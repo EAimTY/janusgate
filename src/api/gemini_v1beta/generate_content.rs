@@ -144,10 +144,12 @@ struct ModelAction {
 /// Parses the wildcard capture after `/models/` into its model plus action.
 ///
 /// The capture must be `<model>:generateContent` or `<model>:streamGenerateContent`
-/// with a non-empty model containing neither `/` nor `:` (such rows are not addressable
-/// through this surface; README §6.5). Anything else is an unmapped path and returns
-/// the surface 404, so malformed paths observe the same body the prefix fallback
-/// renders.
+/// with a non-empty model containing no `/` (the URL path cannot carry such a public
+/// ID; README §6.5). The model is the substring before the first `:`, so a public ID
+/// carrying `:` is not separately rejected — its remainder fails the action match and
+/// lands in the same surface 404, the URL path simply cannot address it. Anything
+/// outside the two action shapes is an unmapped path and returns the surface 404, so
+/// malformed paths observe the same body the prefix fallback renders.
 ///
 /// # Errors
 ///
@@ -166,7 +168,7 @@ fn parse_model_action(rest: &str) -> Result<ModelAction, Error> {
 
     let (model, action) = rest.split_once(':').ok_or_else(invalid_url)?;
 
-    if model.is_empty() || model.contains(':') {
+    if model.is_empty() {
         return Err(invalid_url());
     }
 

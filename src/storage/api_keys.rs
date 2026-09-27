@@ -196,7 +196,10 @@ pub(crate) async fn insert_api_key(
 /// The row is re-read inside the transaction, so a caller's stale outer snapshot can never write
 /// through a concurrent change's results. An unknown key — including one deleted between the
 /// caller's outer read and this call — is rejected and nothing is written, as is a key value
-/// another row already holds; the row's own value re-sent unchanged is never a conflict.
+/// another row already holds; the row's own value re-sent unchanged is never a conflict. The
+/// transaction runs under the storage tier's `in_retryable_transaction` bounded stale-snapshot
+/// retry: a concurrent commit that invalidates the snapshot between the reads and the write
+/// re-runs the whole read-then-write against the newer state instead of surfacing the refusal.
 ///
 /// # Errors
 ///
@@ -206,52 +209,50 @@ pub(crate) async fn update_api_key(
     api_key_id: i64,
     fields: ApiKeyFields<'_>,
 ) -> Result<(), Error> {
-    let mut transaction = database.transaction().await?;
+    in_retryable_transaction!(database, transaction, async {
+        let is_missing = transaction
+            .query(
+                format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE id = ?1"),
+                params![api_key_id],
+            )
+            .await?
+            .is_empty();
 
-    let is_missing = transaction
-        .query(
-            format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE id = ?1"),
-            params![api_key_id],
-        )
-        .await?
-        .is_empty();
+        if is_missing {
+            return Err(Error::NotFound {
+                message: api_key_not_found_message(api_key_id),
+            });
+        }
 
-    if is_missing {
-        return Err(Error::NotFound {
-            message: api_key_not_found_message(api_key_id),
-        });
-    }
+        // A rewrite must not take a key value another row already holds; the row's own value is
+        // excluded, so re-sending the unchanged secret is never a conflict.
+        let key_holders = transaction
+            .query(
+                "SELECT id FROM api_keys WHERE key = ?1 AND id != ?2",
+                params![fields.key, api_key_id],
+            )
+            .await?;
 
-    // A rewrite must not take a key value another row already holds; the row's own value is
-    // excluded, so re-sending the unchanged secret is never a conflict.
-    let key_holders = transaction
-        .query(
-            "SELECT id FROM api_keys WHERE key = ?1 AND id != ?2",
-            params![fields.key, api_key_id],
-        )
-        .await?;
+        if !key_holders.is_empty() {
+            return Err(Error::Conflict {
+                message: api_key_taken_message(),
+            });
+        }
 
-    if !key_holders.is_empty() {
-        return Err(Error::Conflict {
-            message: api_key_taken_message(),
-        });
-    }
+        transaction
+            .execute(
+                "UPDATE api_keys SET name = ?1, key = ?2, is_enabled = ?3 WHERE id = ?4",
+                params![
+                    fields.name,
+                    fields.key,
+                    i64::from(fields.is_enabled),
+                    api_key_id
+                ],
+            )
+            .await?;
 
-    transaction
-        .execute(
-            "UPDATE api_keys SET name = ?1, key = ?2, is_enabled = ?3 WHERE id = ?4",
-            params![
-                fields.name,
-                fields.key,
-                i64::from(fields.is_enabled),
-                api_key_id
-            ],
-        )
-        .await?;
-
-    transaction.commit().await?;
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Deletes one API key by id, returning whether a row was removed.

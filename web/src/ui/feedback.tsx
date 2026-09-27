@@ -77,15 +77,21 @@ const BADGE_GLYPH: Record<BadgeTone, GlyphName> = {
     info: "info",
 };
 
-/** A status that reads as icon plus words, never color alone. */
+/**
+ * A status that reads as icon plus words, never color alone. The optional
+ * title rides the native tooltip, for a state whose one word needs its
+ * sentence carried on hand where no room to state it inline exists.
+ */
 export function Badge(props: {
     readonly tone: BadgeTone;
     readonly label: string;
     readonly glyph?: GlyphName | undefined;
+    readonly title?: string | undefined;
     readonly class?: string | undefined;
 }): JSX.Element {
     return (
         <span
+            title={props.title}
             class={joinClass(
                 "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12.5px] font-medium whitespace-nowrap",
                 BADGE_CLASS[props.tone],

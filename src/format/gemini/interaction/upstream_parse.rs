@@ -5,10 +5,10 @@
 use super::{
     EVENT_COMPLETED, EVENT_CREATED, EVENT_STATUS_UPDATE, EVENT_STEP_DELTA, EVENT_STEP_START,
     EVENT_STEP_STOP, STATUS_BUDGET_EXCEEDED, STATUS_CANCELLED, STATUS_FAILED, STATUS_INCOMPLETE,
-    STATUS_REQUIRES_ACTION, STEP_FUNCTION_CALL, STEP_MODEL_OUTPUT, STEP_THOUGHT, TypedStep,
+    STATUS_REQUIRES_ACTION, STEP_FUNCTION_CALL, STEP_MODEL_OUTPUT, TypedStep,
 };
 use crate::{
-    format::{self, PayloadError, UpstreamError, UpstreamEventParser},
+    format::{self, PayloadError, UpstreamError, UpstreamEventParser, gemini::STEP_THOUGHT},
     ids,
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,

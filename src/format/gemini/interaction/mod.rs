@@ -79,7 +79,10 @@
 
 use self::client_render::{JsonResponse, SseRenderer};
 use crate::{
-    format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
+    format::{
+        ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext,
+        gemini::is_gemini_thought_step,
+    },
     ir::{InvalidRequest, IrAggregation},
 };
 use serde::{Deserialize, Serialize};
@@ -162,9 +165,6 @@ const STATUS_IN_PROGRESS: &str = "in_progress";
 
 /// Step type tag of a model output turn.
 const STEP_MODEL_OUTPUT: &str = "model_output";
-
-/// Step type tag of a model reasoning block.
-const STEP_THOUGHT: &str = "thought";
 
 /// Step type tag of a model tool invocation.
 const STEP_FUNCTION_CALL: &str = "function_call";
@@ -307,7 +307,7 @@ pub(in crate::format) enum ResponseFormatShape {
 /// is a well-formed thought step of this family, else the block synthesizes a fresh step from its
 /// text and signature and the opaque payload is dropped.
 fn render_thought(text: &str, signature: Option<String>, opaque: &Value) -> RenderStep {
-    if is_family_thought_step(opaque) {
+    if is_gemini_thought_step(opaque) {
         // The clone preserves every member and value of the stored step; only key order is
         // canonicalized by the map ordering — see the module docs.
         return RenderStep::Verbatim(opaque.clone());
@@ -322,23 +322,4 @@ fn render_thought(text: &str, signature: Option<String>, opaque: &Value) -> Rend
     };
 
     RenderStep::Typed(TypedStep::Thought { summary, signature })
-}
-
-/// Tests the family membership of an opaque replay payload: an object whose `type` is the thought
-/// step tag replays onto this family's wire, anything else — cross-family blocks, text-only
-/// blocks — is dropped in favor of synthesized content.
-///
-/// The probe is a typed struct rather than a member lookup, so the payload is modelled, never
-/// walked ad hoc.
-fn is_family_thought_step(opaque: &Value) -> bool {
-    /// Minimal shape probe for the family-membership test.
-    #[derive(Debug, Deserialize)]
-    struct ThoughtProbe {
-        /// Step type tag; anything but the thought tag is a foreign block.
-        #[serde(rename = "type")]
-        step_type: String,
-    }
-
-    // Deserializing from the borrowed value copies only the tag String, never the stored step.
-    ThoughtProbe::deserialize(opaque).is_ok_and(|probe| probe.step_type == STEP_THOUGHT)
 }

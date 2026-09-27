@@ -63,7 +63,12 @@ where
 /// with the constraint violation the caller renders as a conflict. An update (a base version)
 /// runs inside a transaction whose insert is conditional on the stored latest version being
 /// exactly the caller's base, so a stale base version is rejected as a conflict and nothing is
-/// written.
+/// written. That transaction runs under the storage tier's `in_retryable_transaction` bounded
+/// stale-snapshot retry: a concurrent version insert that invalidates the snapshot between the
+/// latest-version read and the write re-runs the read-then-write against the newer rows — the
+/// conditional insert then rejects or appends on the fresh state — instead of surfacing the
+/// refusal. The post-commit read-back is outside the retried transaction; it only observes the
+/// committed row for the return value.
 ///
 /// # Errors
 ///
@@ -76,24 +81,22 @@ pub(crate) async fn insert_definition(
         None => insert_first(database, definition).await,
 
         Some(base_version) => {
-            let mut transaction = database.transaction().await?;
-
             let (name, payload, created_at) =
                 (definition.name, definition.payload, definition.created_at);
 
-            insert_next_in_transaction(
-                &mut transaction,
-                NewDefinition {
-                    name,
-                    base_version: None,
-                    payload,
-                    created_at,
-                },
-                base_version,
-            )
-            .await?;
-
-            transaction.commit().await?;
+            in_retryable_transaction!(database, transaction, async {
+                insert_next_in_transaction(
+                    &mut transaction,
+                    NewDefinition {
+                        name,
+                        base_version: None,
+                        payload,
+                        created_at,
+                    },
+                    base_version,
+                )
+                .await
+            })?;
 
             #[expect(
                 clippy::unwrap_used,

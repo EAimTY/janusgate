@@ -36,12 +36,16 @@ type OverviewTraffic = OverviewRecentTotals & {
     readonly series: OverviewDailySeries;
 };
 
-/** One listed attention line: its provider and the human reason it needs one. */
+/** One listed attention line: its provider, the human reason it needs one, and the action that answers it. */
 type ProviderAttention = {
     readonly provider: ProviderResponse;
     readonly attention: {
         readonly label: string;
         readonly detail: string;
+        readonly action: {
+            readonly href: string;
+            readonly label: string;
+        };
     };
 };
 
@@ -332,11 +336,7 @@ export function HomeScreen(props: {
                                                     label={item.attention.label}
                                                 />
                                             }
-                                            action={{
-                                                // Reauthorization lives on the edit page's Credentials card.
-                                                href: hrefs.providerEdit(item.provider.id),
-                                                label: "Reconnect",
-                                            }}
+                                            action={item.attention.action}
                                         >
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                                                 <span class="font-medium">
@@ -497,15 +497,23 @@ function servingGapAttention(
           };
 }
 
-/** Why an OAuth provider needs a human: expired, or never fresh. */
-function credentialAttention(provider: ProviderResponse): {
+/** The OAuth member of the provider row union — the only kind carrying an expiry. */
+type OauthProviderRow = Extract<
+    ProviderResponse,
+    {
+        type: "oauth";
+    }
+>;
+
+/**
+ * The lapsed-credential wording itself: expired, or never fresh — `null`
+ * while the credential still holds. Takes the OAuth member of the row union,
+ * since the expiry is an OAuth row's column alone.
+ */
+function lapsedCredentialAttention(provider: OauthProviderRow): {
     readonly label: string;
     readonly detail: string;
 } | null {
-    if (!isOAuthProviderRow(provider)) {
-        return null;
-    }
-
     if (provider.expires_at === null) {
         return {
             label: "Credential not fresh",
@@ -521,6 +529,46 @@ function credentialAttention(provider: ProviderResponse): {
         label: "Credential expired",
         detail: credentialExpiryLine(provider.expires_at, nowMicros()),
     };
+}
+
+/**
+ * Why an OAuth provider needs a human: expired, or never fresh. The row's
+ * action follows the provider's parked state: reauthorization lives on the
+ * edit page's Credentials card, but a disabled provider is the operator's
+ * own choice, so its row names the parked state and opens the provider's
+ * detail page — read-only itself, its *Edit provider* door reaching the
+ * edit page's Settings card where the Enabled switch lives — instead of
+ * ordering a reconnect the operator deliberately deferred. The credential
+ * counts either way: a parked provider re-enabled with lapsed credentials
+ * fails every request.
+ */
+function credentialAttention(provider: ProviderResponse): ProviderAttention["attention"] | null {
+    if (!isOAuthProviderRow(provider)) {
+        return null;
+    }
+
+    const lapsed = lapsedCredentialAttention(provider);
+
+    if (lapsed === null) {
+        return null;
+    }
+
+    return provider.is_enabled
+        ? {
+              ...lapsed,
+              action: {
+                  href: hrefs.providerEdit(provider.id),
+                  label: "Reconnect",
+              },
+          }
+        : {
+              ...lapsed,
+              detail: `${lapsed.detail} The provider is disabled — reconnect when you re-enable it.`,
+              action: {
+                  href: hrefs.providerDetail(provider.id),
+                  label: "Open provider",
+              },
+          };
 }
 
 /**

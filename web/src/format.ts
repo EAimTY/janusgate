@@ -72,14 +72,30 @@ export function isCredentialExpired(expiresAtMicros: number, nowMicros: number):
 }
 
 /**
- * A stored credential's expiry as one sentence: how long it still holds, or
- * how long ago it ran out. An expiry the credential does not carry (`null`
- * on the wire) is the caller's concern — this only phrases a known instant.
+ * An instant as `YYYY-MM-DD HH:MM` in this browser's zone, minute precision —
+ * [`dateTimeInputValue`]'s shape with the `T` swapped for a space, the same
+ * spelling in a prose-fit separator. The distance beside it goes stale on a
+ * screen left open; this instant stays true.
+ */
+function formatDateTimeMinute(date: Date): string {
+    return dateTimeInputValue(date).replace("T", " ");
+}
+
+/**
+ * A stored credential's expiry as one sentence: how long it still holds and
+ * the instant it runs out, or how long ago it ran out and the instant that
+ * was. The distance alone silently goes stale on a screen left open, and an
+ * admin planning a reconnection cannot act on a bare distance — the absolute
+ * instant beside it does not age. An expiry the credential does not carry
+ * (`null` on the wire) is the caller's concern — this only phrases a known
+ * instant.
  */
 export function credentialExpiryLine(expiresAtMicros: number, nowMicros: number): string {
+    const instant = formatDateTimeMinute(new Date(expiresAtMicros / 1000));
+
     return isCredentialExpired(expiresAtMicros, nowMicros)
-        ? `Expired ${validityDistance(expiresAtMicros, nowMicros)} ago.`
-        : `Valid for ${validityDistance(expiresAtMicros, nowMicros)}.`;
+        ? `Expired ${validityDistance(expiresAtMicros, nowMicros)} ago — on ${instant}.`
+        : `Valid for ${validityDistance(expiresAtMicros, nowMicros)} — until ${instant}.`;
 }
 
 /**

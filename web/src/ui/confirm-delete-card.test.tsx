@@ -1,7 +1,7 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { buttonWithText, settle } from "../screens/screen-test-support";
+import { buttonWithText, paragraphWithText, settle } from "../screens/screen-test-support";
 
 describe("ConfirmDeleteCard state machine", () => {
     const disposes: Array<() => void> = [];
@@ -86,5 +86,33 @@ describe("ConfirmDeleteCard state machine", () => {
         // re-arms — it stays where the confirm left it, awaiting the exit.
         expect(document.body.textContent).toContain("Delete alpha?");
         expect(document.body.textContent).not.toContain("Deleting…");
+    });
+
+    it("keeps keyboard focus with the confirm — onto the armed question on arm, back to the trigger on disarm", async () => {
+        const gate = mount();
+        await settle();
+
+        buttonWithText("Delete…").focus();
+        buttonWithText("Delete…").click();
+        await settle();
+
+        // The armed question is where focus lands — what a screen reader
+        // reads next — with the confirmation button the next Tab away.
+        expect(document.activeElement).toBe(paragraphWithText("Delete alpha?"));
+
+        buttonWithText("Keep it").click();
+        await settle();
+        expect(document.activeElement).toBe(buttonWithText("Delete…"));
+
+        // A confirm that steps back — the row survived — restores the same way.
+        buttonWithText("Delete…").focus();
+        buttonWithText("Delete…").click();
+        await settle();
+        buttonWithText("Delete for good").click();
+        await settle();
+        gate.answer(false);
+        await settle();
+
+        expect(document.activeElement).toBe(buttonWithText("Delete…"));
     });
 });

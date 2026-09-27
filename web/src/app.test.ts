@@ -7,6 +7,7 @@ import {
     buttonWithText,
     drainWrites,
     labeledInput,
+    paragraphWithText,
     settle,
 } from "/src/screens/screen-test-support";
 import { App, guardUnsavedFormsOnLeave } from "./app";
@@ -174,20 +175,26 @@ describe("App disconnect confirm", () => {
 
         // Arming states what arming costs — the bar's one armed control
         // speaks the same confirm grammar as every in-page confirm: the
-        // question, the action, the way back.
+        // question, the action, the way back. Focus moves onto the armed
+        // question, so the question is what a screen reader announces next.
+        buttonWithText("Disconnect").focus();
         buttonWithText("Disconnect").click();
         await settle();
 
         expect(bodyText()).toContain(
             "Disconnect and forget the stored token? Reconnecting means entering it again.",
         );
+        expect(document.activeElement).toBe(
+            paragraphWithText("Disconnect and forget the stored token?"),
+        );
 
-        // Keep steps back to the plain control.
+        // Keep steps back to the plain control — focus returned with it.
         buttonWithText("Keep").click();
         await settle();
 
         expect(bodyText()).not.toContain("Disconnect and forget the stored token?");
         expect(bodyText()).toContain("Disconnect");
+        expect(document.activeElement).toBe(buttonWithText("Disconnect"));
 
         // And the armed action forgets: setup reopens, seeded with the address
         // the forgotten connection served — never the token. In the armed

@@ -1,3 +1,14 @@
+/**
+ * The screens' shared read machinery (README §6.3): the cycle's parallel
+ * reads under one signal (`readAll`), the named read calls, the per-screen
+ * read harness (`createScreenRead`), and the origin-paired standing notice
+ * the harness and every locally-owned failure channel state through. The
+ * standing notice's rule is the two-origin rule: a notice is stored paired
+ * with the origin that stated it — a failed read cycle's diagnosis, or an
+ * action's reported outcome — and each origin is cleared by its own success
+ * alone, so a read cycle that answers lifts only a read's failure and never
+ * the action's diagnosis a re-read never retried.
+ */
 import { type Accessor, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { registerDirtyForm } from "/src/dirty-form-registry";
 import type { ManagementApi } from "/src/management-api/client";
@@ -8,6 +19,7 @@ import type {
     ListApiKeysResponse,
     ListModelsRequest,
     ListModelsResponse,
+    ListProviderDefinitionsResponse,
     ListProvidersResponse,
     ModelResponse,
     ProviderResponse,
@@ -53,6 +65,66 @@ export class ReadCallFailure extends Error {
         this.name = "ReadCallFailure";
         this.notice = screenFailureNotice(cause, call);
     }
+}
+
+/**
+ * Where a standing notice came from: a failed read cycle's diagnosis
+ * (`"read"`), or an action's reported outcome (`"action"`). The origin
+ * decides what may clear the notice — the two-origin rule (README §6.3).
+ */
+export type NoticeOrigin = "read" | "action";
+
+/** A standing notice, paired with the origin its clearing reads. */
+export type StandingNotice = {
+    readonly notice: ScreenNotice;
+    readonly origin: NoticeOrigin;
+};
+
+/** The origin-paired standing notice one screen states its failures and outcomes through. */
+export type StandingNoticeController = {
+    /** The standing notice, or `null` while nothing stands. */
+    readonly notice: Accessor<ScreenNotice | null>;
+    /** The origin of the notice that stands, or `null` while nothing stands. */
+    readonly origin: Accessor<NoticeOrigin | null>;
+    /** States a notice from the given origin, replacing whatever stood. */
+    readonly state: (origin: NoticeOrigin, notice: ScreenNotice) => void;
+    /** Lifts a notice the given origin stated, keeping any other origin's standing notice. */
+    readonly clearOfOrigin: (origin: NoticeOrigin) => void;
+    /** Lifts whatever stands, whatever its origin — an explicit dismissal. */
+    readonly clear: () => void;
+};
+
+/**
+ * One screen's standing notice under the two-origin rule (README §6.3): one
+ * signal holds the notice and its origin together, so every write pairs them
+ * and every clearing reads the origin of the notice that actually stands —
+ * one notice owner, with no second state to drift. The rule is
+ * set-by-origin, clear-by-origin: `state` stamps the notice with the origin
+ * that stated it, and only that origin's own success lifts it again
+ * (`clearOfOrigin`) — a read cycle's answer clears a read's failure, an
+ * action's own clear lifts an action's diagnosis, and neither reaches
+ * across. `clear` is the one origin-unchecked lift, for an explicit
+ * dismissal handing the standing slot back.
+ */
+export function createStandingNotice(): StandingNoticeController {
+    const [standing, setStanding] = createSignal<StandingNotice | null>(null);
+
+    return {
+        notice: (): ScreenNotice | null => standing()?.notice ?? null,
+        origin: (): NoticeOrigin | null => standing()?.origin ?? null,
+        state: (origin: NoticeOrigin, notice: ScreenNotice): void => {
+            setStanding({
+                notice,
+                origin,
+            });
+        },
+        clearOfOrigin: (origin: NoticeOrigin): void => {
+            setStanding((current) => (current?.origin === origin ? null : current));
+        },
+        clear: (): void => {
+            setStanding(null);
+        },
+    };
 }
 
 /** One management call inside a read cycle, run under the cycle's abort signal. */
@@ -142,6 +214,15 @@ export function readProviders(
 ): ReadCall<ListProvidersResponse> {
     return {
         run: (cycle) => api.listProviders(cycle),
+    };
+}
+
+/** The provider-definitions listing, as one read call run under the cycle's signal. */
+export function readProviderDefinitions(
+    api: Pick<ManagementApi, "listProviderDefinitions">,
+): ReadCall<ListProviderDefinitionsResponse> {
+    return {
+        run: (cycle) => api.listProviderDefinitions(cycle),
     };
 }
 
@@ -236,19 +317,6 @@ export type ScreenRead = {
 };
 
 /**
- * Where the harness's standing notice came from: a failed read cycle's
- * diagnosis, or an action's reported outcome. The origin decides what may
- * clear the notice (the two-origin rule, README §6.3).
- */
-type NoticeOrigin = "read" | "action";
-
-/** The harness's standing notice, paired with the origin its clearing reads. */
-type StandingNotice = {
-    readonly notice: ScreenNotice;
-    readonly origin: NoticeOrigin;
-};
-
-/**
  * The screen read harness (README §6.3): one read per mount, repeated when
  * *refresh* is pressed, cancelled when the screen goes away, with the first
  * failure diagnosed where failures are stated. A route-identity move is a
@@ -278,13 +346,8 @@ export function createScreenRead(options: {
 }): ScreenRead {
     const [hasRead, setHasRead] = createSignal(false);
     const [isReading, setIsReading] = createSignal(true);
-    const [standing, setStanding] = createSignal<StandingNotice | null>(null);
+    const standing = createStandingNotice();
     const [isDisposed, setIsDisposed] = createSignal(false);
-
-    // The notice and its origin are one signal, so every write pairs them
-    // and the clearing rule always reads the origin of the notice that
-    // actually stands — one notice owner, with no second state to drift.
-    const notice = (): ScreenNotice | null => standing()?.notice ?? null;
 
     let controller: AbortController | null = null;
 
@@ -307,10 +370,7 @@ export function createScreenRead(options: {
 
             if (error instanceof ReadCallFailure) {
                 setIsReading(false);
-                setStanding({
-                    notice: error.notice,
-                    origin: "read",
-                });
+                standing.state("read", error.notice);
                 return;
             }
 
@@ -336,10 +396,10 @@ export function createScreenRead(options: {
         // actions never clear a read's except by stating their own or
         // dismissing explicitly (`showNotice(null)`).
         const isNoticeShielded =
-            options.isNoticeKeptOnSuccess === true && standing()?.origin === "action";
+            options.isNoticeKeptOnSuccess === true && standing.origin() === "action";
 
         if (!isNoticeShielded) {
-            setStanding(null);
+            standing.clear();
         }
 
         setHasRead(true);
@@ -364,23 +424,23 @@ export function createScreenRead(options: {
 
     // Computed once, so every screen states the skeleton's window through the
     // same one definition instead of re-spelling the three-clause gate.
-    const isFirstRead = createMemo(() => isSkeletonWindowOpen(isReading(), hasRead(), notice()));
+    const isFirstRead = createMemo(() =>
+        isSkeletonWindowOpen(isReading(), hasRead(), standing.notice()),
+    );
 
     return {
         hasRead,
         isReading,
         isFirstRead,
         isDisposed,
-        notice,
+        notice: standing.notice,
         showNotice: (stated) => {
-            setStanding(
-                stated === null
-                    ? null
-                    : {
-                          notice: stated,
-                          origin: "action",
-                      },
-            );
+            if (stated === null) {
+                standing.clear();
+                return;
+            }
+
+            standing.state("action", stated);
         },
         reportAction: <TResult>(
             outcome: ManagementCallOutcome<TResult>,
@@ -401,10 +461,7 @@ export function createScreenRead(options: {
                     options?.onGone?.();
                 }
 
-                setStanding({
-                    notice: screenFailureNotice(outcome.cause, call),
-                    origin: "action",
-                });
+                standing.state("action", screenFailureNotice(outcome.cause, call));
 
                 return false;
             }

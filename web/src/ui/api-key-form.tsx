@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
+import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { CopyButton } from "./clipboard";
 import { requiredHint } from "./required-hint";
 
@@ -71,7 +72,9 @@ type GenerateConfirmSubject = "typed" | "current";
  * field replaces nothing and fires at once; over a standing secret it is
  * destructive — what stands there is unrecoverable — so the first click
  * arms the same one-click confirm the delete card uses, naming what is
- * lost, and only the confirm replaces. The question's subject is the
+ * lost, and only the confirm replaces; focus travels with the confirm as
+ * everywhere — the shared inline-confirm contract (`/src/ui/inline-confirm`).
+ * The question's subject is the
  * caller's context (`generateConfirmSubject`): a creation field opens
  * empty, so text standing there was typed, while the edit form opens
  * prefilled with the row's currently-serving secret, nothing about which is
@@ -94,6 +97,7 @@ export function ApiKeySecretField(props: {
 }): JSX.Element {
     const [isGenerateArmed, setIsGenerateArmed] = createSignal(false);
     const [isSecretVisible, setIsSecretVisible] = createSignal(false);
+    const confirmFocus = createInlineConfirmFocus();
     // The armed state is only ever about the standing text: a field emptied
     // by hand has nothing left to lose, so the confirm yields to the plain
     // Generate button until text stands again.
@@ -137,31 +141,51 @@ export function ApiKeySecretField(props: {
                 <Show
                     when={isStandingSecretArmed()}
                     fallback={
-                        <Button
-                            glyph="key"
-                            isDisabled={props.isDisabled ?? false}
-                            onClick={() =>
-                                props.secret === "" ? generate() : setIsGenerateArmed(true)
-                            }
+                        <span
+                            class="contents"
+                            ref={confirmFocus.restoreDisarmed}
                         >
-                            Generate
-                        </Button>
+                            <Button
+                                glyph="key"
+                                isDisabled={props.isDisabled ?? false}
+                                onClick={() => {
+                                    if (props.secret === "") {
+                                        generate();
+                                    } else {
+                                        confirmFocus.arm();
+                                        setIsGenerateArmed(true);
+                                    }
+                                }}
+                            >
+                                Generate
+                            </Button>
+                        </span>
                     }
                 >
-                    <p class="w-full text-[13.5px] text-ink-dim">
+                    <p
+                        class="w-full text-[13.5px] text-ink-dim"
+                        tabindex={-1}
+                        ref={confirmFocus.focusArmed}
+                    >
                         Replace the {generateConfirmSubject()} secret?
                     </p>
                     <Button
                         tone="danger"
                         glyph="key"
                         isDisabled={props.isDisabled ?? false}
-                        onClick={generate}
+                        onClick={() => {
+                            confirmFocus.disarm();
+                            generate();
+                        }}
                     >
                         Replace it
                     </Button>
                     <Button
                         isDisabled={props.isDisabled ?? false}
-                        onClick={() => setIsGenerateArmed(false)}
+                        onClick={() => {
+                            confirmFocus.disarm();
+                            setIsGenerateArmed(false);
+                        }}
                     >
                         Keep it
                     </Button>

@@ -6,6 +6,7 @@ import {
     hasBaseReference,
     validateDefinitionPayload,
 } from "/src/management-api/definition-payload";
+import { isAbortFailure } from "/src/management-api/errors";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
@@ -22,6 +23,7 @@ import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
+import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     CompatibleConnectionFields,
@@ -32,7 +34,15 @@ import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
-import { type ScreenNotice, screenFailureNotice } from "./read";
+import {
+    createStandingNotice,
+    ReadCallFailure,
+    readAll,
+    readProviderDefinitions,
+    readProviders,
+    type ScreenNotice,
+    screenFailureNotice,
+} from "./read";
 import { StatedNotice } from "./read-notice";
 
 /**
@@ -42,23 +52,6 @@ import { StatedNotice } from "./read-notice";
  */
 const FLOW_LOCK_NOTICE =
     "Locked while the authorization is live — the provider is created from what the flow's start already sent.";
-
-/**
- * Where the page's standing failure came from: the boot read's cycle, or
- * the static creation path's action. The origin decides both what renders
- * beside the failure — the Read-again recovery is the boot read's alone —
- * and what may clear it: the shared read harness's two-origin rule
- * (`read.ts`), applied to the page's locally-owned notice, so a boot cycle
- * that answers clears only a boot failure and a creation's diagnosis
- * survives the re-read that never retried the creation.
- */
-type FailureOrigin = "boot" | "action";
-
-/** The page's standing failure, paired with the origin its clearing reads. */
-type StandingFailure = {
-    readonly notice: ScreenNotice;
-    readonly origin: FailureOrigin;
-};
 
 /**
  * The creation page: one preset catalog, one definition, one provider. A
@@ -72,10 +65,13 @@ type StandingFailure = {
 export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [presetId, setPresetId] = createSignal(PROVIDER_PRESETS[0].id);
     const [definitions, setDefinitions] = createSignal<ReadonlyArray<DefinitionResponse>>([]);
-    /** What the mount read established about the preset's stored versions. */
-    const [isStoredKnown, setIsStoredKnown] = createSignal<"reading" | "read" | "unreadable">(
-        "reading",
-    );
+    /**
+     * Whether a boot cycle answered whole, establishing what is stored: a
+     * cycle in which either call fails installs nothing, so the claims stay
+     * withheld until a whole cycle — the failure notice being the only
+     * state a failed cycle leaves.
+     */
+    const [isStoredKnown, setIsStoredKnown] = createSignal(false);
     const [name, setName] = createSignal("");
     const [isNameTouched, setIsNameTouched] = createSignal(false);
     const [takenNames, setTakenNames] = createSignal<ReadonlySet<string>>(new Set());
@@ -87,12 +83,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     // is not yet a mistake (the api-key forms' untouched-name gate).
     const [hasBaseUrlInput, setHasBaseUrlInput] = createSignal(false);
     const [apiKey, setApiKey] = createSignal("");
-    // The page's standing failure: the boot read's failures and the static
-    // creation path's outcomes, each stamped with the origin its clearing
-    // reads (see `FailureOrigin`). The OAuth flow's failures never reach it
-    // — the flow fragment states its own inside the Connect card — so the
-    // channels cannot render one outcome twice.
-    const [failure, setFailure] = createSignal<StandingFailure | null>(null);
+    // The page's standing notice under the shared two-origin rule
+    // (`createStandingNotice` in `./read`): the boot read's failures carry
+    // the read origin and the static creation path's outcomes the action
+    // one, so a boot cycle that answers clears only the former and the
+    // creation's own clear only the latter. The OAuth flow's failures never
+    // reach it — the flow fragment states its own inside the Connect card —
+    // so the channels cannot render one outcome twice.
+    const failure = createStandingNotice();
     /** Whether the boot read's cycle is in flight — the read-again button's busy state. */
     const [isBootReading, setIsBootReading] = createSignal(true);
 
@@ -133,6 +131,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * a reset to the preset, and a flow going live.
      */
     const [armedPresetId, setArmedPresetId] = createSignal<string | null>(null);
+    // Focus travels with the arming: the pick's confirm takes focus from the
+    // picker, and every disarm that answers a pick hands it back — the
+    // shared inline-confirm contract (`/src/ui/inline-confirm`). A dissolve
+    // no pick asked for (a reset to the preset, a flow going live) calls
+    // nothing: focus stands outside the armed branch there, where the user
+    // put it.
+    const confirmFocus = createInlineConfirmFocus();
 
     /** The armed pick resolved to its catalog entry, `null` when disarmed. */
     const armedPreset = createMemo(() => {
@@ -155,8 +160,17 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * the page renders fully without these reads — they refine the
      * suggestion and the stored-version line, and own no skeleton — so the
      * pulse re-runs them here, and the page's own Read again control beside
-     * the failure notice reruns them in place (README §6.3). It writes only
-     * the listing signals and the notice, never the live OAuth flow's state:
+     * the failure notice reruns them in place (README §6.3).
+     *
+     * Both calls run through the shared `readAll` under the cycle's signal,
+     * so the cycle settles once: both must answer for it to count as read.
+     * A cycle in which either call fails installs nothing — no listing, no
+     * stored-known stamp, no name seed — its diagnosis standing on the
+     * notice with the read origin, Read again retrying the whole cycle. A
+     * whole cycle installs both results, clears only the read-origin failure
+     * (a creation diagnosis the cycle never retried survives the re-read —
+     * the two-origin rule), and stamps the shell. The cycle writes only the
+     * listing signals and the notice, never the live OAuth flow's state:
      * neither rerun may unlock or disturb a flow in flight.
      */
     const readBootState = (): void => {
@@ -166,97 +180,63 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         bootController = cycle;
         setIsBootReading(true);
 
-        // Both calls must answer for the cycle to count as read: a failed
-        // one states its diagnosis on the notice, and only an answered cycle
-        // clears the notice and stamps the shell. Each continuation records
-        // its failure in its declared-call slot and writes nothing itself —
-        // the notice is written once at settle time, naming the first failed
-        // call by declared order (the shared harness's `readAll` contract,
-        // which this boot read mirrors without adopting it), never whichever
-        // continuation happened to settle last.
-        let settledCount = 0;
-        // Each declared call's slot holds its failure cause, `null` marking
-        // the call's success; the none-case lives in the settle's `find`
-        // predicate — `undefined` when every slot still reads `null` — not
-        // in the array's element type.
-        const failureCauses: Array<unknown> = [
-            null,
-            null,
-        ];
+        void readAll(
+            cycle.signal,
+            readProviders(props.api),
+            readProviderDefinitions(props.api),
+        ).then(
+            ([providers, definitions]) => {
+                if (cycle.signal.aborted) {
+                    // Superseded after the reads resolved but before this
+                    // continuation ran: the newer cycle owns the page —
+                    // nothing installs, not even the in-flight lift.
+                    return;
+                }
 
-        const settleBootCall = (index: 0 | 1, failureCause: unknown): void => {
-            settledCount += 1;
-            failureCauses[index] = failureCause;
-
-            if (settledCount === 2) {
-                // The cycle is fully answered: the in-flight state lifts
-                // whether the cycle read or failed — a failed one keeps the
-                // notice, and the read-again button beside it, standing.
-                // An aborted call never settles here, so a superseded cycle
-                // cannot flip the state the newer cycle owns.
                 setIsBootReading(false);
 
-                const firstFailure = failureCauses.find((cause) => cause !== null);
+                const taken = new Set(providers.providers.map((row) => row.name));
+                setTakenNames(taken);
+                setDefinitions(definitions.provider_definitions);
+                setIsStoredKnown(true);
 
-                if (firstFailure === undefined) {
-                    // The cycle read: it clears only a boot-origin failure —
-                    // a creation diagnosis the cycle never retried survives
-                    // the re-read (the two-origin rule).
-                    setFailure((current) => (current?.origin === "boot" ? null : current));
-                    reportRefresh();
-                } else {
-                    // The cycle failed: its diagnosis replaces whatever
-                    // stands — the newest cycle's failure is the current
-                    // fact, and the boot-origin stamp brings the Read-again
-                    // recovery with it.
-                    setFailure({
-                        notice: screenFailureNotice(firstFailure),
-                        origin: "boot",
-                    });
+                if (!isNameTouched()) {
+                    // The seed computes over the local `taken`, not the
+                    // `suggestion` memo: a write from this continuation
+                    // stages until the next flush, so a read-back of the
+                    // memo would still see the committed empty set and
+                    // seed a taken base name without its `-N` suffix.
+                    setName(suggestProviderName(preset().suggestedName, taken));
                 }
-            }
-        };
 
-        void performManagementCall(() => props.api.listProviders(cycle.signal)).then((outcome) => {
-            if (outcome.status === "aborted" || cycle.signal.aborted) {
-                return;
-            }
-
-            if (outcome.status === "failed") {
-                settleBootCall(0, outcome.cause);
-                return;
-            }
-
-            const taken = new Set(outcome.result.providers.map((row) => row.name));
-            setTakenNames(taken);
-
-            if (!isNameTouched()) {
-                // The seed computes over the local `taken`, not the
-                // `suggestion` memo: a write from this continuation stages
-                // until the next flush, so a read-back of the memo would
-                // still see the committed empty set and seed a taken base
-                // name without its `-N` suffix.
-                setName(suggestProviderName(preset().suggestedName, taken));
-            }
-
-            settleBootCall(0, null);
-        });
-
-        void performManagementCall(() => props.api.listProviderDefinitions(cycle.signal)).then(
-            (outcome) => {
-                if (outcome.status === "aborted" || cycle.signal.aborted) {
+                // The cycle read: it clears only the read-origin failure
+                // — a creation diagnosis the cycle never retried
+                // survives the re-read (the two-origin rule).
+                failure.clearOfOrigin("read");
+                reportRefresh();
+            },
+            (error: unknown): void => {
+                if (isAbortFailure(error) || cycle.signal.aborted) {
+                    // Superseded or disposed: an aborted cycle installs
+                    // nothing — not even its diagnosis, which belongs to
+                    // a cycle the page has already replaced.
                     return;
                 }
 
-                if (outcome.status === "failed") {
-                    setIsStoredKnown("unreadable");
-                    settleBootCall(1, outcome.cause);
-                    return;
+                setIsBootReading(false);
+
+                if (!(error instanceof ReadCallFailure)) {
+                    // `readAll` rejects with nothing else; anything here
+                    // is a bug and stays loud, the shared harness's own
+                    // contract for what escapes a load.
+                    throw error;
                 }
 
-                setIsStoredKnown("read");
-                setDefinitions(outcome.result.provider_definitions);
-                settleBootCall(1, null);
+                // The cycle failed: its diagnosis replaces whatever
+                // stands — the newest cycle's failure is the current
+                // fact, and the read-origin stamp brings the Read-again
+                // recovery with it.
+                failure.state("read", error.notice);
             },
         );
     };
@@ -526,6 +506,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         // performs the switch. An untouched definition switches instantly —
         // the common path gains no friction.
         if (isDefinitionTouched()) {
+            confirmFocus.arm();
             setArmedPresetId(nextPreset.id);
             return;
         }
@@ -542,11 +523,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return;
         }
 
+        confirmFocus.disarm();
         applyPreset(presetById(armedId));
     };
 
     /** The confirm's way back: the arming dissolves, the edit stands. */
     const cancelPresetSwitch = (): void => {
+        confirmFocus.disarm();
         setArmedPresetId(null);
     };
 
@@ -557,16 +540,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * (the two-origin rule: an action states its own or clears its own).
      */
     const reportCreationFailure = (notice: ScreenNotice | null): void => {
-        setFailure((current) => {
-            if (notice !== null) {
-                return {
-                    notice,
-                    origin: "action",
-                };
-            }
+        if (notice === null) {
+            failure.clearOfOrigin("action");
+            return;
+        }
 
-            return current?.origin === "action" ? null : current;
-        });
+        failure.state("action", notice);
     };
 
     // The static-key creation's shared action: the page's prelude ensures the
@@ -653,19 +632,19 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             />
 
             <StatedNotice
-                notice={() => failure()?.notice ?? null}
+                notice={failure.notice}
                 class="flex flex-col items-start gap-3"
             >
                 {/* The failed boot read's way back, on the page it
                     failed — and only there: an action-origin failure
                     is not the boot read's to recover, and a click
                     here would rerun a read whose success clears only
-                    a boot failure, leaving the action's diagnosis
+                    a read failure, leaving the action's diagnosis
                     standing while retrying nothing. The rerun aborts
                     the cycle in flight and writes only the listing
                     signals and the notice, so a live OAuth flow
                     stands through it untouched. */}
-                <Show when={failure()?.origin === "boot"}>
+                <Show when={failure.origin() === "read"}>
                     <Button
                         glyph="refresh"
                         tone="ghost"
@@ -700,7 +679,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     >
                         {(armed) => (
                             <div class="mt-3 flex flex-wrap items-center gap-2">
-                                <p class="w-full text-[13.5px] text-ink-dim">
+                                <p
+                                    class="w-full text-[13.5px] text-ink-dim"
+                                    tabindex={-1}
+                                    ref={confirmFocus.focusArmed}
+                                >
                                     {`Switch to ${armed.title}? Your edited connection recipe will be replaced.`}
                                 </p>
                                 <Button
@@ -920,15 +903,15 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <Show
                         when={stored()}
                         fallback={
-                            // The claims wait for the boot read's answer:
-                            // while it is in flight the page states no fact
-                            // about the stored versions — the same wait the
-                            // stored case's line already keeps.
-                            <Show when={isStoredKnown() !== "reading"}>
+                            // The claims wait for a boot cycle that answers
+                            // whole: while the read is in flight — and after
+                            // a cycle that failed, which installs nothing —
+                            // the page states no fact about the stored
+                            // versions; the failure notice is the only state
+                            // a failed cycle leaves.
+                            <Show when={isStoredKnown()}>
                                 <p class="text-[12.5px] text-ink-faint">
-                                    {isStoredKnown() === "unreadable"
-                                        ? "The stored versions could not be read."
-                                        : "Not stored yet — submitting creates version 1."}
+                                    Not stored yet — submitting creates version 1.
                                 </p>
                             </Show>
                         }

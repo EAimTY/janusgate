@@ -29,8 +29,13 @@
 //! - The model is referenced by `model_id` — a bare `models.id` integer — for the same reason
 //!   `api_key_id` and `provider_id` are bare integers: no FK, so a `models:delete` leaves the log
 //!   row intact and attribution by id unchanged.
-//! - `http_status` is `NULL` exactly when no response was ever produced to the client; the
-//!   per-outcome decision rules live in the recording code.
+//! - `http_status` is `NULL` exactly when no response was ever produced to the client, and
+//!   otherwise a status `CHECK`-pinned to 100-999 — the full `StatusCode` domain the gateway
+//!   mirrors verbatim from the upstream response, so a recorded status is never rejected at write
+//!   time; the per-outcome decision rules live in the recording code.
+//! - `duration` counts whole milliseconds from the dispatch stamp to the recording instant; the
+//!   recording code saturates a wall clock stepped backwards, and the schema `CHECK`-pins the
+//!   result non-negative.
 //! - The five token columns are `NULL` when the upstream reported no usage; `output_tokens`
 //!   includes `reasoning_tokens`.
 //! - `started_at` (dispatch-start instant, microseconds) is indexed alone
@@ -81,11 +86,11 @@ CREATE TABLE api_logs (
         )
     ),
     is_stream INTEGER NOT NULL CHECK (is_stream IN (0, 1)),
-    http_status INTEGER NULL,
+    http_status INTEGER NULL CHECK (http_status IS NULL OR http_status BETWEEN 100 AND 999),
     outcome TEXT NOT NULL CHECK (
         outcome IN ('completed', 'client_aborted', 'upstream_error', 'internal')
     ),
-    duration INTEGER NOT NULL,
+    duration INTEGER NOT NULL CHECK (duration >= 0),
     input_tokens INTEGER NULL,
     output_tokens INTEGER NULL,
     cached_tokens INTEGER NULL,
@@ -331,6 +336,76 @@ mod tests {
             .await;
 
         assert_constraint_violation(outcome, "is_stream");
+
+        Ok(())
+    }
+
+    /// Verifies the `api_logs.duration` domain: a negative duration is rejected at write time by
+    /// the schema `CHECK` — the recording code saturates a wall clock stepped backwards, so a
+    /// negative value can only be a bug.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a statement fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the negative duration is not rejected as a constraint violation.
+    #[tokio::test]
+    async fn api_logs_reject_a_negative_duration() -> Result<(), Box<dyn StdError>> {
+        let connection = open_fresh().await?;
+
+        let outcome = connection
+            .execute_batch(
+                "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
+                 endpoint_type, is_stream, outcome, duration) \
+                 VALUES (1, 1, 1, 1, 'openai_responses', 0, 'completed', -1);",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "duration");
+
+        Ok(())
+    }
+
+    /// Verifies the `api_logs.http_status` closed domain: a status outside the mirrored
+    /// `StatusCode` domain 100-999 is rejected at write time by the schema `CHECK`, the
+    /// boundaries write cleanly, and `NULL` — the no-response-was-produced state — stays legal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a statement fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an illegal status is not rejected as a constraint violation.
+    #[tokio::test]
+    async fn api_logs_reject_an_illegal_http_status() -> Result<(), Box<dyn StdError>> {
+        let connection = open_fresh().await?;
+
+        for status in [99, 1000] {
+            let outcome = connection
+                .execute_batch(&format!(
+                    "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
+                     endpoint_type, is_stream, http_status, outcome, duration) \
+                     VALUES (1, 1, 1, 1, 'openai_responses', 0, {status}, 'completed', 1);",
+                ))
+                .await;
+
+            assert_constraint_violation(outcome, "http_status");
+        }
+
+        // The range boundaries and the explicit `NULL` state all write cleanly.
+        for (index, status) in ["100", "999", "NULL"].iter().enumerate() {
+            connection
+                .execute_batch(&format!(
+                    "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
+                     endpoint_type, is_stream, http_status, outcome, duration) \
+                     VALUES ({index}, 1, 1, 1, 'openai_responses', 0, {status}, \
+                     'completed', 1);",
+                ))
+                .await?;
+        }
 
         Ok(())
     }

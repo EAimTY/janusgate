@@ -473,11 +473,10 @@ describe("ProviderNewScreen creation", () => {
         await settle();
 
         // While the boot read is in flight the page asserts nothing about the
-        // stored versions — neither the absence claim nor the unreadable one,
-        // the same wait the stored case's line already keeps. The rest of the
-        // card stands, as the page's no-skeleton design has it.
+        // stored versions — the absence claim stays unstated, the same wait
+        // the stored case's line already keeps. The rest of the card stands,
+        // as the page's no-skeleton design has it.
         expect(document.body.textContent).not.toContain("Not stored yet");
-        expect(document.body.textContent).not.toContain("The stored versions could not be read.");
         expect(document.body.textContent).toContain("Advanced: the connection recipe");
 
         // The read answers absent: the absence claim is now established, and
@@ -515,6 +514,11 @@ describe("ProviderNewScreen creation", () => {
         // the cards, never inside one — the one channel the flow's own
         // failures may not reach.
         expect(paragraphWithText("the listing refused").closest("section")).toBeNull();
+
+        // The cycle failed even though the definitions listing answered:
+        // a cycle in which either call fails installs nothing, so the
+        // stored-version absence claim stays withheld.
+        expect(document.body.textContent).not.toContain("Not stored yet");
     });
 
     it("states a failed definitions listing where the screen's failures stand", async () => {
@@ -533,7 +537,10 @@ describe("ProviderNewScreen creation", () => {
         await settle();
 
         expect(document.body.textContent).toContain("the definitions refused");
-        expect(document.body.textContent).toContain("The stored versions could not be read.");
+
+        // The failed cycle installs nothing — the providers listing's
+        // answer included — so the stored-version claims stay withheld and
+        // the failure notice is the only state the cycle leaves.
         expect(document.body.textContent).not.toContain("Not stored yet");
     });
 
@@ -582,8 +589,45 @@ describe("ProviderNewScreen creation", () => {
 
         expect(document.body.textContent).toContain("the listing refused");
         expect(document.body.textContent).not.toContain("the definitions refused");
-        // The definitions call's own side state stands beside the notice.
-        expect(document.body.textContent).toContain("The stored versions could not be read.");
+        // Neither call's answer installed: the failed cycle leaves the
+        // notice alone, and the Read-again recovery stands beside it.
+        expect(document.body.textContent).not.toContain("Not stored yet");
+        expect(
+            [
+                ...document.querySelectorAll("button"),
+            ].some((candidate) => candidate.textContent?.includes("Read again") === true),
+        ).toBe(true);
+    });
+
+    it("installs nothing from a cycle whose providers call answered but whose definitions call failed", async () => {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            providers: () =>
+                                Promise.resolve({
+                                    providers: [
+                                        providerRowNamed("openai"),
+                                    ],
+                                }),
+                            definitions: () => Promise.reject(new Error("the definitions refused")),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The providers call answered a taken base name, but the cycle
+        // failed: nothing installs — the suggestion keeps the bare base
+        // name, the field stays unseeded, and the stored-version claims
+        // stay withheld. Read again retries the whole cycle.
+        expect(document.body.textContent).toContain("the definitions refused");
+        expect(labeledInput("Name").placeholder).toBe(PROVIDER_PRESETS[0].suggestedName);
+        expect(labeledInput("Name").value).toBe("");
+        expect(document.body.textContent).not.toContain("Not stored yet");
     });
 
     it("diagnoses a definition-write conflict as the definition's own recovery", async () => {
@@ -784,13 +828,22 @@ describe("ProviderNewScreen preset switching over an edited recipe", () => {
 
         typeInto(definitionEditor(), "{}");
         await settle();
+        buttonWithText("Claude Code").focus();
         buttonWithText("Claude Code").click();
         await settle();
 
+        // The armed question takes focus — the confirm announces itself
+        // where the pick landed, instead of dropping focus onto the body.
+        expect(document.activeElement).toBe(
+            paragraphWithText("Switch to Claude Code (Claude account)?"),
+        );
+
         // Cancel dissolves the arming and keeps the edit whole — and the
-        // next pick arms again rather than switching.
+        // next pick arms again rather than switching. The picker survived
+        // the swap, so focus returns to the very button that armed it.
         buttonWithText("Keep my edit").click();
         await settle();
+        expect(document.activeElement).toBe(buttonWithText("Claude Code"));
         expect(document.body.textContent).not.toContain("Switch to Claude Code (Claude account)?");
         expect(definitionEditor().value).toBe("{}");
 
@@ -802,6 +855,8 @@ describe("ProviderNewScreen preset switching over an edited recipe", () => {
         // The confirm is the only switch: the edit gives way to the armed
         // preset's payload, the provenance line names what now stands, and
         // the switched-in preset is untouched — the next pick is instant.
+        // The confirm answers to the picker, so it returns focus there too.
+        expect(document.activeElement).toBe(buttonWithText("Claude Code"));
         expect(document.body.textContent).not.toContain(
             "Your edited connection recipe will be replaced.",
         );

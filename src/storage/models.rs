@@ -308,6 +308,11 @@ pub(crate) async fn list_enabled_models_with_owner(
 /// reports no models, a fresh pre-onboarded account, or an outage answering 200 with an empty
 /// payload must fail loudly instead.
 ///
+/// The transaction runs under the storage tier's `in_retryable_transaction` bounded
+/// stale-snapshot retry: a concurrent commit that invalidates the snapshot between the re-read
+/// and the first write re-runs the whole mark-plus-upsert against the newer state instead of
+/// surfacing the refusal.
+///
 /// # Errors
 ///
 /// Returns [`Error`] for an unknown provider, failed statements, or a composed public ID
@@ -317,86 +322,87 @@ pub(crate) async fn apply_discovered_models(
     provider_id: i64,
     upstream_ids: &[String],
 ) -> Result<Vec<ModelEntry>, Error> {
-    let mut transaction = database.transaction().await?;
+    in_retryable_transaction!(database, transaction, async {
+        let Some(provider) =
+            super::providers::find_provider_by_id_in_transaction(&mut transaction, provider_id)
+                .await?
+        else {
+            return Err(Error::NotFound {
+                message: super::provider_not_found_message(provider_id),
+            });
+        };
 
-    let Some(provider) =
-        super::providers::find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
-    else {
-        return Err(Error::NotFound {
-            message: super::provider_not_found_message(provider_id),
-        });
-    };
-
-    // Blanket mark: every currently-discovered row not listed below ends up `vanished`.
-    transaction
-        .execute(
-            "UPDATE models SET discovery_state = 'vanished' \
-             WHERE provider_id = ?1 AND discovery_state = 'discovered'",
-            params![provider.id],
-        )
-        .await?;
-
-    // One routed snapshot serves every collision check of the loop below. A check consults the map
-    // only by the candidate's public ID, and nothing the loop writes between iterations can enter
-    // that set: the state flips touch no routing column, and a fresh insert composes
-    // `model_prefix + upstream_id`, which equals a later candidate's composed ID only for the same
-    // upstream identifier — but that occurrence finds the just-inserted row through
-    // `find_model_in_transaction` and never reaches the check. Batch-internal convergence is
-    // impossible anyway (distinct upstream identifiers, new rows carry no override — step 4 of the
-    // doc above), so the pre-loop snapshot is exact, not an approximation.
-    let routed = super::read_routed_holders_in_transaction(&mut transaction).await?;
-
-    for upstream_id in upstream_ids {
-        if let Some(existing) =
-            find_model_in_transaction(&mut transaction, provider.id, upstream_id).await?
-        {
-            // The row exists: flip only its state back to `discovered`.
-            transaction
-                .execute(
-                    "UPDATE models SET discovery_state = 'discovered' WHERE id = ?1",
-                    params![existing.id],
-                )
-                .await?;
-
-            continue;
-        }
-
-        // The row is new: compose its public ID and reject a collision against any holder —
-        // `vanished`/`manual` rows and `id_override` holders reserve their IDs — before inserting.
-        let public_id = Model::public_id(&provider.model_prefix, upstream_id, None);
-
-        super::ensure_id_routable_against(&routed, provider.id, &public_id, upstream_id)?;
-
+        // Blanket mark: every currently-discovered row not listed below ends up `vanished`.
         transaction
             .execute(
-                "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
-                 public_id, id_override) VALUES (?1, ?2, 1, 'discovered', ?3, NULL)",
-                params![provider.id, upstream_id.clone(), public_id],
+                "UPDATE models SET discovery_state = 'vanished' \
+                 WHERE provider_id = ?1 AND discovery_state = 'discovered'",
+                params![provider.id],
             )
             .await?;
-    }
 
-    // The response carries every row of the provider as this transaction left them.
-    let rows = transaction
-        .query(
-            format!(
-                "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
-                 WHERE m.provider_id = ?1 ORDER BY m.public_id",
-                super::MODEL_ENTRY_COLUMNS
-            ),
-            params![provider.id],
-        )
-        .await?;
+        // One routed snapshot serves every collision check of the loop below. A check consults
+        // the map only by the candidate's public ID, and nothing the loop writes between
+        // iterations can enter that set: the state flips touch no routing column, and a fresh
+        // insert composes `model_prefix + upstream_id`, which equals a later candidate's
+        // composed ID only for the same upstream identifier — but that occurrence finds the
+        // just-inserted row through `find_model_in_transaction` and never reaches the check.
+        // Batch-internal convergence is impossible anyway (distinct upstream identifiers, new
+        // rows carry no override — step 4 of the doc above), so the pre-loop snapshot is exact,
+        // not an approximation.
+        let routed = super::read_routed_holders_in_transaction(&mut transaction).await?;
 
-    let mut entries = Vec::with_capacity(rows.len());
+        for upstream_id in upstream_ids {
+            if let Some(existing) =
+                find_model_in_transaction(&mut transaction, provider.id, upstream_id).await?
+            {
+                // The row exists: flip only its state back to `discovered`.
+                transaction
+                    .execute(
+                        "UPDATE models SET discovery_state = 'discovered' WHERE id = ?1",
+                        params![existing.id],
+                    )
+                    .await?;
 
-    for row in &rows {
-        entries.push(super::model_entry_from_row(row)?);
-    }
+                continue;
+            }
 
-    transaction.commit().await?;
+            // The row is new: compose its public ID and reject a collision against any holder —
+            // `vanished`/`manual` rows and `id_override` holders reserve their IDs — before
+            // inserting.
+            let public_id = Model::public_id(&provider.model_prefix, upstream_id, None);
 
-    Ok(entries)
+            super::ensure_id_routable_against(&routed, provider.id, &public_id, upstream_id)?;
+
+            transaction
+                .execute(
+                    "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
+                     public_id, id_override) VALUES (?1, ?2, 1, 'discovered', ?3, NULL)",
+                    params![provider.id, upstream_id.clone(), public_id],
+                )
+                .await?;
+        }
+
+        // The response carries every row of the provider as this transaction left them.
+        let rows = transaction
+            .query(
+                format!(
+                    "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
+                     WHERE m.provider_id = ?1 ORDER BY m.public_id",
+                    super::MODEL_ENTRY_COLUMNS
+                ),
+                params![provider.id],
+            )
+            .await?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+
+        for row in &rows {
+            entries.push(super::model_entry_from_row(row)?);
+        }
+
+        Ok(entries)
+    })
 }
 
 /// Inserts one manually created model row — or claims a vanished one — and returns the applied row
@@ -414,7 +420,10 @@ pub(crate) async fn apply_discovered_models(
 /// The public ID collision check matches [`update_model_overrides_checked`]'s quality tier: an ID
 /// already routed by any other model row yields a 409 naming the holder, and nothing is written.
 /// An unknown provider yields 404. The table's unique constraints are the concurrent backstop
-/// behind both checked conflicts.
+/// behind both checked conflicts. The transaction runs under the storage tier's
+/// `in_retryable_transaction` bounded stale-snapshot retry: a concurrent commit that invalidates
+/// the snapshot between the reads and the write re-runs the whole read-then-write against the
+/// newer state instead of surfacing the refusal.
 ///
 /// # Errors
 ///
@@ -424,97 +433,98 @@ pub(crate) async fn insert_model_checked(
     database: &Database,
     create: ModelCreate<'_>,
 ) -> Result<ModelEntry, Error> {
-    let mut transaction = database.transaction().await?;
-
-    let Some(provider) =
-        super::providers::find_provider_by_id_in_transaction(&mut transaction, create.provider_id)
-            .await?
-    else {
-        return Err(Error::NotFound {
-            message: super::provider_not_found_message(create.provider_id),
-        });
-    };
-
-    let stored =
-        find_model_in_transaction(&mut transaction, provider.id, create.upstream_id).await?;
-
-    let public_id = Model::public_id(
-        &provider.model_prefix,
-        create.upstream_id,
-        create.id_override,
-    );
-
-    match stored {
-        None => {
-            super::ensure_id_routable_in_transaction(
-                &mut transaction,
-                provider.id,
-                &public_id,
-                create.upstream_id,
-            )
-            .await?;
-
-            transaction
-                .execute(
-                    "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
-                     public_id, id_override) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        provider.id,
-                        create.upstream_id,
-                        i64::from(create.is_enabled),
-                        DiscoveryState::Manual,
-                        public_id,
-                        create.id_override,
-                    ],
-                )
-                .await?;
-        }
-
-        Some(existing) if existing.discovery_state == DiscoveryState::Vanished => {
-            super::ensure_id_routable_in_transaction(
-                &mut transaction,
-                provider.id,
-                &public_id,
-                create.upstream_id,
-            )
-            .await?;
-
-            transaction
-                .execute(
-                    "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3, \
-                     discovery_state = ?4 WHERE id = ?5",
-                    params![
-                        create.id_override,
-                        i64::from(create.is_enabled),
-                        public_id,
-                        DiscoveryState::Manual,
-                        existing.id,
-                    ],
-                )
-                .await?;
-        }
-
-        Some(_) => {
-            return Err(Error::Conflict {
-                message: format!(
-                    "Model `{}` already exists on provider `{}`",
-                    create.upstream_id, provider.name
-                ),
-            });
-        }
-    }
-
-    // The read-back entry carries the provider facts the response renders, observed on the
-    // write's own snapshot.
-    let entry = find_model_entry_in_transaction(&mut transaction, provider.id, create.upstream_id)
+    in_retryable_transaction!(database, transaction, async {
+        let Some(provider) = super::providers::find_provider_by_id_in_transaction(
+            &mut transaction,
+            create.provider_id,
+        )
         .await?
-        .ok_or_else(|| Error::Drift {
-            message: "model vanished after insert".to_string(),
-        })?;
+        else {
+            return Err(Error::NotFound {
+                message: super::provider_not_found_message(create.provider_id),
+            });
+        };
 
-    transaction.commit().await?;
+        let stored =
+            find_model_in_transaction(&mut transaction, provider.id, create.upstream_id).await?;
 
-    Ok(entry)
+        let public_id = Model::public_id(
+            &provider.model_prefix,
+            create.upstream_id,
+            create.id_override,
+        );
+
+        match stored {
+            None => {
+                super::ensure_id_routable_in_transaction(
+                    &mut transaction,
+                    provider.id,
+                    &public_id,
+                    create.upstream_id,
+                )
+                .await?;
+
+                transaction
+                    .execute(
+                        "INSERT INTO models (provider_id, upstream_id, is_enabled, \
+                         discovery_state, public_id, id_override) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            provider.id,
+                            create.upstream_id,
+                            i64::from(create.is_enabled),
+                            DiscoveryState::Manual,
+                            public_id,
+                            create.id_override,
+                        ],
+                    )
+                    .await?;
+            }
+
+            Some(existing) if existing.discovery_state == DiscoveryState::Vanished => {
+                super::ensure_id_routable_in_transaction(
+                    &mut transaction,
+                    provider.id,
+                    &public_id,
+                    create.upstream_id,
+                )
+                .await?;
+
+                transaction
+                    .execute(
+                        "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3, \
+                         discovery_state = ?4 WHERE id = ?5",
+                        params![
+                            create.id_override,
+                            i64::from(create.is_enabled),
+                            public_id,
+                            DiscoveryState::Manual,
+                            existing.id,
+                        ],
+                    )
+                    .await?;
+            }
+
+            Some(_) => {
+                return Err(Error::Conflict {
+                    message: format!(
+                        "Model `{}` already exists on provider `{}`",
+                        create.upstream_id, provider.name
+                    ),
+                });
+            }
+        }
+
+        // The read-back entry carries the provider facts the response renders, observed on the
+        // write's own snapshot.
+        let entry =
+            find_model_entry_in_transaction(&mut transaction, provider.id, create.upstream_id)
+                .await?
+                .ok_or_else(|| Error::Drift {
+                    message: "model vanished after insert".to_string(),
+                })?;
+
+        Ok(entry)
+    })
 }
 
 /// Rewrites one model row's override columns and recomputes its public ID inside a single
@@ -526,7 +536,10 @@ pub(crate) async fn insert_model_checked(
 /// `is_enabled` are written — `discovery_state` is never touched, so this route cannot restore a
 /// vanished row (README §7.1). The collision check matches [`super::providers::update_provider`]'s
 /// quality tier: an ID already routed by another model row yields a 409 naming the holder, and
-/// nothing is written. An unknown row yields 404.
+/// nothing is written. An unknown row yields 404. The transaction runs under the storage tier's
+/// `in_retryable_transaction` bounded stale-snapshot retry: a concurrent commit that invalidates
+/// the snapshot between the read and the write re-runs the whole read-then-write against the
+/// newer state instead of surfacing the refusal.
 ///
 /// # Errors
 ///
@@ -535,53 +548,51 @@ pub(crate) async fn update_model_overrides_checked(
     database: &Database,
     update: ModelUpdate<'_>,
 ) -> Result<ModelEntry, Error> {
-    let mut transaction = database.transaction().await?;
+    in_retryable_transaction!(database, transaction, async {
+        let Some(joined) =
+            find_provider_model_in_transaction(&mut transaction, update.model_id).await?
+        else {
+            return Err(Error::NotFound {
+                message: super::model_not_found_message(update.model_id),
+            });
+        };
 
-    let Some(joined) =
-        find_provider_model_in_transaction(&mut transaction, update.model_id).await?
-    else {
-        return Err(Error::NotFound {
-            message: super::model_not_found_message(update.model_id),
-        });
-    };
+        let public_id = Model::public_id(
+            &joined.provider.model_prefix,
+            &joined.model.upstream_id,
+            update.id_override,
+        );
 
-    let public_id = Model::public_id(
-        &joined.provider.model_prefix,
-        &joined.model.upstream_id,
-        update.id_override,
-    );
-
-    super::ensure_id_routable_in_transaction(
-        &mut transaction,
-        joined.provider.id,
-        &public_id,
-        &joined.model.upstream_id,
-    )
-    .await?;
-
-    transaction
-        .execute(
-            "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3 WHERE id = ?4",
-            params![
-                update.id_override,
-                i64::from(update.is_enabled),
-                public_id,
-                update.model_id,
-            ],
+        super::ensure_id_routable_in_transaction(
+            &mut transaction,
+            joined.provider.id,
+            &public_id,
+            &joined.model.upstream_id,
         )
         .await?;
 
-    // The read-back entry carries the provider facts the response renders, observed on the
-    // write's own snapshot.
-    let entry = find_model_entry_by_id_in_transaction(&mut transaction, update.model_id)
-        .await?
-        .ok_or_else(|| Error::Drift {
-            message: "model vanished after override update".to_string(),
-        })?;
+        transaction
+            .execute(
+                "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3 WHERE id = ?4",
+                params![
+                    update.id_override,
+                    i64::from(update.is_enabled),
+                    public_id,
+                    update.model_id,
+                ],
+            )
+            .await?;
 
-    transaction.commit().await?;
+        // The read-back entry carries the provider facts the response renders, observed on the
+        // write's own snapshot.
+        let entry = find_model_entry_by_id_in_transaction(&mut transaction, update.model_id)
+            .await?
+            .ok_or_else(|| Error::Drift {
+                message: "model vanished after override update".to_string(),
+            })?;
 
-    Ok(entry)
+        Ok(entry)
+    })
 }
 
 /// Deletes one model row by its identifier inside a single transaction.

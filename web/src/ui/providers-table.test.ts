@@ -38,10 +38,11 @@ describe("credentialBadge", () => {
         expect(credentialBadge(staticKeyProvider)).toBeNull();
     });
 
-    it("reads an OAuth login with no stored expiry as Stale", () => {
+    it("reads an OAuth login with no stored expiry as Stale, titled with the detail page's sentence", () => {
         expect(credentialBadge(oauthProvider(null))).toEqual({
             tone: "warn",
             label: "Stale",
+            title: "The OAuth credentials were never fresh.",
         });
     });
 

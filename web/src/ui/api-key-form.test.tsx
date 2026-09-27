@@ -1,7 +1,13 @@
 import { render } from "@solidjs/web";
 import { createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
-import { buttonWithText, labeledInput, settle, typeInto } from "../screens/screen-test-support";
+import {
+    buttonWithText,
+    labeledInput,
+    paragraphWithText,
+    settle,
+    typeInto,
+} from "../screens/screen-test-support";
 import { ApiKeySecretField, apiKeyNameError } from "./api-key-form";
 
 describe("apiKeyNameError", () => {
@@ -144,6 +150,7 @@ describe("ApiKeySecretField Generate guard", () => {
 
         typeInto(labeledInput("Key"), "sk-hand-made");
         await settle();
+        buttonWithText("Generate").focus();
         buttonWithText("Generate").click();
         await settle();
         buttonWithText("Replace it").click();
@@ -151,6 +158,9 @@ describe("ApiKeySecretField Generate guard", () => {
 
         expect(isGeneratedSecret(labeledInput("Key").value)).toBe(true);
         expect(document.body.textContent).not.toContain("Replace the typed secret?");
+        // The confirm's action steps back to the trigger with focus — the
+        // operator can generate again without re-tabbing the page.
+        expect(document.activeElement).toBe(buttonWithText("Generate"));
     });
 
     it("keeps the typed secret and disarms on Keep it", async () => {
@@ -159,11 +169,17 @@ describe("ApiKeySecretField Generate guard", () => {
 
         typeInto(labeledInput("Key"), "sk-hand-made");
         await settle();
+        buttonWithText("Generate").focus();
         buttonWithText("Generate").click();
         await settle();
+        // The armed question takes focus — the announcement that a question
+        // replaced the Generate button.
+        expect(document.activeElement).toBe(paragraphWithText("Replace the typed secret?"));
+
         buttonWithText("Keep it").click();
         await settle();
 
+        expect(document.activeElement).toBe(buttonWithText("Generate"));
         expect(labeledInput("Key").value).toBe("sk-hand-made");
         expect(document.body.textContent).not.toContain("Replace the typed secret?");
         expect(buttonWithText("Generate")).toBeDefined();

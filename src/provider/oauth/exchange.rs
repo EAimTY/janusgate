@@ -357,10 +357,12 @@ fn decoded_error_code(decoded: &DecodedBody) -> Option<String> {
 }
 
 /// Classifies one upstream failure code against the definition's terminal codes: the RFC 8628
-/// polling codes are engine-owned, the configured terminal codes end the flow, and anything else
-/// is `Other`.
+/// polling codes are engine-owned and match case-insensitively like the configured terminal
+/// codes (README §5.1) — a mis-cased `slow_down` must still apply the slow-down backoff — the
+/// configured terminal codes end the flow, and anything else is `Other` carrying the code's
+/// original text.
 fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct {
-    match code {
+    match code.to_ascii_lowercase().as_str() {
         "authorization_pending" => return ExchangeProduct::Pending,
         "slow_down" => return ExchangeProduct::SlowDown,
         _ => {}
@@ -558,8 +560,8 @@ mod tests {
     )]
 
     use super::{
-        ExchangeOutcome, IdTokenClaim, Target, absorb_exchange_slots, apply_exchange_target,
-        jwt_exp_claim, token_error_code,
+        ExchangeOutcome, ExchangeProduct, IdTokenClaim, Target, absorb_exchange_slots,
+        apply_exchange_target, classify_error_code, jwt_exp_claim, token_error_code,
     };
     use crate::provider::{control::Extracted, definition::template::ResponsePath};
     use base64::{Engine as _, engine::general_purpose};
@@ -598,6 +600,49 @@ mod tests {
         );
 
         assert_eq!(token_error_code("neither code nor shape"), None);
+    }
+
+    /// Pins the classifier's case rule (README §5.1): the engine-owned RFC 8628 polling codes
+    /// match case-insensitively like the configured terminal codes, so a non-conformant
+    /// server's mis-cased `slow_down` still applies the slow-down backoff (RFC 8628 §3.5)
+    /// instead of degrading to a generic rejection, and conformant lowercase inputs keep
+    /// their dispositions; an unknown code lands in `Other` carrying its original text.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a code classifies outside its documented disposition.
+    #[test]
+    fn classify_error_code_matches_case_insensitively() {
+        assert!(
+            matches!(
+                classify_error_code("SLOW_DOWN", &[]),
+                ExchangeProduct::SlowDown
+            ),
+            "a mis-cased `slow_down` must apply the slow-down backoff"
+        );
+
+        assert!(matches!(
+            classify_error_code("Authorization_Pending", &[]),
+            ExchangeProduct::Pending
+        ));
+
+        assert!(matches!(
+            classify_error_code("slow_down", &[]),
+            ExchangeProduct::SlowDown
+        ));
+
+        assert!(matches!(
+            classify_error_code("authorization_pending", &[]),
+            ExchangeProduct::Pending
+        ));
+
+        assert!(
+            matches!(
+                classify_error_code("UNKNOWN_CODE", &[]),
+                ExchangeProduct::Other(unknown) if unknown == "UNKNOWN_CODE"
+            ),
+            "an unknown code lands in `Other` with its original text"
+        );
     }
 
     /// Folds one text value into a fresh outcome through the given target, returning the fold's

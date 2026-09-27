@@ -46,6 +46,7 @@ import { AppLink } from "/src/ui/app-link";
 import { joinClass } from "/src/ui/attributes";
 import { Button } from "/src/ui/controls";
 import { Glyph, type GlyphName, JanusMark } from "/src/ui/glyph";
+import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 
 /**
  * The connection screen's document title: the one page outside the routes,
@@ -593,12 +594,17 @@ function ContextBar(props: {
  * Disconnecting is explicit and confirmed; the token must be re-entered. The
  * armed confirm speaks the app's one confirm grammar — the question naming
  * the cost, the action, and the way back — like every in-page confirm, so
- * the bar's one armed control states its consequence before it acts.
+ * the bar's one armed control states its consequence before it acts. Focus
+ * travels with the confirm: arming moves it onto the question, disarming
+ * back to the control — the shared inline-confirm contract
+ * (`/src/ui/inline-confirm`).
  */
 function DisconnectControl(): JSX.Element {
     const [isArmed, setIsArmed] = createSignal(false);
+    const confirmFocus = createInlineConfirmFocus();
 
     const disarm = (): void => {
+        confirmFocus.disarm();
         setIsArmed(false);
     };
 
@@ -611,17 +617,29 @@ function DisconnectControl(): JSX.Element {
         <Show
             when={isArmed()}
             fallback={
-                <Button
-                    tone="ghost"
-                    glyph="out"
-                    onClick={() => setIsArmed(true)}
+                <span
+                    class="contents"
+                    ref={confirmFocus.restoreDisarmed}
                 >
-                    Disconnect
-                </Button>
+                    <Button
+                        tone="ghost"
+                        glyph="out"
+                        onClick={() => {
+                            confirmFocus.arm();
+                            setIsArmed(true);
+                        }}
+                    >
+                        Disconnect
+                    </Button>
+                </span>
             }
         >
             <div class="flex flex-wrap items-center gap-2">
-                <p class="w-full text-[13.5px] text-ink-dim">
+                <p
+                    class="w-full text-[13.5px] text-ink-dim"
+                    tabindex={-1}
+                    ref={confirmFocus.focusArmed}
+                >
                     Disconnect and forget the stored token? Reconnecting means entering it again.
                 </p>
                 <Button

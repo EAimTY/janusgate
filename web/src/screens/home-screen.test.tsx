@@ -42,6 +42,12 @@ const expiredOauthProviderRow: ProviderResponse = providerRow({
     expires_at: 1,
 });
 
+/** The same lapsed provider parked: the operator switched it off. */
+const parkedExpiredOauthProviderRow: ProviderResponse = {
+    ...expiredOauthProviderRow,
+    is_enabled: false,
+};
+
 /** A second, enabled provider holding no model rows at all. */
 const emptyProviderRow: ProviderResponse = providerRow({
     id: 2,
@@ -236,7 +242,31 @@ describe("HomeScreen", () => {
         await settle();
 
         expect(bodyText()).toContain("Credential expired");
+        // The enabled shape: straight at the reauthorization, no parked
+        // sentence — the operator never deferred anything here.
         expect(linkTo("/providers/2/edit").textContent).toContain("Reconnect");
+        expect(bodyText()).not.toContain("The provider is disabled");
+    });
+
+    it("differentiates a parked provider's expired credential from an enabled one's", async () => {
+        // The operator parked this provider: the credential still counts —
+        // re-enabling it would fail every request until reconnected — but
+        // the row must not read as a reauthorization order. It names the
+        // disabled state and opens the read-only detail page, whose
+        // *Edit provider* door reaches the edit page's switch, instead of
+        // pointing straight at the edit page.
+        mount(
+            overviewApi([], {
+                providers: [
+                    parkedExpiredOauthProviderRow,
+                ],
+            }),
+        );
+        await settle();
+
+        expect(bodyText()).toContain("Credential expired");
+        expect(bodyText()).toContain("The provider is disabled — reconnect when you re-enable it.");
+        expect(linkTo("/providers/2").textContent).toContain("Open provider");
     });
 
     it("lists no pre-satisfied step on a fresh gateway, the key issued before any client is pointed", async () => {

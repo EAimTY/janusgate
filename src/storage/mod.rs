@@ -31,6 +31,74 @@ use crate::{
 };
 use std::{collections::HashMap, num::NonZeroI64};
 
+/// How many times [`in_retryable_transaction!`] runs one read-then-write attempt, counting the
+/// first: three attempts absorb two intervening commits on top of the initial one.
+///
+/// A stale-snapshot refusal needs a concurrent commit to land inside one attempt's own
+/// read-to-write span — the body's runtime — so the refusals against one management write are
+/// exactly as frequent as concurrent writes are, and two retries cover any plausible burst of
+/// concurrent token-refresh lease persists. The bound is a safety net, not a spin loop: after
+/// it, the last error surfaces exactly as it did before the retry existed.
+const RETRYABLE_TRANSACTION_ATTEMPTS: usize = 3;
+
+/// Runs one management read-then-write transaction, re-running the whole attempt while the
+/// engine refuses it with the stale-snapshot busy error — a concurrent commit landed between
+/// the attempt's read snapshot and its first write, a refusal busy timeouts never help. `$body`
+/// is an async block over the attempt's `$transaction` binding, re-created on a fresh
+/// transaction per attempt: every converted entry point reads inside it and re-validates its
+/// conditional outcomes (404s and conflicts) against those fresh reads, so a retry observes
+/// the newer committed state instead of writing through it, and nothing external happens
+/// inside these transactions that a retry would repeat. The engine's unique constraints remain
+/// the concurrent backstop behind the checked conflicts either way.
+///
+/// The attempt bound is `RETRYABLE_TRANSACTION_ATTEMPTS`; after it, the last error surfaces
+/// exactly as an unretryable failure would. On any failed attempt the transaction is rolled
+/// back before the retry or the return: a failed rollback discards the pooled connection by
+/// `Transaction::rollback`'s contract, so the outcome is safe either way, and the failed
+/// attempt's own error stays authoritative — the next begin, or the return, surfaces any real
+/// connection failure in its place.
+///
+/// The loop lives in a macro because the body's future borrows both the per-attempt
+/// transaction and the caller's own captured state: a closure literal's return type cannot
+/// carry the argument's lifetime, so the loop cannot be one generic function over that shape —
+/// while the local expansion, splicing the body over a caller-named binding, types it exactly.
+macro_rules! in_retryable_transaction {
+    ($database:expr, $transaction:ident, $body:expr) => {{
+        let mut remaining_attempts = $crate::storage::RETRYABLE_TRANSACTION_ATTEMPTS;
+
+        loop {
+            let mut $transaction = $database.transaction().await?;
+
+            // The body's future borrows `$transaction`; binding the awaited result ends that
+            // borrow before the commit or rollback arms below consume the transaction.
+            let outcome = $body.await;
+
+            match outcome {
+                Ok(value) => {
+                    break $transaction
+                        .commit()
+                        .await
+                        .map_err($crate::storage::Error::from)
+                        .map(|()| value);
+                }
+
+                Err(error) => {
+                    // The failed attempt's own error stays authoritative: a failed rollback
+                    // discards the pooled connection by contract, and the next begin — or the
+                    // return below — surfaces any real connection failure in its place.
+                    let _ = $transaction.rollback().await;
+
+                    remaining_attempts -= 1;
+
+                    if !error.is_stale_snapshot() || remaining_attempts == 0 {
+                        break Err(error);
+                    }
+                }
+            }
+        }
+    }};
+}
+
 pub(crate) mod api_keys;
 pub(crate) mod api_logs;
 pub(crate) mod models;
@@ -101,13 +169,12 @@ pub(crate) enum Error {
         detail: String,
     },
 
-    /// Database contention: the file lock was busy or a read-then-write upgrade was refused with a
-    /// stale snapshot.
+    /// Database contention: the file lock stayed busy until the write's busy timeout elapsed.
     ///
-    /// The lease caller that must tell the stale-snapshot refusal apart from plain contention
-    /// classifies the raw [`DatabaseError`] through [`DatabaseError::is_stale_snapshot`] before
-    /// this conversion flattens the distinction away; every rendered surface treats `Busy` as an
-    /// internal failure.
+    /// The engine's stale-snapshot refusal classifies separately — through
+    /// [`Error::is_stale_snapshot`] — because this tier's conversion deliberately parks it under
+    /// [`Error::Database`] instead of flattening it in here; every rendered surface treats both
+    /// as internal failures.
     #[error("database is busy: {detail}")]
     Busy {
         /// Engine-provided contention detail.
@@ -146,12 +213,30 @@ impl From<DatabaseError> for Error {
         match error {
             DatabaseError::Turso(TursoError::Constraint(detail)) => Self::Constraint { detail },
 
-            DatabaseError::Turso(TursoError::Busy(detail) | TursoError::BusySnapshot(detail)) => {
-                Self::Busy { detail }
-            }
+            // The stale-snapshot refusal deliberately stays under `Database` instead of
+            // flattening into `Busy`: the transactional surfaces must still tell the two
+            // contention kinds apart after the conversion (see [`Error::is_stale_snapshot`]),
+            // and every rendered surface treats both as internal failures either way.
+            DatabaseError::Turso(TursoError::Busy(detail)) => Self::Busy { detail },
 
             error => Self::Database(error),
         }
+    }
+}
+
+impl Error {
+    /// Whether this failure is the engine's stale-snapshot busy refusal: a read-then-write
+    /// transaction attempted its first write after a concurrent commit invalidated its read
+    /// snapshot ("database snapshot is stale, rollback and retry"; busy timeouts never help).
+    /// The transaction must be rolled back and the whole attempt retried, re-reading the newer
+    /// state — `in_retryable_transaction!` owns that bounded retry for the management
+    /// read-then-write writes, and the refresh lease classifies the same refusal as "not
+    /// acquired" rather than as failed work.
+    fn is_stale_snapshot(&self) -> bool {
+        matches!(
+            self,
+            Self::Database(DatabaseError::Turso(TursoError::BusySnapshot(_)))
+        )
     }
 }
 
@@ -588,7 +673,185 @@ mod tests {
         },
         test_support,
     };
-    use std::error::Error as StdError;
+    use std::{cell::Cell, error::Error as StdError};
+
+    /// Synthesizes the engine's stale-snapshot refusal through the real constructor path: the
+    /// `BusySnapshot` Turso variant, wrapped once into the storage error domain exactly as a
+    /// refused read-then-write upgrade classifies.
+    fn stale_snapshot_error() -> Error {
+        Error::from(DatabaseError::Turso(TursoError::BusySnapshot(
+            "database snapshot is stale, rollback and retry".to_string(),
+        )))
+    }
+
+    /// Verifies the retryable-transaction loop's happy retry: a body whose first attempt fails
+    /// with a synthesized stale-snapshot refusal runs a second time on a fresh transaction, and
+    /// that second attempt's write commits — the discarded first attempt leaves nothing behind
+    /// and the pool stays healthy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn stale_snapshot_retry_succeeds_on_the_second_attempt() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let attempts = &Cell::new(0);
+
+        in_retryable_transaction!(&database, transaction, async {
+            attempts.set(attempts.get() + 1);
+
+            if attempts.get() == 1 {
+                return Err(stale_snapshot_error());
+            }
+
+            transaction
+                .execute(
+                    "INSERT INTO api_keys (name, key, is_enabled, created_at) \
+                     VALUES ('written-on-retry', 'sk-retry', 1, 1)",
+                    (),
+                )
+                .await?;
+
+            Ok(())
+        })?;
+
+        assert_eq!(attempts.get(), 2, "the refusal runs the body a second time");
+
+        assert_eq!(
+            api_keys::list_api_keys(&database).await?.len(),
+            1,
+            "the retry attempt's commit landed"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies the attempt bound: a body that fails with a stale-snapshot refusal every time
+    /// runs exactly [`RETRYABLE_TRANSACTION_ATTEMPTS`] times, and the last refusal surfaces
+    /// unchanged — the bound exhausts instead of spinning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn stale_snapshot_retry_surfaces_the_last_error_after_the_attempt_bound()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let attempts = &Cell::new(0);
+
+        let outcome: Result<(), Error> =
+            in_retryable_transaction!(&database, _transaction, async {
+                attempts.set(attempts.get() + 1);
+
+                Err::<(), Error>(stale_snapshot_error())
+            });
+
+        assert!(
+            matches!(outcome, Err(ref error) if error.is_stale_snapshot()),
+            "the exhausted bound surfaces the last stale-snapshot error"
+        );
+
+        assert_eq!(
+            attempts.get(),
+            RETRYABLE_TRANSACTION_ATTEMPTS,
+            "the bound caps the attempts"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies the retry's selectivity: a non-stale failure — a 404 the body's own
+    /// re-validation produced — surfaces unchanged after a single attempt, never retried.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn stale_snapshot_retry_passes_non_stale_failures_through_without_retrying()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let attempts = &Cell::new(0);
+
+        let outcome: Result<(), Error> =
+            in_retryable_transaction!(&database, _transaction, async {
+                attempts.set(attempts.get() + 1);
+
+                Err::<(), Error>(Error::NotFound {
+                    message: "the row is gone".to_string(),
+                })
+            });
+
+        assert!(
+            matches!(outcome, Err(Error::NotFound { message }) if message == "the row is gone"),
+            "a non-stale failure surfaces unchanged"
+        );
+
+        assert_eq!(attempts.get(), 1, "a non-stale failure is never retried");
+
+        Ok(())
+    }
+
+    /// Verifies the stale-snapshot classification against the real engine: a transaction whose
+    /// read snapshot a concurrent commit invalidates fails its first write with the engine's
+    /// stale-snapshot refusal, and the storage error domain classifies it as such — the failure
+    /// [`in_retryable_transaction`] retries on and the exact interleaving a concurrent
+    /// lease persist produces against a management read-then-write transaction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn a_write_refused_after_a_concurrent_commit_classifies_as_stale_snapshot()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The reader pins its snapshot with a read; the writer commits between that read and
+        // the reader's first write.
+        let mut reader = database.transaction().await?;
+
+        reader.query("SELECT id FROM api_keys", ()).await?;
+
+        let mut writer = database.transaction().await?;
+
+        writer
+            .execute(
+                "INSERT INTO api_keys (name, key, is_enabled, created_at) \
+                 VALUES ('concurrent', 'sk-concurrent', 1, 1)",
+                (),
+            )
+            .await?;
+
+        writer.commit().await?;
+
+        let refused = reader.execute(
+            "INSERT INTO api_keys (name, key, is_enabled, created_at) \
+             VALUES ('stale', 'sk-stale', 1, 1)",
+            (),
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the stale upgrade must fail; a success is the failure report"
+        )]
+        let error = refused
+            .await
+            .expect_err("the write after a concurrent commit must be refused");
+
+        assert!(
+            Error::from(error).is_stale_snapshot(),
+            "the refused upgrade classifies as a stale snapshot"
+        );
+
+        // The refused transaction is dead; dropping it discards its connection, the documented
+        // path for an unfinished handle.
+        drop(reader);
+
+        Ok(())
+    }
 
     /// Verifies the public-ID lifecycle end to end: discovery composes IDs from the provider's
     /// prefix, `models:update` (addressed by row id) applies an override, routing follows the

@@ -12,16 +12,24 @@ import { Badge, type BadgeTone } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
 
 /**
- * The one glance at a credential that can go stale: a fresh OAuth login reads
- * `Valid`, one past its expiry `Expired`, and one with no stored expiry was
- * never fresh — `Stale`. A static key never expires, and the row's own line
- * already names its kind, so it earns no credential badge and this answers
- * `null` for it.
+ * A credential badge's words, plus the native tooltip where the badge's one
+ * word understates the state it names.
  */
-export function credentialBadge(provider: ProviderResponse): {
+type CredentialBadge = {
     readonly tone: BadgeTone;
     readonly label: string;
-} | null {
+    readonly title?: string | undefined;
+};
+
+/**
+ * The one glance at a credential that can go stale: a fresh OAuth login reads
+ * `Valid`, one past its expiry `Expired`, and one with no stored expiry was
+ * never fresh — `Stale`, titled with the sentence the provider's page states,
+ * since a bare word nowhere explains itself. A static key never expires, and
+ * the row's own line already names its kind, so it earns no credential badge
+ * and this answers `null` for it.
+ */
+export function credentialBadge(provider: ProviderResponse): CredentialBadge | null {
     if (!isOAuthProviderRow(provider)) {
         return null;
     }
@@ -30,6 +38,7 @@ export function credentialBadge(provider: ProviderResponse): {
         return {
             tone: "warn",
             label: "Stale",
+            title: "The OAuth credentials were never fresh.",
         };
     }
 
@@ -53,10 +62,7 @@ function ProviderRow(props: {
     readonly provider: ProviderResponse;
     readonly modelCount: number;
 }): JSX.Element {
-    const credential = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } | null => credentialBadge(props.provider);
+    const credential = (): CredentialBadge | null => credentialBadge(props.provider);
 
     return (
         <li>
@@ -79,6 +85,7 @@ function ProviderRow(props: {
                                 <Badge
                                     tone={current().tone}
                                     label={current().label}
+                                    title={current().title}
                                 />
                             )}
                         </Show>

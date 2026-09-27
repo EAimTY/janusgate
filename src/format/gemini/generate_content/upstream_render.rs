@@ -7,7 +7,7 @@ use crate::{
     format,
     ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 /// The `responseMimeType` value requesting a JSON response.
@@ -497,7 +497,7 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
             text,
             signature,
             opaque,
-        } if is_family_thought_step(opaque) => Ok(vec![Part::Thought {
+        } if format::gemini::is_gemini_thought_step(opaque) => Ok(vec![Part::Thought {
             text,
             thought: true,
             thought_signature: signature.as_deref(),
@@ -509,24 +509,6 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
         // (README §6.4).
         IrPart::Reasoning { .. } => Ok(Vec::new()),
     }
-}
-
-/// Tests the Gemini-family membership of a reasoning block's opaque replay payload: an
-/// object tagged with the Interactions thought-step `type` is Gemini-family state and
-/// bridges onto this wire, anything else — cross-family blocks, unattributed text-only
-/// blocks — drops. The probe is a typed struct mirroring the Interactions codec's own
-/// family test, so the payload is modelled, never walked ad hoc.
-fn is_family_thought_step(opaque: &Value) -> bool {
-    /// Minimal shape probe for the family-membership test.
-    #[derive(Debug, Deserialize)]
-    struct ThoughtProbe {
-        /// Step type tag; anything but the thought tag is a foreign block.
-        #[serde(rename = "type")]
-        step_type: String,
-    }
-
-    // Deserializing from the borrowed value copies only the tag String, never the stored step.
-    ThoughtProbe::deserialize(opaque).is_ok_and(|probe| probe.step_type == "thought")
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     credentialExpiryLine,
+    dateTimeInputValue,
     formatClock,
     formatDuration,
     formatRefreshStamp,
@@ -15,37 +16,55 @@ describe("credentialExpiryLine", () => {
     const now = 1_800_000_000_000_000;
     const seconds = 1_000_000;
 
-    it("reads a distant expiry as valid, in days and hours", () => {
+    it("reads a distant expiry as valid, in days and hours beside the instant", () => {
         const line = credentialExpiryLine(now + 3 * 86_400 * seconds + 4 * 3_600 * seconds, now);
 
-        expect(line).toBe("Valid for 3d 4h.");
+        expect(line).toMatch(/^Valid for 3d 4h — until \d{4}-\d{2}-\d{2} \d{2}:\d{2}\.$/);
     });
 
-    it("reads a past expiry as expired with the same units", () => {
+    it("reads a past expiry as expired with the same units beside the instant", () => {
         const line = credentialExpiryLine(now - 2 * 3_600 * seconds - 5 * 60 * seconds, now);
 
-        expect(line).toBe("Expired 2h 5m ago.");
+        expect(line).toMatch(/^Expired 2h 5m ago — on \d{4}-\d{2}-\d{2} \d{2}:\d{2}\.$/);
     });
 
     it("drops a zero remainder rather than printing it", () => {
-        expect(credentialExpiryLine(now + 2 * 86_400 * seconds, now)).toBe("Valid for 2d.");
-        expect(credentialExpiryLine(now + 5 * 3_600 * seconds, now)).toBe("Valid for 5h.");
+        expect(credentialExpiryLine(now + 2 * 86_400 * seconds, now)).toMatch(
+            /^Valid for 2d — until/,
+        );
+        expect(credentialExpiryLine(now + 5 * 3_600 * seconds, now)).toMatch(
+            /^Valid for 5h — until/,
+        );
     });
 
     it("reads hours and minutes inside a day", () => {
-        expect(credentialExpiryLine(now + 4 * 3_600 * seconds + 12 * 60 * seconds, now)).toBe(
-            "Valid for 4h 12m.",
+        expect(credentialExpiryLine(now + 4 * 3_600 * seconds + 12 * 60 * seconds, now)).toMatch(
+            /^Valid for 4h 12m — until/,
         );
-        expect(credentialExpiryLine(now + 42 * 60 * seconds, now)).toBe("Valid for 42m.");
+        expect(credentialExpiryLine(now + 42 * 60 * seconds, now)).toMatch(
+            /^Valid for 42m — until/,
+        );
     });
 
     it("floors anything under a minute to the smallest unit", () => {
-        expect(credentialExpiryLine(now + 30 * seconds, now)).toBe("Valid for <1m.");
-        expect(credentialExpiryLine(now - 30 * seconds, now)).toBe("Expired <1m ago.");
+        expect(credentialExpiryLine(now + 30 * seconds, now)).toMatch(/^Valid for <1m — until/);
+        expect(credentialExpiryLine(now - 30 * seconds, now)).toMatch(/^Expired <1m ago — on/);
     });
 
     it("reads the exact boundary as expired", () => {
-        expect(credentialExpiryLine(now, now)).toBe("Expired <1m ago.");
+        expect(credentialExpiryLine(now, now)).toMatch(/^Expired <1m ago — on/);
+    });
+
+    it("states the expiry's own instant in this browser's zone at minute precision", () => {
+        // The date-time bounds' own spelling, with the input separator traded
+        // for a space, is the oracle: the instant the line names must be the
+        // expiry's, never the reading's, and the shape must match it exactly.
+        const expiresAt = now + 3 * 3_600 * seconds;
+        const expectedInstant = dateTimeInputValue(new Date(expiresAt / 1000)).replace("T", " ");
+
+        expect(credentialExpiryLine(expiresAt, now)).toBe(
+            `Valid for 3h — until ${expectedInstant}.`,
+        );
     });
 });
 

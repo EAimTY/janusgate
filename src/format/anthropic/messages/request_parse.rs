@@ -10,8 +10,8 @@ use super::{TypedBlock, block_opaque};
 use crate::{
     format::{ParsedRequest, RoleRun, StringOrArray},
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrRole, IrTool,
-        IrToolChoice,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
+        IrRole, IrTool, IrToolChoice,
     },
 };
 use serde::{Deserialize, de::IgnoredAny};
@@ -66,7 +66,9 @@ struct InboundRequest {
     #[serde(default)]
     thinking: Option<InboundThinking>,
 
-    /// Reasoning level container: `effort` parses into the closed shared vocabulary.
+    /// Reasoning level and output-format container: `effort` parses into the closed shared
+    /// vocabulary and `format` into the IR response format, each optional per the official
+    /// contract.
     #[serde(default)]
     output_config: Option<InboundOutputConfig>,
 
@@ -386,17 +388,44 @@ struct InboundThinking {
     display: Option<IgnoredAny>,
 }
 
-/// Reasoning level container.
+/// The synthesized name of a schema-bearing Anthropic response format: the Messages wire carries
+/// no schema-name slot in `output_config.format`, so the IR's named-schema form carries this
+/// stand-in — the Gemini surfaces' posture — and the Anthropic upstream render drops it again.
+const ANTHROPIC_RESPONSE_SCHEMA_NAME: &str = "response";
+
+/// Reasoning level container — the official `OutputConfig`, whose `effort` and `format` members
+/// are each optional.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InboundOutputConfig {
-    /// Reasoning effort in the closed shared vocabulary.
-    effort: String,
+    /// Reasoning effort in the closed shared vocabulary; optional per the official contract, so
+    /// the container may carry a format alone.
+    #[serde(default)]
+    effort: Option<String>,
+
+    /// Structured-outputs schema, parsed into the IR response format.
+    #[serde(default)]
+    format: Option<InboundOutputFormat>,
 
     /// Display control, accepted and ignored like its `thinking` sibling.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     display: Option<IgnoredAny>,
+}
+
+/// The inbound `output_config.format` member — the official `JSONOutputFormat`, whose only
+/// variant is `json_schema` with both members required. Malformed shapes are validated at the
+/// conversion so the rejections name `format` instead of rendering serde's generic wording.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InboundOutputFormat {
+    /// Format discriminator: `"json_schema"` is the official union's only member.
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+
+    /// The JSON Schema of the response.
+    #[serde(default)]
+    schema: Option<Value>,
 }
 
 /// Parses a `POST /messages` request body into IR.
@@ -595,15 +624,55 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
     let output_effort = request
         .output_config
         .as_ref()
-        .map(|output_config| IrReasoningLevel::parse(&output_config.effort, "output_config"))
+        .and_then(|output_config| output_config.effort.as_deref())
+        .map(|effort| IrReasoningLevel::parse(effort, "output_config"))
         .transpose()?;
+
+    // The structured-outputs member parses into the IR response format; a shape outside the
+    // official `JSONOutputFormat` union — any other `type`, a missing or non-object `schema` —
+    // is a 400 naming `format` (README §6.6).
+    let response_format = match &request.output_config {
+        None => None,
+
+        Some(output_config) => match &output_config.format {
+            None => None,
+
+            Some(format) => {
+                if format.kind.as_deref() != Some("json_schema") {
+                    return Err(InvalidRequest::field(
+                        "format",
+                        "output format requires type `json_schema`",
+                    ));
+                }
+
+                let Some(schema) = format.schema.as_ref() else {
+                    return Err(InvalidRequest::field(
+                        "format",
+                        "output format `json_schema` requires a `schema`",
+                    ));
+                };
+
+                if !schema.is_object() {
+                    return Err(InvalidRequest::field(
+                        "format",
+                        "output format schema must be a JSON object",
+                    ));
+                }
+
+                Some(IrResponseFormat::JsonSchema {
+                    name: ANTHROPIC_RESPONSE_SCHEMA_NAME.to_string(),
+                    schema: schema.clone(),
+                })
+            }
+        },
+    };
 
     // A disabled legacy control contradicts an explicit effort level; an ignored legacy control
     // beside one is simply redundant.
     if thinking_effort.is_some() && output_effort.is_some() {
         return Err(InvalidRequest::field(
             "thinking",
-            "thinking and output_config are mutually exclusive",
+            "thinking and output_config.effort are mutually exclusive",
         ));
     }
 
@@ -617,7 +686,7 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
             temperature: request.temperature,
             top_p: request.top_p,
             max_output_tokens: Some(request.max_tokens),
-            response_format: None,
+            response_format,
             reasoning_effort: output_effort.or(thinking_effort),
         },
         is_streaming: request.stream.unwrap_or(false),
@@ -1230,6 +1299,88 @@ mod tests {
                 is_error: false,
             },
         );
+    }
+
+    /// `output_config.format` parses into the IR JSON-schema response format — the official
+    /// `JSONOutputFormat` union carries no schema-name slot, so the IR `name` synthesizes the
+    /// surface stand-in — while `effort` is optional beside it (the official `OutputConfig`
+    /// carries both its members optional), `format: null` and an empty container parse as no
+    /// constraint, and the malformed shapes — a non-`json_schema` `type`, a missing `schema`,
+    /// a non-object `schema` — are 400s naming `format` (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any parse diverges from the documented mapping or a rejection lands outside
+    /// its documented wording.
+    #[test]
+    fn parses_output_config_format_and_optional_effort() {
+        let base = || {
+            json!({
+                "model": "m",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            })
+        };
+
+        let schema = json!({"type": "object", "properties": {"city": {"type": "string"}}});
+
+        let expected_format = |schema: Value| {
+            Some(IrResponseFormat::JsonSchema {
+                name: ANTHROPIC_RESPONSE_SCHEMA_NAME.to_string(),
+                schema,
+            })
+        };
+
+        for (output_config, expected_format, expected_effort) in [
+            (
+                json!({"effort": "high",
+                       "format": {"type": "json_schema", "schema": schema.clone()}}),
+                expected_format(schema.clone()),
+                Some(IrReasoningLevel::High),
+            ),
+            (
+                json!({"format": {"type": "json_schema", "schema": schema.clone()}}),
+                expected_format(schema),
+                None,
+            ),
+            (json!({"format": null}), None, None),
+            (json!({}), None, None),
+        ] {
+            let mut body = base();
+
+            set_member(&mut body, "output_config", output_config);
+
+            #[expect(
+                clippy::expect_used,
+                reason = "each output_config shape is constructed to parse"
+            )]
+            let parsed = parse_inbound_request(body.to_string().as_bytes())
+                .expect("the output_config shape parses");
+
+            assert_eq!(parsed.ir.response_format, expected_format);
+            assert_eq!(parsed.ir.reasoning_effort, expected_effort);
+        }
+
+        // The malformed shapes are 400s naming `format` (README §6.6).
+        for format in [
+            json!({"type": "text"}),
+            json!({"type": "json_schema"}),
+            json!({"type": "json_schema", "schema": "x"}),
+            json!({"type": "unknown", "schema": {}}),
+        ] {
+            let mut body = base();
+
+            set_member(&mut body, "output_config", json!({"format": format}));
+
+            #[expect(
+                clippy::expect_used,
+                reason = "each malformed format is constructed to be rejected"
+            )]
+            let error = parse_inbound_request(body.to_string().as_bytes())
+                .expect_err("the malformed format must be rejected");
+
+            assert_eq!(error.param.as_deref(), Some("format"));
+        }
     }
 
     /// Rejects unsupported and malformed inbound controls exactly where the contract pins them:

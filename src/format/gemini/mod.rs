@@ -5,14 +5,16 @@
 //! its families share. This module groups the GenerateContent family ([`generate_content`]) and
 //! the Interactions family ([`interaction`]) — the two codecs over the Gemini client protocol and
 //! the two Gemini upstream wires (README §1, §5.7, §6) — beside their shared error renderer
-//! ([`error`], README §6.7), response-format decision, usage fold and split, and tool-output name
-//! resolution.
+//! ([`error`], README §6.7), response-format decision, usage fold and split, tool-output name
+//! resolution, and the thought-step family predicate deciding replay membership for both codecs
+//! (README §6.4).
 
 pub(crate) mod error;
 pub(crate) mod generate_content;
 pub(crate) mod interaction;
 
 use crate::ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrUsage};
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Resolves the function name a tool output answers, scanning the conversation for the matching
@@ -43,6 +45,38 @@ pub(in crate::format::gemini) fn resolve_tool_output_name(
         "messages",
         format!("Tool output references unknown call_id `{call_id}`"),
     ))
+}
+
+/// Step type tag of a model reasoning step in the official Interactions vocabulary
+/// (ai.google.dev/api/interactions-api): the protocol-pinned discriminant both Gemini codecs must
+/// agree on, because an opaque replay payload carrying it is the credential for Gemini-family
+/// membership on either wire (README §6.4).
+pub(in crate::format::gemini) const STEP_THOUGHT: &str = "thought";
+
+/// Tests the Gemini-family membership of a reasoning block's opaque replay payload: an object
+/// whose `type` is [`STEP_THOUGHT`] is Gemini-family state, anything else — cross-family blocks,
+/// text-only blocks — is not.
+///
+/// The predicate is the one family test of both Gemini codecs, shared so the two can never drift:
+/// the Interactions codec replays an accepted payload verbatim onto its own wire, while the
+/// GenerateContent codec bridges the same payload onto its thinking part (`thought: true` text,
+/// the signature riding `thoughtSignature`) — the README §6.4 bridge only round-trips if both
+/// codecs answer membership identically, and one shared test makes a one-directional drift
+/// unrepresentable.
+///
+/// The probe is a typed struct rather than a member lookup, so the payload is modelled, never
+/// walked ad hoc.
+pub(in crate::format::gemini) fn is_gemini_thought_step(opaque: &Value) -> bool {
+    /// Minimal shape probe for the family-membership test.
+    #[derive(Debug, Deserialize)]
+    struct ThoughtProbe {
+        /// Step type tag; anything but the thought tag is a foreign block.
+        #[serde(rename = "type")]
+        step_type: String,
+    }
+
+    // Deserializing from the borrowed value copies only the tag String, never the stored step.
+    ThoughtProbe::deserialize(opaque).is_ok_and(|probe| probe.step_type == STEP_THOUGHT)
 }
 
 /// The synthesized name of a schema-bearing Gemini-family response format: neither Gemini wire
