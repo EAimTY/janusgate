@@ -182,7 +182,8 @@ impl UpstreamParser {
     /// # Errors
     ///
     /// Returns [`PayloadError`] for an embedded upstream error object and for an
-    /// invalid-generation finish (`MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`).
+    /// invalid-generation finish (`MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`,
+    /// `TOO_MANY_TOOL_CALLS`).
     fn ingest_response(&mut self, body: UpstreamBody) -> Result<Vec<IrEvent>, PayloadError> {
         // An error object inside a 2xx body is a malformed upstream payload (README §6.7); the
         // check sits beside the protocol fields, before the `response` envelope below is unwrapped,
@@ -378,9 +379,10 @@ fn primary_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
 ///
 /// # Errors
 ///
-/// Returns [`PayloadError`] for the invalid-generation reasons `MALFORMED_FUNCTION_CALL` and
-/// `UNEXPECTED_TOOL_CALL`: the turn delivered no usable result and must surface as an upstream
-/// failure (README §6.7) instead of a successful `Stop` finish that would mask the failure.
+/// Returns [`PayloadError`] for the invalid-generation reasons `MALFORMED_FUNCTION_CALL`,
+/// `UNEXPECTED_TOOL_CALL`, and `TOO_MANY_TOOL_CALLS`: the turn delivered no usable result and must
+/// surface as an upstream failure (README §6.7) instead of a successful `Stop` finish that would
+/// mask the failure.
 fn finish_reason_from_gemini(
     value: &str,
     is_call_delivered: bool,
@@ -415,6 +417,15 @@ fn finish_reason_from_gemini(
         "UNEXPECTED_TOOL_CALL" => Err(PayloadError::new(
             "upstream finish reason `UNEXPECTED_TOOL_CALL`: \
              the model generated a tool call but no tools were enabled in the request",
+        )),
+
+        // The same invalid-generation class: the system cut the generation after too many
+        // consecutive tool calls, so the turn never completed and must surface as an upstream
+        // failure instead of a successful finish that would mask the forced loop exit — and lure
+        // the client into resuming the very loop the upstream terminated.
+        "TOO_MANY_TOOL_CALLS" => Err(PayloadError::new(
+            "upstream finish reason `TOO_MANY_TOOL_CALLS`: \
+             the model called too many tools consecutively and the system exited execution",
         )),
 
         _ if is_call_delivered => Ok(IrFinishReason::ToolCall),
@@ -814,6 +825,65 @@ mod tests {
             .expect_err("an unexpected tool call stream frame must fail");
 
         assert!(error.to_string().contains("UNEXPECTED_TOOL_CALL"));
+    }
+
+    /// A turn whose upstream reported `TOO_MANY_TOOL_CALLS` — the model
+    /// called too many tools consecutively, so the system exited execution —
+    /// belongs to the invalid-generation class of `MALFORMED_FUNCTION_CALL`
+    /// and `UNEXPECTED_TOOL_CALL`: even though calls were delivered before
+    /// the cut, both the JSON body and the streaming path reject it as an
+    /// upstream failure (README §6.7) instead of rendering a clean
+    /// `ToolCall` finish that would mask the forced loop exit and lure the
+    /// client into resuming it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flagged turn parses as a success or its wording drifts.
+    #[test]
+    fn too_many_tool_calls_finish_reason_is_an_upstream_failure() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "partial"},
+                    {"functionCall": {"name": "search", "args": {"query": "q"}}},
+                ]},
+                "finishReason": "TOO_MANY_TOOL_CALLS",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the flagged body is constructed to be rejected"
+        )]
+        let error = parser
+            .parse_json_response(body)
+            .expect_err("a too-many-tool-calls turn must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "upstream finish reason `TOO_MANY_TOOL_CALLS`: \
+             the model called too many tools consecutively and the system exited execution",
+        );
+
+        let frame = SseFrame {
+            data: serde_json::json!({"candidates": [{"finishReason": "TOO_MANY_TOOL_CALLS"}]})
+                .to_string(),
+            event: None,
+        };
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the flagged frame is constructed to be rejected"
+        )]
+        let error = parser
+            .ingest_frame(&frame)
+            .expect_err("a too-many-tool-calls stream frame must fail");
+
+        assert!(error.to_string().contains("TOO_MANY_TOOL_CALLS"));
     }
 
     /// A finish reason outside the gateway's mapping — a member the official

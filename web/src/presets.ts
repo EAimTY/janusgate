@@ -192,7 +192,7 @@ const STATIC_KEY_PRESETS: readonly [
     },
     {
         id: "generic-gemini-generate-content",
-        title: "Gemini-compatible generateContent API",
+        title: "Gemini-compatible GenerateContent API",
         description: "Any endpoint speaking the Gemini GenerateContent protocol with a static key.",
         grant: null,
         suggestedName: "gemini",

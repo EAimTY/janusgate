@@ -739,7 +739,8 @@ mod tests {
             provider_definitions::{NewDefinition, insert_definition},
         },
         test_support::{
-            self, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
+            self, FlowFixtureDelta, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture,
+            OAuthRefreshFixture,
         },
     };
     use serde_json::json;
@@ -1021,31 +1022,8 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
-            &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
-            },
-        )
-        .await
-        .unwrap();
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
 
         // The claim spends just enough to record the terminal success against a provider id no
         // row carries — `result_provider_id` is a bare integer without a foreign key (README

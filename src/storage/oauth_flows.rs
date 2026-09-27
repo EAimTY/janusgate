@@ -728,27 +728,22 @@ mod tests {
     };
     use std::{collections::BTreeMap, error::Error as StdError};
 
-    /// A device flow row ready to insert against the fixture OAuth definition.
-    fn new_device_flow(definition: &crate::provider::definition::ProviderDefinition) -> NewFlow {
-        NewFlow {
-            definition_name: definition.name.clone(),
-            definition_version: definition.version,
-            state_token: "st-device-1".to_string(),
-            purpose: FlowPurpose::Reauthorize,
-            provider_name: None,
-            model_prefix: None,
-            base_url: None,
+    /// The storage-layer flow fixture: the crate-wide device-flow fixture
+    /// [`test_support::insert_flow_fixture`] narrowed to the fixed small schedule and the
+    /// `"st-device-1"` token these tests assert against. The delta pins the whole schedule, so
+    /// the fixture instant the callers pass never reaches the row.
+    fn new_device_flow_delta() -> test_support::FlowFixtureDelta {
+        test_support::FlowFixtureDelta {
+            state_token: Some("st-device-1".to_string()),
+            purpose: Some(FlowPurpose::Reauthorize),
+            provider_name: Some(None),
+            model_prefix: Some(None),
             target_provider_id: Some(1),
-            grant_type: FlowGrant::Device,
-            slots: BTreeMap::new(),
-            code_verifier: None,
             device_code: Some("dc".to_string()),
             device_user_code: Some("uc".to_string()),
-            device_verification_uri: Some("https://verify.example".to_string()),
-            device_verification_uri_complete: None,
-            device_poll_interval_seconds: Some(5),
             device_next_poll_at: Some(500),
-            expires_at: 1_000_000,
+            expires_at: Some(1_000_000),
+            ..test_support::FlowFixtureDelta::default()
         }
     }
 
@@ -777,7 +772,9 @@ mod tests {
         )
         .await?;
 
-        let flow = insert_flow(&database, new_device_flow(&definition)).await?;
+        let flow =
+            test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta())
+                .await;
 
         // Nothing is due before its next-poll instant.
         let now = 400;
@@ -919,7 +916,7 @@ mod tests {
         assert!(consume_flow(&database, "st-auth-1", 0).await?.is_none());
 
         // The expiry sweep clears unconsumed rows.
-        insert_flow(&database, new_device_flow(&definition)).await?;
+        test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta()).await;
 
         sweep_expired_flows(&database, 2_000_000).await?;
 
@@ -958,7 +955,7 @@ mod tests {
         )
         .await?;
 
-        insert_flow(&database, new_device_flow(&definition)).await?;
+        test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta()).await;
 
         let claim = claim_due_device_flow(&database, 500, 0)
             .await?

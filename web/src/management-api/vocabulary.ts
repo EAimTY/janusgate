@@ -186,7 +186,7 @@ export function parseApiLogOutcome(value: unknown, context: string): ApiLogOutco
 const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
     openai_chat_completions: "Chat Completions",
     openai_responses: "Responses",
-    gemini_generate_content: "Gemini generateContent",
+    gemini_generate_content: "Gemini GenerateContent",
     gemini_interactions: "Gemini Interactions",
     anthropic_messages: "Anthropic Messages",
 };

@@ -668,10 +668,10 @@ mod tests {
         },
         storage,
         storage::oauth_flows::{
-            FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
-            find_flow_by_state, insert_flow, persist_exchange_checkpoint, restamp_claim,
+            FlowOutcome, FlowPurpose, claim_due_device_flow, find_flow_by_state,
+            persist_exchange_checkpoint, restamp_claim,
         },
-        test_support::{self, MockUpstream},
+        test_support::{self, FlowFixtureDelta, MockUpstream},
     };
     use std::collections::BTreeMap;
 
@@ -721,31 +721,16 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("taken".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            &definition,
+            now,
+            FlowFixtureDelta {
+                provider_name: Some(Some("taken".to_string())),
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)
@@ -806,31 +791,8 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
-            &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
-            },
-        )
-        .await
-        .unwrap();
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)
@@ -929,31 +891,16 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
+            &definition,
+            now,
+            FlowFixtureDelta {
                 device_poll_interval_seconds: Some(100),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)
@@ -1022,31 +969,17 @@ mod tests {
         let fresh_at = now - (window - 10) * crate::unix_time::MICROS_PER_SEC;
 
         for (state_token, claim_at) in [("stale-claim", stale_at), ("fresh-claim", fresh_at)] {
-            insert_flow(
+            test_support::insert_flow_fixture(
                 &database,
-                NewFlow {
-                    definition_name: definition.name.clone(),
-                    definition_version: definition.version,
-                    state_token: state_token.to_string(),
-                    purpose: FlowPurpose::Create,
-                    provider_name: Some("created".to_string()),
-                    model_prefix: Some(String::new()),
-                    base_url: None,
-                    target_provider_id: None,
-                    grant_type: FlowGrant::Device,
-                    slots: BTreeMap::new(),
-                    code_verifier: None,
-                    device_code: Some("device-code".to_string()),
-                    device_user_code: Some("user-code".to_string()),
-                    device_verification_uri: Some("https://verify.example".to_string()),
-                    device_verification_uri_complete: None,
-                    device_poll_interval_seconds: Some(5),
+                &definition,
+                now,
+                FlowFixtureDelta {
+                    state_token: Some(state_token.to_string()),
                     device_next_poll_at: Some(claim_at - 1),
-                    expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                    ..FlowFixtureDelta::default()
                 },
             )
-            .await
-            .unwrap();
+            .await;
 
             #[expect(clippy::expect_used, reason = "the fixture flow is claimed")]
             let claimed = claim_due_device_flow(&database, claim_at, stale_at)
@@ -1250,31 +1183,8 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
-            &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
-            },
-        )
-        .await
-        .unwrap();
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)
@@ -1328,31 +1238,16 @@ mod tests {
         // longer than the window leaves the row in.
         let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
+            &definition,
+            now,
+            FlowFixtureDelta {
                 device_next_poll_at: Some(claim_at - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
@@ -1436,31 +1331,16 @@ mod tests {
         // longer than the window leaves the row in when the poller returns.
         let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
+            &definition,
+            now,
+            FlowFixtureDelta {
                 device_next_poll_at: Some(claim_at - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
@@ -1521,31 +1401,16 @@ mod tests {
 
         let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
+            &definition,
+            now,
+            FlowFixtureDelta {
                 device_next_poll_at: Some(claim_at - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
@@ -1626,33 +1491,22 @@ mod tests {
         // the window, so the commit re-stamps the claim before the provider write.
         let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Reauthorize,
-                provider_name: None,
-                model_prefix: None,
-                base_url: None,
+            &definition,
+            now,
+            FlowFixtureDelta {
+                purpose: Some(FlowPurpose::Reauthorize),
+                provider_name: Some(None),
+                model_prefix: Some(None),
                 // A target id no provider row holds: the concurrent `providers:delete` has
                 // already won by the time the rebind runs.
                 target_provider_id: Some(424242),
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
                 device_next_poll_at: Some(claim_at - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
@@ -1721,31 +1575,8 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
-            &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
-            },
-        )
-        .await
-        .unwrap();
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)
@@ -1832,31 +1663,19 @@ mod tests {
 
         // A reauthorize flow: its commit carries no create-name pre-check, so the forced
         // storage error below surfaces exactly at the transaction's provider write.
-        insert_flow(
+        test_support::insert_flow_fixture(
             &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Reauthorize,
-                provider_name: None,
-                model_prefix: None,
-                base_url: None,
+            &definition,
+            now,
+            FlowFixtureDelta {
+                purpose: Some(FlowPurpose::Reauthorize),
+                provider_name: Some(None),
+                model_prefix: Some(None),
                 target_provider_id: Some(1),
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                ..FlowFixtureDelta::default()
             },
         )
-        .await
-        .unwrap();
+        .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)
@@ -1963,31 +1782,8 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        insert_flow(
-            &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "state-token".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::Device,
-                slots: BTreeMap::new(),
-                code_verifier: None,
-                device_code: Some("device-code".to_string()),
-                device_user_code: Some("user-code".to_string()),
-                device_verification_uri: Some("https://verify.example".to_string()),
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: Some(5),
-                device_next_poll_at: Some(now - 1),
-                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
-            },
-        )
-        .await
-        .unwrap();
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
 
         #[expect(clippy::expect_used, reason = "the due flow is claimed")]
         let claimed = claim_due_device_flow(&database, now, now - 1)

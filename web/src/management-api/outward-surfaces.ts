@@ -23,7 +23,7 @@ export const OUTWARD_SURFACES: ReadonlyArray<OutwardSurface> = [
     {
         label: "Gemini",
         path: "/api/gemini-v1beta",
-        speaks: "generateContent and Interactions",
+        speaks: "GenerateContent and Interactions",
     },
     {
         label: "Anthropic",

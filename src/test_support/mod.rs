@@ -28,9 +28,10 @@ use crate::{
     format::UpstreamFormat,
     provider::{Provider, ProviderDefinition, StoredCredentials, definition::DefinitionPayload},
     storage,
+    storage::oauth_flows::{FlowGrant, FlowPurpose, NewFlow, OngoingFlow, insert_flow},
 };
 use serde_json::{Value, json};
-use std::{num::NonZero, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, num::NonZero, path::PathBuf, time::Duration};
 
 /// File guard cleaning up the temporary SQLite test database on drop.
 pub(crate) struct TempDbGuard(PathBuf);
@@ -212,6 +213,98 @@ pub(crate) async fn insert_oauth_definition(database: &Database, name: &str) -> 
     });
 
     insert_definition(database, name, payload).await
+}
+
+/// The delta one flow-seeding test applies over the shared device-flow fixture base of
+/// [`insert_flow_fixture`]: every field left `None` keeps the base value, and an override
+/// replaces it whole. The two doubly wrapped fields carry a base the tests must clear (a
+/// reauthorize flow names no provider), so their inner `Option` distinguishes "keep the base"
+/// from "clear the field".
+#[derive(Default)]
+pub(crate) struct FlowFixtureDelta {
+    /// Overrides the base state token `"state-token"`.
+    pub(crate) state_token: Option<String>,
+
+    /// Overrides the base purpose [`FlowPurpose::Create`].
+    pub(crate) purpose: Option<FlowPurpose>,
+
+    /// Overrides the base provider name `Some("created")`; `Some(None)` clears it.
+    pub(crate) provider_name: Option<Option<String>>,
+
+    /// Overrides the base model prefix `Some("")`; `Some(None)` clears it.
+    pub(crate) model_prefix: Option<Option<String>>,
+
+    /// Overrides the base target provider id `None`.
+    pub(crate) target_provider_id: Option<i64>,
+
+    /// Overrides the base device code `"device-code"`.
+    pub(crate) device_code: Option<String>,
+
+    /// Overrides the base user code `"user-code"`.
+    pub(crate) device_user_code: Option<String>,
+
+    /// Overrides the base stored poll interval of `5` seconds.
+    pub(crate) device_poll_interval_seconds: Option<i64>,
+
+    /// Overrides the base next-poll instant `now - 1` — the due-now schedule.
+    pub(crate) device_next_poll_at: Option<i64>,
+
+    /// Overrides the base expiry `now + 600` seconds — the ten-minute TTL.
+    pub(crate) expires_at: Option<i64>,
+}
+
+/// Inserts one device-grant flow row against `definition` and returns the stored row: the
+/// fixture base every flow-seeding test shares — a [`FlowPurpose::Create`] flow for a
+/// `"created"` provider under the `"state-token"` token, pending with the 5-second interval,
+/// due at `now - 1`, and expiring at `now + 600` seconds — narrowed by `delta`.
+///
+/// # Panics
+///
+/// Panics if the insert fails — the fixture row always satisfies the schema.
+pub(crate) async fn insert_flow_fixture(
+    database: &Database,
+    definition: &ProviderDefinition,
+    now: i64,
+    delta: FlowFixtureDelta,
+) -> OngoingFlow {
+    let FlowFixtureDelta {
+        state_token,
+        purpose,
+        provider_name,
+        model_prefix,
+        target_provider_id,
+        device_code,
+        device_user_code,
+        device_poll_interval_seconds,
+        device_next_poll_at,
+        expires_at,
+    } = delta;
+
+    insert_flow(
+        database,
+        NewFlow {
+            definition_name: definition.name.clone(),
+            definition_version: definition.version,
+            state_token: state_token.unwrap_or_else(|| "state-token".to_string()),
+            purpose: purpose.unwrap_or(FlowPurpose::Create),
+            provider_name: provider_name.unwrap_or_else(|| Some("created".to_string())),
+            model_prefix: model_prefix.unwrap_or_else(|| Some(String::new())),
+            base_url: None,
+            target_provider_id,
+            grant_type: FlowGrant::Device,
+            slots: BTreeMap::new(),
+            code_verifier: None,
+            device_code: Some(device_code.unwrap_or_else(|| "device-code".to_string())),
+            device_user_code: Some(device_user_code.unwrap_or_else(|| "user-code".to_string())),
+            device_verification_uri: Some("https://verify.example".to_string()),
+            device_verification_uri_complete: None,
+            device_poll_interval_seconds: Some(device_poll_interval_seconds.unwrap_or(5)),
+            device_next_poll_at: Some(device_next_poll_at.unwrap_or(now - 1)),
+            expires_at: expires_at.unwrap_or(now + 600 * crate::unix_time::MICROS_PER_SEC),
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("fixture flow inserts: {error}"))
 }
 
 /// Validates one fixture payload and inserts it as definition version 1 under `name`.
