@@ -19,6 +19,8 @@ import {
     apiLogRow,
     bodyText,
     buttonWithText,
+    type HeldCall,
+    heldCall,
     labeledInput,
     labeledSelect,
     linkTo,
@@ -57,40 +59,8 @@ function page(newest: number, count: number): ReadonlyArray<ApiLogResponse> {
     );
 }
 
-/** One held `usage:list` call: the request it carried and the ways the test ends it. */
-type HeldPage = {
-    readonly request: ListUsageRequest;
-    readonly answer: (result: ListUsageResponse) => void;
-    readonly refuse: (cause: unknown) => void;
-};
-
-/**
- * One `usage:list` call held back until the test ends it, rejecting with the
- * transport's abort failure the moment its cycle's signal fires — the same
- * shape a real in-flight fetch dies with.
- */
-function heldPage(
-    signal: AbortSignal | undefined,
-    request: ListUsageRequest,
-    held: Array<HeldPage>,
-): Promise<ListUsageResponse> {
-    return new Promise<ListUsageResponse>((resolve, reject) => {
-        held.push({
-            request,
-            answer: resolve,
-            refuse: reject,
-        });
-        signal?.addEventListener(
-            "abort",
-            () => {
-                reject(new DOMException("This read cycle was aborted.", "AbortError"));
-            },
-            {
-                once: true,
-            },
-        );
-    });
-}
+/** One held `usage:list` page: the request it carried and the ways the test ends it. */
+type HeldPage = HeldCall<ListUsageResponse, ListUsageRequest>;
 
 /**
  * A management API whose usage listing answers only when the test answers it
@@ -110,7 +80,7 @@ function streamApi(
 ): ManagementApi {
     return stubManagementApi({
         ...stubListings(entities),
-        listUsage: (request, signal) => heldPage(signal, request, holder.pages),
+        listUsage: (request, signal) => heldCall(signal, holder.pages, request),
     });
 }
 
@@ -177,13 +147,13 @@ describe("UsageScreen stream continuation", () => {
 
         expect(bodyText()).toContain("Loading…");
         const stalePage = holder.pages.at(-1);
-        expect(stalePage?.request.before).toBe(API_LOG_CURSOR_BASE + 951);
+        expect(stalePage?.request?.before).toBe(API_LOG_CURSOR_BASE + 951);
 
         // The refresh takes the stream over wholesale: the loader dies
         // mid-flight and the refresh's own first page is the only open call.
         requestRefresh();
         await settle();
-        expect(holder.pages.at(-1)?.request.before).toBeUndefined();
+        expect(holder.pages.at(-1)?.request?.before).toBeUndefined();
 
         // The superseded page answers late — after its cycle died — and
         // writes nothing.
@@ -259,7 +229,7 @@ describe("UsageScreen stream continuation", () => {
 
         buttonWithText("Load more").click();
         await settle();
-        expect(holder.pages.at(-1)?.request.before).toBe(API_LOG_CURSOR_BASE + 951);
+        expect(holder.pages.at(-1)?.request?.before).toBe(API_LOG_CURSOR_BASE + 951);
 
         holder.pages.at(-1)?.refuse(new Error("page load refused"));
         await settle();
@@ -286,7 +256,7 @@ describe("UsageScreen stream continuation", () => {
 
         // The retry carries the stream's own cursor: the failure never
         // displaced it.
-        expect(holder.pages.at(-1)?.request.before).toBe(API_LOG_CURSOR_BASE + 951);
+        expect(holder.pages.at(-1)?.request?.before).toBe(API_LOG_CURSOR_BASE + 951);
 
         answerLastPage(holder, page(950, 3));
         await settle();

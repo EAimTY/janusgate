@@ -271,14 +271,7 @@ pub(crate) async fn execute(
             response_unwrap,
         ));
     } else {
-        tokio::spawn(pump_json(
-            response,
-            parser,
-            sender,
-            upstream_label,
-            is_client_streaming,
-            response_unwrap,
-        ));
+        tokio::spawn(pump_json(response, parser, sender, response_unwrap));
     }
 
     Ok(Box::pin(ReceiverStream::new(receiver)))
@@ -723,16 +716,15 @@ async fn pump_sse(
 /// Relays an upstream JSON response into the IR event channel, always terminating with
 /// [`IrEvent::Done`].
 ///
-/// `upstream_label` names the upstream in the pump's error records. The pump logs a failure only
-/// for a streaming client, whose terminal error frame never reaches a response boundary, making the
-/// pump the failure's single logger (README §8); a non-streaming client receives the failure as the
-/// aggregated HTTP error response, which the response boundary logs.
+/// The JSON pump runs only for a non-streaming client — with [`is_upstream_streaming`] false
+/// the upstream mode is `MatchClient` and the client did not request streaming — so a pump
+/// failure is rendered as the aggregated HTTP error response and logged at the response
+/// boundary (README §8), never by the pump itself: unlike [`pump_sse`], it carries no
+/// `upstream_label` and logs nothing.
 async fn pump_json(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    upstream_label: String,
-    is_client_streaming: bool,
     response_unwrap: Option<String>,
 ) {
     let outcome = async {
@@ -756,10 +748,6 @@ async fn pump_json(
         }
 
         Err(error) => {
-            if is_client_streaming {
-                error!("{upstream_label}: {error}");
-            }
-
             let _ = sender.send(Err(error)).await;
         }
     }

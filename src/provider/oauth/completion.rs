@@ -23,13 +23,21 @@ use crate::{
 use reqwest::Client;
 
 /// The product of one completed flow's exchange-and-provisioning pipeline: the stored OAuth
-/// credentials and the final working base URL the provider write commits.
+/// credentials and the final working base URL — with its provenance — that the provider write
+/// commits.
 pub(crate) struct CompletionProduct {
     /// The stored credentials the completed flow produced.
     pub(crate) credentials: StoredCredentials,
 
     /// The working base URL after the exchange and any provisioning extraction.
     pub(crate) base_url: Option<String>,
+
+    /// Whether [`CompletionProduct::base_url`] is an upstream-derived replacement — the
+    /// exchange's `base_url` fold or a provisioning extraction — rather than the flow's
+    /// begin-time base. Only a derived base joins a reauthorize flow's write (README §7.1); a
+    /// create flow stores the working base either way, the begin-time base being the
+    /// operator-supplied initial value there (README §7.1's `oauth:start` contract).
+    pub(crate) is_base_url_derived: bool,
 }
 
 /// Maps one executed exchange's classification onto an authorization-code completion: the
@@ -100,6 +108,11 @@ pub(crate) async fn complete_exchange(
         outcome.base_url.clone().or_else(|| flow.base_url.clone()),
     );
 
+    // Provenance (README §7.1): only an upstream-derived base URL — the exchange's fold here,
+    // or a provisioning extraction below — replaces the stored base at the provider write; the
+    // begin-time base the flow echoed is never a reauthorize write candidate.
+    state.is_base_url_derived = outcome.base_url.is_some();
+
     // The stage constants thread the exchange's access token — the secret `Secret` references
     // render — and the client credentials down to the per-request environment rebuilds.
     let secret = outcome.access_token.clone();
@@ -151,13 +164,15 @@ pub(crate) async fn complete_exchange(
             refresh_started_at: None,
         },
         base_url: state.base_url,
+        is_base_url_derived: state.is_base_url_derived,
     })
 }
 
 /// Writes the provider row one completed flow produces, inside the caller's transaction: a
-/// create flow inserts the new row, and a reauthorize flow atomically replaces the target's
-/// definition reference, credentials, and working base URL. The caller owns the transaction so
-/// the device poller commits the write together with the flow's succeeded outcome in its claim
+/// create flow inserts the new row carrying the working base URL, and a reauthorize flow
+/// atomically replaces the target's definition reference and credentials plus — only when the
+/// flow derived one — the working base URL. The caller owns the transaction so the device
+/// poller commits the write together with the flow's succeeded outcome in its claim
 /// transaction.
 ///
 /// Returns the written row's id, or [`None`] when a reauthorize flow's target row vanished
@@ -218,7 +233,20 @@ pub(crate) async fn write_completion_provider(
                 return Ok(None);
             }
 
-            if let Some(base_url) = &product.base_url {
+            // The stored base joins the write only when the flow derived a replacement (README
+            // §3): the begin-time base the product otherwise carries is a stale echo by
+            // completion time, and rewriting it would clobber a base a concurrent
+            // `providers:update` stored while the user approved. A derived base lands in the
+            // same transaction as the rebind, so a rebind to a base-referencing definition
+            // never sits on a missing base (README §7.1).
+            if product.is_base_url_derived {
+                let Some(base_url) = &product.base_url else {
+                    return Err(Error::Internal {
+                        message: "the completed flow derived a base URL without carrying one"
+                            .to_string(),
+                    });
+                };
+
                 storage::providers::set_base_url_in_transaction(transaction, target, base_url)
                     .await?;
             }

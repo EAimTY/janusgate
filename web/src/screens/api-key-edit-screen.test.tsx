@@ -258,6 +258,49 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
         expect(document.body.textContent).not.toContain("changed on the gateway");
         expect(document.body.textContent).not.toContain("Unsaved changes");
         expect(document.body.textContent).toContain("saved-here saved.");
+        // The save replaced the secret, so its notice names the old value's
+        // death: every client holding it starts failing at once.
+        expect(document.body.textContent).toContain(
+            "The previous secret stopped working on this save — update every client that held it.",
+        );
+    });
+
+    it("states the rotation consequence only when a save changes the secret", async () => {
+        mount({
+            keys: [
+                key,
+            ],
+        });
+        await settle();
+
+        typeInto(labeledInput("Name"), "renamed-only");
+        await settle();
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("renamed-only saved.");
+        expect(document.body.textContent).not.toContain(
+            "The previous secret stopped working on this save — update every client that held it.",
+        );
+    });
+
+    it("composes the rotation and last-enabled consequences when one save does both", async () => {
+        mount({
+            keys: [
+                key,
+            ],
+        });
+        await settle();
+
+        switchWithLabel("Enabled").click();
+        typeInto(labeledInput("Key"), "sk-rotated");
+        await settle();
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            "The previous secret stopped working on this save — update every client that held it. This was the last enabled key: the gateway now serves nothing until a key is turned on.",
+        );
     });
 
     it("states the last-enabled-key consequence when a save turns the only enabled key off", async () => {

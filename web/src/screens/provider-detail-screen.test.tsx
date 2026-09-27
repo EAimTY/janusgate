@@ -504,6 +504,35 @@ describe("ProviderDetailScreen credential reconnect", () => {
 
         expect(editLink?.getAttribute("href")).toBe("/providers/5/edit");
         expect(editLink?.textContent).toContain("edit page");
+        expect(reconnectLine.textContent).toBe(
+            "Reconnect on the edit page — its Credentials card replaces them.",
+        );
+    });
+
+    it("defers the reconnect to the re-enable while the provider is parked", async () => {
+        // The overview's attention row defers the same fact for a parked
+        // provider instead of ordering a reconnect the operator deliberately
+        // deferred; the detail page's line must defer with it, while still
+        // naming the edit page — both the re-enable and the reconnect live
+        // there.
+        mount([
+            {
+                ...expiredOauth,
+                is_enabled: false,
+            },
+        ]);
+        await settle();
+
+        expect(bodyText()).toContain("The OAuth credentials have expired.");
+
+        const parkedLine = paragraphWithText("The provider is disabled");
+        const editLink = parkedLine.querySelector("a");
+
+        expect(editLink?.getAttribute("href")).toBe("/providers/5/edit");
+        expect(editLink?.textContent).toContain("edit page");
+        expect(parkedLine.textContent).toBe(
+            "The provider is disabled — reconnect when you re-enable it; the edit page's Credentials card replaces them.",
+        );
     });
 
     it("states no reconnect line while the credential is valid", async () => {

@@ -13,12 +13,19 @@
 )]
 
 use crate::{
+    database::Database,
+    format::UpstreamFormat,
     provider::{
         Error, StoredCredentials,
         definition::{discovery::Discovery, eval::ValueEnv},
         oauth::{self, ProvisioningEnv, WorkingState, run_steps},
     },
-    test_support::MockUpstream,
+    storage,
+    test_support::{
+        MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
+        OAuthResponseField, OAuthTarget, create_test_database, insert_provider,
+        oauth_definition_payload,
+    },
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -1408,6 +1415,322 @@ async fn completion_prefers_the_provisioned_expiry_over_the_response_expiry() {
     };
 
     assert_eq!(expires_at, Some(seconds * crate::unix_time::MICROS_PER_SEC));
+
+    mock.shutdown.send(()).ok();
+}
+
+/// The OAuth credentials one completion-write test's stored row carries.
+fn oauth_credentials(access_token: &str) -> StoredCredentials {
+    StoredCredentials::OAuth {
+        access_token: access_token.to_string(),
+        refresh_token: None,
+        slots: BTreeMap::new(),
+        expires_at: None,
+        refresh_started_at: None,
+    }
+}
+
+/// The reauthorize flow one completion-write test runs: the begin-time base echo `base`, no
+/// create-only naming, and `target_provider_id` as the write's target.
+///
+/// # Panics
+///
+/// Panics when the fixture's version number is zero.
+fn reauthorize_completion_flow(
+    base: String,
+    target_provider_id: i64,
+) -> crate::storage::oauth_flows::OngoingFlow {
+    let mut flow = completion_flow(base);
+
+    flow.purpose = crate::storage::oauth_flows::FlowPurpose::Reauthorize;
+    flow.provider_name = None;
+    flow.model_prefix = None;
+    flow.target_provider_id = Some(target_provider_id);
+
+    flow
+}
+
+/// Validates and inserts one OAuth definition fixture whose exchange posts to `exchange_url`
+/// and maps the access token plus `extra_fields`, for the completion-write tests.
+///
+/// # Panics
+///
+/// Panics if the payload does not validate or the insert fails — neither can occur for the
+/// fixed fixture payloads.
+async fn insert_completion_write_definition(
+    database: &Database,
+    name: &str,
+    exchange_url: &str,
+    extra_fields: Vec<OAuthResponseField>,
+) -> crate::provider::ProviderDefinition {
+    let payload = oauth_definition_payload(OAuthDefinitionFixture {
+        format: UpstreamFormat::OpenAiChatCompletion,
+        inference_suffix: Some("/chat/completions"),
+        client_id: "fixture-client",
+        initial_slots: &[],
+        grant: OAuthGrantFixture::AuthorizationCode,
+        exchange_url,
+        response_fields: extra_fields,
+        terminal_codes: &["invalid_grant"],
+        refresh: OAuthRefreshFixture::None,
+        provisioning: None,
+    });
+
+    payload.validate().unwrap();
+
+    storage::provider_definitions::insert_definition(
+        database,
+        storage::provider_definitions::NewDefinition {
+            name,
+            base_version: None,
+            payload: &payload,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// Pins the reauthorize write set (README §7.1): the commit replaces the credentials, but never
+/// writes the flow's begin-time base back over the row. A base the row gains while the user
+/// approves — a legitimate `providers:update` between `oauth:reauthorize` and the completion —
+/// survives the commit: the begin-time echo is stale by completion time, and rewriting it would
+/// send every later dispatch of a base-addressing definition to the old origin.
+///
+/// # Panics
+///
+/// Panics when the fixtures fail to insert or the committed row diverges from the contract.
+#[tokio::test]
+async fn a_reauthorization_keeps_a_base_the_row_gained_mid_flow() {
+    let (database, _guard) = create_test_database().await;
+
+    let mock = MockUpstream::start(vec![
+        serde_json::to_string(&json!({"access_token": "exchange-token"})).unwrap(),
+    ])
+    .await;
+
+    let base = mock.base();
+
+    // The flow's definition: the exchange maps the access token alone, so the completion's
+    // working base is the begin-time echo alone — no derivation is aboard.
+    let definition =
+        insert_completion_write_definition(&database, "completion-write", &base, vec![]).await;
+
+    let provider = insert_provider(
+        &database,
+        &definition,
+        "reauthorized",
+        "r-",
+        Some("https://begin.example"),
+        oauth_credentials("old-token"),
+    )
+    .await;
+
+    let flow = reauthorize_completion_flow("https://begin.example".to_string(), provider.id);
+
+    let client = crate::http_client::control_plane();
+
+    let outcome = executed_outcome(&client, &definition, &flow).await;
+
+    let product = oauth::complete_exchange(&client, &definition, outcome, &flow)
+        .await
+        .unwrap();
+
+    // While the user approves, `providers:update` legitimately stores a new base; the
+    // completion that follows must not echo the begin-time base over it.
+    let mut transaction = database.transaction().await.unwrap();
+
+    storage::providers::set_base_url_in_transaction(
+        &mut transaction,
+        provider.id,
+        "https://updated.example",
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    let mut transaction = database.transaction().await.unwrap();
+
+    let written = oauth::write_completion_provider(&mut transaction, &flow, &definition, &product)
+        .await
+        .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    assert_eq!(written, Some(provider.id), "the reauthorization commits");
+
+    let settled = storage::providers::find_provider_by_id(&database, provider.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        settled.base_url.as_deref(),
+        Some("https://updated.example"),
+        "the completion must not echo the begin-time base over the mid-flow update"
+    );
+
+    assert_eq!(
+        settled.credentials.secret(),
+        "exchange-token",
+        "the reauthorization still commits the credentials"
+    );
+
+    mock.shutdown.send(()).ok();
+}
+
+/// Pins the derived-base write (README §3, §7.1): a reauthorization whose exchange derives a
+/// `base_url` still replaces the stored base, and the derived value lands in the same commit as
+/// a definition rebind — so a rebind to a base-referencing target never sits on a missing or
+/// stale base, and the flow's begin-time echo never wins over the derivation.
+///
+/// # Panics
+///
+/// Panics when the fixtures fail to insert or the committed row diverges from the contract.
+#[tokio::test]
+async fn a_reauthorization_writes_a_derived_base_in_the_rebinds_commit() {
+    let (database, _guard) = create_test_database().await;
+
+    let mock = MockUpstream::start(vec![
+        serde_json::to_string(&json!({
+            "access_token": "exchange-token",
+            "base_url": "https://derived.example"
+        }))
+        .unwrap(),
+    ])
+    .await;
+
+    let base = mock.base();
+
+    // The flow's definition: the exchange maps the access token and a derived `base_url`.
+    let definition = insert_completion_write_definition(
+        &database,
+        "completion-write-derived",
+        &base,
+        vec![OAuthResponseField::new("base_url", OAuthTarget::BaseUrl)],
+    )
+    .await;
+
+    // The rebind target: a different definition whose URLs reference the base too.
+    let rebind_target = insert_completion_write_definition(
+        &database,
+        "rebind-target",
+        crate::test_support::FIXTURE_TOKEN_URL,
+        vec![],
+    )
+    .await;
+
+    let provider = insert_provider(
+        &database,
+        &definition,
+        "rebound",
+        "rb-",
+        Some("https://stored.example"),
+        oauth_credentials("old-token"),
+    )
+    .await;
+
+    // The flow's begin-time base differs from both the stored and the derived value: only the
+    // derivation may reach the row.
+    let flow = reauthorize_completion_flow("https://begin.example".to_string(), provider.id);
+
+    let client = crate::http_client::control_plane();
+
+    let outcome = executed_outcome(&client, &definition, &flow).await;
+
+    let product = oauth::complete_exchange(&client, &definition, outcome, &flow)
+        .await
+        .unwrap();
+
+    let mut transaction = database.transaction().await.unwrap();
+
+    let written =
+        oauth::write_completion_provider(&mut transaction, &flow, &rebind_target, &product)
+            .await
+            .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    assert_eq!(written, Some(provider.id), "the reauthorization commits");
+
+    let settled = storage::providers::find_provider_by_id(&database, provider.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        settled.definition.name, "rebind-target",
+        "the definition reference rebinds"
+    );
+
+    assert_eq!(
+        settled.base_url.as_deref(),
+        Some("https://derived.example"),
+        "the derived base lands in the rebind's commit, replacing the stored and begin bases"
+    );
+
+    mock.shutdown.send(()).ok();
+}
+
+/// Pins the create write (README §7.1): a creation flow stores the flow's begin-time base — the
+/// operator-supplied initial value `oauth:start` stored — unchanged by the provenance rule,
+/// since the new row has no prior base to lose.
+///
+/// # Panics
+///
+/// Panics when the fixtures fail to insert or the committed row diverges from the contract.
+#[tokio::test]
+async fn a_create_flow_writes_the_flows_begin_base() {
+    let (database, _guard) = create_test_database().await;
+
+    let mock = MockUpstream::start(vec![
+        serde_json::to_string(&json!({"access_token": "exchange-token"})).unwrap(),
+    ])
+    .await;
+
+    let base = mock.base();
+
+    let definition =
+        insert_completion_write_definition(&database, "completion-write-create", &base, vec![])
+            .await;
+
+    let flow = completion_flow("https://flow.example".to_string());
+
+    let client = crate::http_client::control_plane();
+
+    let outcome = executed_outcome(&client, &definition, &flow).await;
+
+    let product = oauth::complete_exchange(&client, &definition, outcome, &flow)
+        .await
+        .unwrap();
+
+    let mut transaction = database.transaction().await.unwrap();
+
+    let written = oauth::write_completion_provider(&mut transaction, &flow, &definition, &product)
+        .await
+        .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    let Some(written_provider_id) = written else {
+        panic!("a create flow always inserts");
+    };
+
+    let created = storage::providers::find_provider_by_id(&database, written_provider_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(created.name, "test-provider");
+
+    assert_eq!(
+        created.base_url.as_deref(),
+        Some("https://flow.example"),
+        "the create flow stores the begin base the operator supplied at oauth:start"
+    );
+
+    assert_eq!(created.credentials.secret(), "exchange-token");
 
     mock.shutdown.send(()).ok();
 }

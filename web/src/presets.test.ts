@@ -443,6 +443,48 @@ describe("derived base-URL neediness", () => {
     });
 });
 
+describe("generic Gemini presets", () => {
+    for (const id of [
+        "generic-gemini-generate-content",
+        "generic-gemini-interactions",
+    ]) {
+        it(`walks the paginated model list by pageToken and nextPageToken (${id})`, () => {
+            const gemini = findPreset(id);
+            const pagination = at<Record<string, unknown>>(gemini, [
+                "discovery",
+                "pagination",
+            ]);
+
+            expect(pagination["type"]).toBe("token");
+            expect(pagination["request_param"]).toBe("pageToken");
+            expect(pagination["response_path"]).toEqual([
+                "nextPageToken",
+            ]);
+            expect(pagination["max_pages"]).toBe(10);
+
+            // The page size rides the discovery request at the API's
+            // 1000-model maximum, so the budget covers ten thousand models
+            // before the loud budget failure can ever fire.
+            const query = at<unknown>(gemini, [
+                "discovery",
+                "request",
+                "query",
+            ]);
+            expect(query).toEqual([
+                {
+                    name: "pageSize",
+                    value: [
+                        {
+                            type: "literal",
+                            value: "1000",
+                        },
+                    ],
+                },
+            ]);
+        });
+    }
+});
+
 describe("claude-code preset", () => {
     const claude = findPreset("claude-code");
 

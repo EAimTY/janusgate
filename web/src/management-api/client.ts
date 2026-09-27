@@ -27,6 +27,7 @@ import {
     type DiscoverModelsRequest,
     type DiscoverModelsResponse,
     ErrorCode,
+    type ListApiKeysRequest,
     type ListApiKeysResponse,
     type ListModelsRequest,
     type ListModelsResponse,
@@ -171,8 +172,11 @@ type ManagementApiOptions = {
     readonly onUnauthorized?: (notice: string) => void;
 };
 
-/** A no-argument route's empty request body (README §4.2). */
-const emptyRequest: ListProvidersRequest = {};
+/** The providers listing's empty request body (README §4.2). */
+const emptyProvidersRequest: ListProvidersRequest = {};
+
+/** The api-keys listing's empty request body (README §4.2). */
+const emptyApiKeysRequest: ListApiKeysRequest = {};
 
 /** The definitions listing's empty request body. */
 const emptyDefinitionsRequest: ListProviderDefinitionsRequest = {};
@@ -339,7 +343,7 @@ export function createManagementApi(
             ),
         listProviders: async (signal) =>
             decodeResponse(
-                await post("/providers:list", emptyRequest, signal),
+                await post("/providers:list", emptyProvidersRequest, signal),
                 parseListProvidersResponse,
             ),
         createProvider: async (request, signal) =>
@@ -385,7 +389,7 @@ export function createManagementApi(
             decodeResponse(await post("/usage:query", request, signal), parseQueryUsageResponse),
         listApiKeys: async (signal) =>
             decodeResponse(
-                await post("/api-keys:list", emptyRequest, signal),
+                await post("/api-keys:list", emptyApiKeysRequest, signal),
                 parseListApiKeysResponse,
             ),
         createApiKey: async (request, signal) =>

@@ -5,20 +5,15 @@ import type { QueryUsageResponse, UsageBucket } from "/src/management-api/genera
 import { requestRefresh } from "/src/refresh-state";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import type { UsageSubjectFilter } from "/src/usage-filter";
-import { bodyText, linkTo, settle, stubManagementApi } from "./screen-test-support";
-
-/** One day bucket: the last-good table a failed re-read must keep standing. */
-const dayBucket: UsageBucket = {
-    key: {
-        day: "2026-09-01",
-    },
-    requests: 3,
-    input_tokens: 120,
-    output_tokens: 45,
-    cached_tokens: 0,
-    cache_write_tokens: 0,
-    reasoning_tokens: 0,
-};
+import {
+    bodyText,
+    dayBucket,
+    type HeldCall,
+    heldCall,
+    linkTo,
+    settle,
+    stubManagementApi,
+} from "./screen-test-support";
 
 /** One counted day bucket on the given day. */
 function dayBucketOn(day: string): UsageBucket {
@@ -35,49 +30,19 @@ function dayBucketOn(day: string): UsageBucket {
     };
 }
 
-/** One held `usage:query` call: the ways the test ends it. */
-type HeldQuery = {
-    readonly answer: (result: QueryUsageResponse) => void;
-    readonly refuse: (cause: unknown) => void;
-};
-
-/**
- * One `usage:query` call held back until the test ends it, rejecting with the
- * transport's abort failure the moment its cycle's signal fires — the same
- * shape a real in-flight fetch dies with.
- */
-function heldQuery(
-    signal: AbortSignal | undefined,
-    held: Array<HeldQuery>,
-): Promise<QueryUsageResponse> {
-    return new Promise<QueryUsageResponse>((resolve, reject) => {
-        held.push({
-            answer: resolve,
-            refuse: reject,
-        });
-        signal?.addEventListener(
-            "abort",
-            () => {
-                reject(new DOMException("This read cycle was aborted.", "AbortError"));
-            },
-            {
-                once: true,
-            },
-        );
-    });
-}
-
 /** A management API whose query answers only when the test answers it. */
-function heldQueryApi(holder: { readonly queries: Array<HeldQuery> }): ManagementApi {
+function heldQueryApi(holder: {
+    readonly queries: Array<HeldCall<QueryUsageResponse>>;
+}): ManagementApi {
     return stubManagementApi({
-        queryUsage: (_request, signal) => heldQuery(signal, holder.queries),
+        queryUsage: (_request, signal) => heldCall(signal, holder.queries),
     });
 }
 
 /** Answers the most recent held query — the newest cycle's call. */
 function answerLastQuery(
     holder: {
-        readonly queries: Array<HeldQuery>;
+        readonly queries: Array<HeldCall<QueryUsageResponse>>;
     },
     buckets: ReadonlyArray<UsageBucket>,
 ): void {
@@ -134,14 +99,14 @@ describe("EntityUsageCard read failures", () => {
 
     it("keeps the last-good table beside a failed re-read's notice", async () => {
         const holder: {
-            readonly queries: Array<HeldQuery>;
+            readonly queries: Array<HeldCall<QueryUsageResponse>>;
         } = {
             queries: [],
         };
         mount(heldQueryApi(holder));
         await settle();
         answerLastQuery(holder, [
-            dayBucket,
+            dayBucket(),
         ]);
         await settle();
 
@@ -168,7 +133,7 @@ describe("EntityUsageCard read failures", () => {
 
     it("offers the failed first read a Read again action that re-runs the card's read", async () => {
         const holder: {
-            readonly queries: Array<HeldQuery>;
+            readonly queries: Array<HeldCall<QueryUsageResponse>>;
         } = {
             queries: [],
         };
@@ -194,7 +159,7 @@ describe("EntityUsageCard read failures", () => {
         expect(readAgainButton()?.disabled).toBe(true);
 
         answerLastQuery(holder, [
-            dayBucket,
+            dayBucket(),
         ]);
         await settle();
 
@@ -207,7 +172,7 @@ describe("EntityUsageCard read failures", () => {
 
     it("states the empty state only where a read succeeded and found nothing", async () => {
         const holder: {
-            readonly queries: Array<HeldQuery>;
+            readonly queries: Array<HeldCall<QueryUsageResponse>>;
         } = {
             queries: [],
         };

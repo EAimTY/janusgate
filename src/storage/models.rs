@@ -265,8 +265,8 @@ pub(crate) async fn list_enabled_models_with_owner(
         .query(
             "SELECT m.public_id, p.name FROM models m JOIN providers p ON p.id = m.provider_id \
              WHERE p.is_enabled != 0 AND m.is_enabled != 0 \
-             AND m.discovery_state != 'vanished' ORDER BY m.public_id",
-            (),
+             AND m.discovery_state != ?1 ORDER BY m.public_id",
+            params![DiscoveryState::Vanished],
         )
         .await?;
 
@@ -335,9 +335,13 @@ pub(crate) async fn apply_discovered_models(
         // Blanket mark: every currently-discovered row not listed below ends up `vanished`.
         transaction
             .execute(
-                "UPDATE models SET discovery_state = 'vanished' \
-                 WHERE provider_id = ?1 AND discovery_state = 'discovered'",
-                params![provider.id],
+                "UPDATE models SET discovery_state = ?2 \
+                 WHERE provider_id = ?1 AND discovery_state = ?3",
+                params![
+                    provider.id,
+                    DiscoveryState::Vanished,
+                    DiscoveryState::Discovered
+                ],
             )
             .await?;
 
@@ -359,8 +363,8 @@ pub(crate) async fn apply_discovered_models(
                 // The row exists: flip only its state back to `discovered`.
                 transaction
                     .execute(
-                        "UPDATE models SET discovery_state = 'discovered' WHERE id = ?1",
-                        params![existing.id],
+                        "UPDATE models SET discovery_state = ?2 WHERE id = ?1",
+                        params![existing.id, DiscoveryState::Discovered],
                     )
                     .await?;
 
@@ -377,8 +381,13 @@ pub(crate) async fn apply_discovered_models(
             transaction
                 .execute(
                     "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
-                     public_id, id_override) VALUES (?1, ?2, 1, 'discovered', ?3, NULL)",
-                    params![provider.id, upstream_id.clone(), public_id],
+                     public_id, id_override) VALUES (?1, ?2, 1, ?3, ?4, NULL)",
+                    params![
+                        provider.id,
+                        upstream_id.clone(),
+                        DiscoveryState::Discovered,
+                        public_id
+                    ],
                 )
                 .await?;
         }

@@ -252,6 +252,17 @@ const STATIC_KEY_PRESETS: readonly [
                             value: "/models",
                         },
                     ],
+                    query: [
+                        {
+                            name: "pageSize",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "1000",
+                                },
+                            ],
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-goog-api-key",
@@ -274,7 +285,12 @@ const STATIC_KEY_PRESETS: readonly [
                     strip_prefix: "models/",
                 },
                 pagination: {
-                    type: "none",
+                    type: "token",
+                    request_param: "pageToken",
+                    response_path: [
+                        "nextPageToken",
+                    ],
+                    max_pages: 10,
                 },
             },
         },
@@ -335,6 +351,17 @@ const STATIC_KEY_PRESETS: readonly [
                             value: "/v1beta/models",
                         },
                     ],
+                    query: [
+                        {
+                            name: "pageSize",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "1000",
+                                },
+                            ],
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-goog-api-key",
@@ -366,7 +393,12 @@ const STATIC_KEY_PRESETS: readonly [
                     strip_prefix: "models/",
                 },
                 pagination: {
-                    type: "none",
+                    type: "token",
+                    request_param: "pageToken",
+                    response_path: [
+                        "nextPageToken",
+                    ],
+                    max_pages: 10,
                 },
             },
         },

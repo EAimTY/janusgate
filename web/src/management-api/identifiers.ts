@@ -1,9 +1,9 @@
 /**
  * Composition rules for machine-consumed management fields (gateway README
  * §7): routing identifiers, model prefixes, bearer secrets, and base URLs.
- * Every predicate mirrors the gateway's own validation and its schema
- * `CHECK` constraints, so the app rejects exactly what the gateway would
- * reject — before the round trip, with the field named.
+ * Every predicate mirrors the gateway's boundary validation alone, so the
+ * app rejects exactly what the gateway would reject — before the round
+ * trip, with the field named.
  *
  * The shared rule is printable ASCII without whitespace (`U+0021–U+007E`):
  * no spaces, no control characters, no non-ASCII text such as CJK. Routing
@@ -16,9 +16,6 @@
 /** Non-empty printable ASCII without whitespace. */
 const COMPOSITION_PATTERN = /^[!-~]+$/u;
 
-/** Printable ASCII without whitespace, empty included. */
-const COMPOSITION_OR_EMPTY_PATTERN = /^[!-~]*$/u;
-
 /**
  * Whether the value is a routing token: an upstream ID or a present override —
  * non-empty printable ASCII without whitespace and without `/` or `:` (the Gemini
@@ -30,11 +27,10 @@ export function isRoutingToken(value: string): boolean {
 
 /**
  * Whether the value is a valid model prefix: empty means no prefix,
- * otherwise the routing-token composition — printable ASCII without whitespace
- * and without `/` or `:`.
+ * otherwise a routing token (`isRoutingToken`).
  */
 export function isModelPrefix(value: string): boolean {
-    return COMPOSITION_OR_EMPTY_PATTERN.test(value) && !value.includes("/") && !value.includes(":");
+    return value === "" || isRoutingToken(value);
 }
 
 /**

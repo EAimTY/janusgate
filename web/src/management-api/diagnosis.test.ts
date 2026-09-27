@@ -62,6 +62,21 @@ describe("diagnoseFailure", () => {
         );
     });
 
+    it("points a creation flow's completion conflict at Start over, the one control the live flow leaves reachable", () => {
+        const diagnosis = diagnoseFailure(
+            gatewayFailure(ErrorCode.Conflict, "provider name is taken"),
+            {
+                ...context,
+                action: "complete-oauth",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("conflict");
+        expect(diagnosis.fix).toBe(
+            "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name and prefix; then create again with a name no other row holds.",
+        );
+    });
+
     it("points a definition-write conflict at the moved stored version, not the provider name", () => {
         const diagnosis = diagnoseFailure(
             gatewayFailure(ErrorCode.Conflict, "provider definition version moved"),

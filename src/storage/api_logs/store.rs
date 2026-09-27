@@ -435,13 +435,15 @@ impl ApiLogStore {
     }
 
     /// Every shard day the directory currently holds, ascending. An absent directory reads as
-    /// empty; an unreadable one fails the read explicitly. The walk runs on the blocking
-    /// thread pool, like the sweep: the directory listing is a syscall that must never block
-    /// a worker thread.
+    /// empty; an unreadable one fails the read explicitly, as does an entry the listing fails
+    /// to deliver mid-iteration — a shard day must never read as absent. The walk runs on the
+    /// blocking thread pool, like the sweep: the directory listing is a syscall that must never
+    /// block a worker thread.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the directory exists but cannot be listed.
+    /// Returns [`Error`] when the directory exists but cannot be listed, and when a directory
+    /// entry fails to be delivered mid-iteration.
     pub(super) async fn retained_days(&self) -> Result<Vec<ShardDay>, Error> {
         let directory = self.inner.directory.clone();
 
@@ -466,7 +468,14 @@ impl ApiLogStore {
     }
 
     /// The blocking body of [`ApiLogStore::retained_days`]: lists the directory and parses
-    /// every shard filename, ascending.
+    /// every shard filename, ascending. Unparseable file names — non-UTF8 ones included — stay
+    /// skipped (README §3 *ApiLog Shard Store*), while an entry the iteration fails to deliver
+    /// fails the listing: see [`Self::shard_day_of_listing_entry`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] when the directory exists but cannot be listed, and when a directory
+    /// entry fails to be delivered mid-iteration.
     fn retained_days_blocking(directory: PathBuf) -> Result<Vec<ShardDay>, Error> {
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -478,15 +487,36 @@ impl ApiLogStore {
             Err(failure) => return Err(crate::database::Error::Io(failure).into()),
         };
 
-        let mut days = entries
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter_map(|name| ShardDay::parse_file_stem_of_file_name(&name))
-            .collect::<Vec<_>>();
+        let mut days = Vec::new();
+
+        for entry in entries {
+            if let Some(day) = Self::shard_day_of_listing_entry(entry)? {
+                days.push(day);
+            }
+        }
 
         days.sort();
 
         Ok(days)
+    }
+
+    /// Classifies one entry of the shard directory's listing: [`Some`] with the entry's
+    /// [`ShardDay`] when its file name parses as a shard's, [`None`] for the names that are not
+    /// shards' — unparseable names and non-UTF8 names alike, which the listing leaves alone
+    /// (README §3 *ApiLog Shard Store*). An entry the iteration itself failed to deliver — a
+    /// transient failure on network storage, a permission blip — is an [`Error`]: the entry's
+    /// shard day must not read as absent, so the failure propagates into the read that consumes
+    /// the listing, the same explicit failure a corrupt shard fails its read with.
+    fn shard_day_of_listing_entry(
+        entry: std::io::Result<std::fs::DirEntry>,
+    ) -> Result<Option<ShardDay>, Error> {
+        let entry = entry.map_err(crate::database::Error::Io)?;
+
+        let Some(name) = entry.file_name().into_string().ok() else {
+            return Ok(None);
+        };
+
+        Ok(ShardDay::parse_file_stem_of_file_name(&name))
     }
 }
 
@@ -1238,6 +1268,73 @@ mod tests {
         assert!(
             store.shard_path(planted_day).exists(),
             "a write into an existing shard must not run the sweep"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies the shard directory listing's per-entry classification (README §3 *ApiLog Shard
+    /// Store*): a shard-named entry yields its day, an unparseable name stays skipped, and an
+    /// entry the iteration fails to deliver is an explicit database-I/O storage error — the same
+    /// class a corrupt shard fails its read with — instead of reading its shard day as absent.
+    /// A mid-iteration delivery failure is unreachable through a real filesystem without races,
+    /// so the test drives the per-entry classification seam directly; the listing over real
+    /// directories stays covered by the usage-read suite. The non-UTF8 skip is not fixture-able
+    /// portably — APFS makes the whole iteration fail on such a name while Linux delivers it —
+    /// so it stays with the code path it shares with the unparseable name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the fixture directory cannot be prepared.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a classified entry diverges from the documented semantics.
+    #[test]
+    fn classifies_listing_entries_and_fails_an_undelivered_entry() -> Result<(), Box<dyn StdError>>
+    {
+        let directory = std::env::temp_dir().join(format!(
+            "janusgate-apilogs-listing-{}",
+            rand::random::<u64>()
+        ));
+        let _guard = crate::test_support::TempDirGuard(directory.clone());
+
+        std::fs::create_dir(&directory)?;
+        std::fs::write(directory.join("2026-01-02.db"), b"junk")?;
+        std::fs::write(directory.join("garbage.db"), b"junk")?;
+
+        let mut classified = std::fs::read_dir(&directory)?
+            .map(ApiLogStore::shard_day_of_listing_entry)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        classified.sort_by_key(|day| day.map(|day| day.0));
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the planted file name is constructed to parse"
+        )]
+        let expected = ShardDay::parse_file_stem_of_file_name("2026-01-02.db").unwrap();
+
+        // The shard-named entry yields its day; every other name stays skipped.
+        assert_eq!(classified.last(), Some(&Some(expected)));
+
+        assert!(
+            classified.iter().rev().skip(1).all(|day| day.is_none()),
+            "only the shard-named entry may classify as a day",
+        );
+
+        // An entry the iteration fails to deliver fails the listing explicitly: the shard day
+        // it carries must not read as absent.
+        let undelivered = ApiLogStore::shard_day_of_listing_entry(Err(std::io::Error::other(
+            "transient directory iteration failure",
+        )));
+
+        assert!(
+            matches!(
+                undelivered,
+                Err(Error::Database(crate::database::Error::Io(_)))
+            ),
+            "an undelivered entry must be an explicit storage error",
         );
 
         Ok(())

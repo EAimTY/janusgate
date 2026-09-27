@@ -16,6 +16,9 @@ import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import {
     apiKeyRow,
     buttonWithText,
+    dayBucket,
+    type HeldCall,
+    heldCall,
     labeledInput,
     labeledSelect,
     linkTo,
@@ -32,54 +35,20 @@ const staleProviderRow = providerRow({
     name: "stale-submit",
 });
 
-const dayBucket: UsageBucket = {
-    key: {
-        day: "2026-09-01",
-    },
-    requests: 3,
-    input_tokens: 120,
-    output_tokens: 45,
-    cached_tokens: 0,
-    cache_write_tokens: 0,
-    reasoning_tokens: 0,
-};
-
 /** One bucket grouped by provider 1 on the 1st — its label resolves through the entity lists. */
-const providerBucket: UsageBucket = {
+const providerBucket = dayBucket({
     key: {
         day: "2026-09-01",
         provider_id: 1,
     },
-    requests: 3,
-    input_tokens: 120,
-    output_tokens: 45,
-    cached_tokens: 0,
-    cache_write_tokens: 0,
-    reasoning_tokens: 0,
-};
+});
 
-/**
- * One list call held back until the test answers it, rejecting with the
- * transport's abort failure the moment its cycle's signal fires — the same
- * shape a real in-flight fetch dies with.
- */
-function heldCall<TValue>(
-    signal: AbortSignal | undefined,
-    answers: Array<(answer: TValue) => void>,
-): Promise<TValue> {
-    return new Promise<TValue>((resolve, reject) => {
-        answers.push(resolve);
-        signal?.addEventListener(
-            "abort",
-            () => {
-                reject(new DOMException("This read cycle was aborted.", "AbortError"));
-            },
-            {
-                once: true,
-            },
-        );
-    });
-}
+/** The three entity listings one read cycle holds back, keyed by their routes. */
+type HeldListings = {
+    readonly providers: Array<HeldCall<ListProvidersResponse>>;
+    readonly models: Array<HeldCall<ListModelsResponse>>;
+    readonly apiKeys: Array<HeldCall<ListApiKeysResponse>>;
+};
 
 /**
  * A management API whose entity listings answer only when the test answers
@@ -88,14 +57,10 @@ function heldCall<TValue>(
  * loudly instead of hanging it.
  */
 function screenApi(
-    holder: {
-        readonly providers: Array<(answer: ListProvidersResponse) => void>;
-        readonly models: Array<(answer: ListModelsResponse) => void>;
-        readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-    },
+    holder: HeldListings,
     onQueryUsage: () => void,
     buckets: ReadonlyArray<UsageBucket> = [
-        dayBucket,
+        dayBucket(),
     ],
 ): ManagementApi {
     return stubManagementApi({
@@ -115,29 +80,25 @@ function screenApi(
 }
 
 /** Answers the most recent held call of one route — the newest cycle's call. */
-function answerLast<TValue>(pending: Array<(answer: TValue) => void>, value: TValue): void {
-    const answer = pending.at(-1);
+function answerLast<TValue>(pending: Array<HeldCall<TValue>>, value: TValue): void {
+    const held = pending.at(-1);
 
-    if (answer === undefined) {
+    if (held === undefined) {
         throw new Error("No held call to answer");
     }
 
-    answer(value);
+    held.answer(value);
 }
 
 /** Answers one held call by position — a superseded cycle's own, late answer. */
-function answerAt<TValue>(
-    pending: Array<(answer: TValue) => void>,
-    position: number,
-    value: TValue,
-): void {
-    const answer = pending.at(position);
+function answerAt<TValue>(pending: Array<HeldCall<TValue>>, position: number, value: TValue): void {
+    const held = pending.at(position);
 
-    if (answer === undefined) {
+    if (held === undefined) {
         throw new Error(`No held call at position ${position}`);
     }
 
-    answer(value);
+    held.answer(value);
 }
 
 /** The first-read placeholder: present exactly while the screen owes its first answers. */
@@ -194,13 +155,6 @@ function bucketWith(key: UsageBucket["key"]): UsageBucket {
     };
 }
 
-/** The three entity listings one read cycle holds back, keyed by their routes. */
-type HeldListings = {
-    readonly providers: Array<(answer: ListProvidersResponse) => void>;
-    readonly models: Array<(answer: ListModelsResponse) => void>;
-    readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-};
-
 describe("UsageQueryScreen request assembly", () => {
     const disposes: Array<() => void> = [];
 
@@ -213,11 +167,7 @@ describe("UsageQueryScreen request assembly", () => {
 
     it("sends the dimension set and the assembled filter to the query route", async () => {
         const requests: QueryUsageRequest[] = [];
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -315,11 +265,7 @@ describe("UsageQueryScreen refresh racing the initial read", () => {
 
     it("keeps the loading state up until the newer cycle settles", async () => {
         let queryCount = 0;
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -384,11 +330,7 @@ describe("UsageQueryScreen submit during the initial read", () => {
 
     it("reads the entity lists the labels resolve through before the query lands", async () => {
         let queryCount = 0;
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -466,11 +408,7 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
 
     it("renders the refresh over the submit and lets the submit's late answer write nothing", async () => {
         let queryCount = 0;
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -578,11 +516,7 @@ describe("UsageQueryScreen arrival subject", () => {
 
     async function mountAndAnswer(
         requests: Array<QueryUsageRequest>,
-        holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        },
+        holder: HeldListings,
         subject: UsageQuerySubject | null = null,
     ): Promise<void> {
         const api = screenApi(holder, () => {}, []);
@@ -916,11 +850,7 @@ describe("UsageQueryScreen hand-typed status list", () => {
 
     it("names an unparseable status inline and holds the query until it is fixed", async () => {
         const requests: QueryUsageRequest[] = [];
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -1012,11 +942,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
 
     it("states the hold on the failure channel and keeps the standing buckets", async () => {
         let queryCount = 0;
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -1088,11 +1014,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
 
     it("clears the hold notice when a later cycle succeeds", async () => {
         let queryCount = 0;
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -1199,7 +1121,7 @@ describe("UsageQueryScreen failed query", () => {
                     ? Promise.reject(new Error("query refused"))
                     : Promise.resolve({
                           buckets: [
-                              dayBucket,
+                              dayBucket(),
                           ],
                       }),
         };
@@ -1267,11 +1189,7 @@ describe("UsageQueryScreen clear filters", () => {
 
     it("resets the fields and bounds, keeps the dimensions, and hides once nothing is set", async () => {
         const requests: QueryUsageRequest[] = [];
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -1397,11 +1315,7 @@ describe("UsageQueryScreen empty answer", () => {
 
     /** Mounts the screen against a gateway whose query answers empty, and answers its listings. */
     async function mountAndAnswer(subject: UsageQuerySubject | null): Promise<void> {
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],

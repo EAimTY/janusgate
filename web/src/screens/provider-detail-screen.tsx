@@ -254,7 +254,13 @@ export function ProviderDetailScreen(props: {
                     {/* A lapsed credential's fix lives one page over, where
                         reauthorization runs — named and linked the way the
                         overview's attention rows name it, not left to a bare
-                        badge beside a generic edit button. */}
+                        badge beside a generic edit button. A parked provider
+                        defers the way the overview's attention row defers:
+                        reconnecting waits for the re-enable the operator
+                        chose to defer, so the line says so instead of
+                        ordering the reconnect now — while still naming the
+                        edit page, where both the re-enable and the
+                        reconnect live. */}
                     <Show when={lapsedCredentialStanding(row)}>
                         {(standing) => (
                             <Notice
@@ -266,14 +272,18 @@ export function ProviderDetailScreen(props: {
                                 }
                                 detail={
                                     <>
-                                        {"Reconnect on the "}
+                                        {row.is_enabled
+                                            ? "Reconnect on the "
+                                            : "The provider is disabled — reconnect when you re-enable it; the "}
                                         <AppLink
                                             href={hrefs.providerEdit(row.id)}
                                             class="font-medium text-accent hover:text-accent-strong"
                                         >
                                             edit page
                                         </AppLink>
-                                        {" — its Credentials card replaces them."}
+                                        {row.is_enabled
+                                            ? " — its Credentials card replaces them."
+                                            : "'s Credentials card replaces them."}
                                     </>
                                 }
                             />

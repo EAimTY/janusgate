@@ -454,12 +454,14 @@ async fn persist_terminal(
 /// failure fails the flow terminally with the gateway-owned `provisioning_failed` pair,
 /// persisted with the claim the flow still holds — the failure never reaches the re-stamp — so
 /// the poll loop stops at the terminal outcome instead of re-running the exchange; a failure of
-/// the commit transaction itself — after the re-stamp — fails the flow the same terminal way
-/// with the gateway-owned `commit_failed` pair, because the exchange is consumed upstream
-/// either way; a claim the re-stamp finds stolen abandons the provider write, leaving the
-/// newer state untouched. The exchange checkpoint the caller persisted before this pipeline
-/// rides through it: the success commit clears it together with the outcome, and every terminal
-/// persist clears it with the terminal row.
+/// the commit transaction itself — after the re-stamp — fails the flow the same terminal way,
+/// a create flow whose provider write lost to another row's claim of the name recording the
+/// operator-fixable `name_conflict` pair and every other failure the gateway-owned
+/// `commit_failed` pair, either way because the exchange is consumed upstream; a claim the
+/// re-stamp finds stolen abandons the provider write, leaving the newer state untouched. The
+/// exchange checkpoint the caller persisted before this pipeline rides through it: the success
+/// commit clears it together with the outcome, and every terminal persist clears it with the
+/// terminal row.
 async fn commit_success(
     database: &Database,
     http: &Client,
@@ -472,20 +474,16 @@ async fn commit_success(
     // re-fail the flow until the expiry sweep deletes it, with the management client reading
     // "pending" the whole time; the conflict is terminal instead, with its gateway-owned
     // failure pair (README §7.2). The constraint stays as the concurrent backstop behind this
-    // pre-check.
-    if flow.purpose == FlowPurpose::Create {
-        let name = flow.provider_name.as_deref().unwrap_or_default();
-
-        if storage::providers::is_provider_name_taken(database, name).await? {
-            return persist_terminal(
-                database,
-                flow,
-                flow.device_poll_started_at,
-                "name_conflict",
-                "the provider name the flow creates is already taken",
-            )
-            .await;
-        }
+    // pre-check, and its loss is classified at the commit path below.
+    if flow.purpose == FlowPurpose::Create && is_create_name_taken(database, flow).await? {
+        return persist_terminal(
+            database,
+            flow,
+            flow.device_poll_started_at,
+            "name_conflict",
+            "the provider name the flow creates is already taken",
+        )
+        .await;
     }
 
     let held_claim = flow.device_poll_started_at.ok_or_else(|| Error::Internal {
@@ -540,14 +538,33 @@ async fn commit_success(
     if let Err(error) =
         commit_success_transaction(database, flow, definition, &product, claim).await
     {
-        if let Err(persist_error) = persist_terminal(
-            database,
-            flow,
-            Some(claim),
-            "commit_failed",
-            &format!("the exchange succeeded but the gateway failed to record the result: {error}"),
-        )
-        .await
+        // The failed transaction's provider write may have lost to another row's claim of the
+        // create name — the unique constraint is the pre-check's concurrent backstop, and the
+        // pre-check-to-write window makes the loss reachable. That loss is operator-fixable
+        // (rename and retry), not an internal failure, so a create flow confirms it by
+        // re-checking the name — mirroring the pre-check — and records the terminal
+        // `name_conflict` pair (README §7.2); a probe that fails or still finds the name free
+        // keeps the internal-failure diagnosis, so a genuine `commit_failed` is never
+        // mislabeled as the conflict.
+        let is_name_conflict = flow.purpose == FlowPurpose::Create
+            && matches!(is_create_name_taken(database, flow).await, Ok(true));
+
+        let (code, message) = if is_name_conflict {
+            (
+                "name_conflict",
+                "the provider name the flow creates was claimed before the commit".to_string(),
+            )
+        } else {
+            (
+                "commit_failed",
+                format!(
+                    "the exchange succeeded but the gateway failed to record the result: {error}"
+                ),
+            )
+        };
+
+        if let Err(persist_error) =
+            persist_terminal(database, flow, Some(claim), code, &message).await
         {
             warn!(
                 "device flow {} also failed to record its terminal outcome: {persist_error}",
@@ -559,6 +576,22 @@ async fn commit_success(
     }
 
     Ok(())
+}
+
+/// Whether another stored provider row already holds the create flow's name: the pre-check
+/// ahead of the commit transaction and the commit path's constraint-loss confirmation share one
+/// probe, so both `name_conflict` diagnoses rest on the same fact (README §7.2).
+///
+/// # Errors
+///
+/// Returns [`storage::Error`] when the probe query fails.
+async fn is_create_name_taken(
+    database: &Database,
+    flow: &OngoingFlow,
+) -> Result<bool, storage::Error> {
+    let name = flow.provider_name.as_deref().unwrap_or_default();
+
+    storage::providers::is_provider_name_taken(database, name).await
 }
 
 /// Commits the provider write and the succeeded outcome in one transaction under the fresh
@@ -674,12 +707,12 @@ mod tests {
             persist_exchange_checkpoint, restamp_claim,
         },
         test_support::{
-            self, FlowFixtureDelta, MockUpstream, OAuthDefinitionFixture,
+            self, FlowFixtureDelta, MockAction, MockUpstream, OAuthDefinitionFixture,
             OAuthDeviceAuthorizationFixture, OAuthGrantFixture, OAuthRefreshFixture,
             oauth_definition_payload,
         },
     };
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, time::Duration};
 
     /// The claim-staleness window in whole seconds, so a fixture stamps claims and derives
     /// thresholds a known distance inside or past the window the poller actually enforces
@@ -775,6 +808,167 @@ mod tests {
         );
     }
 
+    /// A create flow whose provider name another row claims inside the commit's
+    /// pre-check-to-write window loses the provider write to the name's unique constraint and
+    /// terminates as `name_conflict`, not the generic `commit_failed` (README §3, §7.2): the
+    /// conflict is operator-fixable — rename and retry — while `commit_failed` diagnoses an
+    /// internal failure. The commit path confirms the loss by re-checking the name before
+    /// relabeling, so a genuine internal failure — whose probe finds the name free — is never
+    /// mislabeled as the conflict.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_create_flow_whose_name_is_claimed_mid_commit_fails_as_name_conflict() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The definition carries one succeeding provisioning step, so the commit's pre-check
+        // runs before a real HTTP round-trip and the provider write runs after it. The mock
+        // announces the provision request's arrival and holds its response back, giving the
+        // competing claim below a wide window strictly inside the pre-check-to-write span.
+        let (provision_arrival, mut arrival) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+        let mock = MockUpstream::start_responding(move || {
+            provision_arrival.send(()).ok();
+
+            MockAction::StreamAfterDelay {
+                head: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                       2\r\nConnection: close\r\n\r\n"
+                    .to_string(),
+                frame: "{}".to_string(),
+                delay: Duration::from_millis(500),
+            }
+        })
+        .await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            &mock.base(),
+            ProvisioningFixture::Succeeding,
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        // The competing claim lands when the provision request arrives — strictly after the
+        // commit's pre-check observed the name free — and completes while the mock still holds
+        // the provisioning response open.
+        let conflicting = tokio::spawn({
+            let database = database.clone();
+
+            async move {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the mock announces the provision request"
+                )]
+                arrival
+                    .recv()
+                    .await
+                    .expect("the mock announces the provision request");
+
+                let static_definition = test_support::insert_static_key_definition(
+                    &database,
+                    "static-def",
+                    UpstreamFormat::OpenAiChatCompletion,
+                )
+                .await;
+
+                test_support::insert_provider(
+                    &database,
+                    &static_definition,
+                    "created",
+                    "c-",
+                    None,
+                    StoredCredentials::ApiKey {
+                        api_key: "sk".to_string(),
+                    },
+                )
+                .await;
+            }
+        });
+
+        let result = commit_success(
+            &database,
+            &http_client::control_plane(),
+            &claimed,
+            &definition,
+            ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..ExchangeOutcome::default()
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "the unique-constraint loss propagates for the spawn loop's warning"
+        );
+
+        #[expect(clippy::unwrap_used, reason = "the claim task cannot panic")]
+        conflicting.await.unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("name_conflict"));
+        assert_eq!(
+            settled.failure_message.as_deref(),
+            Some("the provider name the flow creates was claimed before the commit")
+        );
+        assert_eq!(
+            settled.device_poll_started_at, None,
+            "the persisted terminal outcome clears the claim stamp"
+        );
+
+        // The terminal row is unclaimable, so the poll loop can never re-run the consumed
+        // exchange.
+        #[expect(clippy::unwrap_used, reason = "the claim query executes")]
+        let reclaims = claim_due_device_flow(
+            &database,
+            now + 60 * crate::unix_time::MICROS_PER_SEC,
+            now + 30 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            reclaims.is_none(),
+            "a terminal flow is never re-claimed for another exchange"
+        );
+
+        // The stored row is the competitor's, not the flow's: the write lost the constraint.
+        #[expect(clippy::expect_used, reason = "the competing provider persists")]
+        let winner = storage::providers::find_provider(&database, "created")
+            .await
+            .unwrap()
+            .expect("the competing provider persists");
+
+        assert_eq!(
+            winner.credentials,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+            "the flow's provider write lost the name to the competing claim"
+        );
+
+        mock.shutdown.send(()).ok();
+    }
+
     /// A transport timeout's backoff is transient (RFC 8628 §3.5 reserves a permanent raise for
     /// `slow_down`): the timeout schedules one doubled delay for the next attempt while the
     /// flow's stored interval persists unchanged, and the next attempt — reading the preserved
@@ -791,7 +985,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -891,7 +1085,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -959,7 +1153,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -1018,11 +1212,63 @@ mod tests {
         );
     }
 
+    /// The provisioning sequence a test definition carries.
+    enum ProvisioningFixture {
+        /// No provisioning at all: the commit's pre-check-to-write window carries no HTTP
+        /// round-trip.
+        None,
+
+        /// One step whose required `machine` extraction fails against the mock's response: a
+        /// provisioning failure the exchange itself survives.
+        Failing,
+
+        /// One step with no extractions, succeeding against any mock response: the window
+        /// between the commit's pre-check and the provider write spans a real HTTP round-trip.
+        Succeeding,
+    }
+
+    impl ProvisioningFixture {
+        /// Renders the fixture's steps JSON against the mock's `token_url`, or [`None`].
+        fn steps(self, token_url: &str) -> Option<serde_json::Value> {
+            match self {
+                Self::None => None,
+
+                Self::Failing => Some(serde_json::json!([
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": [{"type": "literal",
+                                     "value": format!("{token_url}/provision")}]
+                        },
+                        "response_encoding": "json",
+                        "extract": [
+                            {
+                                "path": ["machine"],
+                                "target": {"type": "slot", "name": "machine"},
+                                "shape": {"type": "string"},
+                                "required": true
+                            }
+                        ]
+                    }
+                ])),
+
+                Self::Succeeding => Some(serde_json::json!([
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": [{"type": "literal",
+                                     "value": format!("{token_url}/provision")}]
+                        },
+                        "response_encoding": "json"
+                    }
+                ])),
+            }
+        }
+    }
+
     /// Inserts one device-grant OAuth definition whose exchange points at `token_url` and whose
-    /// terminal codes exclude the non-terminal error the fixture's upstream reports. With
-    /// `has_failing_provisioning`, the definition also carries one provisioning step whose
-    /// required `machine` extraction fails against the mock's second response — a provisioning
-    /// failure the exchange itself survives.
+    /// terminal codes exclude the non-terminal error the fixture's upstream reports, carrying
+    /// the `provisioning` fixture's step sequence.
     ///
     /// # Panics
     ///
@@ -1032,7 +1278,7 @@ mod tests {
         database: &crate::database::Database,
         name: &str,
         token_url: &str,
-        has_failing_provisioning: bool,
+        provisioning: ProvisioningFixture,
     ) -> crate::provider::ProviderDefinition {
         let payload = oauth_definition_payload(OAuthDefinitionFixture {
             format: UpstreamFormat::OpenAiChatCompletion,
@@ -1053,26 +1299,7 @@ mod tests {
             response_fields: vec![],
             terminal_codes: &["access_denied"],
             refresh: OAuthRefreshFixture::None,
-            provisioning: has_failing_provisioning.then(|| {
-                serde_json::json!([
-                    {
-                        "request": {
-                            "method": "POST",
-                            "url": [{"type": "literal",
-                                     "value": format!("{token_url}/provision")}]
-                        },
-                        "response_encoding": "json",
-                        "extract": [
-                            {
-                                "path": ["machine"],
-                                "target": {"type": "slot", "name": "machine"},
-                                "shape": {"type": "string"},
-                                "required": true
-                            }
-                        ]
-                    }
-                ])
-            }),
+            provisioning: provisioning.steps(token_url),
         });
 
         #[expect(
@@ -1115,8 +1342,13 @@ mod tests {
         ])
         .await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", &mock.base(), false).await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            &mock.base(),
+            ProvisioningFixture::None,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1165,7 +1397,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -1258,7 +1490,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -1330,7 +1562,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -1418,7 +1650,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -1507,8 +1739,13 @@ mod tests {
         ])
         .await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", &mock.base(), true).await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            &mock.base(),
+            ProvisioningFixture::Failing,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1592,7 +1829,7 @@ mod tests {
             &database,
             "device-def",
             "http://127.0.0.1:1/token",
-            false,
+            ProvisioningFixture::None,
         )
         .await;
 
@@ -1714,8 +1951,13 @@ mod tests {
         ])
         .await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", &mock.base(), false).await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            &mock.base(),
+            ProvisioningFixture::None,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 

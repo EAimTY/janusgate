@@ -7,8 +7,10 @@ import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import {
+    bodyText,
     buttonWithText,
     labeledInput,
+    linkTo,
     modelRow,
     paragraphWithText,
     providerRow,
@@ -427,5 +429,88 @@ describe("ModelEditScreen refresh against an open form", () => {
 
         expect(document.body.textContent).toContain("The gateway holds no such row.");
         expect(document.body.textContent).toContain("Model not found");
+    });
+});
+
+describe("ModelEditScreen vanished model", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** The routing model of the shared provider row, no longer reported. */
+    const vanished = modelRow({
+        id: 11,
+        provider_id: 3,
+        provider: "alpha",
+        upstream_id: "gpt-x",
+        public_id: "alpha-gpt-x",
+        discovery_state: "vanished",
+    });
+
+    function mount(holder: {
+        providers: ReadonlyArray<ProviderResponse>;
+        models: ReadonlyArray<ModelResponse>;
+    }): void {
+        disposes.push(
+            render(
+                () => (
+                    <ModelEditScreen
+                        api={screenApi(holder)}
+                        modelId={11}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("states the suspension under the header with both recovery paths", async () => {
+        // The page is reachable by deep link, and an "enable it again" edit
+        // lands here — the suspension the detail page states cannot be left
+        // to that page alone.
+        mount({
+            providers: [
+                provider,
+            ],
+            models: [
+                vanished,
+            ],
+        });
+        await settle();
+
+        expect(bodyText()).toContain("The upstream no longer reports this model.");
+        expect(linkTo("/providers/3").textContent).toBe("Discover again on the provider's page");
+        expect(linkTo("/models/new?provider=3&upstream=gpt-x").textContent).toBe(
+            "claim it back from the Create model page",
+        );
+    });
+
+    it("keeps the routing line off a vanished row's save notice", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                vanished,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        await overridePublicId("custom-gpt-x");
+        buttonWithText("Save changes").click();
+        await settle();
+
+        // The save succeeds, but the row stays suspended — `models:update`
+        // never touches `discovery_state` — so the notice announces the save
+        // alone, and the page keeps stating the suspension.
+        expect(bodyText()).toContain("Model saved.");
+        expect(bodyText()).not.toContain("Clients now call it");
+        expect(bodyText()).toContain("The upstream no longer reports this model.");
     });
 });

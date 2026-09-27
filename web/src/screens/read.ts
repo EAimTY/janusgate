@@ -71,16 +71,16 @@ export class ReadCallFailure extends Error {
  * (`"read"`), or an action's reported outcome (`"action"`). The origin
  * decides what may clear the notice — the two-origin rule (README §6.3).
  */
-export type NoticeOrigin = "read" | "action";
+type NoticeOrigin = "read" | "action";
 
 /** A standing notice, paired with the origin its clearing reads. */
-export type StandingNotice = {
+type StandingNotice = {
     readonly notice: ScreenNotice;
     readonly origin: NoticeOrigin;
 };
 
 /** The origin-paired standing notice one screen states its failures and outcomes through. */
-export type StandingNoticeController = {
+type StandingNoticeController = {
     /** The standing notice, or `null` while nothing stands. */
     readonly notice: Accessor<ScreenNotice | null>;
     /** The origin of the notice that stands, or `null` while nothing stands. */
@@ -134,7 +134,7 @@ export type ReadCall<TResult> = {
 };
 
 /** What an action's failure reporting accepts beside its diagnosis. */
-export type ReportActionOptions = {
+type ReportActionOptions = {
     /**
      * Runs when the diagnosis says the row the call addressed is gone — the
      * screen's reload, usually, so the not-found state takes over instead of

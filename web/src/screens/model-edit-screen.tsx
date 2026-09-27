@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -17,9 +17,11 @@ import {
     type ScreenRead,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
+import { AppLink } from "/src/ui/app-link";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
+import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     composedPublicId,
@@ -34,7 +36,9 @@ import { RowNotFound } from "./row-not-found";
  * prefilled, tracks dirt, and saves the complete settings back — saving
  * installs the model the gateway returns, because the public ID is
  * recomposed inside that write. Reading the model — its facts and its usage
- * — lives on the detail page.
+ * — lives on the detail page. A vanished row's suspension is stated under
+ * the header with the detail page's two recovery paths, and the save
+ * notice's routing line waits for a row the upstream reports again.
  */
 export function ModelEditScreen(props: {
     readonly api: ManagementApi;
@@ -111,6 +115,39 @@ export function ModelEditScreen(props: {
                         backHref={hrefs.modelDetail(row.id)}
                         backLabel="Model"
                     />
+
+                    {/* The suspension the detail page states, restated here:
+                        this page is reachable by deep link, and it is where
+                        an "enable it again" edit lands — a save of the
+                        enabled switch must not read as service restored
+                        while the upstream still withholds the row. The
+                        wording and both link targets mirror the detail
+                        page's vanish notice exactly. */}
+                    <Show when={row.discovery_state === "vanished"}>
+                        <Notice
+                            tone="warn"
+                            title="The upstream no longer reports this model."
+                            detail={
+                                <>
+                                    It serves nothing meanwhile.{" "}
+                                    <AppLink
+                                        href={hrefs.providerDetail(row.provider_id)}
+                                        class="font-medium text-accent hover:text-accent-strong"
+                                    >
+                                        Discover again on the provider's page
+                                    </AppLink>
+                                    {" when the upstream lists it, or "}
+                                    <AppLink
+                                        href={hrefs.modelNew(row.provider_id, row.upstream_id)}
+                                        class="font-medium text-accent hover:text-accent-strong"
+                                    >
+                                        claim it back from the Create model page
+                                    </AppLink>
+                                    {"."}
+                                </>
+                            }
+                        />
+                    </Show>
 
                     <HoldNotice
                         isHeld={isRowHeld()}
@@ -208,7 +245,15 @@ function ModelSettingsForm(props: {
             return {
                 tone: "ok",
                 title: "Model saved.",
-                detail: `Clients now call it ${saved.public_id}.`,
+                // A vanished row stays suspended whatever its settings say —
+                // `models:update` never touches `discovery_state` — so the
+                // routing line would read as service restored while clients
+                // calling the ID still get 404s. Only a row the upstream
+                // reports again names the public ID it now answers to.
+                detail:
+                    saved.discovery_state === "vanished"
+                        ? null
+                        : `Clients now call it ${saved.public_id}.`,
             };
         },
         onDirtyChange: props.onDirtyChange,

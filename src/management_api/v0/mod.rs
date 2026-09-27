@@ -98,6 +98,22 @@ macro_rules! route {
 
 pub(super) use route;
 
+/// Mounts version 0 routes on a router under construction: invoked with the router being built
+/// followed by `marker => handler` pairs in registration order, where each pair expands to
+/// exactly the shared `.route(...)` wiring, taking the path and the method from the route
+/// marker's [`Route`](crate::management_api::Route) constants, so a mount names the marker type
+/// and the handler only. The pairs are expanded in the written order, which is the router's
+/// route registration order.
+macro_rules! mount {
+    ($router:expr, $($marker:ident => $handler:path),+,) => {
+        $router
+            $(.route(
+                $marker::PATH,
+                routing::on(method_filter(&$marker::METHOD), $handler),
+            ))+
+    };
+}
+
 /// Maximum accepted request body size for the management API.
 ///
 /// Management payloads are small JSON documents, so 2 MiB — axum's default, made explicit here so
@@ -121,118 +137,40 @@ fn method_filter(method: &Method) -> MethodFilter {
 
 /// Constructs this version's router with its own token authentication, 404 response, and body
 /// limit. Method and path are wired from each route's [`Route`](crate::management_api::Route)
-/// constants, so the `route!` declaration is the single place they are written.
+/// constants through the local [`mount!`] macro, so the `route!` declaration is the single place
+/// they are written.
 ///
 /// The router defines no CORS policy of its own: the management API router applies the
 /// cross-version one around it.
 pub(super) fn router() -> Router<Context> {
-    Router::new()
-        .route(
-            ListProviderDefinitions::PATH,
-            routing::on(
-                method_filter(&ListProviderDefinitions::METHOD),
-                provider_definitions::list,
-            ),
-        )
-        .route(
-            CreateProviderDefinition::PATH,
-            routing::on(
-                method_filter(&CreateProviderDefinition::METHOD),
-                provider_definitions::create,
-            ),
-        )
-        .route(
-            UpdateProviderDefinition::PATH,
-            routing::on(
-                method_filter(&UpdateProviderDefinition::METHOD),
-                provider_definitions::update,
-            ),
-        )
-        .route(
-            ListProviders::PATH,
-            routing::on(method_filter(&ListProviders::METHOD), providers::list),
-        )
-        .route(
-            CreateProvider::PATH,
-            routing::on(method_filter(&CreateProvider::METHOD), providers::create),
-        )
-        .route(
-            UpdateProvider::PATH,
-            routing::on(method_filter(&UpdateProvider::METHOD), providers::update),
-        )
-        .route(
-            DeleteProvider::PATH,
-            routing::on(method_filter(&DeleteProvider::METHOD), providers::delete),
-        )
-        .route(
-            StartProviderOauth::PATH,
-            routing::on(
-                method_filter(&StartProviderOauth::METHOD),
-                oauth_flow::start,
-            ),
-        )
-        .route(
-            CompleteProviderOauth::PATH,
-            routing::on(
-                method_filter(&CompleteProviderOauth::METHOD),
-                oauth_flow::complete,
-            ),
-        )
-        .route(
-            ReauthorizeProvider::PATH,
-            routing::on(
-                method_filter(&ReauthorizeProvider::METHOD),
-                oauth_flow::reauthorize,
-            ),
-        )
-        .route(
-            ListApiKeys::PATH,
-            routing::on(method_filter(&ListApiKeys::METHOD), api_keys::list),
-        )
-        .route(
-            CreateApiKey::PATH,
-            routing::on(method_filter(&CreateApiKey::METHOD), api_keys::create),
-        )
-        .route(
-            UpdateApiKey::PATH,
-            routing::on(method_filter(&UpdateApiKey::METHOD), api_keys::update),
-        )
-        .route(
-            DeleteApiKey::PATH,
-            routing::on(method_filter(&DeleteApiKey::METHOD), api_keys::delete),
-        )
-        .route(
-            ListModels::PATH,
-            routing::on(method_filter(&ListModels::METHOD), models::list),
-        )
-        .route(
-            DiscoverModels::PATH,
-            routing::on(method_filter(&DiscoverModels::METHOD), models::discover),
-        )
-        .route(
-            CreateModel::PATH,
-            routing::on(method_filter(&CreateModel::METHOD), models::create),
-        )
-        .route(
-            UpdateModel::PATH,
-            routing::on(method_filter(&UpdateModel::METHOD), models::update),
-        )
-        .route(
-            DeleteModel::PATH,
-            routing::on(method_filter(&DeleteModel::METHOD), models::delete),
-        )
-        .route(
-            ListUsage::PATH,
-            routing::on(method_filter(&ListUsage::METHOD), usage::list),
-        )
-        .route(
-            QueryUsage::PATH,
-            routing::on(method_filter(&QueryUsage::METHOD), usage::query),
-        )
-        .fallback(fallback)
-        .method_not_allowed_fallback(method_not_allowed)
-        .layer(middleware::from_fn(authenticate))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+    mount! {
+        Router::new(),
+        ListProviderDefinitions => provider_definitions::list,
+        CreateProviderDefinition => provider_definitions::create,
+        UpdateProviderDefinition => provider_definitions::update,
+        ListProviders => providers::list,
+        CreateProvider => providers::create,
+        UpdateProvider => providers::update,
+        DeleteProvider => providers::delete,
+        StartProviderOauth => oauth_flow::start,
+        CompleteProviderOauth => oauth_flow::complete,
+        ReauthorizeProvider => oauth_flow::reauthorize,
+        ListApiKeys => api_keys::list,
+        CreateApiKey => api_keys::create,
+        UpdateApiKey => api_keys::update,
+        DeleteApiKey => api_keys::delete,
+        ListModels => models::list,
+        DiscoverModels => models::discover,
+        CreateModel => models::create,
+        UpdateModel => models::update,
+        DeleteModel => models::delete,
+        ListUsage => usage::list,
+        QueryUsage => usage::query,
+    }
+    .fallback(fallback)
+    .method_not_allowed_fallback(method_not_allowed)
+    .layer(middleware::from_fn(authenticate))
+    .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 /// Authenticates the request against the bearer-less management token. The token is read from the

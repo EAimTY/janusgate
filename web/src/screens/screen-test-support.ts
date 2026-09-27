@@ -4,6 +4,7 @@ import type {
     ApiLogResponse,
     ModelResponse,
     ProviderResponse,
+    UsageBucket,
 } from "/src/management-api/generated/v0";
 import type { OauthProviderRow } from "/src/management-api/vocabulary";
 
@@ -11,9 +12,10 @@ import type { OauthProviderRow } from "/src/management-api/vocabulary";
  * Test support the suites share: the full management API stub the screen
  * mounts run against, the entity-listing fragment its suites answer fixture
  * rows from, the shared entity-row fixtures their listings are built from,
- * the shared usage-row fixture their pages are built from, the promise drains
- * the suites' exchanges rely on, and the DOM lookups and keystrokes their
- * user interactions drive.
+ * the shared usage-row and day-bucket fixtures their pages are built from,
+ * the held-call helper that keeps a route's promise in flight until the test
+ * ends it, the promise drains the suites' exchanges rely on, and the DOM
+ * lookups and keystrokes their user interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -227,6 +229,80 @@ export function apiLogRow(offset: number, overrides: Partial<ApiLogResponse> = {
         reasoning_tokens: null,
         ...overrides,
     };
+}
+
+/**
+ * One `usage:query` day bucket the suites share: the counted day the usage
+ * answers render, with the overrides adjusting the columns a suite's
+ * assertions read.
+ */
+export function dayBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
+    return {
+        key: {
+            day: "2026-09-01",
+        },
+        requests: 3,
+        input_tokens: 120,
+        output_tokens: 45,
+        cached_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        ...overrides,
+    };
+}
+
+/**
+ * One held call a test ends by hand: `answer` resolves it, `refuse` rejects
+ * it with the cause the test names, and — where the call's request carries
+ * assertions — `request` is the request the call carried.
+ */
+export type HeldCall<TValue, TRequest = undefined> = {
+    readonly request?: TRequest;
+    readonly answer: (result: TValue) => void;
+    readonly refuse: (cause: unknown) => void;
+};
+
+/**
+ * One route call held back until the test ends it, rejecting with the
+ * transport's abort failure the moment its cycle's signal fires — the same
+ * shape a real in-flight fetch dies with. The ways to end it land in the
+ * given holder as one `HeldCall`; where the caller passes the call's
+ * request, the record carries it for the assertions that read one.
+ */
+export function heldCall<TValue>(
+    signal: AbortSignal | undefined,
+    held: Array<HeldCall<TValue>>,
+): Promise<TValue>;
+export function heldCall<TRequest, TValue>(
+    signal: AbortSignal | undefined,
+    held: Array<HeldCall<TValue, TRequest>>,
+    request: TRequest,
+): Promise<TValue>;
+export function heldCall<TValue, TRequest = undefined>(
+    signal: AbortSignal | undefined,
+    held: Array<HeldCall<TValue, TRequest>>,
+    request?: TRequest,
+): Promise<TValue> {
+    return new Promise<TValue>((resolve, reject) => {
+        held.push({
+            ...(request === undefined
+                ? {}
+                : {
+                      request,
+                  }),
+            answer: resolve,
+            refuse: reject,
+        });
+        signal?.addEventListener(
+            "abort",
+            () => {
+                reject(new DOMException("This read cycle was aborted.", "AbortError"));
+            },
+            {
+                once: true,
+            },
+        );
+    });
 }
 
 /** Drains the pending promises and scheduled work of one screen exchange. */

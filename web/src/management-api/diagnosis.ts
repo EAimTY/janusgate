@@ -146,8 +146,21 @@ function conflictFix(action: ActionName | undefined): string {
 
         case "create-provider":
         case "update-provider":
-        case "complete-oauth":
             return "Choose a provider name no other row holds; a changed model prefix can also collide with an existing model ID.";
+
+        // A creation flow's completion conflicts only on the name the flow
+        // was started under, and the gateway consumes the flow on the
+        // completion attempt even when it answers that conflict (root README
+        // §7.1): the page keeps the flow live — and with it the name and
+        // prefix locked — while the state is already spent, so no field a
+        // rename could point at is editable. The one in-page escape is the
+        // step's own "Start over" control, which ends the flow and unlocks
+        // both fields for the fresh creation's rename. A reauthorize
+        // completion can never answer this conflict: it replaces an existing
+        // row's credentials and touches no unique column, so it stays on the
+        // shared arms' behalf alone.
+        case "complete-oauth":
+            return "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name and prefix; then create again with a name no other row holds.";
 
         default:
             return "Choose an identifier no other row holds.";

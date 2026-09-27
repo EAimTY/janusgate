@@ -53,6 +53,13 @@ pub(crate) struct WorkingState {
     /// The working base URL, replaceable by a `base_url` extraction.
     pub(crate) base_url: Option<String>,
 
+    /// Whether the working base URL is upstream-derived — the exchange's `base_url` fold or a
+    /// provisioning `base_url` extraction — rather than the begin-time base the flow echoed in.
+    /// Only a derived base replaces the stored one at a reauthorization's provider write (README
+    /// §7.1); the begin-time echo never does, or the commit would clobber a base a concurrent
+    /// `providers:update` legitimately stored while the flow ran.
+    pub(crate) is_base_url_derived: bool,
+
     /// The access token's absolute expiry, in UTC microseconds, scaled from a
     /// `expires_at_unix_seconds` extraction.
     pub(crate) expires_at: Option<i64>,
@@ -359,6 +366,10 @@ fn apply_target(
             validate_base_url_value(&value)?;
 
             state.base_url = Some(value);
+
+            // The extraction is the provenance mark (README §7.1): the base now aboard is
+            // upstream-derived, the only kind a reauthorization's write commits.
+            state.is_base_url_derived = true;
 
             Ok(())
         }

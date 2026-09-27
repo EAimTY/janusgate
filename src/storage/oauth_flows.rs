@@ -107,6 +107,15 @@ pub(crate) enum FlowOutcome {
 }
 
 impl FlowOutcome {
+    /// The storage form of the outcome.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
     /// Parses the storage form of the outcome; anything else is storage drift.
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
@@ -527,14 +536,17 @@ pub(crate) async fn claim_due_device_flow(
 ) -> Result<Option<OngoingFlow>, Error> {
     let sql = format!(
         "UPDATE ongoing_oauth_flows SET device_poll_started_at = ?1 WHERE id = (\
-         SELECT id FROM ongoing_oauth_flows WHERE outcome IS NULL AND grant_type = 'device' \
+         SELECT id FROM ongoing_oauth_flows WHERE outcome IS NULL AND grant_type = ?2 \
          AND expires_at > ?1 AND device_next_poll_at <= ?1 \
-         AND (device_poll_started_at IS NULL OR device_poll_started_at < ?2) \
+         AND (device_poll_started_at IS NULL OR device_poll_started_at < ?3) \
          ORDER BY device_next_poll_at LIMIT 1) RETURNING {FLOW_COLUMNS}"
     );
 
     database
-        .query(sql, params![now, claim_stale_before])
+        .query(
+            sql,
+            params![now, FlowGrant::Device.as_str(), claim_stale_before],
+        )
         .await?
         .first()
         .map(flow_from_row)
@@ -639,11 +651,17 @@ pub(crate) async fn persist_device_poll(
         DevicePollOutcome::Failed { code, message } => {
             database
                 .execute(
-                    "UPDATE ongoing_oauth_flows SET outcome = 'failed', failure_code = ?1, \
-                     failure_message = ?2, device_next_poll_at = NULL, \
+                    "UPDATE ongoing_oauth_flows SET outcome = ?1, failure_code = ?2, \
+                     failure_message = ?3, device_next_poll_at = NULL, \
                      device_poll_started_at = NULL, device_exchange_checkpoint = NULL \
-                     WHERE id = ?3 AND device_poll_started_at = ?4 AND outcome IS NULL",
-                    params![code, message, flow_id, claim_started_at],
+                     WHERE id = ?4 AND device_poll_started_at = ?5 AND outcome IS NULL",
+                    params![
+                        FlowOutcome::Failed.as_str(),
+                        code,
+                        message,
+                        flow_id,
+                        claim_started_at
+                    ],
                 )
                 .await?
         }
@@ -696,11 +714,16 @@ pub(crate) async fn commit_device_success_in_transaction(
 ) -> Result<bool, Error> {
     let changes = transaction
         .execute(
-            "UPDATE ongoing_oauth_flows SET outcome = 'succeeded', result_provider_id = ?1, \
+            "UPDATE ongoing_oauth_flows SET outcome = ?1, result_provider_id = ?2, \
              device_next_poll_at = NULL, device_poll_started_at = NULL, \
              device_exchange_checkpoint = NULL \
-             WHERE id = ?2 AND device_poll_started_at = ?3 AND outcome IS NULL",
-            params![result_provider_id, flow_id, claim_started_at],
+             WHERE id = ?3 AND device_poll_started_at = ?4 AND outcome IS NULL",
+            params![
+                FlowOutcome::Succeeded.as_str(),
+                result_provider_id,
+                flow_id,
+                claim_started_at
+            ],
         )
         .await?;
 

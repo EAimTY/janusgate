@@ -304,7 +304,7 @@ function outcomeValues(choice: UsageOutcomeChoice): ReadonlyArray<ApiLogOutcome>
 }
 
 /** The bounds a screen resolved for the filter, or none. */
-export type UsageFilterBounds = {
+type UsageFilterBounds = {
     readonly from?: number | null | undefined;
     readonly to?: number | null | undefined;
 };

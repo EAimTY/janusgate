@@ -6,9 +6,6 @@ import { USAGE_OUTCOME_FAILURES } from "/src/usage-filter";
 /** The number of UTC days the overview's daily chart covers, today included. */
 export const OVERVIEW_DAILY_DAYS = 14;
 
-/** How far back the overview's recent figures reach: one rolling day. */
-export const OVERVIEW_RECENT_WINDOW_MICROS = DAY_MICROS;
-
 /** One day's bar: the UTC day and the requests recorded inside it. */
 export type OverviewDailyPoint = {
     readonly day: string;
@@ -45,6 +42,9 @@ export function overviewDailyWindow(nowMicros: number): {
         to: todayStart + DAY_MICROS,
     };
 }
+
+/** How far back the overview's recent figures reach: one rolling day. */
+const OVERVIEW_RECENT_WINDOW_MICROS = DAY_MICROS;
 
 /** The inclusive lower bound of the overview's rolling figures. */
 export function overviewRecentFrom(nowMicros: number): number {

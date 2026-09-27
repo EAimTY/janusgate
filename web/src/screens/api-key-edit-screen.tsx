@@ -198,17 +198,33 @@ function SettingsCard(props: {
                 is_enabled: isEnabled(),
             });
 
+            // Both consequences read the row the form opened on: the save
+            // latches its hold and starts its reload only after this notice
+            // is built (createEditForm), so `props.apiKey` still answers the
+            // pre-save truth here. The blast radius reads the OTHER keys'
+            // enablement at the moment this notice is built: the standing
+            // listing may already answer the write being reported, so the
+            // saved row's own figure there proves nothing about the others.
+            const isRotatingSecret = secret() !== props.apiKey.key;
+            const isTurningOffLastEnabled =
+                !isEnabled() && props.apiKey.is_enabled && props.otherEnabledCount === 0;
+
+            const consequences: string[] = [];
+            if (isRotatingSecret) {
+                consequences.push(
+                    "The previous secret stopped working on this save — update every client that held it.",
+                );
+            }
+            if (isTurningOffLastEnabled) {
+                consequences.push(
+                    "This was the last enabled key: the gateway now serves nothing until a key is turned on.",
+                );
+            }
+
             return {
                 tone: "ok",
                 title: `${name()} saved.`,
-                // The blast radius reads the OTHER keys' enablement at the
-                // moment this notice is built: the standing listing may
-                // already answer the write being reported, so the saved
-                // row's own figure there proves nothing about the others.
-                detail:
-                    !isEnabled() && props.apiKey.is_enabled && props.otherEnabledCount === 0
-                        ? "This was the last enabled key: the gateway now serves nothing until a key is turned on."
-                        : null,
+                detail: consequences.length > 0 ? consequences.join(" ") : null,
             };
         },
         onDirtyChange: props.onDirtyChange,
