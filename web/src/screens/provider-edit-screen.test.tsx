@@ -751,6 +751,35 @@ describe("ProviderEditScreen refresh against an open form", () => {
 
         expect(document.body.textContent).toContain("beta saved.");
         expect(document.body.textContent).not.toContain("recomposes the public ID");
+        // This save typed no key either, so the notice names no replacement:
+        // the line would read as a consequence the save never carried.
+        expect(document.body.textContent).not.toContain("The upstream API key was replaced.");
+    });
+
+    it("states the upstream key's replacement when the save submits one", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const sent: UpdateProviderRequest[] = [];
+        mount(holder, sent);
+        await settle();
+
+        // The field is write-only and the save empties it, so the notice is
+        // the replacement's only statement anywhere in the app: a save that
+        // typed a key must say the stored secret no longer holds.
+        typeInto(labeledInput("Replace the upstream API key"), "sk-replacement");
+        await settle();
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.api_key).toBe("sk-replacement");
+        expect(document.body.textContent).toContain("The upstream API key was replaced.");
+        // The prefix is unchanged here, so the replacement line stands alone.
+        expect(document.body.textContent).not.toContain("recomposes the public ID");
     });
 });
 

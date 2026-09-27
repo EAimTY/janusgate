@@ -763,7 +763,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for bodies outside the upstream message shape.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let message = crate::format::parse_body::<ResponseMessage>(value)?;
+        let message = crate::format::parse_body::<ResponseMessage>(&value)?;
 
         let mut events = vec![IrEvent::MessageStart {
             id: message.id,

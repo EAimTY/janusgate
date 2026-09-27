@@ -227,7 +227,7 @@ export function HomeScreen(props: {
             <Show when={read.hasRead()}>
                 <Show
                     when={entities().providers.length > 0}
-                    fallback={<GettingStarted />}
+                    fallback={<GettingStarted apiKeyCount={entities().apiKeys.length} />}
                 >
                     <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
                         <StatLink
@@ -595,8 +595,13 @@ function AttentionRow(props: {
     );
 }
 
-/** A fresh gateway: the five steps from here to a working endpoint. */
-function GettingStarted(): JSX.Element {
+/**
+ * A fresh gateway: the five steps from here to a working endpoint. The key
+ * count rides in because keys can exist with no provider standing — the
+ * Endpoints card below links them — and a key already issued is step four's
+ * done state, however early it was taken.
+ */
+function GettingStarted(props: { readonly apiKeyCount: number }): JSX.Element {
     return (
         <EmptyState
             glyph="plug"
@@ -626,6 +631,7 @@ function GettingStarted(): JSX.Element {
                 />
                 <GettingStartedStep
                     index={4}
+                    isDone={props.apiKeyCount > 0}
                     title="Issue an API key for serving clients"
                 />
                 <GettingStartedStep

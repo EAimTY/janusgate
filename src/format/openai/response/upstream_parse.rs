@@ -712,7 +712,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for upstream failure statuses and malformed bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let response = format::parse_body::<ResponseObject>(value)?;
+        let response = format::parse_body::<ResponseObject>(&value)?;
 
         // A 2xx body carrying a top-level error object is an upstream failure (README §6.7), not an
         // empty success; the failed-status fallback below still covers a failure without an error

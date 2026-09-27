@@ -462,11 +462,11 @@ impl UpstreamParser {
     ///
     /// Returns [`PayloadError`] for a step whose kind contradicts the contract.
     fn ingest_complete_step(&mut self, step: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let probe: StepProbe = format::parse_body(step.clone())?;
+        let probe: StepProbe = format::parse_body(&step)?;
 
         match probe.step_type.as_str() {
             STEP_MODEL_OUTPUT => {
-                let output: ModelOutputStep = format::parse_body(step)?;
+                let output: ModelOutputStep = format::parse_body(&step)?;
                 let text = output
                     .content
                     .into_iter()
@@ -477,7 +477,7 @@ impl UpstreamParser {
             }
 
             STEP_THOUGHT => {
-                let thought: ThoughtStep = format::parse_body(step.clone())?;
+                let thought: ThoughtStep = format::parse_body(&step)?;
                 let text = thought
                     .summary
                     .unwrap_or_default()
@@ -493,7 +493,7 @@ impl UpstreamParser {
             }
 
             STEP_FUNCTION_CALL => {
-                let call: FunctionCallStep = format::parse_body(step)?;
+                let call: FunctionCallStep = format::parse_body(&step)?;
                 let index = self.allocate_call_index();
 
                 let arguments = call
@@ -845,8 +845,8 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for malformed JSON, upstream error members, and payloads whose
     /// kind contradicts the contract.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        // One lex per frame: the payload parses once, the probe borrows it, and the matched arm
-        // consumes it without a re-parse.
+        // One lex per frame: the payload parses once, and both the probe and the matched arm
+        // borrow it without a re-parse.
         let payload: Value = format::parse_frame(frame)?;
 
         // The probe is typed: any frame bearing a failure aborts, recognized event or not.
@@ -861,31 +861,31 @@ impl UpstreamEventParser for UpstreamParser {
         // `event_type` member self-describes it. Neither present yields a heartbeat.
         match frame.event.as_deref().or(probe.event_type.as_deref()) {
             Some(EVENT_CREATED) => {
-                let created: CreatedFrame = format::parse_body(payload)?;
+                let created: CreatedFrame = format::parse_body(&payload)?;
 
                 Ok(self.open_events(created.interaction.id, created.interaction.model))
             }
 
             Some(EVENT_STEP_START) => {
-                let start: StepStartFrame = format::parse_body(payload)?;
+                let start: StepStartFrame = format::parse_body(&payload)?;
 
                 Ok(self.ingest_start(start))
             }
 
             Some(EVENT_STEP_DELTA) => {
-                let delta: StepDeltaFrame = format::parse_body(payload)?;
+                let delta: StepDeltaFrame = format::parse_body(&payload)?;
 
                 Ok(self.ingest_delta(delta))
             }
 
             Some(EVENT_STEP_STOP) => {
-                let stop: StepStopFrame = format::parse_body(payload)?;
+                let stop: StepStopFrame = format::parse_body(&payload)?;
 
                 self.ingest_stop(stop)
             }
 
             Some(EVENT_COMPLETED) => {
-                let completed: CompletedFrame = format::parse_body(payload)?;
+                let completed: CompletedFrame = format::parse_body(&payload)?;
 
                 self.ingest_completed(completed)
             }
@@ -908,7 +908,7 @@ impl UpstreamEventParser for UpstreamParser {
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         // Ingesting the body always ingests the terminal status, which emits the body's own finish
         // and marks the parser finished — the body closes its stream, never the finish hook.
-        self.ingest_body(format::parse_body(value)?)
+        self.ingest_body(format::parse_body(&value)?)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {

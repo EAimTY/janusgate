@@ -4,7 +4,10 @@
 //! The rendered payload is a first-party type in the upstream wire shape, so field presence per
 //! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
-use crate::ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice};
+use crate::{
+    format::openai::ToolChoiceMode,
+    ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -184,20 +187,6 @@ enum ToolChoice<'a> {
 
     /// The named-function form.
     Function(NamedToolChoice<'a>),
-}
-
-/// The `tool_choice` mode strings.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ToolChoiceMode {
-    /// The model decides freely.
-    Auto,
-
-    /// The model may not call tools.
-    None,
-
-    /// The model must call a tool.
-    Required,
 }
 
 /// The named-function `tool_choice` form.

@@ -433,7 +433,7 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for upstream error payloads and malformed
     /// bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let response = format::parse_body::<UpstreamResponse>(value)?;
+        let response = format::parse_body::<UpstreamResponse>(&value)?;
 
         Self::reject_embedded_error(&response)?;
 

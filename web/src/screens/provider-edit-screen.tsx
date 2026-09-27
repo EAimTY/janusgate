@@ -439,6 +439,12 @@ function DetailsCard(props: {
             const recomposesPublicIds =
                 countRecomposedPublicIds(props.models, effectivePrefix()) > 0;
 
+            // The replacement is read before the field is emptied below:
+            // empty means the stored secret stands, typed means this save
+            // replaced it — and the write-only field can never show that
+            // again, so the notice is the replacement's only statement.
+            const isApiKeyReplaced = apiKey() !== "";
+
             // The write's complete desired state: the update rewrote exactly
             // these fields, so the row they describe is this form's new truth.
             setBaseline(
@@ -451,12 +457,23 @@ function DetailsCard(props: {
             );
             setApiKey("");
 
+            // The save's consequence lines, composed the way the API-key
+            // edit's save composes its own: one line per consequence this
+            // save actually carries, joined where more than one stands.
+            const consequences: string[] = [];
+            if (recomposesPublicIds) {
+                consequences.push(
+                    "The new prefix recomposes the public ID of every model without an override.",
+                );
+            }
+            if (isApiKeyReplaced) {
+                consequences.push("The upstream API key was replaced.");
+            }
+
             return {
                 tone: "ok",
                 title: `${name()} saved.`,
-                detail: recomposesPublicIds
-                    ? "The new prefix recomposes the public ID of every model without an override."
-                    : null,
+                detail: consequences.length > 0 ? consequences.join(" ") : null,
             };
         },
         onDirtyChange: props.onDirtyChange,

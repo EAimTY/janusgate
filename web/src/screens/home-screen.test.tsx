@@ -2,6 +2,7 @@ import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
+    ApiKeyResponse,
     ModelResponse,
     ProviderResponse,
     QueryUsageRequest,
@@ -84,6 +85,7 @@ function overviewApi(
     listing: {
         readonly providers?: ReadonlyArray<ProviderResponse>;
         readonly models?: ReadonlyArray<ModelResponse>;
+        readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
     } = {},
 ): ManagementApi {
     return stubManagementApi({
@@ -95,7 +97,7 @@ function overviewApi(
                 modelRow(),
                 vanishedModelRow,
             ],
-            apiKeys: [
+            apiKeys: listing.apiKeys ?? [
                 apiKeyRow(),
             ],
         }),
@@ -142,6 +144,21 @@ function barLabels(): ReadonlyArray<string> {
     return Array.from(document.querySelectorAll("span[role='img']")).map(
         (node) => node.getAttribute("aria-label") ?? "",
     );
+}
+
+/**
+ * One checklist row of the getting-started list, by its title. An undone row
+ * renders its index number in place of the check, so the row's own text tells
+ * the two shapes apart.
+ */
+function stepRow(title: string): HTMLLIElement {
+    for (const candidate of document.querySelectorAll("li")) {
+        if (candidate.textContent?.includes(title) === true) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`No getting-started step reading ${title}`);
 }
 
 describe("HomeScreen", () => {
@@ -287,6 +304,23 @@ describe("HomeScreen", () => {
         expect(keyStep).toBeGreaterThanOrEqual(0);
         expect(clientStep).toBeGreaterThan(keyStep);
         expect(body).not.toContain("Re-enable the provider");
+
+        // The listing answers one key, and keys can exist with no provider
+        // standing — the Endpoints card below links them — so the key step
+        // reads done however early it was issued.
+        expect(stepRow("Issue an API key for serving clients").textContent).not.toContain("4");
+    });
+
+    it("leaves the key step unchecked while no key stands", async () => {
+        mount(
+            overviewApi([], {
+                providers: [],
+                apiKeys: [],
+            }),
+        );
+        await settle();
+
+        expect(stepRow("Issue an API key for serving clients").textContent).toContain("4");
     });
 
     it("sends an enabled provider whose every model vanished to the attention list", async () => {

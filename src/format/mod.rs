@@ -638,14 +638,20 @@ where
 
 /// Parses one complete upstream JSON body into a codec's typed upstream shape.
 ///
+/// The body is borrowed, not consumed: `&Value` is serde's borrowed JSON deserializer, so a probe
+/// can read a few fields out of an unbounded upstream payload without cloning the payload first.
+/// The parsed types are unaffected — the borrowed deserializer produces owned `String`s and can
+/// materialize nested `Value`s — and the rejection wording is identical, the value deserializer
+/// reporting at the same zero position as any other in-memory source.
+///
 /// # Errors
 ///
 /// Returns [`PayloadError`] when the body does not match the codec's upstream shape.
-pub(in crate::format) fn parse_body<T>(value: Value) -> Result<T, PayloadError>
+pub(in crate::format) fn parse_body<T>(value: &Value) -> Result<T, PayloadError>
 where
     T: DeserializeOwned,
 {
-    serde_json::from_value(value)
+    T::deserialize(value)
         .map_err(|error| PayloadError::new(format!("malformed upstream payload: {error}")))
 }
 

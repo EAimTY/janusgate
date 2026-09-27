@@ -182,7 +182,9 @@ struct OpaqueKind {
 /// (README §5.8). A `redacted_thinking` fragment carries `data` and no signature member by
 /// design, so it always qualifies.
 fn is_anthropic_block(opaque: &Value) -> bool {
-    let Ok(probe) = serde_json::from_value::<OpaqueKind>(opaque.clone()) else {
+    // Deserializing from the borrowed value copies only the tag and signature Strings, never the
+    // stored thinking text or redacted blob.
+    let Ok(probe) = OpaqueKind::deserialize(opaque) else {
         return false;
     };
 

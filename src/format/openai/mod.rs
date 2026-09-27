@@ -5,14 +5,15 @@
 //! its families share. This module groups the Chat Completions family ([`chat_completion`]) and
 //! the Responses family ([`response`]) — the two codecs over the OpenAI client protocol and the
 //! two OpenAI upstream wires (README §1, §6) — beside the OpenAI error renderer ([`error`],
-//! README §6.7) both outward surfaces render over and the `tool_choice` mode parsing both
-//! request parsers share.
+//! README §6.7) both outward surfaces render over and the `tool_choice` mode parsing and
+//! outbound mode enum both codecs share.
 
 pub(crate) mod chat_completion;
 pub(crate) mod error;
 pub(crate) mod response;
 
 use crate::ir::{InvalidRequest, IrToolChoice};
+use serde::Serialize;
 
 /// Parses an OpenAI-family `tool_choice` mode name; shared by both codecs.
 ///
@@ -31,4 +32,19 @@ pub(in crate::format::openai) fn parse_tool_choice_mode(
             format!("Unknown tool_choice `{other}`"),
         )),
     }
+}
+
+/// The `tool_choice` mode strings in the upstream shape: the outbound spelling of the mode
+/// vocabulary [`parse_tool_choice_mode`] parses inbound.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::format::openai) enum ToolChoiceMode {
+    /// The model decides freely.
+    Auto,
+
+    /// The model may not call tools.
+    None,
+
+    /// The model must call a tool.
+    Required,
 }
