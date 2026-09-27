@@ -684,19 +684,13 @@ impl UpstreamParser {
     /// The identity comes from the response object the event carries; an event carrying none opens
     /// the stream with empty identity.
     fn message_start_events(&mut self, response: Option<&ResponseObject>) -> Vec<IrEvent> {
-        if self.is_started {
-            return Vec::new();
-        }
-
-        self.is_started = true;
-
         let (id, model) = match response {
             Some(response) => (response.id.clone(), response.model.clone()),
 
             None => (String::new(), String::new()),
         };
 
-        vec![IrEvent::MessageStart { id, model }]
+        format::message_start_once(&mut self.is_started, id, model)
     }
 }
 

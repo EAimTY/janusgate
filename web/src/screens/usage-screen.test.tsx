@@ -15,6 +15,7 @@ import { UsageScreen } from "/src/screens/usage-screen";
 import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
 import {
     API_LOG_CURSOR_BASE,
+    answerLast,
     apiKeyRow,
     apiLogRow,
     bodyText,
@@ -84,26 +85,6 @@ function streamApi(
     });
 }
 
-/** Answers the most recent held page — the newest cycle's call. */
-function answerLastPage(
-    holder: {
-        readonly pages: Array<HeldPage>;
-    },
-    rows: ReadonlyArray<ApiLogResponse>,
-): void {
-    const pageAnswer = holder.pages.at(-1);
-
-    if (pageAnswer === undefined) {
-        throw new Error("No held page to answer");
-    }
-
-    pageAnswer.answer({
-        api_logs: [
-            ...rows,
-        ],
-    });
-}
-
 describe("UsageScreen stream continuation", () => {
     const disposes: Array<() => void> = [];
 
@@ -138,7 +119,11 @@ describe("UsageScreen stream continuation", () => {
         await settle();
 
         // A full first page keeps the stream open at cursor 951.
-        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, USAGE_PAGE_SIZE),
+            ],
+        });
         await settle();
         expect(bodyText()).toContain("Load more");
 
@@ -162,7 +147,11 @@ describe("UsageScreen stream continuation", () => {
                 ...page(950, 3),
             ],
         });
-        answerLastPage(holder, page(5000, 1));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(5000, 1),
+            ],
+        });
         await settle();
 
         // The refreshed stream replaced the old one whole: the stale page's
@@ -183,7 +172,11 @@ describe("UsageScreen stream continuation", () => {
         mount(streamApi(holder));
         await settle();
 
-        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, USAGE_PAGE_SIZE),
+            ],
+        });
         await settle();
 
         // A refresh is pressed: its cycle is in flight, and its first page
@@ -207,7 +200,11 @@ describe("UsageScreen stream continuation", () => {
         expect(buttonWithText("Load more").disabled).toBe(true);
         expect(buttonWithText("Load more").title).toContain("replacing the stream");
 
-        answerLastPage(holder, page(5000, 1));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(5000, 1),
+            ],
+        });
         await settle();
 
         // The refresh's stream lands untouched by the refused click.
@@ -224,7 +221,11 @@ describe("UsageScreen stream continuation", () => {
         mount(streamApi(holder));
         await settle();
 
-        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, USAGE_PAGE_SIZE),
+            ],
+        });
         await settle();
 
         buttonWithText("Load more").click();
@@ -258,7 +259,11 @@ describe("UsageScreen stream continuation", () => {
         // displaced it.
         expect(holder.pages.at(-1)?.request?.before).toBe(API_LOG_CURSOR_BASE + 951);
 
-        answerLastPage(holder, page(950, 3));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(950, 3),
+            ],
+        });
         await settle();
 
         expect(bodyText()).toContain("in 950");
@@ -320,7 +325,11 @@ describe("UsageScreen filtering", () => {
         ]);
         expect(first?.filter?.from).toBeTypeOf("number");
 
-        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, USAGE_PAGE_SIZE),
+            ],
+        });
         await settle();
 
         buttonWithText("Load more").click();
@@ -353,7 +362,11 @@ describe("UsageScreen filtering", () => {
         const first = holder.pages.at(-1)?.request;
         // The unfiltered-but-bounded stream's first full page is the rows in
         // hand.
-        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, USAGE_PAGE_SIZE),
+            ],
+        });
         await settle();
 
         // A moment passes so the refresh resolves a strictly later window
@@ -382,7 +395,11 @@ describe("UsageScreen filtering", () => {
         expect(continued?.before).toBe(API_LOG_CURSOR_BASE + 951);
         expect(continued?.filter?.from).toBe(first?.filter?.from);
 
-        answerLastPage(holder, page(950, 3));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(950, 3),
+            ],
+        });
         await settle();
 
         // A landed continuation retires only its own failure; the failed
@@ -413,7 +430,9 @@ describe("UsageScreen filtering", () => {
         mount(streamApi(holder), filtered);
         await settle();
 
-        answerLastPage(holder, []);
+        answerLast(holder.pages, {
+            api_logs: [],
+        });
         await settle();
 
         expect(bodyText()).toContain("No recorded requests match this filter.");
@@ -428,7 +447,9 @@ describe("UsageScreen filtering", () => {
         };
         mount(streamApi(holder), filtered);
         await settle();
-        answerLastPage(holder, []);
+        answerLast(holder.pages, {
+            api_logs: [],
+        });
         await settle();
 
         buttonWithText("Clear filters").click();
@@ -445,7 +466,11 @@ describe("UsageScreen filtering", () => {
         };
         mount(streamApi(holder));
         await settle();
-        answerLastPage(holder, page(1050, 1));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, 1),
+            ],
+        });
         await settle();
 
         // The glob habit "2xx" fills the field and would ride the route, but
@@ -574,7 +599,11 @@ describe("UsageScreen filtering", () => {
             }),
         );
         await settle();
-        answerLastPage(holder, page(1050, 1));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, 1),
+            ],
+        });
         await settle();
 
         // The unfiltered stream's door opens the bare aggregates page, its
@@ -610,7 +639,11 @@ describe("UsageScreen filtering", () => {
         };
         mount(streamApi(holder));
         await settle();
-        answerLastPage(holder, page(1050, 1));
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, 1),
+            ],
+        });
         await settle();
 
         // Both edits ride one task — the status field's input event, then the
@@ -684,13 +717,15 @@ describe("UsageScreen row links", () => {
             }),
         );
         await settle();
-        answerLastPage(holder, [
-            ...page(1050, 1),
-            {
-                ...logRow(1049),
-                provider_id: 2,
-            },
-        ]);
+        answerLast(holder.pages, {
+            api_logs: [
+                ...page(1050, 1),
+                {
+                    ...logRow(1049),
+                    provider_id: 2,
+                },
+            ],
+        });
         await settle();
 
         expect(linkTo("/providers/1").textContent).toContain("local");
@@ -743,23 +778,25 @@ describe("UsageScreen row figures", () => {
         // one. None carries a reported non-zero figure, so none may end in
         // the three-figure tail — a tail of measured-looking zeros no
         // upstream measured.
-        answerLastPage(holder, [
-            apiLogRow(30, {
-                cached_tokens: null,
-                cache_write_tokens: null,
-                reasoning_tokens: null,
-            }),
-            apiLogRow(20, {
-                cached_tokens: 0,
-                cache_write_tokens: 0,
-                reasoning_tokens: 0,
-            }),
-            apiLogRow(10, {
-                cached_tokens: 0,
-                cache_write_tokens: null,
-                reasoning_tokens: null,
-            }),
-        ]);
+        answerLast(holder.pages, {
+            api_logs: [
+                apiLogRow(30, {
+                    cached_tokens: null,
+                    cache_write_tokens: null,
+                    reasoning_tokens: null,
+                }),
+                apiLogRow(20, {
+                    cached_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                }),
+                apiLogRow(10, {
+                    cached_tokens: 0,
+                    cache_write_tokens: null,
+                    reasoning_tokens: null,
+                }),
+            ],
+        });
         await settle();
 
         for (const figure of [
@@ -788,13 +825,15 @@ describe("UsageScreen row figures", () => {
         // One reported reasoning figure among zeros and unreported columns:
         // the tail renders whole, the measured zero and the unreported
         // dashes exactly as they always did.
-        answerLastPage(holder, [
-            apiLogRow(30, {
-                cached_tokens: 0,
-                cache_write_tokens: null,
-                reasoning_tokens: 8,
-            }),
-        ]);
+        answerLast(holder.pages, {
+            api_logs: [
+                apiLogRow(30, {
+                    cached_tokens: 0,
+                    cache_write_tokens: null,
+                    reasoning_tokens: 8,
+                }),
+            ],
+        });
         await settle();
 
         const figures = paragraphWithText("reasoning 8").textContent ?? "";
@@ -812,14 +851,16 @@ describe("UsageScreen row figures", () => {
         mount(streamApi(holder));
         await settle();
 
-        answerLastPage(holder, [
-            apiLogRow(30, {
-                duration: 8_100,
-            }),
-            apiLogRow(20, {
-                duration: 123_000,
-            }),
-        ]);
+        answerLast(holder.pages, {
+            api_logs: [
+                apiLogRow(30, {
+                    duration: 8_100,
+                }),
+                apiLogRow(20, {
+                    duration: 123_000,
+                }),
+            ],
+        });
         await settle();
 
         const short = paragraphWithText("8.1s");

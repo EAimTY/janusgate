@@ -42,6 +42,12 @@ pub(crate) enum FlowPurpose {
 }
 
 impl FlowPurpose {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The storage
+    /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
+    /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
+    /// match is what forces the variant's spelling to be stated.
+    const ALL: [Self; 2] = [Self::Create, Self::Reauthorize];
+
     /// The storage form of the purpose.
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
@@ -53,11 +59,9 @@ impl FlowPurpose {
 
     /// Parses the storage form of the purpose; anything else is storage drift.
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "create" => Some(Self::Create),
-            "reauthorize" => Some(Self::Reauthorize),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|purpose| purpose.as_str() == value)
     }
 }
 
@@ -75,6 +79,12 @@ pub(crate) enum FlowGrant {
 }
 
 impl FlowGrant {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The storage
+    /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
+    /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
+    /// match is what forces the variant's spelling to be stated.
+    const ALL: [Self; 2] = [Self::AuthorizationCode, Self::Device];
+
     /// The storage form of the grant kind.
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
@@ -86,11 +96,7 @@ impl FlowGrant {
 
     /// Parses the storage form of the grant kind; anything else is storage drift.
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "authorization_code" => Some(Self::AuthorizationCode),
-            "device" => Some(Self::Device),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|grant| grant.as_str() == value)
     }
 }
 
@@ -107,6 +113,12 @@ pub(crate) enum FlowOutcome {
 }
 
 impl FlowOutcome {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The storage
+    /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
+    /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
+    /// match is what forces the variant's spelling to be stated.
+    const ALL: [Self; 2] = [Self::Succeeded, Self::Failed];
+
     /// The storage form of the outcome.
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
@@ -118,11 +130,9 @@ impl FlowOutcome {
 
     /// Parses the storage form of the outcome; anything else is storage drift.
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "succeeded" => Some(Self::Succeeded),
-            "failed" => Some(Self::Failed),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|outcome| outcome.as_str() == value)
     }
 }
 

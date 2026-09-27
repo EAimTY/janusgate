@@ -6,6 +6,7 @@ import { requestRefresh } from "/src/refresh-state";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import type { UsageSubjectFilter } from "/src/usage-filter";
 import {
+    answerLast,
     bodyText,
     dayBucket,
     type HeldCall,
@@ -36,26 +37,6 @@ function heldQueryApi(holder: {
 }): ManagementApi {
     return stubManagementApi({
         queryUsage: (_request, signal) => heldCall(signal, holder.queries),
-    });
-}
-
-/** Answers the most recent held query — the newest cycle's call. */
-function answerLastQuery(
-    holder: {
-        readonly queries: Array<HeldCall<QueryUsageResponse>>;
-    },
-    buckets: ReadonlyArray<UsageBucket>,
-): void {
-    const held = holder.queries.at(-1);
-
-    if (held === undefined) {
-        throw new Error("No held query to answer");
-    }
-
-    held.answer({
-        buckets: [
-            ...buckets,
-        ],
     });
 }
 
@@ -105,9 +86,11 @@ describe("EntityUsageCard read failures", () => {
         };
         mount(heldQueryApi(holder));
         await settle();
-        answerLastQuery(holder, [
-            dayBucket(),
-        ]);
+        answerLast(holder.queries, {
+            buckets: [
+                dayBucket(),
+            ],
+        });
         await settle();
 
         expect(bodyText()).toContain("2026-09-01");
@@ -158,9 +141,11 @@ describe("EntityUsageCard read failures", () => {
         expect(bodyText()).toContain("first read refused");
         expect(readAgainButton()?.disabled).toBe(true);
 
-        answerLastQuery(holder, [
-            dayBucket(),
-        ]);
+        answerLast(holder.queries, {
+            buckets: [
+                dayBucket(),
+            ],
+        });
         await settle();
 
         // The re-read landed: the diagnosis it cleared went with it, the day

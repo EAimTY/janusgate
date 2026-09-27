@@ -197,15 +197,13 @@ impl UpstreamParser {
         let mut events = Vec::new();
 
         if !self.is_started {
-            self.is_started = true;
+            let id = value
+                .response_id
+                .clone()
+                .unwrap_or_else(|| format!("gen-{}", ids::new_uuid()));
+            let model = value.model_version.clone().unwrap_or_default();
 
-            events.push(IrEvent::MessageStart {
-                id: value
-                    .response_id
-                    .clone()
-                    .unwrap_or_else(|| format!("gen-{}", ids::new_uuid())),
-                model: value.model_version.clone().unwrap_or_default(),
-            });
+            events.extend(format::message_start_once(&mut self.is_started, id, model));
         }
 
         if let Some(candidate) = primary_candidate(&value.candidates) {

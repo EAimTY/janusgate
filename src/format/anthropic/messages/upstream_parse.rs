@@ -7,7 +7,7 @@
 
 use super::{TypedBlock, block_opaque};
 use crate::{
-    format::{PayloadError, UpstreamEventParser},
+    format::{PayloadError, UpstreamEventParser, message_start_once},
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
@@ -394,16 +394,7 @@ impl UpstreamParser {
 
     /// Emits [`IrEvent::MessageStart`] once per response.
     fn message_start_events(&mut self, head: &MessageHead) -> Vec<IrEvent> {
-        if self.is_started {
-            return Vec::new();
-        }
-
-        self.is_started = true;
-
-        vec![IrEvent::MessageStart {
-            id: head.id.clone(),
-            model: head.model.clone(),
-        }]
+        message_start_once(&mut self.is_started, head.id.clone(), head.model.clone())
     }
 
     /// Records the cumulative usage columns carried by a usage fragment: the input columns on

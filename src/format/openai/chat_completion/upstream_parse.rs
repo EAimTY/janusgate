@@ -402,16 +402,11 @@ impl UpstreamParser {
 
     /// Emits [`IrEvent::MessageStart`] once per response.
     fn message_start_events(&mut self, response: &UpstreamResponse) -> Vec<IrEvent> {
-        if self.is_started {
-            return Vec::new();
-        }
-
-        self.is_started = true;
-
-        vec![IrEvent::MessageStart {
-            id: response.id.clone(),
-            model: response.model.clone(),
-        }]
+        format::message_start_once(
+            &mut self.is_started,
+            response.id.clone(),
+            response.model.clone(),
+        )
     }
 }
 

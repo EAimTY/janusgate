@@ -76,6 +76,18 @@ pub enum UpstreamFormat {
 }
 
 impl UpstreamFormat {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The wire
+    /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
+    /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
+    /// match is what forces the variant's spelling to be stated.
+    const ALL: [Self; 5] = [
+        Self::OpenAiResponse,
+        Self::OpenAiChatCompletion,
+        Self::GeminiGenerateContent,
+        Self::GeminiInteraction,
+        Self::AnthropicMessages,
+    ];
+
     /// Renders the canonical wire-format name.
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
@@ -92,14 +104,7 @@ impl UpstreamFormat {
     /// drift, because the column is written only through [`UpstreamFormat::as_str`] and its
     /// schema `CHECK` pins the vocabulary.
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        match text {
-            "openai_response" => Some(Self::OpenAiResponse),
-            "openai_chat_completion" => Some(Self::OpenAiChatCompletion),
-            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
-            "gemini_interaction" => Some(Self::GeminiInteraction),
-            "anthropic_messages" => Some(Self::AnthropicMessages),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|format| format.as_str() == text)
     }
 }
 
@@ -307,6 +312,27 @@ pub(in crate::format) fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEv
     *is_finished = true;
 
     vec![IrEvent::finish(IrFinishReason::Stop)]
+}
+
+/// Emits the once-only opening [`IrEvent::MessageStart`] of an upstream event stream: exactly
+/// once, first (README §6.2), carrying the response's identity.
+///
+/// The started flag lives in each parser, which passes it on every path that may open the
+/// stream — the stream-head announcement and the recovery paths that never saw it. The first
+/// call on an unstarted parser marks the flag and returns the single [`IrEvent::MessageStart`]
+/// carrying `id` and `model`; a parser that already started emits nothing.
+pub(in crate::format) fn message_start_once(
+    is_started: &mut bool,
+    id: String,
+    model: String,
+) -> Vec<IrEvent> {
+    if *is_started {
+        return Vec::new();
+    }
+
+    *is_started = true;
+
+    vec![IrEvent::MessageStart { id, model }]
 }
 
 /// Emits the canonical two-event announcement of one complete upstream tool call: a
@@ -711,7 +737,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::RoleRun;
+    use super::{RoleRun, UpstreamFormat};
 
     /// A zero-part contribution is transparent: it neither extends nor splits the open run, so a
     /// foreign-role contribution carrying no parts leaves a same-role run unbroken, and a
@@ -731,5 +757,21 @@ mod tests {
         runs.push('b', vec![4]);
 
         assert_eq!(runs.into_runs(), vec![('a', vec![1, 2, 3]), ('b', vec![4])]);
+    }
+
+    /// The derived parse stays one vocabulary with the literal `as_str` home for every word of
+    /// the closed set, and a spelling outside it parses to nothing. Only the two formats the
+    /// storage fixtures round-trip are pinned elsewhere; this pins the whole table at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a word fails to round-trip or an unknown spelling parses.
+    #[test]
+    fn upstream_format_parses_its_whole_vocabulary() {
+        for format in UpstreamFormat::ALL {
+            assert_eq!(UpstreamFormat::parse(format.as_str()), Some(format));
+        }
+
+        assert_eq!(UpstreamFormat::parse("openai_responses"), None);
     }
 }

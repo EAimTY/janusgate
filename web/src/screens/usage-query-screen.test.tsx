@@ -14,6 +14,8 @@ import { requestRefresh } from "/src/refresh-state";
 import type { UsageQuerySubject } from "/src/router";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import {
+    answerAt,
+    answerLast,
     apiKeyRow,
     buttonWithText,
     dayBucket,
@@ -77,28 +79,6 @@ function screenApi(
             });
         },
     });
-}
-
-/** Answers the most recent held call of one route — the newest cycle's call. */
-function answerLast<TValue>(pending: Array<HeldCall<TValue>>, value: TValue): void {
-    const held = pending.at(-1);
-
-    if (held === undefined) {
-        throw new Error("No held call to answer");
-    }
-
-    held.answer(value);
-}
-
-/** Answers one held call by position — a superseded cycle's own, late answer. */
-function answerAt<TValue>(pending: Array<HeldCall<TValue>>, position: number, value: TValue): void {
-    const held = pending.at(position);
-
-    if (held === undefined) {
-        throw new Error(`No held call at position ${position}`);
-    }
-
-    held.answer(value);
 }
 
 /** The first-read placeholder: present exactly while the screen owes its first answers. */

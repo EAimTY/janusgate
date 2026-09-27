@@ -388,13 +388,7 @@ impl UpstreamParser {
 
     /// Emits [`IrEvent::MessageStart`] exactly once, first, with the given identity.
     fn open_events(&mut self, id: String, model: String) -> Vec<IrEvent> {
-        if self.is_started {
-            return Vec::new();
-        }
-
-        self.is_started = true;
-
-        vec![IrEvent::MessageStart { id, model }]
+        format::message_start_once(&mut self.is_started, id, model)
     }
 
     /// Emits [`IrEvent::MessageStart`] with empty identity when no `interaction.created` arrived

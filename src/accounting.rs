@@ -42,6 +42,18 @@ pub enum ApiLogEndpointType {
 }
 
 impl ApiLogEndpointType {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The storage
+    /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
+    /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
+    /// match is what forces the variant's spelling to be stated.
+    const ALL: [Self; 5] = [
+        Self::OpenaiChatCompletions,
+        Self::OpenaiResponses,
+        Self::GeminiGenerateContent,
+        Self::GeminiInteractions,
+        Self::AnthropicMessages,
+    ];
+
     /// Renders the storage spelling of the endpoint type — the exact string the schema `CHECK`
     /// accepts.
     #[must_use]
@@ -59,14 +71,9 @@ impl ApiLogEndpointType {
     /// because the column is written only through [`ApiLogEndpointType::as_str`] and its schema
     /// `CHECK` pins the vocabulary.
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        match text {
-            "openai_chat_completions" => Some(Self::OpenaiChatCompletions),
-            "openai_responses" => Some(Self::OpenaiResponses),
-            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
-            "gemini_interactions" => Some(Self::GeminiInteractions),
-            "anthropic_messages" => Some(Self::AnthropicMessages),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|endpoint_type| endpoint_type.as_str() == text)
     }
 }
 
@@ -98,6 +105,17 @@ pub enum ApiLogOutcome {
 }
 
 impl ApiLogOutcome {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The storage
+    /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
+    /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
+    /// match is what forces the variant's spelling to be stated.
+    const ALL: [Self; 4] = [
+        Self::Completed,
+        Self::ClientAborted,
+        Self::UpstreamError,
+        Self::Internal,
+    ];
+
     /// Renders the storage spelling of the outcome — the exact string the schema `CHECK` accepts.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -112,13 +130,9 @@ impl ApiLogOutcome {
     /// Parses the stored spelling back into the closed set; see
     /// [`ApiLogEndpointType::parse`] for the drift classification.
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        match text {
-            "completed" => Some(Self::Completed),
-            "client_aborted" => Some(Self::ClientAborted),
-            "upstream_error" => Some(Self::UpstreamError),
-            "internal" => Some(Self::Internal),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|outcome| outcome.as_str() == text)
     }
 }
 

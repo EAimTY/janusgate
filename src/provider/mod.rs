@@ -254,14 +254,15 @@ pub enum DiscoveryState {
 }
 
 impl DiscoveryState {
+    /// Every variant in canonical order: the closed table [`Self::parse`] searches. The words
+    /// live once each, in the exhaustive [`Self::as_str`] match. A new variant joins `ALL`; a
+    /// partial table update is a compile error (the length pin), and the exhaustive match is
+    /// what forces the variant's spelling to be stated.
+    const ALL: [Self; 3] = [Self::Discovered, Self::Vanished, Self::Manual];
+
     /// Parses the canonical discovery state name.
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "discovered" => Some(Self::Discovered),
-            "vanished" => Some(Self::Vanished),
-            "manual" => Some(Self::Manual),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|state| state.as_str() == value)
     }
 
     /// Renders the canonical discovery state name.

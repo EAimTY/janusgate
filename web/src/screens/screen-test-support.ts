@@ -14,8 +14,9 @@ import type { OauthProviderRow } from "/src/management-api/vocabulary";
  * rows from, the shared entity-row fixtures their listings are built from,
  * the shared usage-row and day-bucket fixtures their pages are built from,
  * the held-call helper that keeps a route's promise in flight until the test
- * ends it, the promise drains the suites' exchanges rely on, and the DOM
- * lookups and keystrokes their user interactions drive.
+ * ends it, the answers a test ends a held call with, the promise drains the
+ * suites' exchanges rely on, and the DOM lookups and keystrokes their user
+ * interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -303,6 +304,43 @@ export function heldCall<TValue, TRequest = undefined>(
             },
         );
     });
+}
+
+/**
+ * Answers the most recent held call of one route — the newest cycle's call.
+ * Throws when the route holds no call, so an answer aimed at a cycle that
+ * never started fails the test loudly instead of hanging it.
+ */
+export function answerLast<TValue, TRequest = undefined>(
+    pending: Array<HeldCall<TValue, TRequest>>,
+    value: TValue,
+): void {
+    const held = pending.at(-1);
+
+    if (held === undefined) {
+        throw new Error("No held call to answer");
+    }
+
+    held.answer(value);
+}
+
+/**
+ * Answers one held call by position — a superseded cycle's own, late answer.
+ * Throws when no call stands at the position, so an answer aimed at nothing
+ * fails the test loudly instead of hanging it.
+ */
+export function answerAt<TValue, TRequest = undefined>(
+    pending: Array<HeldCall<TValue, TRequest>>,
+    position: number,
+    value: TValue,
+): void {
+    const held = pending.at(position);
+
+    if (held === undefined) {
+        throw new Error(`No held call at position ${position}`);
+    }
+
+    held.answer(value);
 }
 
 /** Drains the pending promises and scheduled work of one screen exchange. */
