@@ -7,8 +7,8 @@ import type {
     UsageBucketKey,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import { indexRowsById } from "/src/management-api/serving";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
+import { indexRowsById } from "/src/row-index";
 import type { UsageEntities } from "./usage-read";
 
 type UsageLabel = {

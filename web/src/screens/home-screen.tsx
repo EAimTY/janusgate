@@ -3,19 +3,19 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { OUTWARD_SURFACES } from "/src/management-api/outward-surfaces";
 import {
-    indexRowsById,
     isModelEffectivelyServing,
     servingModelCountsByProvider,
 } from "/src/management-api/serving";
 import {
     credentialKindLabel,
     credentialStanding,
+    isLapsedCredentialStanding,
     isOAuthProviderRow,
     type OauthProviderRow,
 } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
+import { indexRowsById } from "/src/row-index";
 import {
     buildOverviewDailySeries,
     type OverviewDailySeries,
@@ -35,6 +35,7 @@ import { Badge, EmptyState, Notice, Skeleton, StatLink } from "/src/ui/feedback"
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
+import { OUTWARD_SURFACES } from "./outward-surfaces";
 
 /** What the overview's reads answered: the rolling figures plus the daily series. */
 type OverviewTraffic = OverviewRecentTotals & {
@@ -511,20 +512,20 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
     readonly label: string;
     readonly detail: string;
 } | null {
-    // The missing-expiry check restates the standing's own never-fresh
-    // predicate — `credentialStanding` defines never-fresh as exactly this
-    // absent column — so the narrow below is no second verdict; the
-    // expired-or-valid decision is the standing's alone, and the narrowed
-    // column feeds the expired line's absolute instant.
+    // The gate is the vocabulary's one lapsed verdict over the row's
+    // standing. The missing-expiry column below is the never-fresh
+    // standing's own definition in `credentialStanding`, so past that gate
+    // the narrow is only the title's switch, no second verdict — and the
+    // narrowed column feeds the expired line's absolute instant.
+    if (!isLapsedCredentialStanding(credentialStanding(provider))) {
+        return null;
+    }
+
     if (provider.expires_at === null) {
         return {
             label: "Credential not fresh",
             detail: "No expiry is stored for this provider.",
         };
-    }
-
-    if (credentialStanding(provider) !== "expired") {
-        return null;
     }
 
     return {

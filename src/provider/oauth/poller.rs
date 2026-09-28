@@ -24,7 +24,7 @@ use crate::{
     provider::{
         Error,
         definition::{
-            credential::{CredentialAcquisition, Grant, OAuthRecipe},
+            credential::{Grant, OAuthRecipe},
             eval::ValueEnv,
         },
     },
@@ -146,7 +146,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         .await;
     };
 
-    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
+    let Some(recipe) = definition.oauth_recipe() else {
         return persist_terminal(
             database,
             flow,
@@ -163,7 +163,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         grant,
         exchange,
         ..
-    } = &**recipe;
+    } = recipe;
 
     let Grant::Device { .. } = grant else {
         return persist_terminal(

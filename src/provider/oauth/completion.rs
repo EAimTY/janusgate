@@ -13,10 +13,7 @@ use super::{
 };
 use crate::{
     database::Transaction,
-    provider::{
-        Error, StoredCredentials,
-        definition::{ProviderDefinition, credential::CredentialAcquisition},
-    },
+    provider::{Error, StoredCredentials, definition::ProviderDefinition},
     storage,
     storage::oauth_flows::{FlowPurpose, OngoingFlow},
 };
@@ -90,11 +87,9 @@ pub(crate) async fn complete_exchange(
     outcome: ExchangeOutcome,
     flow: &OngoingFlow,
 ) -> Result<CompletionProduct, Error> {
-    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
-        return Err(Error::Internal {
-            message: "the flow's definition carries no OAuth credential".to_string(),
-        });
-    };
+    let recipe = definition.oauth_recipe().ok_or_else(|| Error::Internal {
+        message: "the flow's definition carries no OAuth credential".to_string(),
+    })?;
 
     // The working slots absorb the identity-token claims and the exchange's slots; a claimed
     // value outside the routing-safety contract fails the flow like any other fold.

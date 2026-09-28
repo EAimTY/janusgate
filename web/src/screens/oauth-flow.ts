@@ -42,7 +42,7 @@ import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { type ManagementCallOutcome, performManagementCall } from "/src/management-api/outcome";
 import { type ActionBegin, createBeginAction } from "./action-begin";
 import { describeCallFailure } from "./failure";
-import { createDisposalGuard, type ScreenNotice } from "./read";
+import { createDisposalGuard, noticeOf, type ScreenNotice } from "./read";
 
 /**
  * What one completion call's outcome left for the calling grant after the
@@ -415,12 +415,7 @@ export function createOauthFlow(options: {
         const settlement = settleCompletionOutcome(outcome);
 
         if (settlement.kind === "failed") {
-            setFailure({
-                tone: "bad",
-                title: settlement.diagnosis.title,
-                detail: settlement.diagnosis.detail,
-                fix: settlement.diagnosis.fix,
-            });
+            setFailure(noticeOf(settlement.diagnosis));
 
             return;
         }

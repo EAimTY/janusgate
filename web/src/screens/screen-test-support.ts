@@ -15,8 +15,8 @@ import type { OauthProviderRow } from "/src/management-api/vocabulary";
  * the shared usage-row and day-bucket fixtures their pages are built from,
  * the held-call helper that keeps a route's promise in flight until the test
  * ends it, the answers a test ends a held call with, the promise drains the
- * suites' exchanges rely on, and the DOM lookups and keystrokes their user
- * interactions drive.
+ * suites' exchanges rely on, and the DOM lookups, keystrokes, and select
+ * choices their user interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -461,6 +461,21 @@ export function typeInto(input: HTMLInputElement | HTMLTextAreaElement, value: s
     input.value = value;
     input.dispatchEvent(
         new Event("input", {
+            bubbles: true,
+        }),
+    );
+}
+
+/**
+ * Chooses the select the given field label names the way a browser delivers
+ * a choice: the option is set, then the change event fires and bubbles the
+ * way a real one does, reaching the select's own change handling.
+ */
+export function chooseSelect(label: string, value: string): void {
+    const select = labeledSelect(label);
+    select.value = value;
+    select.dispatchEvent(
+        new Event("change", {
             bubbles: true,
         }),
     );

@@ -1,21 +1,13 @@
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 
 /**
- * Maps listing rows by their id, ready for O(1) lookups. Row ids are unique
- * by contract, so each id answers exactly one row.
+ * The serving derivations the wire contract leaves to the client: rule 7
+ * (§4.5 *Responses carry only what the caller cannot derive*) ships a model
+ * row's inputs — never the three-input verdict over them — so the verdict
+ * and its counts are computed here, under the gateway's own definition
+ * (root README §3). The generic row indexing these derivations' callers
+ * share lives outside the contract, in `/src/row-index`.
  */
-export function indexRowsById<
-    TRow extends {
-        readonly id: number;
-    },
->(rows: ReadonlyArray<TRow>): ReadonlyMap<number, TRow> {
-    return new Map(
-        rows.map((row) => [
-            row.id,
-            row,
-        ]),
-    );
-}
 
 /**
  * Counts the listed models per provider row id, once per listings change,

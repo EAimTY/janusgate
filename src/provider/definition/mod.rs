@@ -152,6 +152,18 @@ impl ProviderDefinition {
             }
         }
     }
+
+    /// The payload's OAuth recipe, when the credential acquisition is OAuth — the single
+    /// deconstruction every OAuth engine stage shares. The accessor itself only reports
+    /// absence: stored drift — an OAuth flow or renewal whose definition carries no OAuth
+    /// credential — lives in the caller's error domain.
+    #[must_use]
+    pub(crate) fn oauth_recipe(&self) -> Option<&credential::OAuthRecipe> {
+        match &self.payload.credential {
+            credential::CredentialAcquisition::OAuth(recipe) => Some(recipe),
+            credential::CredentialAcquisition::ApiKey => None,
+        }
+    }
 }
 
 #[cfg(test)]

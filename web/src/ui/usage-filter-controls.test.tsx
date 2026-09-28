@@ -7,6 +7,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
 import { EMPTY_USAGE_FILTER_FIELDS, type UsageFilterFields } from "/src/usage-filter";
+import { chooseSelect } from "../screens/screen-test-support";
 
 const providerRow: ProviderResponse = {
     type: "api_key",
@@ -204,12 +205,9 @@ describe("UsageFilterControls listing-backed options", () => {
             providerId: "9",
         });
 
-        const select = selectWithLabel("Provider");
-
         // The synthetic trailing option is a real choice the operator can
         // pick: choosing it reports its id, not a clearing.
-        select.value = "9";
-        select.dispatchEvent(new Event("change"));
+        chooseSelect("Provider", "9");
 
         expect(edits).toEqual([
             {
@@ -218,8 +216,7 @@ describe("UsageFilterControls listing-backed options", () => {
         ]);
 
         // Picking the empty choice still clears the filter.
-        select.value = "";
-        select.dispatchEvent(new Event("change"));
+        chooseSelect("Provider", "");
 
         expect(edits).toEqual([
             {

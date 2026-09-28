@@ -869,18 +869,8 @@ mod tests {
         },
         *,
     };
-    use crate::{accounting::ApiLogEndpointType, database::params, unix_time};
+    use crate::{accounting::ApiLogEndpointType, database::params, test_support::list1, unix_time};
     use std::error::Error as StdError;
-
-    /// Builds one non-empty filter list from a fixture slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics on an empty slice, which no test fixture constructs.
-    fn list1<T: Clone>(values: &[T]) -> Vec1<T> {
-        #[expect(clippy::unwrap_used, reason = "test fixtures are non-empty")]
-        Vec1::try_from_vec(values.to_vec()).unwrap()
-    }
 
     /// Verifies `usage:list` over the shards (README §7.1): an empty store answers an empty
     /// page; rows order newest first across shards — equal stamps never span shards, and each

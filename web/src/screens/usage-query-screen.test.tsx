@@ -19,6 +19,7 @@ import {
     answerLast,
     apiKeyRow,
     buttonWithText,
+    chooseSelect,
     dayBucket,
     type HeldCall,
     heldCall,
@@ -85,17 +86,6 @@ function screenApi(
 /** The first-read placeholder: present exactly while the screen owes its first answers. */
 function skeleton(): Element | null {
     return document.querySelector(".wash");
-}
-
-/** Sets one select the way a browser delivers a choice. */
-function chooseSelect(label: string, value: string): void {
-    const select = labeledSelect(label);
-    select.value = value;
-    select.dispatchEvent(
-        new Event("change", {
-            bubbles: true,
-        }),
-    );
 }
 
 /** One bucket whose key carries exactly the requested dimensions. */

@@ -461,18 +461,8 @@ mod tests {
     use crate::{
         accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
         management_api::v0::Error,
+        test_support::list1,
     };
-    use vec1::Vec1;
-
-    /// Builds one non-empty list for the multi-value filter fields.
-    ///
-    /// # Panics
-    ///
-    /// Panics on an empty slice, which no test constructs.
-    fn list1<T: Clone>(values: &[T]) -> Vec1<T> {
-        #[expect(clippy::unwrap_used, reason = "test fixtures are non-empty")]
-        Vec1::try_from_vec(values.to_vec()).unwrap()
-    }
 
     /// Verifies the two request payloads strictly (README §7.0 rule 2, §7.1): `group_by` is a
     /// required set over the closed dimension vocabulary, `filter` is absent-keeps at every

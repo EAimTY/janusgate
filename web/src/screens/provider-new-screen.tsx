@@ -16,7 +16,6 @@ import {
     modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { defaultModelPrefix, suggestProviderName } from "/src/management-api/provider-defaults";
 import { matchStoredDefinition, PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
@@ -34,6 +33,7 @@ import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
+import { defaultModelPrefix, suggestProviderName } from "./provider-defaults";
 import {
     createStandingNotice,
     ReadCallFailure,

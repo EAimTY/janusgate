@@ -33,6 +33,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, num::NonZero, path::PathBuf, time::Duration};
+use vec1::Vec1;
 
 /// File guard cleaning up the temporary SQLite test database on drop.
 pub(crate) struct TempDbGuard(PathBuf);
@@ -67,6 +68,16 @@ pub(crate) fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
         .expect("the rendered body carries the expected path")
 }
 
+/// Builds one non-empty list from a fixture slice.
+///
+/// # Panics
+///
+/// Panics on an empty slice, which no test fixture constructs.
+pub(crate) fn list1<T: Clone>(values: &[T]) -> Vec1<T> {
+    #[expect(clippy::unwrap_used, reason = "test fixtures are non-empty")]
+    Vec1::try_from_vec(values.to_vec()).unwrap()
+}
+
 /// Creates an initialized temporary SQLite test database.
 ///
 /// # Panics
@@ -92,19 +103,17 @@ pub(crate) async fn create_test_database() -> (Database, TempDbGuard) {
     (database, TempDbGuard(db_path))
 }
 
-/// Inserts one static-key definition version 1 of the given format and returns the stored
-/// definition.
+/// Parses one static-key definition payload of the given format — the in-memory fixture for
+/// tests that need the payload without inserting it. Parsed without validation; callers that
+/// store the payload validate it on the insert path.
 ///
 /// # Panics
 ///
-/// Panics if the insert fails, the payload does not parse, or the fixture fails validation —
-/// none of which can occur for the fixed fixture payloads.
-pub(crate) async fn insert_static_key_definition(
-    database: &Database,
-    name: &str,
+/// Panics if the payload does not parse — the fixed fixture payload always does.
+pub(crate) fn static_key_definition_payload(
     format: crate::format::UpstreamFormat,
-) -> ProviderDefinition {
-    let payload: DefinitionPayload = serde_json::from_value(json!({
+) -> DefinitionPayload {
+    serde_json::from_value(json!({
         "format": format.as_str(),
         "inference": {
             "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
@@ -119,7 +128,22 @@ pub(crate) async fn insert_static_key_definition(
             "extract": {"mode": "array", "array_at": ["data"], "id_field": ["id"]}
         }
     }))
-    .unwrap_or_else(|error| panic!("fixture definition payload parses: {error}"));
+    .unwrap_or_else(|error| panic!("fixture definition payload parses: {error}"))
+}
+
+/// Inserts one static-key definition version 1 of the given format and returns the stored
+/// definition.
+///
+/// # Panics
+///
+/// Panics if the insert fails, the payload does not parse, or the fixture fails validation —
+/// none of which can occur for the fixed fixture payloads.
+pub(crate) async fn insert_static_key_definition(
+    database: &Database,
+    name: &str,
+    format: crate::format::UpstreamFormat,
+) -> ProviderDefinition {
+    let payload = static_key_definition_payload(format);
 
     insert_definition(database, name, payload).await
 }

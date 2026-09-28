@@ -92,6 +92,36 @@ impl OpenStep {
             }
         }
     }
+
+    /// Mints the implicit-open defaults for a thought step: an empty summary and no signature,
+    /// exactly as a `thought` start would record them.
+    fn thought(index: u64) -> Self {
+        Self::Thought {
+            index,
+            summary: String::new(),
+            signature: None,
+        }
+    }
+
+    /// Mints an open function-call step under `index` with the implicit-open defaults, exactly as
+    /// a `function_call` start would record them: the step's stable tool-call index is allocated
+    /// from the parser's counter, the identifier is the synthesized `call_{uuid}` when the
+    /// upstream supplies none, an absent function name defaults to empty, and the argument bytes
+    /// start empty for the deltas to stream.
+    fn call(
+        parser: &mut UpstreamParser,
+        index: u64,
+        id: Option<String>,
+        name: Option<String>,
+    ) -> Self {
+        Self::Call {
+            index,
+            call_index: parser.allocate_call_index(),
+            id: id.unwrap_or_else(|| format!("call_{}", ids::new_uuid())),
+            name: name.unwrap_or_default(),
+            arguments: String::new(),
+        }
+    }
 }
 
 /// One upstream Interaction body or the partial resource an
@@ -421,6 +451,32 @@ impl UpstreamParser {
             .find(|open| open.index() == index)
     }
 
+    /// States the implicit-open rule once: a content delta (or a start) for a step with no
+    /// recorded opening implicitly opens the matching kind exactly as a start would, after the
+    /// stream itself is opened — a missed start cannot strand content. Opens the stream, records
+    /// the step `mint` builds under `index` when none is open there, and returns the events the
+    /// caller extends with: the stream-opening [`IrEvent::MessageStart`] when the stream had not
+    /// opened.
+    ///
+    /// The mint runs only when an opening is actually recorded, so a delta or a repeated start
+    /// for an already-open step never mints a discarded opening — and never consumes a tool-call
+    /// index.
+    fn implicit_open(
+        &mut self,
+        index: u64,
+        mint: impl FnOnce(&mut Self) -> OpenStep,
+    ) -> Vec<IrEvent> {
+        let events = self.ensure_open();
+
+        if self.find_open(index).is_none() {
+            let step = mint(self);
+
+            self.push_open(step);
+        }
+
+        events
+    }
+
     /// Ingests one complete Interaction body: message start, one event group per step, then the
     /// terminal status and usage.
     ///
@@ -568,42 +624,21 @@ impl UpstreamParser {
     /// start for an already-open index is ignored; a function-call start records the call but
     /// emits nothing — its deltas and stop carry the content.
     fn ingest_start(&mut self, frame: StepStartFrame) -> Vec<IrEvent> {
-        let events = self.ensure_open();
-
-        if self.find_open(frame.index).is_some() {
-            return events;
-        }
-
         match frame.step.step_type.as_str() {
-            STEP_MODEL_OUTPUT => self.push_open(OpenStep::Output { index: frame.index }),
-
-            STEP_THOUGHT => self.push_open(OpenStep::Thought {
-                index: frame.index,
-                summary: String::new(),
-                signature: None,
-            }),
-
-            STEP_FUNCTION_CALL => {
-                let call_index = self.allocate_call_index();
-
-                self.push_open(OpenStep::Call {
-                    index: frame.index,
-                    call_index,
-                    id: frame
-                        .step
-                        .id
-                        .unwrap_or_else(|| format!("call_{}", ids::new_uuid())),
-                    name: frame.step.name.unwrap_or_default(),
-                    arguments: String::new(),
-                });
+            STEP_MODEL_OUTPUT => {
+                self.implicit_open(frame.index, |_| OpenStep::Output { index: frame.index })
             }
 
-            // Unknown step kinds open nothing; their deltas fall into the implicit-open rule
-            // below only for the known delta kinds, and their stop closes nothing.
-            _ => {}
-        }
+            STEP_THOUGHT => self.implicit_open(frame.index, |_| OpenStep::thought(frame.index)),
 
-        events
+            STEP_FUNCTION_CALL => self.implicit_open(frame.index, |parser| {
+                OpenStep::call(parser, frame.index, frame.step.id, frame.step.name)
+            }),
+
+            // Unknown step kinds open nothing; their deltas fall into the implicit-open rule
+            // only for the known delta kinds, and their stop closes nothing.
+            _ => self.ensure_open(),
+        }
     }
 
     /// Ingests a `step.delta` frame: the delta kind decides the IR event. A content delta for a
@@ -616,11 +651,9 @@ impl UpstreamParser {
 
         match frame.delta {
             StepDelta::Text { text } => {
-                events.extend(self.ensure_open());
-
-                if self.find_open(frame.index).is_none() {
-                    self.push_open(OpenStep::Output { index: frame.index });
-                }
+                events.extend(
+                    self.implicit_open(frame.index, |_| OpenStep::Output { index: frame.index }),
+                );
 
                 // A delta for a step of another kind contradicts the opened kind, so it is
                 // dropped rather than misattributed to foreign content.
@@ -636,15 +669,7 @@ impl UpstreamParser {
                     return events;
                 }
 
-                events.extend(self.ensure_open());
-
-                if self.find_open(frame.index).is_none() {
-                    self.push_open(OpenStep::Thought {
-                        index: frame.index,
-                        summary: String::new(),
-                        signature: None,
-                    });
-                }
+                events.extend(self.implicit_open(frame.index, |_| OpenStep::thought(frame.index)));
 
                 // A delta for a step of another kind contradicts the opened kind, so it is
                 // dropped rather than misattributed to foreign content.
@@ -662,15 +687,7 @@ impl UpstreamParser {
                     return events;
                 };
 
-                events.extend(self.ensure_open());
-
-                if self.find_open(frame.index).is_none() {
-                    self.push_open(OpenStep::Thought {
-                        index: frame.index,
-                        summary: String::new(),
-                        signature: None,
-                    });
-                }
+                events.extend(self.implicit_open(frame.index, |_| OpenStep::thought(frame.index)));
 
                 if let Some(OpenStep::Thought {
                     signature: open, ..
@@ -681,19 +698,9 @@ impl UpstreamParser {
             }
 
             StepDelta::ArgumentsDelta { arguments } => {
-                events.extend(self.ensure_open());
-
-                if self.find_open(frame.index).is_none() {
-                    let call_index = self.allocate_call_index();
-
-                    self.push_open(OpenStep::Call {
-                        index: frame.index,
-                        call_index,
-                        id: format!("call_{}", ids::new_uuid()),
-                        name: String::new(),
-                        arguments: String::new(),
-                    });
-                }
+                events.extend(self.implicit_open(frame.index, |parser| {
+                    OpenStep::call(parser, frame.index, None, None)
+                }));
 
                 // A delta for a step of another kind contradicts the opened kind, so it is
                 // dropped rather than misattributed to foreign content.
@@ -1188,6 +1195,89 @@ mod tests {
         );
 
         assert!(stop.is_empty(), "a closed output step emits nothing");
+    }
+
+    /// A repeated start and a matching-kind delta on an already-open function-call step open and
+    /// mint nothing: the open step's streamed state survives untouched, and the next opened call
+    /// keeps the next stable index — a redundant opening never shifts the response's tool-call
+    /// indices.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a redundant opening mints a discarded step or corrupts the open call.
+    #[test]
+    fn mints_nothing_for_an_already_open_call_step() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 0,
+                "step": {"type": "function_call", "id": "call_a", "name": "search"},
+            }),
+        );
+
+        // A repeated start for the open index, and a matching delta on it, must not open — nor
+        // mint a discarded — second step.
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 0, "step": {"type": "function_call"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_DELTA,
+            serde_json::json!({
+                "index": 0,
+                "delta": {"type": "arguments_delta", "arguments": "{}"},
+            }),
+        );
+
+        // The next opened call carries the next stable index, unshifted by spurious mints.
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 1,
+                "step": {"type": "function_call", "id": "call_b", "name": "find"},
+            }),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({
+                    "index": 1,
+                    "delta": {"type": "arguments_delta", "arguments": "{}"},
+                }),
+            ),
+            vec![IrEvent::ToolCallDelta {
+                index: 1,
+                call_id: Some("call_b".to_string()),
+                name: Some("find".to_string()),
+                arguments_delta: "{}".to_string(),
+            }],
+        );
+
+        // The redundant delta appended to the still-open first call, whose opening state the
+        // repeated start left untouched.
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 0}),
+            ),
+            vec![IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_a".to_string(),
+                name: "search".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+        );
     }
 
     /// A delta whose kind contradicts the step already open at its index is dropped rather than

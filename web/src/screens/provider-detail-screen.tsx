@@ -4,15 +4,16 @@ import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { indexRowsById } from "/src/management-api/serving";
 import {
     credentialKindLabel,
     credentialStanding,
+    isLapsedCredentialStanding,
     isOAuthProviderRow,
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
 import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
 import { hrefs } from "/src/router";
+import { indexRowsById } from "/src/row-index";
 import {
     createPinnedRow,
     createScreenRead,
@@ -314,12 +315,14 @@ export function ProviderDetailScreen(props: {
  * expires, earns no credential badge at all. The page's reconnect line gates
  * on the standing, never on a badge's rendered word, so a renamed label
  * cannot silently detach the notice — and the notice and the header badge can
- * never disagree about whether a fix is called for.
+ * never disagree about whether a fix is called for. The lapsed verdict itself
+ * is the vocabulary's `isLapsedCredentialStanding`; this wrapper only hands
+ * the keyed notice the specific standing its title switches on.
  */
 function lapsedCredentialStanding(provider: ProviderResponse): "expired" | "never-fresh" | null {
     const standing = credentialStanding(provider);
 
-    return standing === "expired" || standing === "never-fresh" ? standing : null;
+    return isLapsedCredentialStanding(standing) ? standing : null;
 }
 
 /** What this provider is, read-only: every change lives on the edit page. */

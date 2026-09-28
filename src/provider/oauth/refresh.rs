@@ -19,7 +19,7 @@ use crate::{
     provider::{
         Error, Provider, StoredCredentials,
         definition::{
-            credential::{CredentialAcquisition, OAuthRecipe, TokenRefresh},
+            credential::{OAuthRecipe, TokenRefresh},
             eval::ValueEnv,
         },
     },
@@ -94,11 +94,10 @@ fn is_renewable(provider: &Provider) -> bool {
         return false;
     };
 
-    let CredentialAcquisition::OAuth(recipe) = &provider.definition.payload.credential else {
-        return false;
-    };
-
-    !matches!(recipe.refresh, TokenRefresh::None)
+    provider
+        .definition
+        .oauth_recipe()
+        .is_some_and(|recipe| !matches!(recipe.refresh, TokenRefresh::None))
 }
 
 /// Whether the provider's credentials carry a refresh schedule at all: a known `expires_at`. A
@@ -464,11 +463,12 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
         });
     };
 
-    let CredentialAcquisition::OAuth(recipe) = &provider.definition.payload.credential else {
-        return Err(Error::Internal {
+    let recipe = provider
+        .definition
+        .oauth_recipe()
+        .ok_or_else(|| Error::Internal {
             message: "the provider's definition carries no OAuth credential".to_string(),
-        });
-    };
+        })?;
 
     let OAuthRecipe {
         client_id,
@@ -478,7 +478,7 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
         exchange,
         refresh,
         ..
-    } = &**recipe;
+    } = recipe;
 
     match refresh {
         TokenRefresh::Grant {
@@ -590,7 +590,7 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{Error, ensure_fresh_token, renew_and_build_state, renew_and_store};
+    use super::{Error, ensure_fresh_token, is_renewable, renew_and_build_state, renew_and_store};
     use crate::{
         database::{Database, schema::Registry},
         format::UpstreamFormat,
@@ -600,6 +600,7 @@ mod tests {
         test_support::{
             FIXTURE_TOKEN_URL, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture,
             OAuthRefreshFixture, OAuthResponseField, OAuthTarget, oauth_definition_payload,
+            static_key_definition_payload,
         },
         unix_time,
     };
@@ -1437,5 +1438,42 @@ mod tests {
         );
 
         mock.shutdown.send(()).ok();
+    }
+
+    /// A provider whose stored credentials are OAuth but whose definition carries an api_key
+    /// credential is not renewable (README §3): the stored-drift row must short-circuit before
+    /// the lease loop instead of reaching a renewal whose definition carries no OAuth recipe —
+    /// the internal drift error — so the predicate reports the drift as non-renewable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture payload fails to parse — a broken fixture is the failure report.
+    #[test]
+    fn a_provider_whose_definition_lost_the_oauth_recipe_is_not_renewable() {
+        let provider = Provider {
+            id: 1,
+            name: "drifted".to_string(),
+            model_prefix: String::new(),
+            base_url: None,
+            is_enabled: true,
+            credentials: StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: Some("stored".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(unix_time::unix_now_micros() - 1),
+                refresh_started_at: None,
+            },
+            definition: crate::provider::ProviderDefinition {
+                name: "static-key-drift".to_string(),
+                version: NonZero::new(1).unwrap(),
+                payload: static_key_definition_payload(UpstreamFormat::OpenAiChatCompletion),
+                created_at: 0,
+            },
+        };
+
+        assert!(
+            !is_renewable(&provider),
+            "OAuth credentials under a definition without an OAuth recipe are not renewable"
+        );
     }
 }

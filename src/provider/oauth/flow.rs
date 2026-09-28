@@ -16,7 +16,7 @@ use crate::{
         Error,
         control::{self, ControlFailure, Extracted},
         definition::{
-            credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce, SlotGenerator},
+            credential::{Grant, OAuthRecipe, Pkce, SlotGenerator},
             eval::ValueEnv,
             template::ResponseTarget as Target,
         },
@@ -64,11 +64,9 @@ pub(crate) fn initialize_slots(
     definition: &crate::provider::ProviderDefinition,
     stored: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, Error> {
-    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
-        return Err(Error::Internal {
-            message: "the flow's definition carries no OAuth credential".to_string(),
-        });
-    };
+    let recipe = definition.oauth_recipe().ok_or_else(|| Error::Internal {
+        message: "the flow's definition carries no OAuth credential".to_string(),
+    })?;
 
     let mut slots = stored.clone();
 
@@ -202,18 +200,16 @@ pub(crate) async fn begin_flow(
     base_url: Option<String>,
     slots: BTreeMap<String, String>,
 ) -> Result<BeganFlow, Error> {
-    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
-        return Err(Error::Internal {
-            message: "the flow's definition carries no OAuth credential".to_string(),
-        });
-    };
+    let recipe = definition.oauth_recipe().ok_or_else(|| Error::Internal {
+        message: "the flow's definition carries no OAuth credential".to_string(),
+    })?;
 
     let OAuthRecipe {
         client_id,
         client_secret,
         grant,
         ..
-    } = &**recipe;
+    } = recipe;
 
     let state_token = random_url_safe(32);
 

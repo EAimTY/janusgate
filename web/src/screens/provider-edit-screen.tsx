@@ -12,8 +12,11 @@ import {
     modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { defaultModelPrefix } from "/src/management-api/provider-defaults";
-import { credentialStanding, isOAuthProviderRow } from "/src/management-api/vocabulary";
+import {
+    credentialStanding,
+    isLapsedCredentialStanding,
+    isOAuthProviderRow,
+} from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -37,6 +40,7 @@ import {
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { createOauthFlow, type OauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
+import { defaultModelPrefix } from "./provider-defaults";
 import { RowNotFound } from "./row-not-found";
 
 /**
@@ -536,19 +540,6 @@ function DetailsCard(props: {
 }
 
 /**
- * The credential standing that names a state the gateway cannot use as
- * stored — expired, or never fresh: the same lapsed verdict the provider
- * detail page's reconnect notice gates on. The Credentials card's reconnect
- * offer gates on it read over the gateway's latest row, so a current
- * credential is never invited into a second authorization flow.
- */
-function isCredentialLapsed(provider: ProviderResponse): boolean {
-    const standing = credentialStanding(provider);
-
-    return standing === "expired" || standing === "never-fresh";
-}
-
-/**
  * An OAuth provider's credential health and its reauthorization flow. The
  * flow's state machine is the screen's (`oauth`), so a keyed remount of this
  * card on a rewritten row re-renders the live flow's step from the state
@@ -585,7 +576,11 @@ function CredentialsCard(props: {
         return credentialExpiryLine(row.expires_at, nowMicros());
     };
 
-    const isReconnectOffered = (): boolean => isCredentialLapsed(credentialRow());
+    // The reconnect offer gates on the vocabulary's lapsed verdict read over
+    // the gateway's latest row, so a current credential is never invited
+    // into a second authorization flow.
+    const isReconnectOffered = (): boolean =>
+        isLapsedCredentialStanding(credentialStanding(credentialRow()));
 
     return (
         <Card>

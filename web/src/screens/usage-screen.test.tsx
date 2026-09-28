@@ -20,6 +20,7 @@ import {
     apiLogRow,
     bodyText,
     buttonWithText,
+    chooseSelect,
     type HeldCall,
     heldCall,
     labeledInput,
@@ -616,13 +617,7 @@ describe("UsageScreen filtering", () => {
         // the aggregates page's own door carries back — so a narrow the
         // operator holds in the form cannot be silently dropped by the
         // crossing.
-        const providerSelect = labeledSelect("Provider");
-        providerSelect.value = "3";
-        providerSelect.dispatchEvent(
-            new Event("change", {
-                bubbles: true,
-            }),
-        );
+        chooseSelect("Provider", "3");
         await settle();
 
         // The provider narrow alone crosses — the window and the rest stand
@@ -651,13 +646,7 @@ describe("UsageScreen filtering", () => {
         // window's merge must be functional: a field set read inside its own
         // setter would build on the pre-edit draft and drop the typed status.
         typeInto(labeledInput("HTTP statuses"), "200,429");
-        const windowSelect = labeledSelect("Window");
-        windowSelect.value = "24h";
-        windowSelect.dispatchEvent(
-            new Event("change", {
-                bubbles: true,
-            }),
-        );
+        chooseSelect("Window", "24h");
         await settle();
 
         // Both edits landed: the applied route carries them together.

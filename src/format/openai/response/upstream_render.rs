@@ -5,8 +5,11 @@
 //! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
 use crate::{
-    format::{RenderOption, openai::ToolChoiceMode},
-    ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
+    format::{
+        RenderOption,
+        openai::{ToolChoice, render_tool_choice},
+    },
+    ir::{IrPart, IrRequest, IrResponseFormat, IrRole},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -36,7 +39,7 @@ pub(crate) struct RequestBody<'a> {
 
     /// Tool selection restriction, omitted when the request has none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<ToolChoice<'a>>,
+    tool_choice: Option<ToolChoice<NamedToolChoice<'a>>>,
 
     /// Sampling temperature, omitted when the request has none.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,18 +152,6 @@ struct Tool<'a> {
 
     /// JSON Schema of the accepted arguments, absent for a function that takes none.
     parameters: Option<&'a Value>,
-}
-
-/// A `tool_choice` restriction in the upstream shape: a bare mode string or a named-function
-/// object.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum ToolChoice<'a> {
-    /// The mode-string form.
-    Mode(ToolChoiceMode),
-
-    /// The named-function form.
-    Function(NamedToolChoice<'a>),
 }
 
 /// The named-function `tool_choice` form.
@@ -311,19 +302,12 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
         })
         .collect();
 
-    let tool_choice = ir
-        .tool_choice
-        .as_ref()
-        .map(|tool_choice| match tool_choice {
-            IrToolChoice::Auto => ToolChoice::Mode(ToolChoiceMode::Auto),
-            IrToolChoice::None => ToolChoice::Mode(ToolChoiceMode::None),
-            IrToolChoice::Required => ToolChoice::Mode(ToolChoiceMode::Required),
-
-            IrToolChoice::Function { name } => ToolChoice::Function(NamedToolChoice {
-                tool_type: "function",
-                name,
-            }),
-        });
+    let tool_choice = ir.tool_choice.as_ref().map(|tool_choice| {
+        render_tool_choice(tool_choice, |name| NamedToolChoice {
+            tool_type: "function",
+            name,
+        })
+    });
 
     let text = ir
         .response_format
@@ -360,8 +344,8 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
 #[cfg(test)]
 mod tests {
     use super::render_request_body;
-    use crate::ir::{IrReasoningLevel, IrRequest};
-    use serde_json::Value;
+    use crate::ir::{IrReasoningLevel, IrRequest, IrToolChoice};
+    use serde_json::{Value, json};
 
     /// Renders one upstream body for the given effort level.
     ///
@@ -412,5 +396,41 @@ mod tests {
         }
 
         assert!(render_body(None).get("reasoning").is_none());
+    }
+
+    /// Verifies the `tool_choice` outbound contract: the three shared modes render as bare mode
+    /// strings, and the named function renders in this codec's flat `{"type": "function",
+    /// "name": ...}` shape.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered choice diverges from the contract.
+    #[test]
+    fn maps_the_tool_choice_modes_and_the_named_function() {
+        for (choice, rendered) in [
+            (IrToolChoice::Auto, json!("auto")),
+            (IrToolChoice::None, json!("none")),
+            (IrToolChoice::Required, json!("required")),
+            (
+                IrToolChoice::Function {
+                    name: "search".to_string(),
+                },
+                json!({"type": "function", "name": "search"}),
+            ),
+        ] {
+            let ir = IrRequest {
+                tool_choice: Some(choice),
+                ..IrRequest::default()
+            };
+
+            #[expect(
+                clippy::expect_used,
+                reason = "the rendered payload is under test; a failing render is the failure"
+            )]
+            let body = serde_json::to_value(render_request_body(&ir, false, &[]))
+                .expect("the body serializes");
+
+            assert_eq!(body.get("tool_choice"), Some(&rendered));
+        }
     }
 }

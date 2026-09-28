@@ -169,6 +169,22 @@ export function credentialStanding(provider: ProviderResponse): CredentialStandi
     return isCredentialExpired(provider.expires_at, nowMicros()) ? "expired" : "valid";
 }
 
+/**
+ * Whether a credential standing states a credential the gateway cannot use as
+ * stored — the "needs a human" verdict over the standing: `"expired"` once
+ * the stored OAuth expiry has passed, or `"never-fresh"` when an OAuth row
+ * stores no expiry at all. A `"valid"` login is not lapsed, and a static
+ * key — which never expires and states no standing at all — never is. Takes
+ * the standing rather than the row so every presentation derives the
+ * standing once, from `credentialStanding`, and shares this one disjunction
+ * over it.
+ */
+export function isLapsedCredentialStanding(
+    standing: CredentialStanding,
+): standing is "expired" | "never-fresh" {
+    return standing === "expired" || standing === "never-fresh";
+}
+
 const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {
     discovered: "Discovered",
     // The wire value `vanished` never reaches the operator verbatim: the

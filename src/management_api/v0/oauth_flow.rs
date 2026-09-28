@@ -12,10 +12,7 @@ use crate::{
     context::Context,
     provider::{
         CredentialKind, Provider,
-        definition::{
-            credential::{CredentialAcquisition, Grant},
-            eval::ValueEnv,
-        },
+        definition::{credential::Grant, eval::ValueEnv},
         oauth,
     },
     storage,
@@ -583,11 +580,9 @@ async fn complete_consumed_flow(
         }
     }
 
-    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
-        return Err(Error::Internal {
-            message: "the consumed flow's definition carries no OAuth credential".to_string(),
-        });
-    };
+    let recipe = definition.oauth_recipe().ok_or_else(|| Error::Internal {
+        message: "the consumed flow's definition carries no OAuth credential".to_string(),
+    })?;
 
     // The flow row's grant was checked before the consume; a definition whose grant disagrees
     // with the flow it issued is stored drift.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { indexRowsById } from "/src/row-index";
 import {
-    indexRowsById,
     isModelEffectivelyServing,
     modelCountsByProvider,
     servingModelCountsByProvider,

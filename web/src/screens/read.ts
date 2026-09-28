@@ -12,7 +12,7 @@
 import { type Accessor, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { registerDirtyForm } from "/src/dirty-form-registry";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ActionName } from "/src/management-api/diagnosis";
+import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
 import { isAbortFailure } from "/src/management-api/errors";
 import type {
     ApiKeyResponse,
@@ -39,16 +39,19 @@ export type ScreenNotice = {
     readonly fix?: string | null | undefined;
 };
 
-/** The bad notice a failed call renders: the app's own diagnosis of the failure. */
-export function screenFailureNotice(cause: unknown, call?: FailureCall): ScreenNotice {
-    const diagnosis = describeCallFailure(cause, call);
-
+/** The bad notice a diagnosis states verbatim: its title, detail, and fix carried across unchanged. */
+export function noticeOf(diagnosis: Diagnosis): ScreenNotice {
     return {
         tone: "bad",
         title: diagnosis.title,
         detail: diagnosis.detail,
         fix: diagnosis.fix,
     };
+}
+
+/** The bad notice a failed call renders: the app's own diagnosis of the failure. */
+export function screenFailureNotice(cause: unknown, call?: FailureCall): ScreenNotice {
+    return noticeOf(describeCallFailure(cause, call));
 }
 
 /**
