@@ -38,6 +38,8 @@ import {
     expectInteger,
     expectRecord,
     expectString,
+    parseEnvelopeResponse,
+    parseListResponse,
     parseUpstreamFormat,
 } from "/src/management-api/validation";
 
@@ -1406,26 +1408,9 @@ function parseDefinitionResponse(value: unknown, context: string): DefinitionRes
 export function parseListProviderDefinitionsResponse(
     value: unknown,
 ): ListProviderDefinitionsResponse {
-    const record = expectRecord(value, "response");
-    const definitions = expectArray(
-        Reflect.get(record, "provider_definitions"),
-        "response.provider_definitions",
-    );
-
-    return {
-        provider_definitions: definitions.map((entry, index) =>
-            parseDefinitionResponse(entry, `response.provider_definitions[${index}]`),
-        ),
-    };
+    return parseListResponse(value, "provider_definitions", parseDefinitionResponse);
 }
 
 export function parseDefinitionEnvelope(value: unknown): DefinitionEnvelope {
-    const record = expectRecord(value, "response");
-
-    return {
-        provider_definition: parseDefinitionResponse(
-            Reflect.get(record, "provider_definition"),
-            "response.provider_definition",
-        ),
-    };
+    return parseEnvelopeResponse(value, "provider_definition", parseDefinitionResponse);
 }

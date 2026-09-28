@@ -549,6 +549,11 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
                 client_secret: client_secret.as_deref(),
             };
 
+            // The seed base feeds only the steps' request environments; the persist carries a
+            // base only when an extraction derived one. Writing the acquire-time snapshot
+            // unconditionally would clobber a base a concurrent `providers:update` stored
+            // while the sequence ran — the flow path's identical hazard, which refuses a
+            // non-derived base for the same reason (README §3).
             let mut state = WorkingState::new(slots.clone(), provider.base_url.clone());
 
             provisioning::run_steps(http, steps, &constants, &mut state).await?;
@@ -573,7 +578,14 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
                 access_token,
                 expires_at,
                 refresh_token: state.refresh_token,
-                base_url: state.base_url,
+                // The stored base joins the persist only when this renewal's provisioning
+                // extracted a replacement (README §3): the seed base aboard otherwise is the
+                // lease-acquire-time snapshot, and the persist's `COALESCE` keeps the stored
+                // column — a concurrent `providers:update`'s write — untouched.
+                base_url: state
+                    .is_base_url_derived
+                    .then(|| state.base_url.clone())
+                    .flatten(),
             })
         }
 
@@ -1024,6 +1036,131 @@ mod tests {
                 "an absent extraction leaves the stored refresh token shape untouched"
             );
         }
+
+        mock.shutdown.send(()).ok();
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// A reprovisioning renewal whose sequence extracts no `base_url` leaves a base URL a
+    /// concurrent `providers:update` stored untouched (README §3): the working state's seed
+    /// base is the lease-acquire-time snapshot, so only an extraction marks it derived, and
+    /// the persist carries the base only when this renewal's provisioning supplied one — the
+    /// reprovisioning arm's mirror of the flow path's refusal to rewrite a non-derived base
+    /// (README §7.1). The access token renews regardless.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the renewal rewrites the concurrently stored
+    /// base.
+    #[tokio::test]
+    async fn a_reprovision_without_a_base_extraction_retains_a_concurrently_updated_base_url() {
+        let db_path = std::env::temp_dir().join(format!(
+            "janusgate-refresh-repro-base-test-{}.db",
+            rand::random::<u64>()
+        ));
+
+        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+        let one = NonZero::new(1_usize).unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
+        let database = Database::open(&db_path, Registry::Main, one, POOL_WAIT)
+            .await
+            .unwrap();
+
+        let expiry_seconds = unix_time::unix_now_micros() / unix_time::MICROS_PER_SEC + 3_600;
+
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(
+                &serde_json::json!({"token": "renewed", "expiry": expiry_seconds}),
+            )
+            .unwrap(),
+        ])
+        .await;
+
+        let definition =
+            insert_reprovision_definition(&database, "reprovision-base-def", &mock.base(), false)
+                .await;
+
+        let provider = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "based",
+            "b-",
+            Some("https://acquire-time.example"),
+            StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: None,
+                slots: BTreeMap::new(),
+                expires_at: Some(unix_time::unix_now_micros() - 1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let now = unix_time::unix_now_micros();
+
+        let mut transaction = database.transaction().await.unwrap();
+
+        #[expect(clippy::expect_used, reason = "the elapsed token acquires the lease")]
+        let lease = storage::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            now,
+            now - 1,
+            0,
+        )
+        .await
+        .unwrap()
+        .expect("the elapsed token acquires the lease");
+
+        transaction.commit().await.unwrap();
+
+        // The concurrent write under test: a `providers:update` changing only the base URL.
+        // It never touches the credentials document, so the renewal's lease stamp survives
+        // and the persist's conditioning cannot mask the clobber this test pins.
+        #[expect(clippy::unwrap_used, reason = "the base-only update commits")]
+        storage::providers::update_provider(
+            &database,
+            provider.id,
+            storage::providers::ProviderUpdate {
+                name: provider.name.as_str(),
+                model_prefix: provider.model_prefix.as_str(),
+                base_url: Some("https://concurrent.example"),
+                is_enabled: true,
+                definition: None,
+                credentials: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        renew_and_store(&database, &http_client::control_plane(), &provider, lease)
+            .await
+            .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the provider row persists")]
+        let settled = storage::providers::find_provider_by_id(&database, provider.id)
+            .await
+            .unwrap()
+            .expect("the provider row persists");
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent credential kind is the failure report"
+        )]
+        let StoredCredentials::OAuth { access_token, .. } = settled.credentials else {
+            panic!("the renewed row carries OAuth credentials");
+        };
+
+        assert_eq!(access_token, "renewed", "the reprovisioning persisted");
+
+        assert_eq!(
+            settled.base_url.as_deref(),
+            Some("https://concurrent.example"),
+            "a base URL a concurrent providers:update stored survives a renewal that extracted \
+             none"
+        );
 
         mock.shutdown.send(()).ok();
 

@@ -33,6 +33,7 @@ import {
     ProviderEnabledSwitch,
     ProviderIdentityFields,
 } from "/src/ui/provider-form";
+import { NO_STORED_EXPIRY_SENTENCE } from "/src/ui/providers-table";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { createOauthFlow, type OauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
@@ -570,7 +571,7 @@ function CredentialsCard(props: {
         const row = credentialRow();
 
         if (!isOAuthProviderRow(row) || row.expires_at === null) {
-            return "No expiry is stored for this provider.";
+            return NO_STORED_EXPIRY_SENTENCE;
         }
 
         return credentialExpiryLine(row.expires_at, nowMicros());

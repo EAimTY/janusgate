@@ -44,9 +44,10 @@ import {
  * tolerating it; that walk and the stored-definition rows it rebuilds live in
  * `definition-payload.ts`, the descriptor contract's own module.
  *
- * This module is also the primitives home: the scalar `expect*` narrowings and
- * the upstream-format parse below are what `definition-payload.ts`'s
- * descriptor walk builds on.
+ * This module is also the primitives home: the scalar `expect*` narrowings,
+ * the list- and envelope-shaped response walks beside them, and the
+ * upstream-format parse below are what the response parsers and
+ * `definition-payload.ts`'s descriptor walk build on.
  */
 export function expectRecord(value: unknown, context: string): object {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -62,6 +63,57 @@ export function expectArray(value: unknown, context: string): unknown[] {
     }
 
     return value;
+}
+
+/**
+ * One list-shaped response: the record `response` holding the one array
+ * member `member`, each entry narrowed through `parseElement`. Owns the
+ * context-path grammar `response.<member>[i]` — a broken record or array
+ * names the shape it broke, and a broken entry names the failing index.
+ *
+ * The mapped result keeps the returned object structurally identical to the
+ * generated `List*Response` bindings.
+ */
+export function parseListResponse<const TMember extends string, TElement>(
+    value: unknown,
+    member: TMember,
+    parseElement: (value: unknown, context: string) => TElement,
+): { [TMemberName in TMember]: Array<TElement> } {
+    const record = expectRecord(value, "response");
+    const entries = expectArray(Reflect.get(record, member), `response.${member}`);
+
+    // A generic computed key reads back as an index signature, so the literal
+    // carries one assertion to stand as the mapped result; the key is `member`
+    // itself, so the shape holds by construction on the same line.
+    return {
+        [member]: entries.map((entry, index) =>
+            parseElement(entry, `response.${member}[${index}]`),
+        ),
+    } as { [TMemberName in TMember]: Array<TElement> };
+}
+
+/**
+ * One envelope-shaped response: the record `response` holding the one member
+ * `member`, narrowed through `parseElement`. Owns the context-path grammar
+ * `response.<member>` — a broken record names the shape it broke, and a
+ * broken member names the member directly.
+ *
+ * The mapped result keeps the returned object structurally identical to the
+ * generated `*Envelope` bindings.
+ */
+export function parseEnvelopeResponse<const TMember extends string, TElement>(
+    value: unknown,
+    member: TMember,
+    parseElement: (value: unknown, context: string) => TElement,
+): { [TMemberName in TMember]: TElement } {
+    const record = expectRecord(value, "response");
+
+    // A generic computed key reads back as an index signature, so the literal
+    // carries one assertion to stand as the mapped result; the key is `member`
+    // itself, so the shape holds by construction on the same line.
+    return {
+        [member]: parseElement(Reflect.get(record, member), `response.${member}`),
+    } as { [TMemberName in TMember]: TElement };
 }
 
 export function expectString(value: unknown, context: string): string {
@@ -373,33 +425,15 @@ function parseUsageBucket(value: unknown, context: string): UsageBucket {
 }
 
 export function parseListProvidersResponse(value: unknown): ListProvidersResponse {
-    const record = expectRecord(value, "response");
-    const providers = expectArray(Reflect.get(record, "providers"), "response.providers");
-
-    return {
-        providers: providers.map((entry, index) =>
-            parseProviderResponse(entry, `response.providers[${index}]`),
-        ),
-    };
+    return parseListResponse(value, "providers", parseProviderResponse);
 }
 
 export function parseProviderEnvelope(value: unknown): ProviderEnvelope {
-    const record = expectRecord(value, "response");
-
-    return {
-        provider: parseProviderResponse(Reflect.get(record, "provider"), "response.provider"),
-    };
+    return parseEnvelopeResponse(value, "provider", parseProviderResponse);
 }
 
 export function parseListModelsResponse(value: unknown): ListModelsResponse {
-    const record = expectRecord(value, "response");
-    const models = expectArray(Reflect.get(record, "models"), "response.models");
-
-    return {
-        models: models.map((entry, index) =>
-            parseModelResponse(entry, `response.models[${index}]`),
-        ),
-    };
+    return parseListResponse(value, "models", parseModelResponse);
 }
 
 export function parseDiscoverModelsResponse(value: unknown): DiscoverModelsResponse {
@@ -407,33 +441,15 @@ export function parseDiscoverModelsResponse(value: unknown): DiscoverModelsRespo
 }
 
 export function parseModelEnvelope(value: unknown): ModelEnvelope {
-    const record = expectRecord(value, "response");
-
-    return {
-        model: parseModelResponse(Reflect.get(record, "model"), "response.model"),
-    };
+    return parseEnvelopeResponse(value, "model", parseModelResponse);
 }
 
 export function parseListUsageResponse(value: unknown): ListUsageResponse {
-    const record = expectRecord(value, "response");
-    const apiLogs = expectArray(Reflect.get(record, "api_logs"), "response.api_logs");
-
-    return {
-        api_logs: apiLogs.map((entry, index) =>
-            parseApiLogResponse(entry, `response.api_logs[${index}]`),
-        ),
-    };
+    return parseListResponse(value, "api_logs", parseApiLogResponse);
 }
 
 export function parseQueryUsageResponse(value: unknown): QueryUsageResponse {
-    const record = expectRecord(value, "response");
-    const buckets = expectArray(Reflect.get(record, "buckets"), "response.buckets");
-
-    return {
-        buckets: buckets.map((entry, index) =>
-            parseUsageBucket(entry, `response.buckets[${index}]`),
-        ),
-    };
+    return parseListResponse(value, "buckets", parseUsageBucket);
 }
 
 /** One gateway API key row: the complete readable state, plaintext secret included. */
@@ -450,22 +466,11 @@ function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
 }
 
 export function parseListApiKeysResponse(value: unknown): ListApiKeysResponse {
-    const record = expectRecord(value, "response");
-    const apiKeys = expectArray(Reflect.get(record, "api_keys"), "response.api_keys");
-
-    return {
-        api_keys: apiKeys.map((entry, index) =>
-            parseApiKeyResponse(entry, `response.api_keys[${index}]`),
-        ),
-    };
+    return parseListResponse(value, "api_keys", parseApiKeyResponse);
 }
 
 export function parseApiKeyEnvelope(value: unknown): ApiKeyEnvelope {
-    const record = expectRecord(value, "response");
-
-    return {
-        api_key: parseApiKeyResponse(Reflect.get(record, "api_key"), "response.api_key"),
-    };
+    return parseEnvelopeResponse(value, "api_key", parseApiKeyResponse);
 }
 
 /**

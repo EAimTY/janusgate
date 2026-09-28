@@ -82,6 +82,29 @@ async fn discovery_walks_token_paginated_lists() {
     mock.shutdown.send(()).ok();
 }
 
+/// The provisioning fixture vocabulary every provisioning test binds: the credential secret
+/// `test-secret`, the client id `test-client-id`, and no client secret.
+fn provision_constants() -> ProvisioningEnv<'static> {
+    ProvisioningEnv {
+        secret: Some("test-secret"),
+        client_id: "test-client-id",
+        client_secret: None,
+    }
+}
+
+/// The scaffolding one provisioning test consumes: the control-plane client and a fresh working
+/// state seeded with `slots` and bound to the mock's base URL. Each test keeps its mock's
+/// shutdown, so the mock serves until the test's own assertions have run.
+fn provisioning_scaffolding(
+    mock: &MockUpstream,
+    slots: BTreeMap<String, String>,
+) -> (reqwest::Client, WorkingState) {
+    (
+        crate::http_client::control_plane(),
+        WorkingState::new(slots, Some(mock.base())),
+    )
+}
+
 /// Pins the provisioning engine: the conditional step is skipped, the poll
 /// repeats until done, and the extractions fold into the working state.
 ///
@@ -136,20 +159,12 @@ async fn provisioning_runs_steps_and_polls_the_operation() {
         ]))
         .unwrap();
 
-    let client = crate::http_client::control_plane();
-
     let mut slots = BTreeMap::new();
     slots.insert("already".to_string(), "present".to_string());
 
-    let base_url = Some(mock.base());
+    let (client, mut state) = provisioning_scaffolding(&mock, slots);
 
-    let mut state = WorkingState::new(slots, base_url.clone());
-
-    let constants = ProvisioningEnv {
-        secret: Some("test-secret"),
-        client_id: "test-client-id",
-        client_secret: None,
-    };
+    let constants = provision_constants();
 
     run_steps(&client, &steps, &constants, &mut state)
         .await
@@ -215,15 +230,9 @@ async fn provisioning_polls_a_form_encoded_operation_to_completion() {
             ]))
             .unwrap();
 
-        let client = crate::http_client::control_plane();
+        let (client, mut state) = provisioning_scaffolding(&mock, BTreeMap::new());
 
-        let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
-
-        let constants = ProvisioningEnv {
-            secret: Some("test-secret"),
-            client_id: "test-client-id",
-            client_secret: None,
-        };
+        let constants = provision_constants();
 
         run_steps(&client, &steps, &constants, &mut state)
             .await
@@ -278,15 +287,9 @@ async fn a_form_encoded_poll_surfaces_its_error_member_as_the_failure_payload() 
         ]))
         .unwrap();
 
-    let client = crate::http_client::control_plane();
+    let (client, mut state) = provisioning_scaffolding(&mock, BTreeMap::new());
 
-    let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
-
-    let constants = ProvisioningEnv {
-        secret: Some("test-secret"),
-        client_id: "test-client-id",
-        client_secret: None,
-    };
+    let constants = provision_constants();
 
     let outcome = run_steps(&client, &steps, &constants, &mut state).await;
 
@@ -368,17 +371,9 @@ async fn provisioning_resolves_slots_previous_stages_placed() {
         ]))
         .unwrap();
 
-    let client = crate::http_client::control_plane();
+    let (client, mut state) = provisioning_scaffolding(&mock, BTreeMap::new());
 
-    let base_url = Some(mock.base());
-
-    let mut state = WorkingState::new(BTreeMap::new(), base_url.clone());
-
-    let constants = ProvisioningEnv {
-        secret: Some("test-secret"),
-        client_id: "test-client-id",
-        client_secret: None,
-    };
+    let constants = provision_constants();
 
     run_steps(&client, &steps, &constants, &mut state)
         .await
@@ -442,11 +437,7 @@ fn expiry_step() -> Vec<crate::provider::definition::provisioning::ProvisioningS
 async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
     let steps = expiry_step();
 
-    let constants = ProvisioningEnv {
-        secret: Some("test-secret"),
-        client_id: "test-client-id",
-        client_secret: None,
-    };
+    let constants = provision_constants();
 
     for seconds in [0, -1, crate::unix_time::unix_now() - 3_600] {
         let mock = MockUpstream::start(vec![
@@ -454,9 +445,7 @@ async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
         ])
         .await;
 
-        let client = crate::http_client::control_plane();
-
-        let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
+        let (client, mut state) = provisioning_scaffolding(&mock, BTreeMap::new());
 
         let outcome = run_steps(&client, &steps, &constants, &mut state).await;
 
@@ -482,9 +471,7 @@ async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
     ])
     .await;
 
-    let client = crate::http_client::control_plane();
-
-    let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
+    let (client, mut state) = provisioning_scaffolding(&mock, BTreeMap::new());
 
     run_steps(&client, &steps, &constants, &mut state)
         .await

@@ -30,7 +30,7 @@ import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
-import { credentialBadge } from "/src/ui/providers-table";
+import { credentialBadge, OAUTH_NEVER_FRESH_SENTENCE } from "/src/ui/providers-table";
 import { StatedNotice } from "./read-notice";
 import { RowNotFound } from "./row-not-found";
 
@@ -264,7 +264,7 @@ export function ProviderDetailScreen(props: {
                                 title={
                                     standing() === "expired"
                                         ? "The OAuth credentials have expired."
-                                        : "The OAuth credentials were never fresh."
+                                        : OAUTH_NEVER_FRESH_SENTENCE
                                 }
                                 detail={
                                     <>

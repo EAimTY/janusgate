@@ -3,10 +3,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import {
-    isModelEffectivelyServing,
-    servingModelCountsByProvider,
-} from "/src/management-api/serving";
+import { servingModelCountsByProvider } from "/src/management-api/serving";
 import {
     credentialKindLabel,
     isOAuthProviderRow,
@@ -34,6 +31,7 @@ import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton, StatLink } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { NO_STORED_EXPIRY_SENTENCE } from "/src/ui/providers-table";
 import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
 import { OUTWARD_SURFACES } from "./outward-surfaces";
 
@@ -129,12 +127,23 @@ export function HomeScreen(props: {
 
     const providersById = createMemo(() => indexRowsById(entities().providers));
 
-    const servingModels = createMemo(
-        () =>
-            entities().models.filter((model) =>
-                isModelEffectivelyServing(model, providersById().get(model.provider_id)),
-            ).length,
+    // One walk over the models per listings change: the per-provider serving
+    // counts the attention lines read below. The "Models routing" figure is
+    // exactly that map's sum, so it derives from the same accumulation
+    // instead of filtering the models a second time.
+    const servingModelCounts = createMemo(() =>
+        servingModelCountsByProvider(entities().models, providersById()),
     );
+
+    const servingModels = createMemo(() => {
+        let total = 0;
+
+        for (const count of servingModelCounts().values()) {
+            total += count;
+        }
+
+        return total;
+    });
 
     const attentionProviders = createMemo(() =>
         entities().providers.flatMap((provider): ProviderAttention[] => {
@@ -160,7 +169,7 @@ export function HomeScreen(props: {
     // cannot repair a row that is merely switched off.
     const providersWithoutServingModels = createMemo(
         (): ReadonlyArray<ProviderServingAttention> => {
-            const servingCounts = servingModelCountsByProvider(entities().models, providersById());
+            const servingCounts = servingModelCounts();
 
             return entities().providers.flatMap((provider): ProviderServingAttention[] => {
                 if (!provider.is_enabled || (servingCounts.get(provider.id) ?? 0) !== 0) {
@@ -524,7 +533,7 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
     if (provider.expires_at === null) {
         return {
             label: "Credential not fresh",
-            detail: "No expiry is stored for this provider.",
+            detail: NO_STORED_EXPIRY_SENTENCE,
         };
     }
 
