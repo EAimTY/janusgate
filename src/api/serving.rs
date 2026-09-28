@@ -32,10 +32,13 @@ use crate::{
     },
 };
 use axum::{
+    Router,
     body::{Body, Bytes},
-    extract::{FromRequestParts, OriginalUri, Request, State, rejection::BytesRejection},
+    extract::{
+        DefaultBodyLimit, FromRequestParts, OriginalUri, Request, State, rejection::BytesRejection,
+    },
     http::{Method, StatusCode, header, request::Parts as RequestParts},
-    middleware::Next,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -231,6 +234,37 @@ where
     );
 
     error_response::<S>(error)
+}
+
+/// Composes one surface router's shared pipeline tail — the surface's 404/405 fallbacks
+/// ([`fallback`], [`method_not_allowed`]), the authentication middleware ([`authenticate`]), and
+/// the body limit ([`MAX_BODY_BYTES`]) — onto the surface's route set. Each surface's `router`
+/// function owns only its route set and delegates this tail, so all three surfaces compose one
+/// identical service tree.
+///
+/// The order is load-bearing, because an axum layer wraps everything registered before it:
+///
+/// - The authentication middleware wraps the routes and their fallbacks — the fallbacks are
+///   registered first — so an unauthorized request is rejected with the surface's 401 before a 404
+///   or 405 body is produced (README §2.2 item 4).
+/// - The body limit is extractor-side configuration: the [`DefaultBodyLimit`] layer only plants the
+///   limit into request extensions, and each handler's [`Bytes`] extractor enforces it, rendering
+///   the surface's 413 ([`BodyError`]) at extraction time — after authentication, since the
+///   handlers run within [`authenticate`]'s `next.run` (README §4: the 64 MiB outward body cap).
+///
+/// `database` feeds the authentication middleware its own state, so every request checks the
+/// presented key against the live database rather than the router state.
+pub(super) fn surface_router<S>(database: Database, routes: Router<Context>) -> Router<Context>
+where
+    // `'static` because the fallbacks and the authentication middleware are stored in the
+    // router's service tree, whose handlers must be `'static`.
+    S: Surface + 'static,
+{
+    routes
+        .fallback(fallback::<S>)
+        .method_not_allowed_fallback(method_not_allowed::<S>)
+        .layer(middleware::from_fn_with_state(database, authenticate::<S>))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 /// Body extractor rejection mapped into the surface's error shape: an over-limit body renders the

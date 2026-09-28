@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { createSignal } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { discoveryStateLabel } from "/src/management-api/vocabulary";
@@ -14,9 +14,11 @@ import {
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
+import { VanishedModelNotice } from "/src/screens/vanished-model-notice";
 import { AppLink } from "/src/ui/app-link";
+import { proseLinkClass } from "/src/ui/attributes";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, type BadgeTone, Notice } from "/src/ui/feedback";
+import { Badge, type BadgeTone } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 import { RowNotFound } from "./row-not-found";
@@ -129,36 +131,11 @@ function ModelFacts(props: {
                 <ButtonLink href={hrefs.modelEdit(props.model.id)}>Edit model</ButtonLink>
             </PageHeader>
 
-            <Show when={props.model.discovery_state === "vanished"}>
-                {/* The same warn notice every screen states, with the two
-                recovery paths linked where they are named. */}
-                <Notice
-                    tone="warn"
-                    title="The upstream no longer reports this model."
-                    detail={
-                        <>
-                            It serves nothing meanwhile.{" "}
-                            <AppLink
-                                href={hrefs.providerDetail(props.model.provider_id)}
-                                class="font-medium text-accent hover:text-accent-strong"
-                            >
-                                Discover again on the provider's page
-                            </AppLink>
-                            {" when the upstream lists it, or "}
-                            <AppLink
-                                href={hrefs.modelNew(
-                                    props.model.provider_id,
-                                    props.model.upstream_id,
-                                )}
-                                class="font-medium text-accent hover:text-accent-strong"
-                            >
-                                claim it back from the Create model page
-                            </AppLink>
-                            {"."}
-                        </>
-                    }
-                />
-            </Show>
+            <VanishedModelNotice
+                isVanished={props.model.discovery_state === "vanished"}
+                providerId={props.model.provider_id}
+                upstreamId={props.model.upstream_id}
+            />
 
             <Card>
                 <CardHeader title="Details" />
@@ -183,7 +160,7 @@ function ModelFacts(props: {
                             ) : (
                                 <AppLink
                                     href={hrefs.providerDetail(props.provider.id)}
-                                    class="font-medium text-accent hover:text-accent-strong"
+                                    class={proseLinkClass}
                                 >
                                     {props.provider.name}
                                 </AppLink>

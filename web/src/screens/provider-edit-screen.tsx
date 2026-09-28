@@ -12,11 +12,7 @@ import {
     modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import {
-    credentialStanding,
-    isLapsedCredentialStanding,
-    isOAuthProviderRow,
-} from "/src/management-api/vocabulary";
+import { isOAuthProviderRow, lapsedCredentialStanding } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -206,7 +202,10 @@ function seedFrom(row: ProviderResponse): {
         name: row.name,
         isCustomPrefix,
         customPrefix: isCustomPrefix ? row.model_prefix : "",
-        // A static key's row carries the stored base URL; an OAuth login's has none.
+        // The row's stored base URL seeds the field whatever kind minted it
+        // — an OAuth row carries the same nullable column — but this form
+        // exposes no base-URL editor for an OAuth row, so its seed is the
+        // empty string of an absent field, never a statement about the row.
         baseUrl: isOAuthProviderRow(row) ? "" : row.base_url,
     };
 }
@@ -216,7 +215,8 @@ function seedFrom(row: ProviderResponse): {
  * gateway last returned: `providers:update` is a full-state write, so the
  * update rewrote exactly these fields, and this restatement is the form's new
  * truth once the save answers. The secret is never part of it — it is
- * write-only, and an OAuth row has no base URL to restate.
+ * write-only — and an OAuth row's base URL is never part of it either, the
+ * form exposing no editor whose value could be restated.
  */
 function withEdits(
     row: ProviderResponse,
@@ -579,8 +579,7 @@ function CredentialsCard(props: {
     // The reconnect offer gates on the vocabulary's lapsed verdict read over
     // the gateway's latest row, so a current credential is never invited
     // into a second authorization flow.
-    const isReconnectOffered = (): boolean =>
-        isLapsedCredentialStanding(credentialStanding(credentialRow()));
+    const isReconnectOffered = (): boolean => lapsedCredentialStanding(credentialRow()) !== null;
 
     return (
         <Card>

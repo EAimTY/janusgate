@@ -15,6 +15,7 @@ import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { AppLink } from "/src/ui/app-link";
+import { proseLinkClass } from "/src/ui/attributes";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
@@ -99,7 +100,7 @@ export function ApiKeyDetailScreen(props: {
                             URLs are on the{" "}
                             <AppLink
                                 href={hrefs.home()}
-                                class="font-medium text-accent hover:underline dark:text-accent-strong"
+                                class={proseLinkClass}
                             >
                                 Overview
                             </AppLink>

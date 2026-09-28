@@ -8,6 +8,7 @@ import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/voc
 import { hrefs, isCurrentAddress, navigate } from "/src/router";
 import { ReadNotice, StatedNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
+import { proseLinkClass } from "/src/ui/attributes";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
 import { Badge, type BadgeTone, EmptyState, Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
@@ -638,7 +639,7 @@ function UsageEntityLabel(props: {
         >
             <AppLink
                 href={props.href}
-                class="font-medium text-accent hover:text-accent-strong"
+                class={proseLinkClass}
             >
                 {props.text}
             </AppLink>

@@ -9,9 +9,8 @@ import {
 } from "/src/management-api/serving";
 import {
     credentialKindLabel,
-    credentialStanding,
-    isLapsedCredentialStanding,
     isOAuthProviderRow,
+    lapsedCredentialStanding,
     type OauthProviderRow,
 } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
@@ -28,6 +27,7 @@ import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { readUsageBuckets, readUsageEntities, type UsageEntities } from "/src/screens/usage-read";
 import { AppLink } from "/src/ui/app-link";
+import { proseLinkClass } from "/src/ui/attributes";
 import { BarChart } from "/src/ui/bar-chart";
 import { CopyButton } from "/src/ui/clipboard";
 import { ButtonLink } from "/src/ui/controls";
@@ -463,7 +463,7 @@ function EndpointsCard(props: { readonly baseUrl: string }): JSX.Element {
                 A serving client authenticates with a serving API key — create one under{" "}
                 <AppLink
                     href={hrefs.apiKeys()}
-                    class="font-medium text-accent hover:underline dark:text-accent-strong"
+                    class={proseLinkClass}
                 >
                     API keys
                 </AppLink>{" "}
@@ -512,12 +512,12 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
     readonly label: string;
     readonly detail: string;
 } | null {
-    // The gate is the vocabulary's one lapsed verdict over the row's
-    // standing. The missing-expiry column below is the never-fresh
-    // standing's own definition in `credentialStanding`, so past that gate
-    // the narrow is only the title's switch, no second verdict — and the
-    // narrowed column feeds the expired line's absolute instant.
-    if (!isLapsedCredentialStanding(credentialStanding(provider))) {
+    // The gate is the vocabulary's one lapsed composition over the row. The
+    // missing-expiry column below is the never-fresh standing's own
+    // definition in `credentialStanding`, so past the gate the branch is
+    // already fixed and the non-null column feeds the expired line's
+    // absolute instant.
+    if (lapsedCredentialStanding(provider) === null) {
         return null;
     }
 

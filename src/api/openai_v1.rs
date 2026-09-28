@@ -21,9 +21,8 @@ use crate::{
 use axum::{
     Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Request, State},
+    extract::{Request, State},
     http::{StatusCode, header},
-    middleware,
     response::Response,
     routing::{get, post},
 };
@@ -83,21 +82,14 @@ struct ModelObject {
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its own 404/405
 /// responses.
-///
-/// `database` feeds the authentication middleware its own state, so every request checks the
-/// presented key against the live database rather than the router state.
 pub(super) fn router(database: Database) -> Router<Context> {
-    Router::new()
-        .route("/chat/completions", post(chat_completions))
-        .route("/responses", post(responses))
-        .route("/models", get(models))
-        .fallback(serving::fallback::<Surface>)
-        .method_not_allowed_fallback(serving::method_not_allowed::<Surface>)
-        .layer(middleware::from_fn_with_state(
-            database,
-            serving::authenticate::<Surface>,
-        ))
-        .layer(DefaultBodyLimit::max(serving::MAX_BODY_BYTES))
+    serving::surface_router::<Surface>(
+        database,
+        Router::new()
+            .route("/chat/completions", post(chat_completions))
+            .route("/responses", post(responses))
+            .route("/models", get(models)),
+    )
 }
 
 /// Extracts the bearer token from an `Authorization` header value.

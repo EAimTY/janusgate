@@ -174,15 +174,35 @@ export function credentialStanding(provider: ProviderResponse): CredentialStandi
  * stored — the "needs a human" verdict over the standing: `"expired"` once
  * the stored OAuth expiry has passed, or `"never-fresh"` when an OAuth row
  * stores no expiry at all. A `"valid"` login is not lapsed, and a static
- * key — which never expires and states no standing at all — never is. Takes
- * the standing rather than the row so every presentation derives the
- * standing once, from `credentialStanding`, and shares this one disjunction
- * over it.
+ * key — which never expires and states no standing at all — never is. The
+ * internal disjunction the exported row-level verdict
+ * `lapsedCredentialStanding` composes over `credentialStanding`'s
+ * derivation.
  */
-export function isLapsedCredentialStanding(
+function isLapsedCredentialStanding(
     standing: CredentialStanding,
 ): standing is "expired" | "never-fresh" {
     return standing === "expired" || standing === "never-fresh";
+}
+
+/**
+ * A provider row's credential standing when it names a credential the gateway
+ * cannot use as stored — the "needs a human" verdict: `"expired"` once the
+ * stored OAuth expiry has passed, or `"never-fresh"` when an OAuth row stores
+ * no expiry at all — and `null` when there is nothing to show: a valid OAuth
+ * login needs no human, and a static key, which never expires, states no
+ * standing at all. The composition of `credentialStanding` with
+ * `isLapsedCredentialStanding` over the row itself, hoisted beside its two
+ * pieces so the overview's lapsed-credential attention, the provider page's
+ * reconnect notice, and the edit page's reconnect offer state one verdict
+ * instead of spelling the composition three times.
+ */
+export function lapsedCredentialStanding(
+    provider: ProviderResponse,
+): "expired" | "never-fresh" | null {
+    const standing = credentialStanding(provider);
+
+    return isLapsedCredentialStanding(standing) ? standing : null;
 }
 
 const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {

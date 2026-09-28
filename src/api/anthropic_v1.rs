@@ -27,9 +27,8 @@ use crate::{
 use axum::{
     Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Request, State},
+    extract::{Request, State},
     http::StatusCode,
-    middleware,
     response::Response,
     routing::{get, post},
 };
@@ -136,20 +135,13 @@ fn native_model_page(listed: Vec<(String, String)>) -> ModelList {
 }
 
 /// Constructs the surface router with Anthropic-key authentication and its own 404/405 responses.
-///
-/// `database` feeds the authentication middleware its own state, so every request checks the
-/// presented key against the live database rather than the router state.
 pub(super) fn router(database: Database) -> Router<Context> {
-    Router::new()
-        .route("/messages", post(messages))
-        .route("/models", get(models))
-        .fallback(serving::fallback::<Surface>)
-        .method_not_allowed_fallback(serving::method_not_allowed::<Surface>)
-        .layer(middleware::from_fn_with_state(
-            database,
-            serving::authenticate::<Surface>,
-        ))
-        .layer(DefaultBodyLimit::max(serving::MAX_BODY_BYTES))
+    serving::surface_router::<Surface>(
+        database,
+        Router::new()
+            .route("/messages", post(messages))
+            .route("/models", get(models)),
+    )
 }
 
 /// Handles `POST /messages`.

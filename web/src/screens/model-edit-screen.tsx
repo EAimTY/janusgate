@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Show } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -16,11 +16,10 @@ import {
     type ScreenRead,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
-import { AppLink } from "/src/ui/app-link";
+import { VanishedModelNotice } from "/src/screens/vanished-model-notice";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     composedPublicId,
@@ -113,38 +112,17 @@ export function ModelEditScreen(props: {
                         backLabel="Model"
                     />
 
-                    {/* The suspension the detail page states, restated here:
-                        this page is reachable by deep link, and it is where
-                        an "enable it again" edit lands — a save of the
-                        enabled switch must not read as service restored
-                        while the upstream still withholds the row. The
-                        wording and both link targets mirror the detail
-                        page's vanish notice exactly. */}
-                    <Show when={row.discovery_state === "vanished"}>
-                        <Notice
-                            tone="warn"
-                            title="The upstream no longer reports this model."
-                            detail={
-                                <>
-                                    It serves nothing meanwhile.{" "}
-                                    <AppLink
-                                        href={hrefs.providerDetail(row.provider_id)}
-                                        class="font-medium text-accent hover:text-accent-strong"
-                                    >
-                                        Discover again on the provider's page
-                                    </AppLink>
-                                    {" when the upstream lists it, or "}
-                                    <AppLink
-                                        href={hrefs.modelNew(row.provider_id, row.upstream_id)}
-                                        class="font-medium text-accent hover:text-accent-strong"
-                                    >
-                                        claim it back from the Create model page
-                                    </AppLink>
-                                    {"."}
-                                </>
-                            }
-                        />
-                    </Show>
+                    {/* The suspension the detail page states, restated here
+                        through the shared notice: this page is reachable by
+                        deep link, and it is where an "enable it again" edit
+                        lands — a save of the enabled switch must not read as
+                        service restored while the upstream still withholds
+                        the row. */}
+                    <VanishedModelNotice
+                        isVanished={row.discovery_state === "vanished"}
+                        providerId={row.provider_id}
+                        upstreamId={row.upstream_id}
+                    />
 
                     <HoldNotice
                         isHeld={isRowHeld()}

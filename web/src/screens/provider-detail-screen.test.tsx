@@ -419,6 +419,61 @@ describe("ProviderDetailScreen facts", () => {
         const allModels = linkTo("/models?provider=5");
         expect(allModels.textContent).toContain("All models");
     });
+
+    // The base-URL fact's whole truth table over the row union: the OAuth
+    // variant carries the same nullable column the static kind does — an
+    // operator types it at the flow's start, a renewal's fold or provisioning
+    // extraction may replace it — so the fact renders whenever the row stores
+    // one and states nothing when it stores none, for either kind.
+    const validExpiry = 4_102_444_800_000_000;
+
+    /** The shared OAuth row, holding a stored base URL and a valid credential. */
+    const oauthProvider = providerRow({
+        type: "oauth",
+        id: 5,
+        name: "local",
+        model_prefix: "local-",
+        provider_definition_name: "codex-oauth",
+        format: "openai_response",
+        base_url: "https://relay.example.com",
+        expires_at: validExpiry,
+    });
+
+    it("renders a static row's stored base URL as a fact", async () => {
+        mount(provider);
+        await settle();
+
+        expect(bodyText()).toContain("Upstream base URL");
+        expect(bodyText()).toContain("https://upstream.example.com");
+    });
+
+    it("renders an OAuth row's stored base URL as the same fact", async () => {
+        mount(oauthProvider);
+        await settle();
+
+        expect(bodyText()).toContain("Upstream base URL");
+        expect(bodyText()).toContain("https://relay.example.com");
+    });
+
+    it("states no base-URL fact for a static row storing none", async () => {
+        mount({
+            ...provider,
+            base_url: null,
+        });
+        await settle();
+
+        expect(bodyText()).not.toContain("Upstream base URL");
+    });
+
+    it("states no base-URL fact for an OAuth row storing none", async () => {
+        mount({
+            ...oauthProvider,
+            base_url: null,
+        });
+        await settle();
+
+        expect(bodyText()).not.toContain("Upstream base URL");
+    });
 });
 
 describe("ProviderDetailScreen credential reconnect", () => {

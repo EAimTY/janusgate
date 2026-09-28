@@ -13,12 +13,7 @@ use crate::{
     context::Context,
     database::Database,
 };
-use axum::{
-    Router,
-    extract::{DefaultBodyLimit, Request},
-    http::StatusCode,
-    middleware,
-};
+use axum::{Router, extract::Request, http::StatusCode};
 use serde::Serialize;
 
 pub(super) mod generate_content;
@@ -49,20 +44,13 @@ impl serving::Surface for Surface {
 }
 
 /// Constructs the prefix router with Gemini-key authentication and its own 404/405 responses.
-///
-/// `database` feeds the authentication middleware its own state, so every request checks the
-/// presented key against the live database rather than the router state.
 pub(super) fn router(database: Database) -> Router<Context> {
-    Router::new()
-        .merge(generate_content::router())
-        .merge(interactions::router())
-        .fallback(serving::fallback::<Surface>)
-        .method_not_allowed_fallback(serving::method_not_allowed::<Surface>)
-        .layer(middleware::from_fn_with_state(
-            database,
-            serving::authenticate::<Surface>,
-        ))
-        .layer(DefaultBodyLimit::max(serving::MAX_BODY_BYTES))
+    serving::surface_router::<Surface>(
+        database,
+        Router::new()
+            .merge(generate_content::router())
+            .merge(interactions::router()),
+    )
 }
 
 /// Reports whether a query string carries `alt=sse`: the only supported streaming query form of

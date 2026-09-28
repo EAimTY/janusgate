@@ -8,6 +8,7 @@ use crate::{
     sse, unix_time,
 };
 use serde::Serialize;
+use serde_json::Value;
 
 /// The aggregated, non-streaming Chat Completions response body.
 #[derive(Debug, Serialize)]
@@ -80,8 +81,25 @@ struct ResponseChoice {
     /// The complete assistant message.
     message: AssistantMessage,
 
+    /// Official `logprobs` member: required-nullable on the official choice schema, which the
+    /// gateway never populates because it tracks no token probabilities, so the member renders
+    /// `null` and stays present (README §6.3).
+    logprobs: Option<ChoiceLogprobs>,
+
     /// Canonical finish reason; `stop` when the upstream reported none.
     finish_reason: &'static str,
+}
+
+/// The official choice `logprobs` object. Never rendered: the gateway tracks no token
+/// probabilities, so [`ResponseChoice::logprobs`] is always `None`; the token-logprob element
+/// shape is the official OpenAI shape, which the gateway never renders.
+#[derive(Debug, Serialize)]
+struct ChoiceLogprobs {
+    /// Log probabilities of the message content tokens.
+    content: Vec<Value>,
+
+    /// Log probabilities of the message refusal tokens.
+    refusal: Vec<Value>,
 }
 
 /// The complete aggregated assistant message.
@@ -92,6 +110,11 @@ struct AssistantMessage {
 
     /// The full assistant text, `null` for a turn that produced none.
     content: Option<String>,
+
+    /// Official `refusal` member: required-nullable on the official response message schema,
+    /// which the gateway never populates because it never produces refusals, so the member
+    /// renders `null` and stays present (README §6.3).
+    refusal: Option<String>,
 
     /// The full reasoning text, omitted for a turn that produced none.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -576,6 +599,7 @@ pub(super) fn render_json_response(
     let message = AssistantMessage {
         role: "assistant",
         content: (!aggregation.text.is_empty()).then(|| aggregation.text.clone()),
+        refusal: None,
         reasoning_content: (!aggregation.reasoning.is_empty())
             .then(|| aggregation.reasoning.clone()),
         tool_calls,
@@ -589,6 +613,7 @@ pub(super) fn render_json_response(
         choices: vec![ResponseChoice {
             index: 0,
             message,
+            logprobs: None,
             finish_reason: aggregation
                 .finish
                 .map(super::finish_reason_to_openai)
@@ -601,6 +626,7 @@ pub(super) fn render_json_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{format::aggregated_body_json, ir::IrFinishReason};
     use serde_json::Value;
 
     /// Parses the JSON payload of every rendered SSE frame.
@@ -1003,6 +1029,41 @@ mod tests {
         assert_eq!(
             payload.pointer("/choices/0/delta/tool_calls/0/id"),
             Some(&serde_json::json!("call_5"))
+        );
+    }
+
+    /// The aggregated choice carries every required member of the official
+    /// chat completion object shape, including the required-nullable members
+    /// the gateway always renders empty — the choice's `logprobs` (object or
+    /// null) and the message's `refusal` (string or null), which the official
+    /// schema and openai-node both type as required and which the gateway
+    /// never produces (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body diverges from the official shape.
+    #[test]
+    fn aggregated_body_carries_the_required_nullable_choice_and_message_members() {
+        let aggregation = IrAggregation {
+            text: "answer".to_string(),
+            finish: Some(IrFinishReason::Stop),
+            ..IrAggregation::default()
+        };
+
+        let body = aggregated_body_json(&render_json_response("m", &aggregation));
+
+        assert_eq!(
+            body.pointer("/choices/0"),
+            Some(&serde_json::json!({
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "refusal": null,
+                },
+                "logprobs": null,
+                "finish_reason": "stop",
+            }))
         );
     }
 }

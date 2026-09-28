@@ -23,6 +23,23 @@ function jsonResponse(status: number, payload: unknown): Promise<Response> {
     );
 }
 
+/**
+ * Installs a `fetch` stub simulating a probe that hangs until its abort
+ * signal fires, then rejects with the standard `AbortError`: only the
+ * caller's abort can end it, never an answer from the gateway.
+ */
+function stubAbortingFetch(): void {
+    vi.stubGlobal(
+        "fetch",
+        (_url: unknown, init?: RequestInit) =>
+            new Promise<never>((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => {
+                    reject(new DOMException("This operation was aborted", "AbortError"));
+                });
+            }),
+    );
+}
+
 function submitConnectionForm(): void {
     const form = document.querySelector("form");
 
@@ -201,15 +218,7 @@ describe("ConnectionScreen", () => {
         // control can end it: the assertions pin that the control aborts the
         // in-flight request and that the interrupted form reopens pristine —
         // no seeded address, no failure notice — rather than as a refusal.
-        vi.stubGlobal(
-            "fetch",
-            (_url: unknown, init?: RequestInit) =>
-                new Promise<never>((_resolve, reject) => {
-                    init?.signal?.addEventListener("abort", () => {
-                        reject(new DOMException("This operation was aborted", "AbortError"));
-                    });
-                }),
-        );
+        stubAbortingFetch();
 
         dispose = render(() => <ConnectionScreen />, document.body);
         await settle();
@@ -254,15 +263,7 @@ describe("ConnectionScreen", () => {
         // The cancellation bypasses the seeding for its own landing only: a
         // genuine refusal after it seeds the address exactly as any refusal
         // does.
-        vi.stubGlobal(
-            "fetch",
-            (_url: unknown, init?: RequestInit) =>
-                new Promise<never>((_resolve, reject) => {
-                    init?.signal?.addEventListener("abort", () => {
-                        reject(new DOMException("This operation was aborted", "AbortError"));
-                    });
-                }),
-        );
+        stubAbortingFetch();
 
         dispose = render(() => <ConnectionScreen />, document.body);
         await settle();
@@ -327,15 +328,7 @@ describe("ConnectionScreen", () => {
 
         // The resubmit hangs until its abort signal fires, so only the
         // Cancel control can end it.
-        vi.stubGlobal(
-            "fetch",
-            (_url: unknown, init?: RequestInit) =>
-                new Promise<never>((_resolve, reject) => {
-                    init?.signal?.addEventListener("abort", () => {
-                        reject(new DOMException("This operation was aborted", "AbortError"));
-                    });
-                }),
-        );
+        stubAbortingFetch();
         typeInto(labeledInput("Management token"), "any token");
         await settle();
         submitConnectionForm();

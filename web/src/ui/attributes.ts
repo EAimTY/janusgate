@@ -13,6 +13,14 @@ export function joinClass(
 }
 
 /**
+ * The one class of an in-prose link — an anchor inside a notice's detail or
+ * a paragraph's copy: medium-weight accent text that shifts to the stronger
+ * accent on hover. Every such link composes this constant, so the treatment
+ * cannot drift between screens.
+ */
+export const proseLinkClass = "font-medium text-accent hover:text-accent-strong";
+
+/**
  * ARIA states are enumerated strings in the DOM typings, not booleans; this
  * keeps the panel's switches honest about it.
  */

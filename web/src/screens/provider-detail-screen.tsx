@@ -6,9 +6,8 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { performManagementCall } from "/src/management-api/outcome";
 import {
     credentialKindLabel,
-    credentialStanding,
-    isLapsedCredentialStanding,
     isOAuthProviderRow,
+    lapsedCredentialStanding,
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
 import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
@@ -26,6 +25,7 @@ import {
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
+import { proseLinkClass } from "/src/ui/attributes";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
@@ -248,13 +248,15 @@ export function ProviderDetailScreen(props: {
                     {/* A lapsed credential's fix lives one page over, where
                         reauthorization runs — named and linked the way the
                         overview's attention rows name it, not left to a bare
-                        badge beside a generic edit button. A parked provider
-                        defers the way the overview's attention row defers:
-                        reconnecting waits for the re-enable the operator
-                        chose to defer, so the line says so instead of
-                        ordering the reconnect now — while still naming the
-                        edit page, where both the re-enable and the
-                        reconnect live. */}
+                        badge beside a generic edit button. The gate is the
+                        vocabulary's standing, never a badge's rendered word,
+                        so a renamed label cannot silently detach the notice.
+                        A parked provider defers the way the overview's
+                        attention row defers: reconnecting waits for the
+                        re-enable the operator chose to defer, so the line
+                        says so instead of ordering the reconnect now — while
+                        still naming the edit page, where both the re-enable
+                        and the reconnect live. */}
                     <Show when={lapsedCredentialStanding(row)}>
                         {(standing) => (
                             <Notice
@@ -271,7 +273,7 @@ export function ProviderDetailScreen(props: {
                                             : "The provider is disabled — reconnect when you re-enable it; the "}
                                         <AppLink
                                             href={hrefs.providerEdit(row.id)}
-                                            class="font-medium text-accent hover:text-accent-strong"
+                                            class={proseLinkClass}
                                         >
                                             edit page
                                         </AppLink>
@@ -308,29 +310,8 @@ export function ProviderDetailScreen(props: {
     );
 }
 
-/**
- * The credential's standing when it names a state the gateway cannot use as
- * stored — `expired`, or the never-fresh standing — and `null` when it does
- * not: a valid OAuth login needs no reconnect, and a static key, which never
- * expires, earns no credential badge at all. The page's reconnect line gates
- * on the standing, never on a badge's rendered word, so a renamed label
- * cannot silently detach the notice — and the notice and the header badge can
- * never disagree about whether a fix is called for. The lapsed verdict itself
- * is the vocabulary's `isLapsedCredentialStanding`; this wrapper only hands
- * the keyed notice the specific standing its title switches on.
- */
-function lapsedCredentialStanding(provider: ProviderResponse): "expired" | "never-fresh" | null {
-    const standing = credentialStanding(provider);
-
-    return isLapsedCredentialStanding(standing) ? standing : null;
-}
-
 /** What this provider is, read-only: every change lives on the edit page. */
 function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element {
-    // A static key's row carries the base URL; an OAuth login's row has none.
-    const baseUrl = (): string | null =>
-        isOAuthProviderRow(props.provider) ? null : props.provider.base_url;
-
     const credentialLine = (): string | null => {
         if (!isOAuthProviderRow(props.provider) || props.provider.expires_at === null) {
             return null;
@@ -391,7 +372,13 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                     isTabular
                     class="break-all"
                 />
-                <Show when={baseUrl()}>
+                {/* The row's stored instance URL, whichever credential kind
+                    minted it: the OAuth variant carries the same nullable
+                    column the static kind does — an operator types it at the
+                    flow's start and a renewal's fold or provisioning
+                    extraction may replace it — so the fact renders whenever
+                    the row stores one, read-only like every fact here. */}
+                <Show when={props.provider.base_url}>
                     {(url) => (
                         <Fact
                             label="Upstream base URL"
