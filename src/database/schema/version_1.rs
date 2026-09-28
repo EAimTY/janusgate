@@ -215,7 +215,10 @@ const MIGRATION_SQL: &str = "";
 
 #[cfg(test)]
 mod tests {
-    use super::{super::open_memory_connection, SCHEMA};
+    use super::{
+        super::{assert_constraint_violation, open_fresh},
+        SCHEMA,
+    };
     use std::error::Error as StdError;
 
     /// The `credentials` JSON of a minimal static-key provider row, for raw statement probes.
@@ -223,15 +226,16 @@ mod tests {
 
     /// Verifies that this version's DDL applies cleanly to a fresh in-memory database.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the DDL fails to apply.
+    ///
     /// # Panics
     ///
-    /// Panics if opening the in-memory database fails.
+    /// Panics if connecting to the in-memory database fails.
     #[tokio::test]
     async fn schema_applies_to_a_fresh_database() -> Result<(), Box<dyn StdError>> {
-        open_memory_connection()
-            .await
-            .execute_batch(SCHEMA.schema)
-            .await?;
+        open_fresh(SCHEMA.schema).await?;
 
         Ok(())
     }
@@ -327,18 +331,6 @@ mod tests {
         Ok(row.get(0)?)
     }
 
-    /// Opens a fresh database carrying this version's schema.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the DDL fails to apply.
-    async fn open_fresh() -> Result<turso::Connection, Box<dyn StdError>> {
-        let connection = open_memory_connection().await;
-        connection.execute_batch(SCHEMA.schema).await?;
-
-        Ok(connection)
-    }
-
     /// Runs the cycle over `api_keys`.
     ///
     /// # Errors
@@ -349,7 +341,7 @@ mod tests {
     ///
     /// Panics if the identity is recycled.
     async fn cycle_api_key_identity() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         assert_identity_not_recycled(
             &connection,
@@ -372,7 +364,7 @@ mod tests {
     ///
     /// Panics if the identity is recycled.
     async fn cycle_provider_identity() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
         insert_probe_definition(&connection, "def").await?;
 
         assert_identity_not_recycled(
@@ -406,7 +398,7 @@ mod tests {
     /// Panics if an out-of-domain write is not rejected as a constraint violation.
     #[tokio::test]
     async fn provider_definitions_reject_out_of_domain_columns() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
         insert_probe_definition(&connection, "def").await?;
 
         let probes = [
@@ -465,7 +457,7 @@ mod tests {
     /// Panics if an integrity violation is not rejected.
     #[tokio::test]
     async fn providers_enforce_the_definition_foreign_key() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         // Foreign keys are enforced on the migration bootstrap connection and every runtime
         // connection; the probe enables them explicitly like the runtime does.
@@ -532,7 +524,7 @@ mod tests {
     /// Panics if invalid JSON is accepted.
     #[tokio::test]
     async fn providers_reject_malformed_credential_json() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
         insert_probe_definition(&connection, "def").await?;
 
         let outcome = connection
@@ -568,7 +560,7 @@ mod tests {
     ///
     /// Panics if the identity is recycled.
     async fn cycle_model_identity() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
         insert_probe_definition(&connection, "def").await?;
         connection
             .execute_batch(&format!(
@@ -610,7 +602,7 @@ mod tests {
     /// Panics if an illegal state combination is accepted.
     #[tokio::test]
     async fn ongoing_oauth_flows_enforce_their_lifecycle_states() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
         insert_probe_definition(&connection, "def").await?;
 
         /// The shared prefix of a legal insert: definition reference, state token, purpose, and
@@ -891,26 +883,5 @@ mod tests {
         assert_constraint_violation(outcome, "device_exchange_checkpoint");
 
         Ok(())
-    }
-
-    /// Verifies that a probe's failure classifies as a constraint violation — never a
-    /// missing-table or syntax failure, which would make the rejection meaningless.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the write succeeds or fails with any classification but a constraint
-    /// violation.
-    #[expect(
-        clippy::panic,
-        reason = "a rejection outside the constraint classification fails the test loudly"
-    )]
-    fn assert_constraint_violation(outcome: Result<(), turso::Error>, column: &str) {
-        match outcome {
-            Err(turso::Error::Constraint(_)) => {}
-
-            Err(other) => panic!("{column} rejection must be a constraint violation: {other}"),
-
-            Ok(()) => panic!("{column} value outside its closed domain must be rejected"),
-        }
     }
 }

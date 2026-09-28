@@ -71,6 +71,12 @@ export function UsageScreen(props: {
         apiKeys: [],
     });
     const [rows, setRows] = createSignal<ReadonlyArray<ApiLogResponse>>([]);
+    // The read's first success flips this, permanently for the mount: the
+    // read lands the listings and the page together, and a failure installs
+    // nothing, so only a landed read teaches the filter fields which ids the
+    // listings no longer carry. Until then a route-seeded id renders as its
+    // plain value — honest about the nothing read yet.
+    const [hasEntityListings, setHasEntityListings] = createSignal(false);
     const [hasMore, setHasMore] = createSignal(true);
     const [isLoadingMore, setIsLoadingMore] = createSignal(false);
     // The load-more failure is stated beside its own control — the Load more
@@ -119,6 +125,7 @@ export function UsageScreen(props: {
             // their cursor with a filter they never answered.
             setActiveFilter(filter);
             setEntities(entitiesResult);
+            setHasEntityListings(true);
 
             const continuation = nextUsagePage([], pageResult.api_logs);
             setRows(continuation.rows);
@@ -338,6 +345,7 @@ export function UsageScreen(props: {
                             providers={entities().providers}
                             models={entities().models}
                             apiKeys={entities().apiKeys}
+                            hasEntityListings={hasEntityListings()}
                             statusError={statusError(draft().statusInput)}
                             isDisabled={read.isReading()}
                             onEdit={(edits) =>

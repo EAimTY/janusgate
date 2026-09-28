@@ -6,10 +6,9 @@ import { indexRowsById } from "/src/management-api/serving";
 import { hrefs, navigate } from "/src/router";
 import { createScreenRead, readOne, readProviderCatalog } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { ButtonLink, SearchInput, SelectField } from "/src/ui/controls";
+import { ButtonLink, noLongerListedLabel, SearchInput, SelectField } from "/src/ui/controls";
 import { EmptyState, Notice } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
-import { listedOptions } from "/src/ui/listed-options";
 import { ModelList } from "/src/ui/models-table";
 import { SkeletonRows } from "./skeleton-rows";
 
@@ -41,25 +40,22 @@ export function ModelsScreen(props: {
 
     const providersById = createMemo(() => indexRowsById(providers()));
 
-    // A filter is the route, so it can name a provider deleted since the link
-    // was written — the listing the screen read no longer carries it. The
-    // fallback option states the filter in force instead of letting the
-    // select silently reset to "All providers" while the route still filters.
-    const filterOptions = createMemo(() =>
-        listedOptions(
-            [
-                {
-                    value: "",
-                    label: "All providers",
-                },
-                ...providers().map((row) => ({
-                    value: String(row.id),
-                    label: row.name,
-                })),
-            ],
-            props.providerFilter === null ? "" : String(props.providerFilter),
-        ),
-    );
+    // The option list tracks only the provider listing. A filter is the
+    // route, so it can name a provider deleted since the link was written —
+    // the listing the screen read no longer carries it — and the select
+    // states that itself: its absent-value option, worded by
+    // `noLongerListedLabel`, keeps the filter in force visible instead of
+    // letting the select silently reset to "All providers".
+    const filterOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All providers",
+        },
+        ...providers().map((row) => ({
+            value: String(row.id),
+            label: row.name,
+        })),
+    ]);
 
     const visibleModels = createMemo(() => {
         const needle = search().trim().toLowerCase();
@@ -191,6 +187,7 @@ export function ModelsScreen(props: {
                                 props.providerFilter === null ? "" : String(props.providerFilter)
                             }
                             options={filterOptions()}
+                            absentLabel={noLongerListedLabel}
                             onChange={(value) =>
                                 navigate(hrefs.models(value === "" ? null : Number(value)))
                             }

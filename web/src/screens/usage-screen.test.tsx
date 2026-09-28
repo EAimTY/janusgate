@@ -670,6 +670,86 @@ describe("UsageScreen filtering", () => {
     });
 });
 
+describe("UsageScreen filter options before the read lands", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** The Provider select's options, as the DOM holds them. */
+    function providerOptions(): Array<{
+        value: string;
+        label: string;
+        isSelected: boolean;
+    }> {
+        return Array.from(labeledSelect("Provider").options).map((option) => ({
+            value: option.value,
+            label: option.textContent ?? "",
+            isSelected: option.selected,
+        }));
+    }
+
+    it("names a route-seeded id plainly until the read lands, then carries the absence verdict", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        // The route filters to provider 3; the listing the read will land
+        // carries only provider 1.
+        disposes.push(
+            render(
+                () => (
+                    <UsageScreen
+                        api={streamApi(holder, {
+                            providers: [
+                                providerRow(),
+                            ],
+                        })}
+                        filter={{
+                            ...EMPTY_USAGE_FILTER_DRAFT,
+                            providerId: "3",
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The filter card stands while the held page keeps the whole read
+        // cycle in flight — listings and page land together, so nothing has
+        // been read yet. The seeded id has no listing to be absent from: it
+        // renders as its plain value, neither the verdict nor a reset to
+        // "All providers" while the route still filters.
+        expect(providerOptions().some((option) => option.label.includes("no longer listed"))).toBe(
+            false,
+        );
+        expect(providerOptions().at(-1)).toEqual({
+            value: "3",
+            label: "3",
+            isSelected: true,
+        });
+
+        // The read lands whole: provider 3's absence is now a fact the read
+        // listing states, and the trailing option carries the verdict.
+        answerLast(holder.pages, {
+            api_logs: [],
+        });
+        await settle();
+
+        expect(providerOptions().at(-1)).toEqual({
+            value: "3",
+            label: "3 (no longer listed)",
+            isSelected: true,
+        });
+    });
+});
+
 describe("UsageScreen row links", () => {
     const disposes: Array<() => void> = [];
 

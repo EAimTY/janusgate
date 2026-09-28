@@ -48,8 +48,16 @@ afterEach(() => {
     disposes.length = 0;
 });
 
-/** Mounts the controls holding the given fields, collecting the edits they report. */
-function mountControls(fields: UsageFilterFields): {
+/**
+ * Mounts the controls holding the given fields, collecting the edits they
+ * report. The listings stand read by default — the settled state every
+ * option-list fact below is stated past; the pre-read render is pinned by the
+ * mounting screens' suites.
+ */
+function mountControls(
+    fields: UsageFilterFields,
+    hasEntityListings = true,
+): {
     edits: Array<Partial<UsageFilterFields>>;
 } {
     const edits: Array<Partial<UsageFilterFields>> = [];
@@ -68,6 +76,7 @@ function mountControls(fields: UsageFilterFields): {
                     apiKeys={[
                         apiKeyRow,
                     ]}
+                    hasEntityListings={hasEntityListings}
                     statusError={null}
                     isDisabled={false}
                     onEdit={(edit) => {

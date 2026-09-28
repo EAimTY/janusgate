@@ -32,6 +32,8 @@ mod shard_version_1;
 mod version_1;
 
 use log::{debug, info};
+#[cfg(test)]
+use std::error::Error as StdError;
 use turso::Connection;
 #[cfg(test)]
 use turso::{Builder as TursoBuilder, Database as TursoDatabase};
@@ -487,6 +489,41 @@ pub(crate) async fn open_memory_connection() -> Connection {
         .await
         .connect()
         .expect("failed to connect to the in-memory test database")
+}
+
+/// Opens a connection to a fresh in-memory test database carrying `schema` — the shared setup of
+/// the per-version tests in the `version_x` modules, each passing its own `SCHEMA.schema`.
+///
+/// # Errors
+///
+/// Returns an error if the DDL fails to apply.
+#[cfg(test)]
+pub(crate) async fn open_fresh(schema: &str) -> Result<Connection, Box<dyn StdError>> {
+    let connection = open_memory_connection().await;
+    connection.execute_batch(schema).await?;
+
+    Ok(connection)
+}
+
+/// Asserts that a rejected write failed with a constraint violation — never a missing-table or
+/// syntax failure, which would make the rejection meaningless.
+///
+/// # Panics
+///
+/// Panics when the write succeeds or fails with any classification but a constraint violation.
+#[cfg(test)]
+#[expect(
+    clippy::panic,
+    reason = "a rejection outside the constraint classification fails the test loudly"
+)]
+pub(crate) fn assert_constraint_violation(outcome: Result<(), turso::Error>, column: &str) {
+    match outcome {
+        Err(turso::Error::Constraint(_)) => {}
+
+        Err(other) => panic!("{column} rejection must be a constraint violation: {other}"),
+
+        Ok(()) => panic!("{column} value outside its closed domain must be rejected"),
+    }
 }
 
 #[cfg(test)]

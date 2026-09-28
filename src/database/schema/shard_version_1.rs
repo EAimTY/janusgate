@@ -113,20 +113,24 @@ const MIGRATION_SQL: &str = "";
 
 #[cfg(test)]
 mod tests {
-    use super::{super::open_memory_connection, SCHEMA};
+    use super::{
+        super::{assert_constraint_violation, open_fresh},
+        SCHEMA,
+    };
     use std::error::Error as StdError;
 
     /// Verifies that this version's DDL applies cleanly to a fresh in-memory database.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the DDL fails to apply.
+    ///
     /// # Panics
     ///
-    /// Panics if opening the in-memory database fails.
+    /// Panics if connecting to the in-memory database fails.
     #[tokio::test]
     async fn schema_applies_to_a_fresh_database() -> Result<(), Box<dyn StdError>> {
-        open_memory_connection()
-            .await
-            .execute_batch(SCHEMA.schema)
-            .await?;
+        open_fresh(SCHEMA.schema).await?;
 
         Ok(())
     }
@@ -144,7 +148,7 @@ mod tests {
     /// Panics if the illegal endpoint type is not rejected as a constraint violation.
     #[tokio::test]
     async fn api_logs_reject_an_illegal_endpoint_type() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         let outcome = connection
             .execute_batch(
@@ -192,7 +196,7 @@ mod tests {
     /// Panics if an index is missing, unexpected, or carries different columns than declared.
     #[tokio::test]
     async fn api_logs_carry_the_documented_indexes() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         let mut rows = connection
             .query(
@@ -298,7 +302,7 @@ mod tests {
     /// Panics if the illegal outcome is not rejected as a constraint violation.
     #[tokio::test]
     async fn api_logs_reject_an_illegal_outcome() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         let outcome = connection
             .execute_batch(
@@ -325,7 +329,7 @@ mod tests {
     /// Panics if the illegal flag is not rejected as a constraint violation.
     #[tokio::test]
     async fn api_logs_reject_an_illegal_stream_flag() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         let outcome = connection
             .execute_batch(
@@ -353,7 +357,7 @@ mod tests {
     /// Panics if the negative duration is not rejected as a constraint violation.
     #[tokio::test]
     async fn api_logs_reject_a_negative_duration() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         let outcome = connection
             .execute_batch(
@@ -381,7 +385,7 @@ mod tests {
     /// Panics if an illegal status is not rejected as a constraint violation.
     #[tokio::test]
     async fn api_logs_reject_an_illegal_http_status() -> Result<(), Box<dyn StdError>> {
-        let connection = open_fresh().await?;
+        let connection = open_fresh(SCHEMA.schema).await?;
 
         for status in [99, 1000] {
             let outcome = connection
@@ -408,38 +412,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    /// Opens a fresh in-memory database carrying this version's schema.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the DDL fails to apply.
-    async fn open_fresh() -> Result<turso::Connection, Box<dyn StdError>> {
-        let connection = open_memory_connection().await;
-        connection.execute_batch(SCHEMA.schema).await?;
-
-        Ok(connection)
-    }
-
-    /// Asserts that a rejected write failed with a constraint violation — never a missing-table
-    /// or syntax failure, which would make the rejection meaningless.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the write succeeds or fails with any classification but a constraint
-    /// violation.
-    #[expect(
-        clippy::panic,
-        reason = "a rejection outside the constraint classification fails the test loudly"
-    )]
-    fn assert_constraint_violation(outcome: Result<(), turso::Error>, column: &str) {
-        match outcome {
-            Err(turso::Error::Constraint(_)) => {}
-
-            Err(other) => panic!("{column} rejection must be a constraint violation: {other}"),
-
-            Ok(()) => panic!("{column} value outside its closed domain must be rejected"),
-        }
     }
 }

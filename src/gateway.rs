@@ -321,9 +321,11 @@ fn build_upstream_request(
         &routing.model.upstream_id,
     );
 
-    let url_expr = match is_upstream_streaming && inference.stream_url.is_some() {
-        true => inference.stream_url.as_ref().unwrap_or(&inference.url),
-        false => &inference.url,
+    // The streaming URL only when this dispatch streams and one is configured (README §5.2).
+    let url_expr = if is_upstream_streaming {
+        inference.stream_url.as_ref().unwrap_or(&inference.url)
+    } else {
+        &inference.url
     };
 
     let url = env

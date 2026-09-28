@@ -6,8 +6,7 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { API_LOG_ENDPOINT_OPTIONS, API_LOG_OUTCOME_OPTIONS } from "/src/management-api/vocabulary";
-import { SelectField, TextField } from "/src/ui/controls";
-import { listedOptions } from "/src/ui/listed-options";
+import { noLongerListedLabel, SelectField, TextField } from "/src/ui/controls";
 import type { UsageFilterFields, UsageOutcomeChoice, UsageStreamChoice } from "/src/usage-filter";
 
 /**
@@ -54,11 +53,12 @@ const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
  * own grid: both usage screens narrow the same filter type, so both present
  * these fields — the same labels, the same options, the same vocabulary —
  * while each screen owns the bounds it resolves (a rolling window on the
- * listing, explicit instants on the aggregates page). Every option list is
- * built from the entity listings the screen read, so a filter can only name a
- * row the app can also label — except an id the listings no longer carry,
- * which `listedOptions` renders as its own trailing option instead of letting
- * the select silently reset while the filter still sends the id.
+ * listing, explicit instants on the aggregates page). Every option list tracks
+ * only the entity listings the screen read; an id no option carries is stated
+ * by the select's own trailing option, worded by `noLongerListedLabel` once
+ * the listings stand read (`hasEntityListings`) — the point from which the
+ * absence is a fact a read listing states, not an unread one it merely fails
+ * to contradict.
  *
  * The control reports the one field the operator changed and the screen merges
  * it into the filter it holds, so two edits delivered in one task — a change
@@ -70,58 +70,45 @@ export function UsageFilterControls(props: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
     readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
+    /** Whether the screen has read the entity listings at least once — the point from which an unlisted id is a stated absence. */
+    readonly hasEntityListings: boolean;
     /** The inline error for the hand-typed status list, computed and gated on by the screen. */
     readonly statusError: string | null | undefined;
     readonly isDisabled: boolean;
     readonly onEdit: (edits: Partial<UsageFilterFields>) => void;
 }): JSX.Element {
-    const providerOptions = createMemo(() =>
-        listedOptions(
-            [
-                {
-                    value: "",
-                    label: "All providers",
-                },
-                ...props.providers.map((row) => ({
-                    value: String(row.id),
-                    label: row.name,
-                })),
-            ],
-            props.fields.providerId,
-        ),
-    );
+    const providerOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All providers",
+        },
+        ...props.providers.map((row) => ({
+            value: String(row.id),
+            label: row.name,
+        })),
+    ]);
 
-    const modelOptions = createMemo(() =>
-        listedOptions(
-            [
-                {
-                    value: "",
-                    label: "All models",
-                },
-                ...props.models.map((row) => ({
-                    value: String(row.id),
-                    label: row.public_id,
-                })),
-            ],
-            props.fields.modelId,
-        ),
-    );
+    const modelOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All models",
+        },
+        ...props.models.map((row) => ({
+            value: String(row.id),
+            label: row.public_id,
+        })),
+    ]);
 
-    const apiKeyOptions = createMemo(() =>
-        listedOptions(
-            [
-                {
-                    value: "",
-                    label: "All API keys",
-                },
-                ...props.apiKeys.map((row) => ({
-                    value: String(row.id),
-                    label: row.name,
-                })),
-            ],
-            props.fields.apiKeyId,
-        ),
-    );
+    const apiKeyOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All API keys",
+        },
+        ...props.apiKeys.map((row) => ({
+            value: String(row.id),
+            label: row.name,
+        })),
+    ]);
 
     return (
         <>
@@ -129,6 +116,7 @@ export function UsageFilterControls(props: {
                 label="Provider"
                 value={props.fields.providerId}
                 options={providerOptions()}
+                absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
                 onChange={(providerId) =>
                     props.onEdit({
                         providerId,
@@ -140,6 +128,7 @@ export function UsageFilterControls(props: {
                 label="Model"
                 value={props.fields.modelId}
                 options={modelOptions()}
+                absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
                 onChange={(modelId) =>
                     props.onEdit({
                         modelId,
@@ -151,6 +140,7 @@ export function UsageFilterControls(props: {
                 label="API key"
                 value={props.fields.apiKeyId}
                 options={apiKeyOptions()}
+                absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
                 onChange={(apiKeyId) =>
                     props.onEdit({
                         apiKeyId,

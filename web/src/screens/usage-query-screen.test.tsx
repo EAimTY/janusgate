@@ -1642,6 +1642,94 @@ describe("UsageQueryScreen displayed bucket order", () => {
     });
 });
 
+describe("UsageQueryScreen filter options before the listings land", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** The Provider select's options, as the DOM holds them. */
+    function providerOptions(): Array<{
+        value: string;
+        label: string;
+        isSelected: boolean;
+    }> {
+        return Array.from(labeledSelect("Provider").options).map((option) => ({
+            value: option.value,
+            label: option.textContent ?? "",
+            isSelected: option.selected,
+        }));
+    }
+
+    it("names a route-seeded id plainly until the listings land, then carries the absence verdict", async () => {
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {}, []);
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={{
+                            dimension: "provider",
+                            id: 1,
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The filter card stands while the first cycle's listings are still
+        // in flight, and the arrival subject's id fills the Provider field.
+        // The listing is unread — an empty one proves no absence — so the id
+        // renders as its plain value, never the verdict a read could state.
+        expect(holder.providers).toHaveLength(1);
+        expect(providerOptions().some((option) => option.label.includes("no longer listed"))).toBe(
+            false,
+        );
+        expect(providerOptions().at(-1)).toEqual({
+            value: "1",
+            label: "1",
+            isSelected: true,
+        });
+
+        // The listings land without provider 1: the absence is now a fact a
+        // read listing states, and the trailing option carries the verdict.
+        answerLast(holder.providers, {
+            providers: [
+                providerRow({
+                    id: 2,
+                    name: "other",
+                    model_prefix: "other-",
+                }),
+            ],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(providerOptions().at(-1)).toEqual({
+            value: "1",
+            label: "1 (no longer listed)",
+            isSelected: true,
+        });
+    });
+});
+
 describe("UsageQueryScreen aggregates-to-stream door", () => {
     const disposes: Array<() => void> = [];
 

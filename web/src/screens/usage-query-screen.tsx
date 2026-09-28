@@ -126,6 +126,12 @@ export function UsageQueryScreen(props: {
         models: [],
         apiKeys: [],
     });
+    // The entity listings' first successful read flips this, permanently for
+    // the mount: only a read listing states a row's absence, so the filter
+    // fields carry the `(no longer listed)` verdict only past it. The write
+    // sits beside the listings' install — which a superseded cycle never
+    // reaches and a failed read never survives — so the flag never retracts.
+    const [hasEntityListings, setHasEntityListings] = createSignal(false);
     const [groupBy, setGroupBy] = createSignal<ReadonlyArray<UsageGroupBy>>(
         arrivalGroupBy(props.subject),
     );
@@ -305,6 +311,7 @@ export function UsageQueryScreen(props: {
             }
 
             setEntities(listings);
+            setHasEntityListings(true);
 
             if (await runQuery(call.signal)) {
                 setHasRead(true);
@@ -460,6 +467,7 @@ export function UsageQueryScreen(props: {
                             providers={entities().providers}
                             models={entities().models}
                             apiKeys={entities().apiKeys}
+                            hasEntityListings={hasEntityListings()}
                             statusError={statusError(fields().statusInput)}
                             isDisabled={isQuerying()}
                             onEdit={(edits) =>

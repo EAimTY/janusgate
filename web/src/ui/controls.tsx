@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createUniqueId, For, Show } from "solid-js";
+import { createEffect, createMemo, createUniqueId, For, Show } from "solid-js";
 import { AppLink } from "/src/ui/app-link";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Glyph, type GlyphName } from "/src/ui/glyph";
@@ -84,6 +84,14 @@ export function TextField(props: {
     );
 }
 
+/**
+ * The label of the trailing option a select renders for a value none of its
+ * options carry: the id the entity listings, once read, no longer hold.
+ */
+export function noLongerListedLabel(value: string): string {
+    return `${value} (no longer listed)`;
+}
+
 export function SelectField<T extends string>(props: {
     readonly label: string;
     readonly value: T;
@@ -91,6 +99,12 @@ export function SelectField<T extends string>(props: {
         readonly value: T;
         readonly label: string;
     }>;
+    /**
+     * The label of the trailing option rendered when no offered option
+     * carries `value`, so the select keeps stating the choice in force
+     * instead of silently resetting. Absent: the value itself.
+     */
+    readonly absentLabel?: ((value: T) => string) | undefined;
     readonly onChange: (value: T) => void;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
@@ -98,6 +112,40 @@ export function SelectField<T extends string>(props: {
     readonly class?: string | undefined;
 }): JSX.Element {
     const controlId = createUniqueId();
+
+    // A value the options do not carry still selects something: one trailing
+    // option states it, worded by `absentLabel` where the caller can name the
+    // absence. The listed options ride along untouched, so only this option's
+    // node turns over when the absent value moves.
+    const absentOption = createMemo(() => {
+        const value = props.value;
+
+        if (props.options.some((option) => option.value === value)) {
+            return null;
+        }
+
+        return {
+            value,
+            label: props.absentLabel?.(value) ?? value,
+        };
+    });
+
+    let selectElement: HTMLSelectElement | undefined;
+
+    // The displayed selection is the select's own state, driven from the
+    // value: this re-asserts it whenever the value moves, so the select
+    // follows its value even when no option node is recreated. The effect
+    // runs after the flush's DOM updates, so the assignment always lands on
+    // the options the flush produced; the options' `selected` attributes
+    // carry the first paint until it runs.
+    createEffect(
+        () => props.value,
+        (value) => {
+            if (selectElement !== undefined) {
+                selectElement.value = value;
+            }
+        },
+    );
 
     return (
         <FieldFrame
@@ -108,16 +156,22 @@ export function SelectField<T extends string>(props: {
             class={props.class}
         >
             <select
+                ref={(element) => {
+                    selectElement = element;
+                }}
                 id={controlId}
                 class={joinClass(INPUT_CLASS, "tnum pr-8")}
                 disabled={props.isDisabled ?? false}
                 onChange={(event) => {
-                    const selected = props.options.find(
-                        (option) => option.value === event.currentTarget.value,
-                    );
+                    const picked = event.currentTarget.value;
+                    const selected = props.options.find((option) => option.value === picked);
 
                     if (selected !== undefined) {
                         props.onChange(selected.value);
+                    } else if (picked === props.value) {
+                        // The trailing absent-value option: the choice the
+                        // caller already holds, reported like any other.
+                        props.onChange(props.value);
                     }
                 }}
             >
@@ -131,6 +185,16 @@ export function SelectField<T extends string>(props: {
                         </option>
                     )}
                 </For>
+                <Show when={absentOption()}>
+                    {(absent) => (
+                        <option
+                            value={absent().value}
+                            selected={true}
+                        >
+                            {absent().label}
+                        </option>
+                    )}
+                </Show>
             </select>
         </FieldFrame>
     );

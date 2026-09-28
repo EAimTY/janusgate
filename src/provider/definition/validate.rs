@@ -250,7 +250,7 @@ impl DefinitionPayload {
             walk.string_expr(stream_url, "inference streaming URL")?;
         }
 
-        walk.params(&inference.headers, "inference header")?;
+        walk.headers(&inference.headers, "inference header")?;
 
         if let Some(envelope) = &inference.envelope {
             let body_count = walk.template_node(envelope, "inference envelope")?;
@@ -822,7 +822,7 @@ fn validate_control_request(
     let mut walk = ExpressionWalk::new(stage, slots);
 
     walk.string_expr(&request.url, what)?;
-    walk.params(&request.headers, "control request header")?;
+    walk.headers(&request.headers, "control request header")?;
     walk.params(&request.query, "control request query parameter")?;
 
     match &request.body {
@@ -977,12 +977,39 @@ impl<'a> ExpressionWalk<'a> {
         Ok(())
     }
 
-    /// Walks one name-value row list: non-empty names, stage-available values.
+    /// Walks one percent-encoded row list — query parameters, form fields, and authorize-URL
+    /// parameters: non-empty names, stage-available values. Percent-encoding carries any name,
+    /// so no header-name rule applies.
     fn params(&mut self, rows: &[ParamRow], what: &str) -> Result<(), ValidationError> {
         for row in rows {
             if row.name.is_empty() {
                 return Err(ValidationError::new(format!(
                     "{what} carries an empty name"
+                )));
+            }
+
+            self.string_expr(&row.value, what)?;
+        }
+
+        Ok(())
+    }
+
+    /// Walks one header-row list: non-empty, syntactically valid HTTP header names,
+    /// stage-available values. A header row reaches the wire as a literal header name (README
+    /// §5.2), so an invalid name is a definition defect caught here at the write instead of
+    /// failing every dispatch at runtime under a misleading error classification.
+    fn headers(&mut self, rows: &[ParamRow], what: &str) -> Result<(), ValidationError> {
+        for row in rows {
+            if row.name.is_empty() {
+                return Err(ValidationError::new(format!(
+                    "{what} carries an empty name"
+                )));
+            }
+
+            if http::HeaderName::try_from(row.name.as_str()).is_err() {
+                return Err(ValidationError::new(format!(
+                    "{what} carries an invalid HTTP header name `{}`",
+                    row.name
                 )));
             }
 
@@ -3741,6 +3768,57 @@ mod tests {
         });
 
         assert!(empty_strip_prefix.unwrap_err().contains("prefix"));
+    }
+
+    /// Header rows must carry valid HTTP header names: a stored invalid name would fail every
+    /// dispatch at runtime — misclassified as an upstream-unreachable control failure or an
+    /// internal inference error — so the write boundary rejects it naming the row. Query and form
+    /// rows are percent-encoded names and stay exempt from the header rule.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an invalid header name validates or a valid one is rejected.
+    #[test]
+    fn rejects_invalid_header_row_names_but_encoded_query_rows() {
+        // The inference path: a trailing space is not a header-name token character.
+        let trailing_space = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["inference"]["headers"][1]["name"] = serde_json::json!("User-Agent ");
+        });
+
+        let error = trailing_space.unwrap_err();
+
+        assert!(
+            error.contains("inference header") && error.contains("User-Agent"),
+            "{error}"
+        );
+
+        // The control path: the device-authorization request's header rows obey the same rule.
+        let control_trailing_space = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["authorization"]["request"]["headers"][0]["name"] =
+                serde_json::json!("Accept ");
+        });
+
+        assert!(
+            control_trailing_space
+                .unwrap_err()
+                .contains("control request header")
+        );
+
+        // A valid `Authorization` name stays accepted on the row the invalid one failed on.
+        mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["authorization"]["request"]["headers"][0]["name"] =
+                serde_json::json!("Authorization");
+        })
+        .unwrap();
+
+        // Query rows are percent-encoded, not wire header names: characters that would fail the
+        // header rule stay accepted there.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
+              { "name": "code verifier", "value": [{ "type": "literal", "value": "x" }] }
+            ]);
+        })
+        .unwrap();
     }
 
     /// The wire surface is strict: unknown fields are rejected at every level of the payload, an
