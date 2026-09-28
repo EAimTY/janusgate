@@ -1,8 +1,9 @@
 import { render } from "@solidjs/web";
 import { createSignal } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
     buttonWithText,
+    createDisposals,
     labeledInput,
     paragraphWithText,
     settle,
@@ -30,14 +31,7 @@ function isGeneratedSecret(value: string): boolean {
     return /^[A-Za-z0-9_-]{43}$/.test(value);
 }
 
-const disposes: Array<() => void> = [];
-
-afterEach(() => {
-    for (const dispose of disposes.reverse()) {
-        dispose();
-    }
-    disposes.length = 0;
-});
+const disposes = createDisposals();
 
 /** Mounts the field over a signal, so the parent's state is observable. The
  * confirm subject defaults to the creation context's "typed", the reveal

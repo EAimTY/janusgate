@@ -1,7 +1,6 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import { ManagementApiError } from "/src/management-api/errors";
 import type {
     CompleteProviderOauthRequest,
     CompleteProviderOauthResponse,
@@ -16,6 +15,9 @@ import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
 import {
     buttonWithText,
     cardWithTitle,
+    createDisposals,
+    gatewayFailure,
+    goneFailure,
     labeledInput,
     modelRow,
     paragraphWithText,
@@ -100,13 +102,6 @@ function screenApi(
     });
 }
 
-function goneFailure(message: string): ManagementApiError {
-    return new ManagementApiError("gateway", message, {
-        errno: ErrorCode.NotFound,
-        httpStatus: 404,
-    });
-}
-
 /**
  * A management API whose third provider listing is held until the test
  * releases it, exposing the window between a save and its reload landing.
@@ -159,14 +154,7 @@ function gatedScreenApi(holder: {
 }
 
 describe("ProviderEditScreen refresh against an open form", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(
         holder: {
@@ -472,12 +460,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
         await settle();
         expect(gate.isReloadInFlight()).toBe(true);
 
-        gate.failReload(
-            new ManagementApiError("gateway", "reload dropped", {
-                errno: ErrorCode.UpstreamError,
-                httpStatus: 502,
-            }),
-        );
+        gate.failReload(gatewayFailure("reload dropped", ErrorCode.UpstreamError, 502));
         await settle();
 
         // A failed reload must not hand the form the stale pre-save rows
@@ -784,14 +767,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
 });
 
 describe("ProviderEditScreen base URL rules", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the screen over the base-carrying fixture row. */
     async function mountBaseCarryingRow(): Promise<void> {
@@ -864,14 +840,7 @@ describe("ProviderEditScreen base URL rules", () => {
 });
 
 describe("ProviderEditScreen deletion copy", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the screen over a read-only gateway with the given models. */
     function mountWith(models: ReadonlyArray<ModelResponse>): void {
@@ -936,14 +905,7 @@ describe("ProviderEditScreen deletion copy", () => {
 });
 
 describe("ProviderEditScreen prefix-change warning", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the screen over the fixture provider with the given models. */
     function mountWith(models: ReadonlyArray<ModelResponse>): void {
@@ -1056,14 +1018,7 @@ describe("ProviderEditScreen prefix-change warning", () => {
 });
 
 describe("ProviderEditScreen reauthorization", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     const oauthProvider = providerRow({
         type: "oauth",

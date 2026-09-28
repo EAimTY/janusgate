@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     DiscoverModelsRequest,
@@ -12,6 +12,7 @@ import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
 import {
     bodyText,
     buttonWithText,
+    createDisposals,
     linkTo,
     modelRow,
     paragraphWithText,
@@ -101,14 +102,7 @@ function deferredDiscoveryAnswer(): {
 }
 
 describe("ProviderDetailScreen automatic discovery", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("starts one discovery on its own when the provider reports no models", async () => {
         const onDiscover = vi.fn();
@@ -213,14 +207,7 @@ describe("ProviderDetailScreen automatic discovery", () => {
 });
 
 describe("ProviderDetailScreen discovery notice", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** One new model the upstream began reporting: a fresh row identity. */
     const newlyReported: ModelResponse = {
@@ -303,14 +290,7 @@ describe("ProviderDetailScreen discovery notice", () => {
 });
 
 describe("ProviderDetailScreen facts", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the screen over one provider row with the discovered model listed. */
     function mount(row: ProviderResponse): void {
@@ -442,14 +422,7 @@ describe("ProviderDetailScreen facts", () => {
 });
 
 describe("ProviderDetailScreen credential reconnect", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** One OAuth provider whose authorization lapsed long ago. */
     const expiredOauth = providerRow({

@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DAY_MICROS, nowMicros, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -20,6 +20,7 @@ import {
     apiKeyRow,
     buttonWithText,
     chooseSelect,
+    createDisposals,
     dayBucket,
     type HeldCall,
     heldCall,
@@ -27,6 +28,7 @@ import {
     labeledSelect,
     linkTo,
     modelRow,
+    optionRepr,
     providerRow,
     settle,
     stubManagementApi,
@@ -127,14 +129,7 @@ function bucketWith(key: UsageBucket["key"]): UsageBucket {
 }
 
 describe("UsageQueryScreen request assembly", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("sends the dimension set and the assembled filter to the query route", async () => {
         const requests: QueryUsageRequest[] = [];
@@ -225,14 +220,7 @@ describe("UsageQueryScreen request assembly", () => {
 });
 
 describe("UsageQueryScreen refresh racing the initial read", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("keeps the loading state up until the newer cycle settles", async () => {
         let queryCount = 0;
@@ -290,14 +278,7 @@ describe("UsageQueryScreen refresh racing the initial read", () => {
 });
 
 describe("UsageQueryScreen submit during the initial read", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("reads the entity lists the labels resolve through before the query lands", async () => {
         let queryCount = 0;
@@ -368,14 +349,7 @@ describe("UsageQueryScreen submit during the initial read", () => {
 });
 
 describe("UsageQueryScreen refresh racing an in-flight submit", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("renders the refresh over the submit and lets the submit's late answer write nothing", async () => {
         let queryCount = 0;
@@ -476,14 +450,7 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
 });
 
 describe("UsageQueryScreen a resolved query superseded before its continuation runs", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("installs nothing from the dead cycle and lets the superseding submit own the screen", async () => {
         const holder: HeldListings = {
@@ -577,14 +544,7 @@ describe("UsageQueryScreen a resolved query superseded before its continuation r
 });
 
 describe("UsageQueryScreen arrival subject", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     async function mountAndAnswer(
         requests: Array<QueryUsageRequest>,
@@ -680,14 +640,7 @@ describe("UsageQueryScreen arrival subject", () => {
 });
 
 describe("UsageQueryScreen hand-typed bounds", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("opens a bound's error only behind input to its field, then holds the query until it is fixed", async () => {
         const requests: QueryUsageRequest[] = [];
@@ -783,14 +736,7 @@ describe("UsageQueryScreen hand-typed bounds", () => {
 });
 
 describe("UsageQueryScreen rolling-window quick-sets", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /**
      * Mounts the bare screen, answers its first cycle's held listings so the
@@ -911,14 +857,7 @@ describe("UsageQueryScreen rolling-window quick-sets", () => {
 });
 
 describe("UsageQueryScreen hand-typed status list", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("names an unparseable status inline and holds the query until it is fixed", async () => {
         const requests: QueryUsageRequest[] = [];
@@ -1003,14 +942,7 @@ describe("UsageQueryScreen hand-typed status list", () => {
 });
 
 describe("UsageQueryScreen refresh holding on a marked field", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("states the hold on the failure channel and keeps the standing buckets", async () => {
         let queryCount = 0;
@@ -1170,14 +1102,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
 });
 
 describe("UsageQueryScreen failed query", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("states the query's diagnosis once and clears it when a later cycle lands", async () => {
         const holder: HeldListings = {
@@ -1250,14 +1175,7 @@ describe("UsageQueryScreen failed query", () => {
 });
 
 describe("UsageQueryScreen clear filters", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("resets the fields and bounds, keeps the dimensions, and hides once nothing is set", async () => {
         const requests: QueryUsageRequest[] = [];
@@ -1376,14 +1294,7 @@ describe("UsageQueryScreen clear filters", () => {
 });
 
 describe("UsageQueryScreen empty answer", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the screen against a gateway whose query answers empty, and answers its listings. */
     async function mountAndAnswer(subject: UsageQuerySubject | null): Promise<void> {
@@ -1448,14 +1359,7 @@ describe("UsageQueryScreen empty answer", () => {
 });
 
 describe("UsageQueryScreen displayed bucket order", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** The table's row labels in rendered order — the displayed bucket order. */
     function rowLabels(): Array<string | null> {
@@ -1633,14 +1537,7 @@ describe("UsageQueryScreen displayed bucket order", () => {
 });
 
 describe("UsageQueryScreen filter options before the listings land", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** The Provider select's options, as the DOM holds them. */
     function providerOptions(): Array<{
@@ -1648,11 +1545,7 @@ describe("UsageQueryScreen filter options before the listings land", () => {
         label: string;
         isSelected: boolean;
     }> {
-        return Array.from(labeledSelect("Provider").options).map((option) => ({
-            value: option.value,
-            label: option.textContent ?? "",
-            isSelected: option.selected,
-        }));
+        return Array.from(labeledSelect("Provider").options).map(optionRepr);
     }
 
     it("names a route-seeded id plainly until the listings land, then carries the absence verdict", async () => {
@@ -1721,14 +1614,7 @@ describe("UsageQueryScreen filter options before the listings land", () => {
 });
 
 describe("UsageQueryScreen aggregates-to-stream door", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("carries the shared filter fields into the stream draft the header door's href spells, bounds behind", async () => {
         const holder: HeldListings = {

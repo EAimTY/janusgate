@@ -1,17 +1,10 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { RowLink } from "/src/ui/row-link";
-import { buttonWithText, linkTo, settle } from "../screens/screen-test-support";
+import { buttonWithText, createDisposals, linkTo, settle } from "../screens/screen-test-support";
 
 describe("RowLink trailing action", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("renders the trailing action inside the row but outside the link", async () => {
         disposes.push(

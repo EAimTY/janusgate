@@ -1,14 +1,14 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import { ManagementApiError } from "/src/management-api/errors";
 import type { ApiKeyResponse, UpdateApiKeyRequest } from "/src/management-api/generated/v0";
-import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 import {
     apiKeyRow,
     buttonWithText,
+    createDisposals,
+    goneFailure,
     labeledInput,
     settle,
     stubManagementApi,
@@ -81,14 +81,7 @@ function gated<TValue>(): {
 }
 
 describe("ApiKeyEditScreen refresh against an open form", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(holder: { readonly keys: ReadonlyArray<ApiKeyResponse> }): void {
         disposes.push(
@@ -516,13 +509,7 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
         };
         const api: ManagementApi = {
             ...screenApi(holder),
-            updateApiKey: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "no key 7", {
-                        errno: ErrorCode.NotFound,
-                        httpStatus: 404,
-                    }),
-                ),
+            updateApiKey: () => Promise.reject(goneFailure("no key 7")),
         };
         disposes.push(
             render(
@@ -558,13 +545,7 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
         };
         const api: ManagementApi = {
             ...screenApi(holder),
-            deleteApiKey: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "no key 7", {
-                        errno: ErrorCode.NotFound,
-                        httpStatus: 404,
-                    }),
-                ),
+            deleteApiKey: () => Promise.reject(goneFailure("no key 7")),
         };
         disposes.push(
             render(

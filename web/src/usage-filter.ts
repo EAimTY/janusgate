@@ -125,6 +125,20 @@ function routeWindow(raw: string | null): UsageWindowChoice {
 }
 
 /**
+ * The entries one comma-separated list field holds: the raw value split on
+ * commas, each entry trimmed, the blanks dropped. The one reading behind the
+ * route's outcome list, [`parseStatusList`], and [`statusError`], so a status
+ * list's validity and its reading agree entry-for-entry — an entry
+ * [`statusError`] accepts is exactly an entry [`parseStatusList`] reads.
+ */
+function splitListEntries(input: string): string[] {
+    return input
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== "");
+}
+
+/**
  * Reads the outcome choice out of the route's comma-separated value list: one
  * known outcome, or exactly the failure pair. Any other set — including a
  * hand-written list the control cannot present — reads as absent, so the
@@ -135,10 +149,7 @@ function routeOutcome(raw: string | null): UsageOutcomeChoice {
         return "";
     }
 
-    const values = raw
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry !== "");
+    const values = splitListEntries(raw);
 
     if (values.length === 1) {
         return findApiLogOutcome(values[0]) ?? "";
@@ -230,20 +241,47 @@ export function serializeUsageFilterDraft(draft: UsageFilterDraft): string {
 }
 
 /**
+ * The names of [`UsageFilterFields`], in the order the forms hold them: the
+ * one enumeration the fields-half predicates walk, so a field added to the
+ * controls is answered by [`hasUsageFilterFields`] and
+ * [`hasUsageFilterFieldsExcept`] alike with one entry here.
+ */
+const USAGE_FILTER_FIELD_NAMES: ReadonlyArray<keyof UsageFilterFields> = [
+    "providerId",
+    "modelId",
+    "apiKeyId",
+    "endpointType",
+    "outcome",
+    "streamChoice",
+    "statusInput",
+];
+
+/**
  * Whether any filter field is chosen — the fields half of [`hasUsageFilter`],
  * shared with the aggregates page, whose form holds the fields without a
  * window: its narrow question is these fields alone.
  */
 export function hasUsageFilterFields(fields: UsageFilterFields): boolean {
-    return (
-        fields.providerId !== "" ||
-        fields.modelId !== "" ||
-        fields.apiKeyId !== "" ||
-        fields.endpointType !== "" ||
-        fields.outcome !== "" ||
-        fields.streamChoice !== "" ||
-        fields.statusInput !== ""
-    );
+    return hasUsageFilterFieldsExcept(fields, null);
+}
+
+/**
+ * Whether any filter field except the one carried field is chosen — the
+ * fields half of the aggregates door's stated trade: the stream's crossing to
+ * the aggregates page carries a single-entity narrow's field alone, and the
+ * window and every other field stay the aggregates page's own, so the door
+ * states its trade exactly while this predicate over the standing draft
+ * stands. `carriedField` is that one field's name, or `null` when the
+ * crossing carries no field and every set field counts. The walk is
+ * [`USAGE_FILTER_FIELD_NAMES`], the same enumeration
+ * [`hasUsageFilterFields`] answers through, so a field added to the controls
+ * can never leave the trade unstated.
+ */
+export function hasUsageFilterFieldsExcept(
+    fields: UsageFilterFields,
+    carriedField: keyof UsageFilterFields | null,
+): boolean {
+    return USAGE_FILTER_FIELD_NAMES.some((name) => name !== carriedField && fields[name] !== "");
 }
 
 /** Whether anything is chosen — a window alone counts as a filter. */
@@ -262,10 +300,7 @@ export function hasUsageFilter(draft: UsageFilterDraft): boolean {
  * name.
  */
 export function parseStatusList(input: string): number[] {
-    return input
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry !== "")
+    return splitListEntries(input)
         .map((entry) => parseRowIdentifier(entry))
         .filter((entry): entry is number => entry !== null);
 }
@@ -278,10 +313,7 @@ export function parseStatusList(input: string): number[] {
  * empty field sets no status filter.
  */
 export function statusError(input: string): string | null {
-    const entries = input
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry !== "");
+    const entries = splitListEntries(input);
 
     if (entries.every((entry) => parseRowIdentifier(entry) !== null)) {
         return null;

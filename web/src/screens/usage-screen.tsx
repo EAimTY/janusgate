@@ -6,7 +6,7 @@ import type { ApiLogOutcome, ApiLogResponse, UsageFilter } from "/src/management
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
 import { hrefs, isCurrentAddress, navigate } from "/src/router";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ReadNotice, StatedNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
 import { Badge, type BadgeTone, EmptyState, Notice } from "/src/ui/feedback";
@@ -18,11 +18,11 @@ import {
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
+    hasUsageFilterFieldsExcept,
     namedSubjects,
     soleSubject,
     statusError,
     USAGE_OUTCOME_FAILURES,
-    USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
@@ -265,18 +265,7 @@ export function UsageScreen(props: {
         const carriedField =
             subject === undefined ? null : USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].draftField;
 
-        return (
-            draft().window !== "all" ||
-            draft().endpointType !== "" ||
-            draft().outcome !== "" ||
-            draft().streamChoice !== "" ||
-            draft().statusInput !== "" ||
-            USAGE_QUERY_SUBJECT_DIMENSIONS.some((dimension) => {
-                const field = USAGE_QUERY_SUBJECT_FIELDS[dimension].draftField;
-
-                return field !== carriedField && draft()[field] !== "";
-            })
-        );
+        return draft().window !== "all" || hasUsageFilterFieldsExcept(draft(), carriedField);
     };
 
     return (
@@ -441,16 +430,7 @@ export function UsageScreen(props: {
                         }
                     >
                         <div class="flex flex-col gap-3">
-                            <Show when={loadMoreNotice()}>
-                                {(failure) => (
-                                    <Notice
-                                        tone={failure().tone}
-                                        title={failure().title}
-                                        detail={failure().detail}
-                                        fix={failure().fix}
-                                    />
-                                )}
-                            </Show>
+                            <StatedNotice notice={loadMoreNotice} />
                             <div>
                                 {/* The read cycle's wholesale replacement is
                                     the one refusal `loadMore` makes, and the

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
+import { gatewayFailure } from "/src/screens/screen-test-support";
 import type { ActionContext, Reachability } from "./diagnosis";
 import { diagnoseFailure, probeReachability } from "./diagnosis";
 
@@ -9,17 +10,10 @@ const context: ActionContext = {
     pageOrigin: "https://admin.example.com",
 };
 
-function gatewayFailure(errno: ErrorCode, message: string): ManagementApiError {
-    return new ManagementApiError("gateway", message, {
-        errno,
-        httpStatus: 400,
-    });
-}
-
 describe("diagnoseFailure", () => {
     it("preserves the gateway's own message as the detail of every rendered failure", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.UpstreamError, "upstream answered 401"),
+            gatewayFailure("upstream answered 401", ErrorCode.UpstreamError, 400),
             context,
         );
 
@@ -29,7 +23,7 @@ describe("diagnoseFailure", () => {
 
     it("names the token's source for an unauthorized answer", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.Unauthorized, "invalid management token"),
+            gatewayFailure("invalid management token", ErrorCode.Unauthorized, 400),
             context,
         );
 
@@ -39,7 +33,7 @@ describe("diagnoseFailure", () => {
 
     it("reports a gone row as having no recovery on this screen", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.NotFound, "no such provider"),
+            gatewayFailure("no such provider", ErrorCode.NotFound, 400),
             context,
         );
 
@@ -49,7 +43,7 @@ describe("diagnoseFailure", () => {
 
     it("names the taken identifier for a conflict", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.Conflict, "provider name is taken"),
+            gatewayFailure("provider name is taken", ErrorCode.Conflict, 400),
             {
                 ...context,
                 action: "create-provider",
@@ -64,7 +58,7 @@ describe("diagnoseFailure", () => {
 
     it("points a creation flow's completion conflict at Start over, the one control the live flow leaves reachable", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.Conflict, "provider name is taken"),
+            gatewayFailure("provider name is taken", ErrorCode.Conflict, 400),
             {
                 ...context,
                 action: "complete-oauth",
@@ -79,7 +73,7 @@ describe("diagnoseFailure", () => {
 
     it("points a definition-write conflict at the moved stored version, not the provider name", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.Conflict, "provider definition version moved"),
+            gatewayFailure("provider definition version moved", ErrorCode.Conflict, 400),
             {
                 ...context,
                 action: "ensure-definition",
@@ -93,20 +87,26 @@ describe("diagnoseFailure", () => {
     });
 
     it("names the colliding public ID for a model creation conflict", () => {
-        const diagnosis = diagnoseFailure(gatewayFailure(ErrorCode.Conflict, "public id taken"), {
-            ...context,
-            action: "create-model",
-        });
+        const diagnosis = diagnoseFailure(
+            gatewayFailure("public id taken", ErrorCode.Conflict, 400),
+            {
+                ...context,
+                action: "create-model",
+            },
+        );
 
         expect(diagnosis.kind).toBe("conflict");
         expect(diagnosis.fix).toContain("public ID");
     });
 
     it("points a taken key secret at generating a fresh one", () => {
-        const diagnosis = diagnoseFailure(gatewayFailure(ErrorCode.Conflict, "api key taken"), {
-            ...context,
-            action: "create-api-key",
-        });
+        const diagnosis = diagnoseFailure(
+            gatewayFailure("api key taken", ErrorCode.Conflict, 400),
+            {
+                ...context,
+                action: "create-api-key",
+            },
+        );
 
         expect(diagnosis.kind).toBe("conflict");
         expect(diagnosis.fix).toContain("fresh one");
@@ -114,7 +114,7 @@ describe("diagnoseFailure", () => {
 
     it("keeps an upstream refusal during discovery agnostic when no provider type is known", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
+            gatewayFailure("upstream answered 502", ErrorCode.UpstreamError, 400),
             {
                 ...context,
                 action: "discover-models",
@@ -127,7 +127,7 @@ describe("diagnoseFailure", () => {
 
     it("offers an OAuth provider's discovery refusal the reconnect and the manual add without claiming the cause", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
+            gatewayFailure("upstream answered 502", ErrorCode.UpstreamError, 400),
             {
                 ...context,
                 action: "discover-models",
@@ -145,7 +145,7 @@ describe("diagnoseFailure", () => {
 
     it("offers a static-key provider's discovery refusal the credential fix and the manual add without claiming the cause", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
+            gatewayFailure("upstream answered 502", ErrorCode.UpstreamError, 400),
             {
                 ...context,
                 action: "discover-models",
@@ -163,7 +163,7 @@ describe("diagnoseFailure", () => {
 
     it("keeps internal failures opaque and points at the gateway's log", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.Internal, "internal error"),
+            gatewayFailure("internal error", ErrorCode.Internal, 400),
             context,
         );
 
@@ -173,7 +173,7 @@ describe("diagnoseFailure", () => {
 
     it("treats a rejected field as the gateway's own statement", () => {
         const diagnosis = diagnoseFailure(
-            gatewayFailure(ErrorCode.InvalidRequest, "`name` must not be empty"),
+            gatewayFailure("`name` must not be empty", ErrorCode.InvalidRequest, 400),
             context,
         );
 

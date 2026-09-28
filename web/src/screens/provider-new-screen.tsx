@@ -20,7 +20,6 @@ import { matchStoredDefinition, PROVIDER_PRESETS, type ProviderPreset } from "/s
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
-import { Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -781,18 +780,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             and buttons stand — a refused begin or exchange, a
                             failed outcome poll, a flow's expiry — never on
                             the page's read-level notice above the cards. */}
-                        <Show when={oauth.failure()}>
-                            {(current) => (
-                                <div class="mt-4">
-                                    <Notice
-                                        tone="bad"
-                                        title={current().title}
-                                        detail={current().detail}
-                                        fix={current().fix}
-                                    />
-                                </div>
-                            )}
-                        </Show>
+                        <StatedNotice
+                            notice={oauth.failure}
+                            class="mt-4"
+                        />
                         <Show
                             when={oauth.flow() === null}
                             fallback={

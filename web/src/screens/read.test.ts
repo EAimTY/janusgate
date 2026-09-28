@@ -1,7 +1,6 @@
 import { createRoot, createSignal } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { hasDirtyForms } from "/src/dirty-form-registry";
-import { ManagementApiError } from "/src/management-api/errors";
 import type { ApiKeyResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
@@ -20,14 +19,15 @@ import {
     readAll,
     readOne,
 } from "./read";
-import { apiKeyRow, modelRow, providerRow, settle } from "./screen-test-support";
-
-function gatewayFailure(errno: ErrorCode, message: string): ManagementApiError {
-    return new ManagementApiError("gateway", message, {
-        errno,
-        httpStatus: 404,
-    });
-}
+import {
+    apiKeyRow,
+    createDisposals,
+    gatewayFailure,
+    goneFailure,
+    modelRow,
+    providerRow,
+    settle,
+} from "./screen-test-support";
 
 function abortFailure(): Promise<never> {
     return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
@@ -71,10 +71,10 @@ describe("readAll", () => {
         const failure = await readAll(
             controller.signal,
             {
-                run: () => Promise.reject(gatewayFailure(ErrorCode.NotFound, "gone row")),
+                run: () => Promise.reject(goneFailure("gone row")),
             },
             {
-                run: () => Promise.reject(gatewayFailure(ErrorCode.Conflict, "taken name")),
+                run: () => Promise.reject(gatewayFailure("taken name", ErrorCode.Conflict, 404)),
             },
         ).catch((error: unknown) => error);
 
@@ -99,10 +99,7 @@ describe("readAll", () => {
                             }),
                     },
                     {
-                        run: () =>
-                            Promise.reject(
-                                gatewayFailure(ErrorCode.NotFound, "the keys listing is gone"),
-                            ),
+                        run: () => Promise.reject(goneFailure("the keys listing is gone")),
                     },
                 ),
         };
@@ -120,7 +117,7 @@ describe("readAll", () => {
         const controller = new AbortController();
 
         const failure = await readAll(controller.signal, call(abortFailure()), {
-            run: () => Promise.reject(gatewayFailure(ErrorCode.NotFound, "gone row")),
+            run: () => Promise.reject(goneFailure("gone row")),
         }).catch((error: unknown) => error);
 
         expect((failure as Error).name).toBe("AbortError");
@@ -150,7 +147,8 @@ describe("readOne", () => {
 
         const failure = await readOne(controller.signal, {
             action: "query-usage",
-            run: () => Promise.reject(gatewayFailure(ErrorCode.UpstreamError, "upstream down")),
+            run: () =>
+                Promise.reject(gatewayFailure("upstream down", ErrorCode.UpstreamError, 404)),
         }).catch((error: unknown) => error);
 
         expect(failure).toBeInstanceOf(ReadCallFailure);
@@ -169,8 +167,7 @@ describe("readOne", () => {
     });
 });
 
-/** The harnesses mounted by the running test; every one is disposed after it. */
-const mountedDisposes: Array<() => void> = [];
+const disposes = createDisposals();
 
 /** Mounts one harness outside a component, registered for disposal. */
 function mountedRead(options: Parameters<typeof createScreenRead>[0]) {
@@ -186,7 +183,7 @@ function mountedRead(options: Parameters<typeof createScreenRead>[0]) {
         throw new Error("The harness did not mount");
     }
 
-    mountedDisposes.push(dispose);
+    disposes.push(dispose);
 
     return {
         read: box.read,
@@ -230,7 +227,7 @@ function manualLoad(): {
                         resolve();
                     },
                     fail: () => {
-                        reject(new ReadCallFailure(gatewayFailure(ErrorCode.NotFound, "late")));
+                        reject(new ReadCallFailure(goneFailure("late")));
                     },
                 });
             }),
@@ -238,13 +235,6 @@ function manualLoad(): {
 }
 
 describe("createScreenRead", () => {
-    afterEach(() => {
-        for (const dispose of mountedDisposes.reverse()) {
-            dispose();
-        }
-        mountedDisposes.length = 0;
-    });
-
     it("installs nothing from a superseded cycle's late failure", async () => {
         const state = manualLoad();
         const { read } = mountedRead({
@@ -482,13 +472,7 @@ describe("createScreenRead", () => {
                                     }),
                             },
                             {
-                                run: () =>
-                                    Promise.reject(
-                                        gatewayFailure(
-                                            ErrorCode.NotFound,
-                                            "the keys listing is gone",
-                                        ),
-                                    ),
+                                run: () => Promise.reject(goneFailure("the keys listing is gone")),
                             },
                         ),
                 });
@@ -728,13 +712,6 @@ describe("createHeldRow", () => {
         created_at: 1,
     });
 
-    afterEach(() => {
-        for (const dispose of mountedDisposes.reverse()) {
-            dispose();
-        }
-        mountedDisposes.length = 0;
-    });
-
     it("holds the held row against a changed read while the form is dirty, and says so", async () => {
         const { held, setLatest, setIsFormDirty, dispose } = mountedKey();
 
@@ -809,13 +786,6 @@ describe("createHeldRow", () => {
 });
 
 describe("reportAction", () => {
-    afterEach(() => {
-        for (const dispose of mountedDisposes.reverse()) {
-            dispose();
-        }
-        mountedDisposes.length = 0;
-    });
-
     it("diagnoses a failed action into the notice and runs onGone only when the row is gone", async () => {
         const { read } = mountedRead({
             load: async () => {},
@@ -824,7 +794,7 @@ describe("reportAction", () => {
 
         let goneReloads = 0;
         const goneOutcome = await performManagementCall(() =>
-            Promise.reject(gatewayFailure(ErrorCode.NotFound, "the row is gone")),
+            Promise.reject(goneFailure("the row is gone")),
         );
         const reported = read.reportAction(
             goneOutcome,
@@ -851,7 +821,7 @@ describe("reportAction", () => {
         // A failure that is not a gone row states its diagnosis but reloads
         // nothing: the screen's own state stands.
         const conflictOutcome = await performManagementCall(() =>
-            Promise.reject(gatewayFailure(ErrorCode.Conflict, "name taken")),
+            Promise.reject(gatewayFailure("name taken", ErrorCode.Conflict, 404)),
         );
         read.reportAction(
             conflictOutcome,
@@ -916,7 +886,7 @@ describe("createEditRow", () => {
             throw new Error("The edit row did not mount");
         }
 
-        mountedDisposes.push(dispose);
+        disposes.push(dispose);
 
         return {
             edit: box.edit,
@@ -927,13 +897,6 @@ describe("createEditRow", () => {
 
     const key = apiKeyRow({
         created_at: 1,
-    });
-
-    afterEach(() => {
-        for (const dispose of mountedDisposes.reverse()) {
-            dispose();
-        }
-        mountedDisposes.length = 0;
     });
 
     it("holds the row from a succeeded save until its reload lands, whatever the listing answers", async () => {
@@ -1024,13 +987,6 @@ describe("createPinnedRow", () => {
         name: "alpha",
         model_prefix: "alpha-",
         base_url: "https://alpha.example",
-    });
-
-    afterEach(() => {
-        for (const dispose of mountedDisposes.reverse()) {
-            dispose();
-        }
-        mountedDisposes.length = 0;
     });
 
     it("keeps a re-answered row's identity, adopts a changed one, and passes null through", async () => {

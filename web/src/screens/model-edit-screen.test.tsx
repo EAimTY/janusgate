@@ -1,14 +1,14 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import { ManagementApiError } from "/src/management-api/errors";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import {
     bodyText,
     buttonWithText,
+    createDisposals,
+    goneFailure,
     labeledInput,
     linkTo,
     modelRow,
@@ -114,14 +114,7 @@ async function overridePublicId(value: string): Promise<HTMLInputElement> {
 }
 
 describe("ModelEditScreen refresh against an open form", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(holder: {
         providers: ReadonlyArray<ProviderResponse>;
@@ -328,13 +321,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         };
         const api: ManagementApi = {
             ...screenApi(holder),
-            updateModel: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "no model 11", {
-                        errno: ErrorCode.NotFound,
-                        httpStatus: 404,
-                    }),
-                ),
+            updateModel: () => Promise.reject(goneFailure("no model 11")),
         };
         disposes.push(
             render(
@@ -396,13 +383,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         };
         const api: ManagementApi = {
             ...screenApi(holder),
-            deleteModel: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "no model 11", {
-                        errno: ErrorCode.NotFound,
-                        httpStatus: 404,
-                    }),
-                ),
+            deleteModel: () => Promise.reject(goneFailure("no model 11")),
         };
         disposes.push(
             render(
@@ -433,14 +414,7 @@ describe("ModelEditScreen refresh against an open form", () => {
 });
 
 describe("ModelEditScreen vanished model", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** The routing model of the shared provider row, no longer reported. */
     const vanished = modelRow({
@@ -516,14 +490,7 @@ describe("ModelEditScreen vanished model", () => {
 });
 
 describe("ModelEditScreen parked provider", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** The shared provider row parked: its switch is off, so nothing it holds serves. */
     const parkedProvider: ProviderResponse = {

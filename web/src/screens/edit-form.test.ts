@@ -1,19 +1,10 @@
 import { createRoot, createSignal } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
-import { ManagementApiError } from "/src/management-api/errors";
-import { ErrorCode } from "/src/management-api/generated/v0";
+import { describe, expect, it } from "vitest";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { createScreenRead, type ScreenRead } from "./read";
-import { settle } from "./screen-test-support";
+import { conflictFailure, createDisposals, goneFailure, settle } from "./screen-test-support";
 
-const mountedDisposes: Array<() => void> = [];
-
-afterEach(() => {
-    for (const dispose of mountedDisposes.reverse()) {
-        dispose();
-    }
-    mountedDisposes.length = 0;
-});
+const disposes = createDisposals();
 
 /**
  * Mounts one read harness outside a component, registered for disposal — a
@@ -36,7 +27,7 @@ function mountedRead(load: () => Promise<void>): ScreenRead {
         throw new Error("The harness did not mount");
     }
 
-    mountedDisposes.push(dispose);
+    disposes.push(dispose);
 
     return box.read;
 }
@@ -156,13 +147,7 @@ describe("createEditForm", () => {
             action: "update-api-key",
             isDirty: () => true,
             canSave: () => true,
-            perform: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "the name is taken", {
-                        errno: ErrorCode.Conflict,
-                        httpStatus: 409,
-                    }),
-                ),
+            perform: () => Promise.reject(conflictFailure("the name is taken")),
             onSucceeded: () => {
                 succeeded = true;
 
@@ -320,13 +305,7 @@ describe("createDeleteAction", () => {
         const confirmDelete = createDeleteAction({
             read,
             action: "delete-model",
-            perform: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "no model 11", {
-                        errno: ErrorCode.NotFound,
-                        httpStatus: 404,
-                    }),
-                ),
+            perform: () => Promise.reject(goneFailure("no model 11")),
             onDeleted: () => {
                 navigations += 1;
             },

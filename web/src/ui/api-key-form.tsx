@@ -4,6 +4,7 @@ import { Button, TextField } from "/src/ui/controls";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { CopyButton } from "./clipboard";
 import { requiredHint } from "./required-hint";
+import { SecretRevealToggle } from "./secret-reveal";
 
 /**
  * Mints one serving-key secret locally: 32 random bytes, base64url without
@@ -135,15 +136,12 @@ export function ApiKeySecretField(props: {
                     requiredHint("Sent as Authorization: Bearer <key> by serving clients.")
                 }
             />
-            <label class="mt-2 flex w-fit cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
-                <input
-                    type="checkbox"
-                    class="size-4 accent-(--color-accent)"
-                    checked={isSecretVisible()}
-                    onChange={(event) => setIsSecretVisible(event.currentTarget.checked)}
-                />
-                {revealLabel()}
-            </label>
+            <SecretRevealToggle
+                caption={revealLabel()}
+                class="mt-2"
+                isVisible={isSecretVisible()}
+                onToggle={setIsSecretVisible}
+            />
             <div class="mt-2 flex flex-wrap items-center gap-2">
                 <Show
                     when={isStandingSecretArmed()}

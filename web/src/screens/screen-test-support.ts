@@ -1,4 +1,6 @@
+import { afterEach } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
+import { ManagementApiError } from "/src/management-api/errors";
 import type {
     ApiKeyResponse,
     ApiLogResponse,
@@ -6,6 +8,7 @@ import type {
     ProviderResponse,
     UsageBucket,
 } from "/src/management-api/generated/v0";
+import { ErrorCode } from "/src/management-api/generated/v0";
 import type { OauthProviderRow } from "/src/management-api/vocabulary";
 
 /**
@@ -13,10 +16,11 @@ import type { OauthProviderRow } from "/src/management-api/vocabulary";
  * mounts run against, the entity-listing fragment its suites answer fixture
  * rows from, the shared entity-row fixtures their listings are built from,
  * the shared usage-row and day-bucket fixtures their pages are built from,
- * the held-call helper that keeps a route's promise in flight until the test
- * ends it, the answers a test ends a held call with, the promise drains the
- * suites' exchanges rely on, and the DOM lookups, keystrokes, and select
- * choices their user interactions drive.
+ * the gateway failures their stubs reject with, the held-call helper that
+ * keeps a route's promise in flight until the test ends it, the answers a
+ * test ends a held call with, the promise drains the suites' exchanges rely
+ * on, the suite-scoped disposal list their mounts register into, and the
+ * DOM lookups, keystrokes, and select choices their user interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -253,6 +257,31 @@ export function dayBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
 }
 
 /**
+ * One gateway-rendered failure a stub rejects with: the gateway's message
+ * verbatim, carrying the errno and HTTP status the test names.
+ */
+export function gatewayFailure(
+    message: string,
+    errno: ErrorCode,
+    httpStatus: number,
+): ManagementApiError {
+    return new ManagementApiError("gateway", message, {
+        errno,
+        httpStatus,
+    });
+}
+
+/** The gone-row failure every refused row address answers: errno 3, HTTP 404. */
+export function goneFailure(message: string): ManagementApiError {
+    return gatewayFailure(message, ErrorCode.NotFound, 404);
+}
+
+/** The taken-name failure every collision answers: errno 4, HTTP 409. */
+export function conflictFailure(message: string): ManagementApiError {
+    return gatewayFailure(message, ErrorCode.Conflict, 409);
+}
+
+/**
  * One held call a test ends by hand: `answer` resolves it, `refuse` rejects
  * it with the cause the test names, and — where the call's request carries
  * assertions — `request` is the request the call carried.
@@ -362,6 +391,26 @@ export function drainWrites(): Promise<void> {
     });
 }
 
+/**
+ * The disposal list of one suite scope: what a test pushes here is disposed
+ * newest first after the test ends, leaving the list empty for the next one.
+ * The `afterEach` draining it registers at the suite scope the call sits in —
+ * a `describe` callback's or the file's — so the call belongs exactly where
+ * the suite declares its list.
+ */
+export function createDisposals(): Array<() => void> {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    return disposes;
+}
+
 /** The button whose visible label contains the given text. */
 export function buttonWithText(text: string): HTMLButtonElement {
     for (const candidate of document.querySelectorAll("button")) {
@@ -405,6 +454,30 @@ export function labeledSelect(label: string): HTMLSelectElement {
     }
 
     throw new Error(`No select labeled ${label}`);
+}
+
+/** The search input the given aria-label names, as every listing's is. */
+export function searchInput(ariaLabel: string): HTMLInputElement {
+    const input = document.querySelector(`input[aria-label='${ariaLabel}']`);
+
+    if (input instanceof HTMLInputElement) {
+        return input;
+    }
+
+    throw new Error(`No search input labeled ${ariaLabel}`);
+}
+
+/** One option's value, label, and selected state, as the DOM holds them. */
+export function optionRepr(option: HTMLOptionElement): {
+    value: string;
+    label: string;
+    isSelected: boolean;
+} {
+    return {
+        value: option.value,
+        label: option.textContent ?? "",
+        isSelected: option.selected,
+    };
 }
 
 /** The switch the given aria-label names. */

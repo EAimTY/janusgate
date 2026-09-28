@@ -1,17 +1,10 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { modelPrefixError } from "/src/management-api/identifiers";
 import { CompatibleConnectionFields, ProviderIdentityFields } from "/src/ui/provider-form";
-import { labeledInput, settle } from "../screens/screen-test-support";
+import { createDisposals, labeledInput, settle } from "../screens/screen-test-support";
 
-const disposes: Array<() => void> = [];
-
-afterEach(() => {
-    for (const dispose of disposes.reverse()) {
-        dispose();
-    }
-    disposes.length = 0;
-});
+const disposes = createDisposals();
 
 /** Mounts the static-key connection fields holding a pasted upstream key. */
 function mountFields(): void {

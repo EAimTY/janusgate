@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiKeyResponse,
@@ -21,12 +21,14 @@ import {
     bodyText,
     buttonWithText,
     chooseSelect,
+    createDisposals,
     type HeldCall,
     heldCall,
     labeledInput,
     labeledSelect,
     linkTo,
     modelRow,
+    optionRepr,
     paragraphWithText,
     providerRow,
     settle,
@@ -87,14 +89,7 @@ function streamApi(
 }
 
 describe("UsageScreen stream continuation", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(api: ManagementApi, filter: UsageFilterDraft = EMPTY_USAGE_FILTER_DRAFT): void {
         disposes.push(
@@ -275,15 +270,7 @@ describe("UsageScreen stream continuation", () => {
 });
 
 describe("UsageScreen filtering", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(api: ManagementApi, filter: UsageFilterDraft = EMPTY_USAGE_FILTER_DRAFT): void {
         disposes.push(
@@ -660,14 +647,7 @@ describe("UsageScreen filtering", () => {
 });
 
 describe("UsageScreen filter options before the read lands", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** The Provider select's options, as the DOM holds them. */
     function providerOptions(): Array<{
@@ -675,11 +655,7 @@ describe("UsageScreen filter options before the read lands", () => {
         label: string;
         isSelected: boolean;
     }> {
-        return Array.from(labeledSelect("Provider").options).map((option) => ({
-            value: option.value,
-            label: option.textContent ?? "",
-            isSelected: option.selected,
-        }));
+        return Array.from(labeledSelect("Provider").options).map(optionRepr);
     }
 
     it("names a route-seeded id plainly until the read lands, then carries the absence verdict", async () => {
@@ -740,15 +716,7 @@ describe("UsageScreen filter options before the read lands", () => {
 });
 
 describe("UsageScreen row links", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(api: ManagementApi): void {
         disposes.push(
@@ -809,15 +777,7 @@ describe("UsageScreen row links", () => {
 });
 
 describe("UsageScreen row figures", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(api: ManagementApi): void {
         disposes.push(

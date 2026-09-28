@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { CreateModelRequest, ProviderResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
@@ -7,10 +7,12 @@ import { ModelNewScreen } from "/src/screens/model-new-screen";
 import {
     bodyText,
     buttonWithText,
+    createDisposals,
     labeledInput,
     labeledSelect,
     linkTo,
     modelRow,
+    optionRepr,
     providerRow,
     settle,
     stubManagementApi,
@@ -52,28 +54,8 @@ function screenApi(
     });
 }
 
-/** One option's value, label, and selected state, as the DOM holds them. */
-function optionRepr(option: HTMLOptionElement): {
-    value: string;
-    label: string;
-    isSelected: boolean;
-} {
-    return {
-        value: option.value,
-        label: option.textContent ?? "",
-        isSelected: option.selected,
-    };
-}
-
 describe("ModelNewScreen creation", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mountScreen(
         api: ManagementApi,
@@ -276,14 +258,7 @@ describe("ModelNewScreen creation", () => {
 });
 
 describe("ModelNewScreen failed first read", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("states the diagnosis and recovers in place through Read again", async () => {
         let isListingFailing = true;

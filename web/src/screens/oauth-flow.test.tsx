@@ -1,8 +1,7 @@
 import { render } from "@solidjs/web";
 import { createRoot } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { hasDirtyForms } from "/src/dirty-form-registry";
-import { ManagementApiError } from "/src/management-api/errors";
 import type {
     CompleteProviderOauthResponse,
     ProviderResponse,
@@ -12,7 +11,15 @@ import { ErrorCode } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { createOauthFlow, type OauthFlow } from "./oauth-flow";
 import { AuthorizeStep, DeviceStep } from "./oauth-flow-view";
-import { drainWrites, providerRow, settle, stubManagementApi } from "./screen-test-support";
+import {
+    createDisposals,
+    drainWrites,
+    gatewayFailure,
+    goneFailure,
+    providerRow,
+    settle,
+    stubManagementApi,
+} from "./screen-test-support";
 
 /**
  * The OAuth flow machine's own suite: the registry seat the live flow keeps
@@ -65,31 +72,8 @@ const reauthorizedProvider: ProviderResponse = providerRow({
     base_url: null,
 });
 
-/** The gateway's verdict that the flow state the call addressed is gone. */
-function goneFailure(): ManagementApiError {
-    return new ManagementApiError("gateway", "no such flow", {
-        errno: ErrorCode.NotFound,
-        httpStatus: 404,
-    });
-}
-
-/** A transient gateway failure that says nothing about the flow's liveness. */
-function wobbledFailure(): ManagementApiError {
-    return new ManagementApiError("gateway", "upstream wobbled", {
-        errno: ErrorCode.UpstreamError,
-        httpStatus: 502,
-    });
-}
-
 describe("OauthFlow leave-guard registration", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /**
      * The flow machine mounted under its own reactive root, the way a screen
@@ -229,7 +213,7 @@ describe("OauthFlow leave-guard registration", () => {
     it("unregisters when the authorization-code completion answers gone", async () => {
         const { flow } = mountedFlow({
             begun: authorizationFlow,
-            complete: () => Promise.reject(goneFailure()),
+            complete: () => Promise.reject(goneFailure("no such flow")),
         });
 
         await flow.start();
@@ -249,7 +233,7 @@ describe("OauthFlow leave-guard registration", () => {
     it("unregisters when a device poll answers gone", async () => {
         const { flow } = mountedFlow({
             begun: deviceFlow((Date.now() + 600_000) * 1000),
-            complete: () => Promise.reject(goneFailure()),
+            complete: () => Promise.reject(goneFailure("no such flow")),
         });
 
         await flow.start();
@@ -291,7 +275,9 @@ describe("OauthFlow leave-guard registration", () => {
             begun: deviceFlow((Date.now() + 600_000) * 1000),
             complete: () => {
                 if (isFailing) {
-                    return Promise.reject(wobbledFailure());
+                    return Promise.reject(
+                        gatewayFailure("upstream wobbled", ErrorCode.UpstreamError, 502),
+                    );
                 }
 
                 return Promise.resolve({
@@ -399,14 +385,7 @@ describe("OauthFlow leave-guard registration", () => {
 });
 
 describe("OauthFlowView navigation warning", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("states the in-console navigation cost on the authorization-code step", async () => {
         const resets: number[] = [];

@@ -1,13 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import { ManagementApiError } from "/src/management-api/errors";
 import type { ListProvidersResponse } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { createScreenRead, readOne } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { settle, stubManagementApi } from "./screen-test-support";
+import { createDisposals, gatewayFailure, settle, stubManagementApi } from "./screen-test-support";
 
 /**
  * A screen body reduced to its standing notice: the read harness over one
@@ -72,14 +71,7 @@ function readAgainButton(): HTMLButtonElement {
 }
 
 describe("ReadNotice", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(listing: ManagementApi["listProviders"], isRetryWired: boolean): void {
         disposes.push(
@@ -106,12 +98,7 @@ describe("ReadNotice", () => {
         // read-again action stands with it.
         expect(() => readAgainButton()).toThrow("No button reading Read again");
 
-        held.refuse(
-            new ManagementApiError("gateway", "the listing dropped", {
-                errno: ErrorCode.UpstreamError,
-                httpStatus: 502,
-            }),
-        );
+        held.refuse(gatewayFailure("the listing dropped", ErrorCode.UpstreamError, 502));
         await settle();
 
         // The failure's diagnosis stands, and the read-again action with it —
@@ -144,12 +131,7 @@ describe("ReadNotice", () => {
         mount(held.listProviders, false);
         await settle();
 
-        held.refuse(
-            new ManagementApiError("gateway", "the listing dropped", {
-                errno: ErrorCode.UpstreamError,
-                httpStatus: 502,
-            }),
-        );
+        held.refuse(gatewayFailure("the listing dropped", ErrorCode.UpstreamError, 502));
         await settle();
 
         // The diagnosis stands with no action beside it: the slot is the

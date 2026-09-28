@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { QueryUsageResponse, UsageBucket } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
@@ -8,6 +8,7 @@ import type { UsageSubjectFilter } from "/src/usage-filter";
 import {
     answerLast,
     bodyText,
+    createDisposals,
     dayBucket,
     type HeldCall,
     heldCall,
@@ -52,14 +53,7 @@ function readAgainButton(): HTMLButtonElement | null {
 }
 
 describe("EntityUsageCard read failures", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(api: ManagementApi): void {
         disposes.push(
@@ -195,14 +189,7 @@ describe("EntityUsageCard read failures", () => {
 });
 
 describe("EntityUsageCard per-day series", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** The usage table's row labels in rendered order — the displayed series. */
     function dayRows(): Array<string | null> {
@@ -250,14 +237,7 @@ describe("EntityUsageCard per-day series", () => {
 });
 
 describe("EntityUsageCard doors", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("carries the subject through both doors — the stream's narrow and the aggregates preselection", async () => {
         // One case per subject dimension: each door fills the subject into

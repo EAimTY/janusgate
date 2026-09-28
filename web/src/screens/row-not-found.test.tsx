@@ -1,16 +1,10 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { RowNotFound } from "./row-not-found";
+import { createDisposals } from "./screen-test-support";
 
 describe("RowNotFound", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("states the row kind's copy under the screen's own header, with the way back to the listing", () => {
         disposes.push(

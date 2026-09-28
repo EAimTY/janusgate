@@ -1,8 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createScreenRead } from "./read";
-import { settle } from "./screen-test-support";
+import { createDisposals, settle } from "./screen-test-support";
 import { SkeletonRows } from "./skeleton-rows";
 
 /** A minimal list screen: the rows stand in for whatever its read fetches. */
@@ -32,14 +32,7 @@ function skeletonRows(): Array<Element> {
 }
 
 describe("SkeletonRows", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("stands in rowCount rows at rowHeight while the first read is in flight", async () => {
         disposes.push(

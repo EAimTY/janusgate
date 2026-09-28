@@ -1,6 +1,6 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buttonWithText } from "../screens/screen-test-support";
+import { buttonWithText, createDisposals } from "../screens/screen-test-support";
 import { CopyButton, copyText } from "./clipboard";
 
 /**
@@ -33,14 +33,10 @@ function stubExecCommand(isCopied: boolean) {
     return execCommand;
 }
 
-const disposes: Array<() => void> = [];
+const disposes = createDisposals();
 
 afterEach(() => {
     vi.useRealTimers();
-    for (const dispose of disposes.reverse()) {
-        dispose();
-    }
-    disposes.length = 0;
     delete (
         navigator as {
             clipboard?: unknown;

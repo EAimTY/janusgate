@@ -1,11 +1,13 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ProvidersScreen } from "/src/screens/providers-screen";
 import {
     bodyText,
+    createDisposals,
     providerRow,
+    searchInput,
     settle,
     stubListings,
     stubManagementApi,
@@ -20,26 +22,8 @@ function screenApi(options: {
     return stubManagementApi(stubListings(options));
 }
 
-/** The provider search field, named by its aria-label. */
-function searchInput(): HTMLInputElement {
-    const input = document.querySelector('input[aria-label="Search providers"]');
-
-    if (input instanceof HTMLInputElement) {
-        return input;
-    }
-
-    throw new Error("No provider search input");
-}
-
 describe("ProvidersScreen search", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("matches the wire format the rows display", async () => {
         disposes.push(
@@ -67,13 +51,13 @@ describe("ProvidersScreen search", () => {
         );
         await settle();
 
-        typeInto(searchInput(), "openai");
+        typeInto(searchInput("Search providers"), "openai");
         await settle();
 
         expect(bodyText()).toContain("mix-ops");
         expect(bodyText()).not.toContain("No providers match");
 
-        typeInto(searchInput(), "zzz");
+        typeInto(searchInput("Search providers"), "zzz");
         await settle();
 
         expect(bodyText()).toContain('No providers match "zzz"');

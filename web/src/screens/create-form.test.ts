@@ -1,11 +1,9 @@
 import { createRoot } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
-import { ManagementApiError } from "/src/management-api/errors";
-import { ErrorCode } from "/src/management-api/generated/v0";
+import { describe, expect, it } from "vitest";
 import type { ActionBegin } from "./action-begin";
 import { createCreateAction } from "./create-form";
 import type { ScreenNotice } from "./read";
-import { settle } from "./screen-test-support";
+import { conflictFailure, createDisposals, settle } from "./screen-test-support";
 
 /** The row this suite's creations answer with. */
 type CreatedRow = {
@@ -49,14 +47,7 @@ function abortedRow(): ActionBegin<CreatedRow> {
     };
 }
 
-const mountedDisposes: Array<() => void> = [];
-
-afterEach(() => {
-    for (const dispose of mountedDisposes.reverse()) {
-        dispose();
-    }
-    mountedDisposes.length = 0;
-});
+const disposes = createDisposals();
 
 /**
  * Mounts one value inside a reactive root, registered for disposal after the
@@ -80,7 +71,7 @@ function mountInRoot<TValue>(mount: () => TValue): {
         throw new Error("Nothing mounted");
     }
 
-    mountedDisposes.push(dispose);
+    disposes.push(dispose);
 
     return {
         value: box.value,
@@ -183,15 +174,7 @@ describe("createCreateAction", () => {
                     stated.push(notice);
                 },
                 canRun: () => true,
-                perform: () =>
-                    Promise.resolve(
-                        failedRow(
-                            new ManagementApiError("gateway", "the name is taken", {
-                                errno: ErrorCode.Conflict,
-                                httpStatus: 409,
-                            }),
-                        ),
-                    ),
+                perform: () => Promise.resolve(failedRow(conflictFailure("the name is taken"))),
                 onCreated: () => {
                     landed += 1;
                 },

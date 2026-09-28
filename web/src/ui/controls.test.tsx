@@ -1,17 +1,10 @@
 import { render } from "@solidjs/web";
 import { createSignal } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
-import { drainWrites } from "/src/screens/screen-test-support";
+import { describe, expect, it } from "vitest";
+import { createDisposals, drainWrites, optionRepr } from "/src/screens/screen-test-support";
 import { SelectField } from "/src/ui/controls";
 
-const disposes: Array<() => void> = [];
-
-afterEach(() => {
-    for (const dispose of disposes.reverse()) {
-        dispose();
-    }
-    disposes.length = 0;
-});
+const disposes = createDisposals();
 
 /** The one select the mounts below render. */
 function theSelect(): HTMLSelectElement {
@@ -97,11 +90,7 @@ describe("SelectField", () => {
         );
 
         const select = theSelect();
-        const optionReprs = Array.from(select.options).map((option) => ({
-            value: option.value,
-            label: option.textContent ?? "",
-            isSelected: option.selected,
-        }));
+        const optionReprs = Array.from(select.options).map(optionRepr);
 
         expect(optionReprs).toEqual([
             {

@@ -1,13 +1,17 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ModelsScreen } from "/src/screens/models-screen";
 import {
     bodyText,
+    createDisposals,
+    labeledSelect,
     linkTo,
     modelRow,
+    optionRepr,
     providerRow,
+    searchInput,
     settle,
     stubListings,
     stubManagementApi,
@@ -26,58 +30,8 @@ function screenApi(options: {
     return stubManagementApi(stubListings(options));
 }
 
-/** The models search field, named by its aria-label like every listing's. */
-function searchInput(): HTMLInputElement {
-    const input = document.querySelector('input[aria-label="Search models"]');
-
-    if (input instanceof HTMLInputElement) {
-        return input;
-    }
-
-    throw new Error("No models search input");
-}
-
-/** The select one label names, through the label's `for` pairing. */
-function selectWithLabel(label: string): HTMLSelectElement {
-    const owner = Array.from(document.querySelectorAll("label")).find(
-        (candidate) => candidate.textContent === label,
-    );
-
-    if (owner === undefined) {
-        throw new Error(`No field labelled ${label}`);
-    }
-
-    const control = document.getElementById(owner.htmlFor);
-
-    if (!(control instanceof HTMLSelectElement)) {
-        throw new Error(`No select labelled ${label}`);
-    }
-
-    return control;
-}
-
-/** One option's value, label, and selected state, as the DOM holds them. */
-function optionRepr(option: HTMLOptionElement): {
-    value: string;
-    label: string;
-    isSelected: boolean;
-} {
-    return {
-        value: option.value,
-        label: option.textContent ?? "",
-        isSelected: option.selected,
-    };
-}
-
 describe("ModelsScreen empty gateway", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("makes the provider the first step when nothing exists yet", async () => {
         disposes.push(
@@ -115,14 +69,7 @@ describe("ModelsScreen empty gateway", () => {
 });
 
 describe("ModelsScreen search", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(): void {
         disposes.push(
@@ -162,13 +109,13 @@ describe("ModelsScreen search", () => {
         mount();
         await settle();
 
-        typeInto(searchInput(), "mix");
+        typeInto(searchInput("Search models"), "mix");
         await settle();
 
         expect(bodyText()).toContain("llama3-70b");
         expect(bodyText()).not.toContain("No models match");
 
-        typeInto(searchInput(), "zzz");
+        typeInto(searchInput("Search models"), "zzz");
         await settle();
 
         expect(bodyText()).toContain('No models match "zzz"');
@@ -176,14 +123,7 @@ describe("ModelsScreen search", () => {
 });
 
 describe("ModelsScreen count line", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /**
      * Five models of one provider, two of them qwen: the fraction a standing
@@ -237,13 +177,13 @@ describe("ModelsScreen count line", () => {
         expect(bodyText()).toContain("5 models");
         expect(bodyText()).not.toContain("of 5 models");
 
-        typeInto(searchInput(), "qwen");
+        typeInto(searchInput("Search models"), "qwen");
         await settle();
 
         // Under a search the fraction carries the narrowing the search made.
         expect(bodyText()).toContain("2 of 5 models");
 
-        typeInto(searchInput(), "");
+        typeInto(searchInput("Search models"), "");
         await settle();
 
         // Clearing the search returns the line to the plain count.
@@ -253,14 +193,7 @@ describe("ModelsScreen count line", () => {
 });
 
 describe("ModelsScreen provider filter", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the screen over a gateway holding the provider and the given models. */
     function mountFiltered(
@@ -319,7 +252,7 @@ describe("ModelsScreen provider filter", () => {
         ]);
         await settle();
 
-        typeInto(searchInput(), "zzz");
+        typeInto(searchInput("Search models"), "zzz");
         await settle();
 
         expect(bodyText()).toContain('No models of this provider match "zzz"');
@@ -350,7 +283,7 @@ describe("ModelsScreen provider filter", () => {
         mountFiltered(9);
         await settle();
 
-        const options = Array.from(selectWithLabel("Provider").options).map(optionRepr);
+        const options = Array.from(labeledSelect("Provider").options).map(optionRepr);
 
         expect(options.at(-1)).toEqual({
             value: "9",

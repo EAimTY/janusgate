@@ -1,9 +1,9 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
-import { bodyText, settle, stubManagementApi } from "./screen-test-support";
+import { bodyText, createDisposals, settle, stubManagementApi } from "./screen-test-support";
 
 /** One serving key whose secret spells its own name. */
 function keyRow(isEnabled: boolean): ApiKeyResponse {
@@ -33,14 +33,7 @@ function screenApi(apiKey: ApiKeyResponse): ManagementApi {
 }
 
 describe("ApiKeyDetailScreen facts", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(apiKey: ApiKeyResponse): void {
         disposes.push(

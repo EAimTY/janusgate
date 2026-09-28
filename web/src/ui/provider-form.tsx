@@ -6,6 +6,7 @@ import { Switch, TextField } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { requiredHint } from "./required-hint";
+import { SecretRevealToggle } from "./secret-reveal";
 
 /**
  * The alert beside the prefix switch while the derived prefix is invalid. No
@@ -241,15 +242,11 @@ export function CompatibleConnectionFields(props: {
                     requiredHint("Sent upstream with every request. Never returned by the gateway.")
                 }
             />
-            <label class="flex w-fit cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
-                <input
-                    type="checkbox"
-                    class="size-4 accent-(--color-accent)"
-                    checked={isKeyVisible()}
-                    onChange={(event) => setIsKeyVisible(event.currentTarget.checked)}
-                />
-                Show the API key while typing
-            </label>
+            <SecretRevealToggle
+                caption="Show the API key while typing"
+                isVisible={isKeyVisible()}
+                onToggle={setIsKeyVisible}
+            />
         </div>
     );
 }

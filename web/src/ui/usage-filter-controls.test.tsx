@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type {
     ApiKeyResponse,
     ModelResponse,
@@ -7,7 +7,12 @@ import type {
 } from "/src/management-api/generated/v0";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
 import { EMPTY_USAGE_FILTER_FIELDS, type UsageFilterFields } from "/src/usage-filter";
-import { chooseSelect } from "../screens/screen-test-support";
+import {
+    chooseSelect,
+    createDisposals,
+    labeledSelect,
+    optionRepr,
+} from "../screens/screen-test-support";
 
 const providerRow: ProviderResponse = {
     type: "api_key",
@@ -40,14 +45,7 @@ const apiKeyRow: ApiKeyResponse = {
     created_at: 1,
 };
 
-const disposes: Array<() => void> = [];
-
-afterEach(() => {
-    for (const dispose of disposes.reverse()) {
-        dispose();
-    }
-    disposes.length = 0;
-});
+const disposes = createDisposals();
 
 /**
  * Mounts the controls holding the given fields, collecting the edits they
@@ -94,38 +92,6 @@ function mountControls(
     };
 }
 
-/** The select one label names, through the label's `for` pairing. */
-function selectWithLabel(label: string): HTMLSelectElement {
-    const owner = Array.from(document.querySelectorAll("label")).find(
-        (candidate) => candidate.textContent === label,
-    );
-
-    if (owner === undefined) {
-        throw new Error(`No field labelled ${label}`);
-    }
-
-    const control = document.getElementById(owner.htmlFor);
-
-    if (!(control instanceof HTMLSelectElement)) {
-        throw new Error(`No select labelled ${label}`);
-    }
-
-    return control;
-}
-
-/** One option's value, label, and selected state, as the DOM holds them. */
-function optionRepr(option: HTMLOptionElement): {
-    value: string;
-    label: string;
-    isSelected: boolean;
-} {
-    return {
-        value: option.value,
-        label: option.textContent ?? "",
-        isSelected: option.selected,
-    };
-}
-
 describe("UsageFilterControls listing-backed options", () => {
     it("renders a chosen id the listing no longer carries as its trailing, selected option", () => {
         mountControls({
@@ -133,7 +99,7 @@ describe("UsageFilterControls listing-backed options", () => {
             providerId: "9",
         });
 
-        const options = Array.from(selectWithLabel("Provider").options).map(optionRepr);
+        const options = Array.from(labeledSelect("Provider").options).map(optionRepr);
 
         expect(options.map((option) => option.label)).toContain("9 (no longer listed)");
         expect(options.at(-1)).toEqual({
@@ -160,12 +126,12 @@ describe("UsageFilterControls listing-backed options", () => {
             "Model",
             "API key",
         ]) {
-            const options = Array.from(selectWithLabel(label).options).map(optionRepr);
+            const options = Array.from(labeledSelect(label).options).map(optionRepr);
 
             expect(options.some((option) => option.label.includes("no longer listed"))).toBe(false);
         }
 
-        expect(Array.from(selectWithLabel("Provider").options).map(optionRepr)).toContainEqual({
+        expect(Array.from(labeledSelect("Provider").options).map(optionRepr)).toContainEqual({
             value: "3",
             label: "alpha",
             isSelected: true,
@@ -189,7 +155,7 @@ describe("UsageFilterControls listing-backed options", () => {
                 "8",
             ],
         ] as const) {
-            const options = Array.from(selectWithLabel(label).options).map(optionRepr);
+            const options = Array.from(labeledSelect(label).options).map(optionRepr);
 
             expect(options.at(-1)).toEqual({
                 value: id,

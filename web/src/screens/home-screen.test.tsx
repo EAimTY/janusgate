@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiKeyResponse,
@@ -13,6 +13,7 @@ import { HomeScreen } from "/src/screens/home-screen";
 import {
     apiKeyRow,
     bodyText,
+    createDisposals,
     linkTo,
     modelRow,
     providerRow,
@@ -162,15 +163,7 @@ function stepRow(title: string): HTMLLIElement {
 }
 
 describe("HomeScreen", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(api: ManagementApi): void {
         disposes.push(

@@ -26,11 +26,11 @@ import {
     readProviderCatalog,
     type ScreenRead,
 } from "/src/screens/read";
+import { StatedNotice } from "/src/screens/read-notice";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     CompatibleConnectionFields,
@@ -595,16 +595,7 @@ function CredentialsCard(props: {
                     buttons stand — a refused begin or exchange, a failed
                     outcome poll, a flow's expiry — never on the screen's
                     read-level notice above the page. */}
-                <Show when={props.oauth.failure()}>
-                    {(current) => (
-                        <Notice
-                            tone="bad"
-                            title={current().title}
-                            detail={current().detail}
-                            fix={current().fix}
-                        />
-                    )}
-                </Show>
+                <StatedNotice notice={props.oauth.failure} />
 
                 <Show
                     when={props.oauth.flow()}

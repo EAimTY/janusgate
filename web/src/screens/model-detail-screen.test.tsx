@@ -1,11 +1,12 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ModelDetailScreen } from "/src/screens/model-detail-screen";
 import {
     bodyText,
     cardWithTitle,
+    createDisposals,
     modelRow,
     providerRow,
     settle,
@@ -47,14 +48,7 @@ function screenApi(provider: ProviderResponse | null, model: ModelResponse): Man
 }
 
 describe("ModelDetailScreen facts", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(provider: ProviderResponse | null, model: ModelResponse): void {
         disposes.push(

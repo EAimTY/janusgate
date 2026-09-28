@@ -1,17 +1,15 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { buttonWithText, paragraphWithText, settle } from "../screens/screen-test-support";
+import {
+    buttonWithText,
+    createDisposals,
+    paragraphWithText,
+    settle,
+} from "../screens/screen-test-support";
 
 describe("ConfirmDeleteCard state machine", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     /** Mounts the card over a confirm the test answers through the returned gate. */
     function mount(): {

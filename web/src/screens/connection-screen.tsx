@@ -12,6 +12,7 @@ import { CopyButton } from "/src/ui/clipboard";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { JanusMark } from "/src/ui/glyph";
+import { SecretRevealToggle } from "/src/ui/secret-reveal";
 
 /**
  * First contact: what JanusGate is, what the visitor needs before connecting,
@@ -293,15 +294,11 @@ export function ConnectionScreen(): JSX.Element {
                         hint="Sent only to that instance, and kept only in this browser."
                     />
 
-                    <label class="flex w-fit cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
-                        <input
-                            type="checkbox"
-                            class="size-4 accent-(--color-accent)"
-                            checked={isTokenVisible()}
-                            onChange={(event) => setIsTokenVisible(event.currentTarget.checked)}
-                        />
-                        Show the token while typing
-                    </label>
+                    <SecretRevealToggle
+                        caption="Show the token while typing"
+                        isVisible={isTokenVisible()}
+                        onToggle={setIsTokenVisible}
+                    />
 
                     <div class="flex flex-wrap items-center gap-4">
                         <Button

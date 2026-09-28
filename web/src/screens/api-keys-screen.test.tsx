@@ -1,9 +1,17 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { ApiKeysScreen } from "/src/screens/api-keys-screen";
-import { apiKeyRow, bodyText, settle, stubManagementApi, typeInto } from "./screen-test-support";
+import {
+    apiKeyRow,
+    bodyText,
+    createDisposals,
+    searchInput,
+    settle,
+    stubManagementApi,
+    typeInto,
+} from "./screen-test-support";
 
 /** Builds one listing row whose secret spells its own name out. */
 function keyRow(id: number, name: string, isEnabled: boolean): ApiKeyResponse {
@@ -39,26 +47,8 @@ function screenApi(): ManagementApi {
     });
 }
 
-/** The keys search field, named by its aria-label. */
-function searchInput(): HTMLInputElement {
-    const input = document.querySelector('input[aria-label="Search API keys"]');
-
-    if (input instanceof HTMLInputElement) {
-        return input;
-    }
-
-    throw new Error("No API keys search input");
-}
-
 describe("ApiKeysScreen count line", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     function mount(): void {
         disposes.push(render(() => <ApiKeysScreen api={screenApi()} />, document.body));
@@ -75,18 +65,18 @@ describe("ApiKeysScreen count line", () => {
         // Under a standing search the numerator and the denominator diverge,
         // so the line states both facts instead of reading as visible over
         // total, the shape the models screen's sentence means.
-        typeInto(searchInput(), "alpha");
+        typeInto(searchInput("Search API keys"), "alpha");
         await settle();
         expect(bodyText()).toContain("1 key shown · 1 of 5 keys enabled");
 
         // The numerator counts enabled rows among the visible ones, not the
         // visible rows themselves: the single row a disabled match leaves is
         // counted as off, and the denominator stays the whole listing.
-        typeInto(searchInput(), "beta");
+        typeInto(searchInput("Search API keys"), "beta");
         await settle();
         expect(bodyText()).toContain("1 key shown · 0 of 5 keys enabled");
 
-        typeInto(searchInput(), "");
+        typeInto(searchInput("Search API keys"), "");
         await settle();
         expect(bodyText()).toContain("2 of 5 keys enabled");
     });
@@ -95,7 +85,7 @@ describe("ApiKeysScreen count line", () => {
         mount();
         await settle();
 
-        typeInto(searchInput(), "zzz");
+        typeInto(searchInput("Search API keys"), "zzz");
         await settle();
 
         expect(bodyText()).toContain('No API keys match "zzz"');

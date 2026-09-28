@@ -2112,6 +2112,20 @@ mod tests {
         validate_json(payload)
     }
 
+    /// Builds the coalesce-argument probe: a `reference` value part nested inside a coalesce
+    /// argument satisfies the stage's reference requirement.
+    fn coalesce_argument(reference: &str) -> serde_json::Value {
+        serde_json::json!([
+            {
+                "type": "coalesce",
+                "parts": [
+                    { "type": reference },
+                    { "type": "literal", "value": "fallback" }
+                ]
+            }
+        ])
+    }
+
     /// The accepted researched shapes (README §5.6): the Antigravity, Copilot, Codex, and
     /// static-key definitions all parse and validate, and each payload round-trips through its
     /// JSON form.
@@ -2908,15 +2922,7 @@ mod tests {
 
             let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][3];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "code_verifier" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("code_verifier");
         });
 
         outcome.unwrap();
@@ -2986,15 +2992,7 @@ mod tests {
 
             let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][3];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "redirect_uri" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("redirect_uri");
         });
 
         outcome.unwrap();
@@ -3057,15 +3055,7 @@ mod tests {
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "authorization_code" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("authorization_code");
         });
 
         outcome.unwrap();
@@ -3162,15 +3152,7 @@ mod tests {
 
             let field = &mut fields[2];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "client_id" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("client_id");
         });
 
         outcome.unwrap();
@@ -3244,15 +3226,7 @@ mod tests {
         let outcome = mutate_and_validate(good_copilot_json(), |payload| {
             let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][2];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "device_code" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("device_code");
         });
 
         outcome.unwrap();
@@ -3320,15 +3294,7 @@ mod tests {
 
             let field = &mut request["body"]["fields"][0];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "client_id" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("client_id");
         });
 
         outcome.unwrap();
@@ -3407,15 +3373,7 @@ mod tests {
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             let field = &mut payload["credential"]["refresh"]["request"]["body"]["fields"][1];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "refresh_token" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("refresh_token");
         });
 
         outcome.unwrap();
@@ -3512,15 +3470,7 @@ mod tests {
 
             let field = &mut fields[2];
 
-            field["value"] = serde_json::json!([
-                {
-                    "type": "coalesce",
-                    "parts": [
-                        { "type": "client_id" },
-                        { "type": "literal", "value": "fallback" }
-                    ]
-                }
-            ]);
+            field["value"] = coalesce_argument("client_id");
         });
 
         outcome.unwrap();

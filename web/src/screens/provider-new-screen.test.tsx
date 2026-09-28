@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appConfig } from "/src/config";
 import type { ManagementApi } from "/src/management-api/client";
 import type { DefinitionPayload } from "/src/management-api/definition-payload";
-import { ManagementApiError } from "/src/management-api/errors";
 import type {
     CompleteProviderOauthRequest,
     CompleteProviderOauthResponse,
@@ -21,6 +20,10 @@ import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 import {
     buttonWithText,
     cardWithTitle,
+    conflictFailure,
+    createDisposals,
+    gatewayFailure,
+    goneFailure,
     labeledInput,
     paragraphWithText,
     providerRow,
@@ -210,14 +213,7 @@ function presetById(id: string): ProviderPreset {
 }
 
 describe("ProviderNewScreen creation", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("sends a typed custom prefix byte-for-byte in the create request", async () => {
         const sent: CreateProviderRequest[] = [];
@@ -635,12 +631,7 @@ describe("ProviderNewScreen creation", () => {
         const api: ManagementApi = {
             ...screenApi(sent),
             createProviderDefinition: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "definition name already stored", {
-                        errno: ErrorCode.Conflict,
-                        httpStatus: 409,
-                    }),
-                ),
+                Promise.reject(conflictFailure("definition name already stored")),
         };
         disposes.push(render(() => <ProviderNewScreen api={api} />, document.body));
         await settle();
@@ -668,12 +659,7 @@ describe("ProviderNewScreen creation", () => {
         const api: ManagementApi = {
             ...screenApi(sent),
             createProviderDefinition: () =>
-                Promise.reject(
-                    new ManagementApiError("gateway", "definition name already stored", {
-                        errno: ErrorCode.Conflict,
-                        httpStatus: 409,
-                    }),
-                ),
+                Promise.reject(conflictFailure("definition name already stored")),
         };
         disposes.push(render(() => <ProviderNewScreen api={api} />, document.body));
         await settle();
@@ -707,14 +693,7 @@ describe("ProviderNewScreen creation", () => {
 });
 
 describe("ProviderNewScreen name seeding", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("seeds the untouched name field with the picked preset's own suggestion", async () => {
         disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
@@ -766,14 +745,7 @@ describe("ProviderNewScreen name seeding", () => {
 });
 
 describe("ProviderNewScreen preset switching over an edited recipe", () => {
-    const disposes: Array<() => void> = [];
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+    const disposes = createDisposals();
 
     it("switches presets instantly while the definition stands untouched", async () => {
         disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
@@ -1026,17 +998,10 @@ function heldDefinitionsRelease(
 }
 
 describe("ProviderNewScreen refresh", () => {
-    const disposes: Array<() => void> = [];
+    const disposes = createDisposals();
 
     beforeEach(() => {
         resetRefreshStamp();
-    });
-
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
     });
 
     it("re-runs the boot reads on the refresh pulse and recovers a failed read", async () => {
@@ -1285,13 +1250,6 @@ const createdProvider = providerRow({
     base_url: null,
 });
 
-function goneFailure(message: string): ManagementApiError {
-    return new ManagementApiError("gateway", message, {
-        errno: ErrorCode.NotFound,
-        httpStatus: 404,
-    });
-}
-
 /**
  * A management API standing in for the gateway along the OAuth paths: the
  * flow-begin and completion answers come from the test, everything else
@@ -1358,14 +1316,10 @@ function oauthScreenApi(options: {
 }
 
 describe("ProviderNewScreen OAuth flow", () => {
-    const disposes: Array<() => void> = [];
+    const disposes = createDisposals();
 
     afterEach(() => {
         vi.useRealTimers();
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
     });
 
     function mountScreen(api: ManagementApi): void {
@@ -1918,10 +1872,7 @@ describe("ProviderNewScreen OAuth flow", () => {
                     completeCalls += 1;
                     if (isFailing) {
                         return Promise.reject(
-                            new ManagementApiError("gateway", "upstream wobbled", {
-                                errno: ErrorCode.UpstreamError,
-                                httpStatus: 502,
-                            }),
+                            gatewayFailure("upstream wobbled", ErrorCode.UpstreamError, 502),
                         );
                     }
 
@@ -1974,10 +1925,7 @@ describe("ProviderNewScreen OAuth flow", () => {
                 complete: () => {
                     completeCalls += 1;
                     return Promise.reject(
-                        new ManagementApiError("gateway", "upstream wobbled", {
-                            errno: ErrorCode.UpstreamError,
-                            httpStatus: 502,
-                        }),
+                        gatewayFailure("upstream wobbled", ErrorCode.UpstreamError, 502),
                     );
                 },
             }),
