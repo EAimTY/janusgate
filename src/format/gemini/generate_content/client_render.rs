@@ -2,7 +2,10 @@
 //! GenerateContent SSE chunks or an aggregated non-streaming body.
 
 use crate::{
-    format::{ClientSseRenderer, arguments_to_object_or_empty, gemini::split_gemini_usage},
+    format::{
+        ClientSseRenderer, arguments_to_object_or_empty,
+        gemini::{error_data_frame, split_gemini_usage},
+    },
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
 };
 use serde::Serialize;
@@ -445,9 +448,7 @@ impl ClientSseRenderer for SseRenderer {
 
     /// Renders a mid-stream error as a terminal SSE frame carrying the Gemini error envelope.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        let (_, envelope) = crate::format::gemini::error::render(error);
-
-        crate::sse::format_data_frame(&crate::format::render_json(&envelope))
+        error_data_frame(error)
     }
 }
 #[cfg(test)]

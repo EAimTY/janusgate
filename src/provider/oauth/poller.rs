@@ -1289,7 +1289,7 @@ mod tests {
                 has_grant_type_field: true,
                 authorization: OAuthDeviceAuthorizationFixture {
                     request_url: "https://example.test/device/code",
-                    has_client_id_body: false,
+                    has_client_id_body: true,
                     response_encoding: ResponseEncoding::Json,
                     is_verification_uri_required: true,
                     has_expires_in_field: true,

@@ -397,6 +397,26 @@ impl DefinitionPayload {
                          optional",
                     )));
                 }
+
+                // RFC 8628 §3.1: the device-authorization request carries the `client_id` —
+                // "REQUIRED, if the client is not authenticating with the authorization server
+                // as described in Section 3.2.1 of [RFC6749]" — and a credential with no
+                // `client_secret` never authenticates, so an authorization request that never
+                // references the part dies at the upstream with `invalid_client` on every
+                // flow's begin: the same required-carry shape the exchange and refresh
+                // client-ID rules below enforce. A credential with a client secret
+                // authenticates with it — the Basic/body scheme is the definition's business.
+                if client_secret.is_none()
+                    && !request_references(&authorization.request, &ValueExpr::ClientId)
+                {
+                    return Err(ValidationError::new(
+                        "device grant without a client secret requires the device authorization \
+                         request to reference the `client_id` value part: RFC 8628 §3.1 makes \
+                         the client ID REQUIRED when the client is not authenticating with the \
+                         authorization server (RFC 6749 §3.2.1), and a credential with no \
+                         client secret never does",
+                    ));
+                }
             }
         }
 
@@ -3228,6 +3248,95 @@ mod tests {
                     ]
                 }
             ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 8628 §3.1: the device-authorization request carries the client ID — "REQUIRED, if
+    /// the client is not authenticating with the authorization server" (RFC 6749 §3.2.1) — and
+    /// a credential with no `client_secret` never authenticates, so a secret-less device grant
+    /// whose authorization request never references the `client_id` value part is rejected at
+    /// the write boundary, symmetric to the exchange and refresh client-ID rules, instead of
+    /// dying at the upstream with `invalid_client` on every flow. A credential with a client
+    /// secret authenticates with it and stays exempt. The untouched Copilot fixture references
+    /// the client ID as a form field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming secret-less device authorization validates.
+    #[test]
+    fn requires_a_secret_less_device_authorization_to_reference_the_client_id() {
+        // The Copilot shape's device-authorization request presents the client ID as its first
+        // form field; dropping it leaves the stage with no client identification at all.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["authorization"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(0);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("client_id"), "{error}");
+        assert!(error.contains("RFC 8628"), "{error}");
+        assert!(error.contains("device authorization"), "{error}");
+
+        // The untouched fixture is secret-less and references the client ID as a form field.
+        mutate_and_validate(good_copilot_json(), |_| {}).unwrap();
+    }
+
+    /// The client-ID rule binds only the secret-less credentials — a credential with a client
+    /// secret authenticates with it, and its device-authorization request may omit the ID — and
+    /// reads the whole request, so the value part satisfies it wherever the stage's expressions
+    /// live.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a client-ID-carrying secret-less device authorization is rejected.
+    #[test]
+    fn accepts_a_secret_less_device_authorization_referencing_the_client_id() {
+        // As a query row on the device-authorization request.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["authorization"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(0);
+
+            payload["credential"]["grant"]["authorization"]["request"]["query"] =
+                serde_json::json!([{ "name": "client_id", "value": [{ "type": "client_id" }] }]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            let request = &mut payload["credential"]["grant"]["authorization"]["request"];
+
+            let field = &mut request["body"]["fields"][0];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "client_id" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // A credential with a client secret authenticates with it: its device-authorization
+        // request may omit the client ID outright.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::json!("copilot-secret");
+
+            payload["credential"]["grant"]["authorization"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(0);
         });
 
         outcome.unwrap();

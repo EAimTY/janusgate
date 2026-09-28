@@ -5,9 +5,9 @@
 //! its families share. This module groups the GenerateContent family ([`generate_content`]) and
 //! the Interactions family ([`interaction`]) — the two codecs over the Gemini client protocol and
 //! the two Gemini upstream wires (README §1, §5.7, §6) — beside their shared error renderer
-//! ([`error`], README §6.7), response-format decision, usage fold and split, tool-output name
-//! resolution, and the thought-step family predicate deciding replay membership for both codecs
-//! (README §6.4).
+//! ([`error`], README §6.7) and its mid-stream frame helper ([`error_data_frame`]),
+//! response-format decision, usage fold and split, tool-output name resolution, and the
+//! thought-step family predicate deciding replay membership for both codecs (README §6.4).
 
 pub(crate) mod error;
 pub(crate) mod generate_content;
@@ -16,6 +16,17 @@ pub(crate) mod interaction;
 use crate::ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrUsage};
 use serde::Deserialize;
 use serde_json::Value;
+
+/// Renders a mid-stream stream failure as the Gemini terminal SSE data frame — the one recipe
+/// both Gemini codecs' SSE renderers emit when a stream aborts, shared here so the two cannot
+/// drift: the shared [`error`] renderer classifies the API error into the official Status
+/// envelope (README §6.7), which is serialized and framed as the single `data:` frame that
+/// terminates the stream.
+pub(in crate::format::gemini) fn error_data_frame(error: &crate::api::Error) -> String {
+    let (_, envelope) = error::render(error);
+
+    crate::sse::format_data_frame(&crate::format::render_json(&envelope))
+}
 
 /// Resolves the function name a tool output answers, scanning the conversation for the matching
 /// invocation; shared by both Gemini codecs.

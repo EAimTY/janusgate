@@ -637,9 +637,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// The device grant one begin test swaps into the shared OAuth skeleton: the authorization
-    /// request posts to the given base and maps the required codes plus the verification URI,
-    /// reporting neither `expires_in` nor `interval` — so the begin resolves the documented
-    /// fallbacks, the definition's expiry fallback and the five-second RFC 8628 default.
+    /// request posts the `client_id` form row — RFC 8628 §3.1, and the write boundary requires
+    /// it of the fixture's secret-less credential — to the given base and maps the required
+    /// codes plus the verification URI, reporting neither `expires_in` nor `interval` — so the
+    /// begin resolves the documented fallbacks, the definition's expiry fallback and the
+    /// five-second RFC 8628 default.
     ///
     /// # Panics
     ///
@@ -651,7 +653,10 @@ mod tests {
             "authorization": {
                 "request": {
                     "method": "POST",
-                    "url": [{"type": "literal", "value": format!("{base}/device/code")}]
+                    "url": [{"type": "literal", "value": format!("{base}/device/code")}],
+                    "body": {"kind": "form", "fields": [
+                        {"name": "client_id", "value": [{"type": "client_id"}]}
+                    ]}
                 },
                 "response": {
                     "encoding": "json",

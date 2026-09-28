@@ -514,3 +514,83 @@ describe("ModelEditScreen vanished model", () => {
         expect(bodyText()).toContain("The upstream no longer reports this model.");
     });
 });
+
+describe("ModelEditScreen parked provider", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** The shared provider row parked: its switch is off, so nothing it holds serves. */
+    const parkedProvider: ProviderResponse = {
+        ...provider,
+        is_enabled: false,
+    };
+
+    function mount(holder: {
+        providers: ReadonlyArray<ProviderResponse>;
+        models: ReadonlyArray<ModelResponse>;
+    }): void {
+        disposes.push(
+            render(
+                () => (
+                    <ModelEditScreen
+                        api={screenApi(holder)}
+                        modelId={11}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("names the re-enable instead of the routing line on a save under the parked provider", async () => {
+        // Restoring a parked provider works model-side: the row is enabled
+        // and reported, so a save's routing line would read as service
+        // restored while clients calling the ID still 404 — the provider's
+        // switch is off, and nothing else on this page states that hold.
+        const holder = {
+            providers: [
+                parkedProvider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        await overridePublicId("custom-gpt-x");
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(bodyText()).toContain("Model saved.");
+        expect(bodyText()).not.toContain("Clients now call it");
+        expect(bodyText()).toContain(
+            "Clients will call it custom-gpt-x once the provider is re-enabled.",
+        );
+    });
+
+    it("keeps the routing line when the owning provider row is absent", async () => {
+        // Without the provider row the hold cannot be proven — the gate
+        // stays out of the way and the save notice speaks as usual.
+        const holder = {
+            providers: [],
+            models: [
+                model,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        await overridePublicId("custom-gpt-x");
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(bodyText()).toContain("Clients now call it custom-gpt-x.");
+    });
+});

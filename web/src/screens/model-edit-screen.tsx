@@ -37,7 +37,9 @@ import { RowNotFound } from "./row-not-found";
  * recomposed inside that write. Reading the model — its facts and its usage
  * — lives on the detail page. A vanished row's suspension is stated under
  * the header with the detail page's two recovery paths, and the save
- * notice's routing line waits for a row the upstream reports again.
+ * notice's routing line speaks only where service is true — silent for a
+ * vanished row, and naming the provider's re-enable where the owning
+ * provider is disabled.
  */
 export function ModelEditScreen(props: {
     readonly api: ManagementApi;
@@ -237,18 +239,27 @@ function ModelSettingsForm(props: {
             setHasIdOverride(saved.id_override !== null);
             setIdOverride(saved.id_override ?? "");
 
+            // The routing line speaks only where clients calling the composed
+            // ID actually reach the gateway. A vanished row stays suspended
+            // whatever its settings say — `models:update` never touches
+            // `discovery_state` — and its silence is carried by the standing
+            // suspension notice under the header. Under a disabled provider
+            // the row answers nothing either, but nothing else on this page
+            // states that hold, so the line states it instead of promising
+            // service: what waits is the provider's switch, not this save.
+            let routingLine: string | null;
+            if (saved.discovery_state === "vanished") {
+                routingLine = null;
+            } else if (props.provider !== null && !props.provider.is_enabled) {
+                routingLine = `Clients will call it ${saved.public_id} once the provider is re-enabled.`;
+            } else {
+                routingLine = `Clients now call it ${saved.public_id}.`;
+            }
+
             return {
                 tone: "ok",
                 title: "Model saved.",
-                // A vanished row stays suspended whatever its settings say —
-                // `models:update` never touches `discovery_state` — so the
-                // routing line would read as service restored while clients
-                // calling the ID still get 404s. Only a row the upstream
-                // reports again names the public ID it now answers to.
-                detail:
-                    saved.discovery_state === "vanished"
-                        ? null
-                        : `Clients now call it ${saved.public_id}.`,
+                detail: routingLine,
             };
         },
         onDirtyChange: props.onDirtyChange,

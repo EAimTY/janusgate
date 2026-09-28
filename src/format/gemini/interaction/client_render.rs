@@ -21,7 +21,10 @@ use super::{
     RenderStep, STATUS_COMPLETED, STATUS_IN_PROGRESS, STATUS_INCOMPLETE, STATUS_REQUIRES_ACTION,
 };
 use crate::{
-    format::{self, ClientSseRenderer, gemini::split_gemini_usage},
+    format::{
+        self, ClientSseRenderer,
+        gemini::{error_data_frame, split_gemini_usage},
+    },
     ids,
     ir::{IrAggregation, IrFinishReason, IrUsage},
     sse,
@@ -833,9 +836,7 @@ impl ClientSseRenderer for SseRenderer {
     /// Renders a mid-stream error as a terminal data frame carrying the Gemini error envelope,
     /// classified once through the shared API error.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        let (_, envelope) = crate::format::gemini::error::render(error);
-
-        sse::format_data_frame(&format::render_json(&envelope))
+        error_data_frame(error)
     }
 }
 

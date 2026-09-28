@@ -92,6 +92,27 @@ function findOption<TValue extends string>(
     return null;
 }
 
+/**
+ * Narrows a wire value that must be one of a vocabulary's members, naming the
+ * offending value in a `ContractViolationError` otherwise. The noun is the
+ * value's noun phrase as the violation names it, article included — e.g.
+ * `"a discovery state"` — so every parser's message stays byte-identical.
+ */
+function parseOption<TValue extends string>(
+    options: ReadonlyArray<VocabularyOption<TValue>>,
+    value: unknown,
+    context: string,
+    noun: string,
+): TValue {
+    const member = findOption(options, value);
+
+    if (member === null) {
+        throw new ContractViolationError(`${context} is not ${noun}: ${String(value)}`);
+    }
+
+    return member;
+}
+
 /** Looks a credential kind up, returning `null` when the value is not one. */
 export function findCredentialKind(value: unknown): CredentialKind | null {
     return findOption(CREDENTIAL_KIND_OPTIONS, value);
@@ -170,19 +191,9 @@ export function discoveryStateLabel(state: DiscoveryState): string {
     return DISCOVERY_STATE_LABELS[state];
 }
 
-function findDiscoveryState(value: unknown): DiscoveryState | null {
-    return findOption(DISCOVERY_STATE_OPTIONS, value);
-}
-
 /** Narrows a wire value that must be one of the discovery lifecycle states. */
 export function parseDiscoveryState(value: unknown, context: string): DiscoveryState {
-    const state = findDiscoveryState(value);
-
-    if (state === null) {
-        throw new ContractViolationError(`${context} is not a discovery state: ${String(value)}`);
-    }
-
-    return state;
+    return parseOption(DISCOVERY_STATE_OPTIONS, value, context, "a discovery state");
 }
 
 const API_LOG_OUTCOME_LABELS: Record<ApiLogOutcome, string> = {
@@ -208,13 +219,7 @@ export function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
 
 /** Narrows a wire value that must be one of the recorded request outcomes. */
 export function parseApiLogOutcome(value: unknown, context: string): ApiLogOutcome {
-    const outcome = findApiLogOutcome(value);
-
-    if (outcome === null) {
-        throw new ContractViolationError(`${context} is not a request outcome: ${String(value)}`);
-    }
-
-    return outcome;
+    return parseOption(API_LOG_OUTCOME_OPTIONS, value, context, "a request outcome");
 }
 
 const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
@@ -241,13 +246,7 @@ export function findApiLogEndpointType(value: unknown): ApiLogEndpointType | nul
 
 /** Narrows a wire value that must be one of the outward endpoints. */
 export function parseApiLogEndpointType(value: unknown, context: string): ApiLogEndpointType {
-    const endpoint = findApiLogEndpointType(value);
-
-    if (endpoint === null) {
-        throw new ContractViolationError(`${context} is not an endpoint type: ${String(value)}`);
-    }
-
-    return endpoint;
+    return parseOption(API_LOG_ENDPOINT_OPTIONS, value, context, "an endpoint type");
 }
 
 const USAGE_GROUP_BY_LABELS: Record<UsageGroupBy, string> = {
