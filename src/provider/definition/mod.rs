@@ -46,51 +46,43 @@ pub struct DefinitionPayload {
 }
 
 impl DefinitionPayload {
-    /// Whether any descriptor URL of this payload references the instance base URL — the
+    /// Whether any descriptor expression of this payload references the instance base URL — the
     /// [`template::ValueExpr::Base`] part (README §3). A definition so addressed evaluates every
-    /// such URL against the bound provider row's stored base URL, so a provider bound to it must
-    /// carry one.
+    /// such expression against the bound provider row's stored base URL, so a provider bound to
+    /// it must carry one.
     ///
-    /// The walk covers every URL-bearing member whose evaluation environment carries the base
-    /// URL — the inference and streaming URLs, the discovery and provisioning request URLs, and
-    /// the credential section's device-authorization, token-exchange, and refresh-grant request
-    /// URLs — and must be extended alongside any new member of that set: the requirement checks
-    /// consult only this predicate, so a missed URL is accepted with no base URL and every later
-    /// evaluation of it fails as stored drift. The authorize URL is excluded: the write-time
-    /// validation bars the base reference at the authorize-URL stage (README §5.1), so that
-    /// expression can never evaluate against a base URL.
+    /// The walk covers every expression member whose evaluation environment carries the base
+    /// URL — the inference and streaming URLs, the inference header-row values, the envelope's
+    /// string leaves, and every control request's full expression surface (URL, header-row
+    /// values, query-row values, form-field values, and JSON string leaves) across the
+    /// credential section's device-authorization, token-exchange, and refresh-grant requests,
+    /// the provisioning steps and their polls, and the discovery request — and must be extended
+    /// alongside any new member of that set: the requirement checks consult only this
+    /// predicate, so a missed expression is accepted with no base URL and every later
+    /// evaluation of it fails as stored drift. The authorize URL and its extra parameters are
+    /// excluded: the write-time validation bars the base reference at the authorize-URL stage
+    /// (README §5.1), so those expressions can never evaluate against a base URL.
     #[must_use]
     pub(crate) fn references_base(&self) -> bool {
-        /// Whether one string expression carries the base reference, descending into a
-        /// `Coalesce`'s arguments — the one compound part, which evaluation recurses into.
-        fn references_base(expr: &template::StringExpr) -> bool {
-            /// Whether one expression part is, or contains, the base reference.
-            fn part_references_base(part: &template::ValueExpr) -> bool {
-                match part {
-                    template::ValueExpr::Base => true,
+        // The part the walk seeks everywhere below: the stored base-URL reference.
+        let base = template::ValueExpr::Base;
 
-                    template::ValueExpr::Coalesce { parts } => {
-                        parts.iter().any(part_references_base)
-                    }
-
-                    _ => false,
-                }
-            }
-
-            expr.0.iter().any(part_references_base)
-        }
-
-        /// Whether one control request's URL carries the base reference.
-        fn references_request_base(request: &template::ControlRequest) -> bool {
-            references_base(&request.url)
-        }
-
-        let mut is_addressed = references_base(&self.inference.url)
+        let mut is_addressed = validate::references(&self.inference.url, &base)
             || self
                 .inference
                 .stream_url
                 .as_ref()
-                .is_some_and(references_base);
+                .is_some_and(|url| validate::references(url, &base))
+            || self
+                .inference
+                .headers
+                .iter()
+                .any(|header| validate::references(&header.value, &base))
+            || self
+                .inference
+                .envelope
+                .as_ref()
+                .is_some_and(|envelope| validate::template_node_references(envelope, &base));
 
         // The credential section's OAuth recipe: every stage here evaluates against the flow's
         // working base URL or the stored provider base URL, except the authorize-URL build,
@@ -100,30 +92,31 @@ impl DefinitionPayload {
                 || match &recipe.grant {
                     credential::Grant::AuthorizationCode { .. } => false,
                     credential::Grant::Device { authorization, .. } => {
-                        references_request_base(&authorization.request)
+                        validate::request_references(&authorization.request, &base)
                     }
                 };
 
-            is_addressed = is_addressed || references_request_base(&recipe.exchange.request);
+            is_addressed =
+                is_addressed || validate::request_references(&recipe.exchange.request, &base);
 
             if let credential::TokenRefresh::Grant { request, .. } = &recipe.refresh {
-                is_addressed = is_addressed || references_request_base(request);
+                is_addressed = is_addressed || validate::request_references(request, &base);
             }
         }
 
         if let Some(steps) = &self.provisioning {
             is_addressed = is_addressed
                 || steps.iter().any(|step| {
-                    references_request_base(&step.request)
+                    validate::request_references(&step.request, &base)
                         || step
                             .poll
                             .as_ref()
-                            .is_some_and(|poll| references_request_base(&poll.request))
+                            .is_some_and(|poll| validate::request_references(&poll.request, &base))
                 });
         }
 
         if let Some(discovery) = &self.discovery {
-            is_addressed = is_addressed || references_request_base(&discovery.request);
+            is_addressed = is_addressed || validate::request_references(&discovery.request, &base);
         }
 
         is_addressed
@@ -377,18 +370,111 @@ mod tests {
         })
     }
 
-    /// Verifies the base-reference predicate against every URL-bearing descriptor member whose
-    /// evaluation environment carries the base URL: the inference and streaming URLs, the
-    /// discovery, provisioning, and poll request URLs, and the credential section's
-    /// device-authorization, token-exchange, and refresh-grant request URLs — directly or
-    /// inside a `Coalesce`. The authorize URL is the one excluded member: its stage bars the
-    /// base reference at write time (README §5.1), so a base reference there never counts.
+    /// Builds one static-key payload wholesale with the given inference header rows and the
+    /// optional envelope: the inference URL stays literal, so only the carried non-URL members
+    /// decide the predicate.
+    fn inference_payload(
+        headers: serde_json::Value,
+        envelope: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let inference = match envelope {
+            Some(envelope) => serde_json::json!({
+                "url": literal("https://upstream.example"),
+                "headers": headers,
+                "upstream_streaming": "match_client",
+                "envelope": envelope,
+            }),
+
+            None => serde_json::json!({
+                "url": literal("https://upstream.example"),
+                "headers": headers,
+                "upstream_streaming": "match_client",
+            }),
+        };
+
+        serde_json::json!({
+            "format": "openai_chat_completion",
+            "inference": inference,
+            "credential": {"type": "api_key"},
+        })
+    }
+
+    /// Builds one device-grant OAuth payload wholesale with the given token-exchange control
+    /// request: every other expression stays literal, so only the exchange request decides the
+    /// predicate. The refresh mode stays `none`.
+    fn exchange_payload(exchange_request: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "format": "openai_chat_completion",
+            "inference": {
+                "url": literal("https://upstream.example"),
+                "upstream_streaming": "match_client",
+            },
+            "credential": {
+                "type": "oauth",
+                "client_id": "client-id",
+                "grant": {
+                    "type": "device",
+                    "authorization": {
+                        "request": {
+                            "method": "POST",
+                            "url": literal("https://oauth.example/device"),
+                        },
+                        "response": {
+                            "encoding": "form",
+                            "fields": [
+                                {
+                                    "path": ["device_code"],
+                                    "target": {"type": "device_code"},
+                                    "required": true,
+                                },
+                                {
+                                    "path": ["user_code"],
+                                    "target": {"type": "user_code"},
+                                    "required": true,
+                                },
+                                {
+                                    "path": ["verification_uri"],
+                                    "target": {"type": "verification_uri"},
+                                    "required": false,
+                                },
+                            ],
+                        },
+                    },
+                    "expires_in_fallback_seconds": 900,
+                },
+                "exchange": {
+                    "request": exchange_request,
+                    "response": {
+                        "encoding": "json",
+                        "fields": [
+                            {
+                                "path": ["access_token"],
+                                "target": {"type": "access_token"},
+                                "required": true,
+                            },
+                        ],
+                    },
+                    "terminal_codes": ["invalid_grant"],
+                },
+                "refresh": {"type": "none"},
+            },
+        })
+    }
+
+    /// Verifies the base-reference predicate against every descriptor member whose evaluation
+    /// environment carries the base URL — the inference and streaming URLs, the inference
+    /// header-row values, the envelope's string leaves, and every control request's URL,
+    /// header-row values, query-row values, form-field values, and JSON string leaves across
+    /// the device-authorization, token-exchange, refresh-grant, provisioning, poll, and
+    /// discovery requests — directly or inside a `Coalesce`. The authorize URL is the one
+    /// excluded member: its stage bars the base reference at write time (README §5.1), so a
+    /// base reference there never counts.
     ///
     /// # Panics
     ///
     /// Panics when a fixture payload does not parse or the predicate diverges.
     #[test]
-    fn detects_the_base_reference_across_every_url_bearing_member() {
+    fn detects_the_base_reference_across_every_expression_surface() {
         let literal_url = literal("https://upstream.example");
 
         let cases = [
@@ -469,6 +555,99 @@ mod tests {
             (
                 "refresh grant request URL inside a coalesce",
                 device_payload(literal_url.clone(), literal_url.clone(), coalesced_base()),
+                true,
+            ),
+            (
+                "literal inference header value",
+                inference_payload(
+                    serde_json::json!([
+                        { "name": "X-Endpoint", "value": literal("https://upstream.example/v1") },
+                    ]),
+                    None,
+                ),
+                false,
+            ),
+            (
+                "inference header value",
+                inference_payload(
+                    serde_json::json!([{ "name": "X-Endpoint", "value": base() }]),
+                    None,
+                ),
+                true,
+            ),
+            (
+                "inference envelope string leaf",
+                inference_payload(
+                    serde_json::json!([]),
+                    Some(serde_json::json!({
+                        "type": "object",
+                        "fields": {
+                            "request": {
+                                "type": "array",
+                                "items": [{ "type": "string", "expr": base() }],
+                            },
+                        },
+                    })),
+                ),
+                true,
+            ),
+            (
+                "control request header value",
+                exchange_payload(serde_json::json!({
+                    "method": "POST",
+                    "url": literal("https://oauth.example/token"),
+                    "headers": [{ "name": "X-Endpoint", "value": base() }],
+                })),
+                true,
+            ),
+            (
+                "control request query-row value",
+                exchange_payload(serde_json::json!({
+                    "method": "POST",
+                    "url": literal("https://oauth.example/token"),
+                    "query": [{ "name": "endpoint", "value": base() }],
+                })),
+                true,
+            ),
+            (
+                "control request form-field value",
+                exchange_payload(serde_json::json!({
+                    "method": "POST",
+                    "url": literal("https://oauth.example/token"),
+                    "body": {
+                        "kind": "form",
+                        "fields": [{ "name": "endpoint", "value": base() }],
+                    },
+                })),
+                true,
+            ),
+            (
+                "control request form-field value inside a coalesce",
+                exchange_payload(serde_json::json!({
+                    "method": "POST",
+                    "url": literal("https://oauth.example/token"),
+                    "body": {
+                        "kind": "form",
+                        "fields": [{ "name": "endpoint", "value": coalesced_base() }],
+                    },
+                })),
+                true,
+            ),
+            (
+                "control request JSON string leaf",
+                exchange_payload(serde_json::json!({
+                    "method": "POST",
+                    "url": literal("https://oauth.example/token"),
+                    "body": {
+                        "kind": "json",
+                        "node": {
+                            "type": "object",
+                            "fields": {
+                                "endpoint": { "type": "string", "expr": base() },
+                            },
+                        },
+                    },
+                })),
                 true,
             ),
             (

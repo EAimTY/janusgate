@@ -295,10 +295,15 @@ enum StartBlockOut {
         text: &'static str,
     },
 
-    /// Thinking block opening empty; the signature streams later as a delta.
+    /// Thinking block opening empty; the signature streams later as a delta. The official
+    /// `ThinkingBlock` shape requires the `signature` member, so the start frame carries it
+    /// empty until the `signature_delta` lands (README §5.8).
     Thinking {
         /// Always empty at the start.
         thinking: &'static str,
+
+        /// Always empty at the start: the real signature streams later as a delta.
+        signature: &'static str,
     },
 
     /// Tool invocation block with its identity; arguments stream as deltas.
@@ -515,7 +520,10 @@ impl SseRenderer {
             &ContentBlockStartPayload {
                 kind: "content_block_start",
                 index,
-                content_block: StartBlockOut::Thinking { thinking: "" },
+                content_block: StartBlockOut::Thinking {
+                    thinking: "",
+                    signature: "",
+                },
             },
         ));
 
@@ -1056,11 +1064,11 @@ mod tests {
 
     /// Streams one turn through the client renderer: the `message_start` head waits one event
     /// and resolves on the first event after the start — zero usage when no partial report
-    /// preceded — block indexes ascend across text, thinking, and tool blocks; the signature
-    /// closes the thinking block; the tool call emits whole on its done event; and the
-    /// terminal delta rides `Done` — after the usage that cross-format upstreams report
-    /// following the finish — carrying the stop reason and the final usage before
-    /// `message_stop`.
+    /// preceded — block indexes ascend across text, thinking, and tool blocks; the thinking
+    /// block opens with the official empty `signature` member and the signature delta closes
+    /// it; the tool call emits whole on its done event; and the terminal delta rides `Done` —
+    /// after the usage that cross-format upstreams report following the finish — carrying the
+    /// stop reason and the final usage before `message_stop`.
     ///
     /// # Panics
     ///
@@ -1114,6 +1122,17 @@ mod tests {
                 "content_block_start",
                 "content_block_delta",
             ],
+        );
+
+        let thinking_payloads = payloads(&thinking);
+
+        assert_eq!(at(payload_at(&thinking_payloads, 1), "/index"), &json!(1));
+
+        // The thinking block opens with the official empty `signature` member — required on
+        // the official `ThinkingBlock` shape — until the `signature_delta` lands (README §5.8).
+        assert_eq!(
+            at(payload_at(&thinking_payloads, 1), "/content_block"),
+            &json!({"type": "thinking", "thinking": "", "signature": ""}),
         );
 
         let done = renderer.render(&IrEvent::ReasoningDone {

@@ -879,8 +879,9 @@ fn validate_control_request(
 }
 
 /// Whether one string expression references the sought value part, directly or inside a
-/// coalesce's arguments.
-fn references(expr: &StringExpr, sought: &ValueExpr) -> bool {
+/// coalesce's arguments. Shared with the parent module's base-reference predicate, which seeks
+/// the same walk over the inference descriptor's non-URL members.
+pub(super) fn references(expr: &StringExpr, sought: &ValueExpr) -> bool {
     expr.0.iter().any(|part| match part {
         ValueExpr::Coalesce { parts } => parts.contains(sought),
 
@@ -889,7 +890,9 @@ fn references(expr: &StringExpr, sought: &ValueExpr) -> bool {
 }
 
 /// Whether one template tree references the sought value part in any of its string leaves.
-fn template_node_references(node: &TemplateNode, sought: &ValueExpr) -> bool {
+/// Shared with the parent module's base-reference predicate, which seeks the same walk over
+/// the inference envelope.
+pub(super) fn template_node_references(node: &TemplateNode, sought: &ValueExpr) -> bool {
     match node {
         TemplateNode::Json { .. } | TemplateNode::Body => false,
 
@@ -907,7 +910,9 @@ fn template_node_references(node: &TemplateNode, sought: &ValueExpr) -> bool {
 
 /// Whether one control request references the sought value part anywhere its stage expressions
 /// live: the URL, the headers, the query rows, and the body's form fields or JSON string leaves.
-fn request_references(request: &ControlRequest, sought: &ValueExpr) -> bool {
+/// Shared with the parent module's base-reference predicate, which seeks the same walk over
+/// every control request of the definition.
+pub(super) fn request_references(request: &ControlRequest, sought: &ValueExpr) -> bool {
     let rows_reference = |rows: &[ParamRow]| rows.iter().any(|row| references(&row.value, sought));
 
     let body_references = match &request.body {

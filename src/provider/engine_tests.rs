@@ -922,16 +922,15 @@ async fn completion_supplies_the_access_token_from_provisioning() {
     mock.shutdown.send(()).ok();
 }
 
-/// The completion payload one base-URL precedence test row runs: the exchange request points at
-/// `token_url` and its mapping extracts the access token plus an optional `base_url`; with the
-/// provisioning sequence, its step re-extracts the `base_url` from its own response instead of
-/// the access token.
+/// The completion payload one mapping-focused exchange test runs: the completion fixture without
+/// a provisioning sequence whose exchange request points at `token_url` and whose response
+/// mapping extracts the access token plus one extra `extra_field` mapping row.
 ///
 /// # Panics
 ///
 /// Panics when the fixture cannot be mutated.
-fn base_url_completion_payload(token_url: &str, is_with_provisioning: bool) -> serde_json::Value {
-    let mut payload = completion_payload(is_with_provisioning);
+fn exchange_mapped_payload(token_url: &str, extra_field: serde_json::Value) -> serde_json::Value {
+    let mut payload = completion_payload(false);
 
     payload
         .get_mut("credential")
@@ -964,30 +963,50 @@ fn base_url_completion_payload(token_url: &str, is_with_provisioning: bool) -> s
                     "target": {"type": "access_token"},
                     "required": true
                 },
-                {
-                    "path": ["base_url"],
-                    "target": {"type": "base_url"},
-                    "required": false
-                }
+                extra_field
             ]),
         );
 
+    payload
+}
+
+/// The completion payload one base-URL precedence test row runs: the exchange request points at
+/// `token_url` and its mapping extracts the access token plus an optional `base_url`; with the
+/// provisioning sequence, its step re-extracts the `base_url` from its own response instead of
+/// the access token.
+///
+/// # Panics
+///
+/// Panics when the fixture cannot be mutated.
+fn base_url_completion_payload(token_url: &str, is_with_provisioning: bool) -> serde_json::Value {
+    let mut payload = exchange_mapped_payload(
+        token_url,
+        json!({
+            "path": ["base_url"],
+            "target": {"type": "base_url"},
+            "required": false
+        }),
+    );
+
     if is_with_provisioning {
-        *payload.get_mut("provisioning").unwrap().get_mut(0).unwrap() = json!({
-            "request": {
-                "method": "POST",
-                "url": [{"type": "literal", "value": format!("{token_url}/base")}]
-            },
-            "response_encoding": "json",
-            "extract": [
-                {
-                    "path": ["base_url"],
-                    "target": {"type": "base_url"},
-                    "shape": {"type": "string"},
-                    "required": true
-                }
-            ]
-        });
+        payload.as_object_mut().unwrap().insert(
+            "provisioning".to_string(),
+            json!([{
+                "request": {
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": format!("{token_url}/base")}]
+                },
+                "response_encoding": "json",
+                "extract": [
+                    {
+                        "path": ["base_url"],
+                        "target": {"type": "base_url"},
+                        "shape": {"type": "string"},
+                        "required": true
+                    }
+                ]
+            }]),
+        );
     }
 
     payload
@@ -1135,47 +1154,15 @@ async fn token_exchange_reads_numeric_expires_in() {
     ])
     .await;
 
-    let mut payload = completion_payload(false);
-
     // The exchange points at the mock and maps the access token plus the numeric `expires_in`.
-    payload
-        .get_mut("credential")
-        .unwrap()
-        .get_mut("exchange")
-        .unwrap()
-        .get_mut("request")
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
-        .insert(
-            "url".to_string(),
-            json!([{"type": "literal", "value": format!("{}/token", mock.base())}]),
-        );
-
-    payload
-        .get_mut("credential")
-        .unwrap()
-        .get_mut("exchange")
-        .unwrap()
-        .get_mut("response")
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
-        .insert(
-            "fields".to_string(),
-            json!([
-                {
-                    "path": ["access_token"],
-                    "target": {"type": "access_token"},
-                    "required": true
-                },
-                {
-                    "path": ["expires_in"],
-                    "target": {"type": "expires_in_seconds"},
-                    "required": false
-                }
-            ]),
-        );
+    let payload = exchange_mapped_payload(
+        &mock.base(),
+        json!({
+            "path": ["expires_in"],
+            "target": {"type": "expires_in_seconds"},
+            "required": false
+        }),
+    );
 
     let definition = completion_definition(payload);
 
@@ -1214,46 +1201,14 @@ async fn a_non_integer_expires_in_fails_the_token_response_malformed() {
         ])
         .await;
 
-        let mut payload = completion_payload(false);
-
-        payload
-            .get_mut("credential")
-            .unwrap()
-            .get_mut("exchange")
-            .unwrap()
-            .get_mut("request")
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .insert(
-                "url".to_string(),
-                json!([{"type": "literal", "value": format!("{}/token", mock.base())}]),
-            );
-
-        payload
-            .get_mut("credential")
-            .unwrap()
-            .get_mut("exchange")
-            .unwrap()
-            .get_mut("response")
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .insert(
-                "fields".to_string(),
-                json!([
-                    {
-                        "path": ["access_token"],
-                        "target": {"type": "access_token"},
-                        "required": true
-                    },
-                    {
-                        "path": ["expires_in"],
-                        "target": {"type": "expires_in_seconds"},
-                        "required": false
-                    }
-                ]),
-            );
+        let payload = exchange_mapped_payload(
+            &mock.base(),
+            json!({
+                "path": ["expires_in"],
+                "target": {"type": "expires_in_seconds"},
+                "required": false
+            }),
+        );
 
         let definition = completion_definition(payload);
 
