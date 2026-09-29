@@ -223,6 +223,125 @@ pub(crate) struct OngoingFlow {
     pub(crate) expires_at: i64,
 }
 
+impl OngoingFlow {
+    /// The new provider's name of a create flow.
+    ///
+    /// The schema's cross-column `CHECK`s pin `provider_name` non-null exactly while `purpose`
+    /// is `create` (README §3), so only a create flow reads it; any other read is storage drift
+    /// and fails fast instead of completing a flow under an empty name.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a non-create flow reads the name — the stored state the `CHECK`s make
+    /// unrepresentable.
+    #[must_use]
+    pub(crate) fn create_provider_name(&self) -> &str {
+        #[expect(
+            clippy::expect_used,
+            reason = "the schema's cross-column checks pin a create flow's provider name non-null"
+        )]
+        self.provider_name
+            .as_deref()
+            .expect("a create flow names its new provider")
+    }
+
+    /// The new provider's model prefix of a create flow.
+    ///
+    /// The schema's cross-column `CHECK`s pin `model_prefix` non-null exactly while `purpose`
+    /// is `create` (README §3), so only a create flow reads it; any other read is storage drift
+    /// and fails fast instead of completing a flow under an empty prefix.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a non-create flow reads the prefix — the stored state the `CHECK`s make
+    /// unrepresentable.
+    #[must_use]
+    pub(crate) fn create_model_prefix(&self) -> &str {
+        #[expect(
+            clippy::expect_used,
+            reason = "the schema's cross-column checks pin a create flow's model prefix non-null"
+        )]
+        self.model_prefix
+            .as_deref()
+            .expect("a create flow names its model prefix")
+    }
+
+    /// The target provider row of a reauthorize flow.
+    ///
+    /// The schema's cross-column `CHECK`s pin `target_provider_id` non-null exactly while
+    /// `purpose` is `reauthorize` (README §3), so only a reauthorize flow reads it; any other
+    /// read is storage drift and fails fast instead of attributing the completion to row `0`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a non-reauthorize flow reads the target — the stored state the `CHECK`s make
+    /// unrepresentable.
+    #[must_use]
+    pub(crate) fn reauthorize_target_id(&self) -> i64 {
+        #[expect(
+            clippy::expect_used,
+            reason = "the schema's cross-column checks pin a reauthorize flow's target non-null"
+        )]
+        self.target_provider_id
+            .expect("a reauthorize flow names its target provider")
+    }
+
+    /// The result provider row of a succeeded flow.
+    ///
+    /// The schema's cross-column `CHECK`s pin `result_provider_id` non-null exactly while
+    /// `outcome` is `succeeded` (README §3), so only a succeeded outcome reads it; any other
+    /// read is storage drift and fails fast instead of resolving row `0`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a pending or failed flow reads the result — the stored state the `CHECK`s
+    /// make unrepresentable.
+    #[must_use]
+    pub(crate) fn result_provider_id(&self) -> i64 {
+        #[expect(
+            clippy::expect_used,
+            reason = "the schema's cross-column checks pin a succeeded outcome's result non-null"
+        )]
+        self.result_provider_id
+            .expect("a succeeded flow carries its result provider")
+    }
+
+    /// The gateway-owned failure code and message of a failed flow.
+    ///
+    /// The schema's cross-column `CHECK`s pin the failure pair non-null exactly while `outcome`
+    /// is `failed` (README §3), so only a failed outcome reads it; any other read is storage
+    /// drift and fails fast instead of surfacing empty failure facts.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a pending or succeeded flow reads the pair — the stored state the `CHECK`s
+    /// make unrepresentable.
+    #[must_use]
+    pub(crate) fn failure_pair(&self) -> (String, String) {
+        #[expect(
+            clippy::expect_used,
+            reason = "the schema's cross-column checks pin a failed outcome's failure pair non-null"
+        )]
+        let code = self
+            .failure_code
+            .as_deref()
+            .expect("a failed flow carries its failure code")
+            .to_string();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the schema's cross-column checks pin a failed outcome's failure pair non-null"
+        )]
+        let message = self
+            .failure_message
+            .as_deref()
+            .expect("a failed flow carries its failure message")
+            .to_string();
+
+        (code, message)
+    }
+}
+
 /// The facts a new flow row is inserted from; the device columns are already decoded when a
 /// device flow is inserted, so every stored state satisfies the schema's cross-column checks.
 pub(crate) struct NewFlow {

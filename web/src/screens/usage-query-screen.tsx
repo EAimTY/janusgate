@@ -24,9 +24,9 @@ import {
     EMPTY_USAGE_FILTER_FIELDS,
     hasUsageFilterFields,
     statusError,
+    streamDraftOf,
     subjectFilterFields,
     USAGE_WINDOW_OPTIONS,
-    type UsageFilterDraft,
     type UsageFilterFields,
     type UsageWindowChoice,
     windowBoundMicros,
@@ -56,20 +56,6 @@ function arrivalGroupBy(subject: UsageQuerySubject | null): ReadonlyArray<UsageG
               "day",
               subject.dimension,
           ];
-}
-
-/**
- * The stream draft the page's filter fields become: the fields cross
- * verbatim — both pages hold the shared filter in the one
- * [`UsageFilterFields`] vocabulary, single values on each side — while the
- * From and To bounds stay behind with no stream spelling to become, the
- * stream's own window row governing time there instead.
- */
-function fieldsStreamDraft(fields: UsageFilterFields): UsageFilterDraft {
-    return {
-        ...fields,
-        window: "all",
-    };
 }
 
 /**
@@ -381,7 +367,7 @@ export function UsageQueryScreen(props: {
                 backHref={hrefs.usage()}
                 backLabel="Usage"
             >
-                <ButtonLink href={hrefs.usage(fieldsStreamDraft(fields()))}>
+                <ButtonLink href={hrefs.usage(streamDraftOf(fields()))}>
                     View requests
                     <Show when={hasBoundInput()}>
                         {/* The stated trade, muted but visible — the same

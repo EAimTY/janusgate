@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros } from "/src/format";
+import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import {
@@ -412,7 +412,7 @@ function trafficSummary(series: OverviewDailySeries): JSX.Element {
         return "No requests recorded.";
     }
 
-    const total = `${series.total.toLocaleString()} ${series.total === 1 ? "request" : "requests"}`;
+    const total = `${series.total.toLocaleString()} ${pluralNoun(series.total, "request")}`;
 
     if (series.peak === null) {
         return total;

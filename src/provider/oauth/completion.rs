@@ -186,17 +186,13 @@ pub(crate) async fn write_completion_provider(
 ) -> Result<Option<i64>, Error> {
     match flow.purpose {
         FlowPurpose::Create => {
-            let name = flow.provider_name.as_deref().unwrap_or_default();
-
-            let model_prefix = flow.model_prefix.as_deref().unwrap_or_default();
-
             // A concurrent creation of the same name is the unique constraint's call; the flow
             // fails with the conflict instead of racing.
             let id = storage::providers::insert_provider_in_transaction(
                 transaction,
                 storage::providers::NewProvider {
-                    name,
-                    model_prefix,
+                    name: flow.create_provider_name(),
+                    model_prefix: flow.create_model_prefix(),
                     base_url: product.base_url.as_deref(),
                     credentials: &product.credentials,
                     definition,
@@ -209,11 +205,7 @@ pub(crate) async fn write_completion_provider(
         }
 
         FlowPurpose::Reauthorize => {
-            let Some(target) = flow.target_provider_id else {
-                return Err(Error::Internal {
-                    message: "the reauthorize flow carries no target provider".to_string(),
-                });
-            };
+            let target = flow.reauthorize_target_id();
 
             let is_updated = storage::providers::rebind_credentials_in_transaction(
                 transaction,

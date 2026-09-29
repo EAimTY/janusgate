@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { formatTimestamp } from "/src/format";
+import { formatTimestamp, pluralNoun } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
@@ -57,14 +57,14 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
 
     const countLine = createMemo(() => {
         const total = keys().length;
-        const totalNoun = total === 1 ? "key" : "keys";
+        const totalNoun = pluralNoun(total, "key");
         const shown = visibleKeys().length;
 
         if (search().trim() === "") {
             return `${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
         }
 
-        return `${shown} ${shown === 1 ? "key" : "keys"} shown · ${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
+        return `${shown} ${pluralNoun(shown, "key")} shown · ${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
     });
 
     return (

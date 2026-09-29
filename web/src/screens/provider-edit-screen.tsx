@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { type Accessor, createMemo, createSignal, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros } from "/src/format";
+import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -332,7 +332,7 @@ function DetailsCard(props: {
 
         return count === null || count === 0
             ? null
-            : `Saving recomposes ${count} model ${count === 1 ? "ID" : "IDs"} — clients calling the old IDs will 404 until updated.`;
+            : `Saving recomposes ${count} model ${pluralNoun(count, "ID", "IDs")} — clients calling the old IDs will 404 until updated.`;
     };
 
     const trimmedBaseUrl = (): string => (baseUrl() ?? "").trim();
@@ -668,7 +668,7 @@ function DangerCard(props: {
             description={
                 props.modelCount === 0
                     ? "Deleting removes the provider. It has no models, so nothing else is removed."
-                    : `Deleting removes the provider and, by cascade, its ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}.`
+                    : `Deleting removes the provider and, by cascade, its ${props.modelCount} ${pluralNoun(props.modelCount, "model")}.`
             }
             question={
                 props.modelCount === 0

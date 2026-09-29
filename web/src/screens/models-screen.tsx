@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Show } from "solid-js";
+import { pluralNoun } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { hrefs, navigate } from "/src/router";
@@ -82,7 +83,7 @@ export function ModelsScreen(props: {
     // a search stands, the narrow it then reports.
     const countLine = createMemo(() => {
         const total = models().length;
-        const totalNoun = total === 1 ? "model" : "models";
+        const totalNoun = pluralNoun(total, "model");
 
         if (search().trim() === "") {
             return `${total} ${totalNoun}`;

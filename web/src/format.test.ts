@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
     credentialExpiryLine,
     dateTimeInputValue,
-    formatClock,
     formatDuration,
     formatRefreshStamp,
     formatTokenCount,
@@ -141,12 +140,9 @@ describe("date-time input bounds", () => {
     });
 });
 
-describe("formatClock", () => {
-    it("prints a wall clock of hours, minutes and seconds", () => {
-        expect(formatClock(new Date(1_700_000_000 * 1000))).toMatch(/^\d{2}:\d{2}:\d{2}$/);
-    });
-});
-
+// The wall clock is module-private, exercised only through this surface: the
+// today branch prints the bare clock, the other-day branch the same clock
+// after the date — both assert its hours-minutes-seconds shape.
 describe("formatRefreshStamp", () => {
     const now = new Date(2026, 8, 27, 14, 0, 0);
 

@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { type Accessor, createMemo, createSignal, onCleanup, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros } from "/src/format";
+import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
@@ -180,7 +180,7 @@ export function ProviderDetailScreen(props: {
             tone: "ok",
             title:
                 added > 0
-                    ? `${added} ${added === 1 ? "model" : "models"} discovered from ${current.name}.`
+                    ? `${added} ${pluralNoun(added, "model")} discovered from ${current.name}.`
                     : `Nothing new discovered from ${current.name}.`,
             detail: facts.length > 0 ? facts.join(" ") : null,
         });

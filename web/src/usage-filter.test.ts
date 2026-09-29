@@ -10,7 +10,6 @@ import {
     serializeUsageFilterDraft,
     statusError,
     subjectFilterFields,
-    USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     type UsageQuerySubjectDimension,
     type UsageSubjectFilter,
@@ -221,6 +220,15 @@ describe("hasUsageFilter", () => {
 });
 
 /**
+ * The dimensions the round-trips below must each cover, read through the
+ * public table: its `satisfies Record<UsageQuerySubjectDimension, ...>` bound
+ * makes its keys exhaustive over the dimension union, so a dimension added to
+ * the module is answered here with no edit — the same auto-coverage the
+ * module-private walk enumeration (`USAGE_QUERY_SUBJECT_DIMENSIONS`) gave.
+ */
+const SUBJECT_DIMENSIONS = Object.keys(USAGE_QUERY_SUBJECT_FIELDS) as UsageQuerySubjectDimension[];
+
+/**
  * The subject filter one table dimension names, built under that dimension's
  * own wire field. The computed key's union spelling reads as an index
  * signature, so the fixture asserts the one table pairing the round-trip
@@ -234,7 +242,7 @@ function subjectFilterNamed(dimension: UsageQuerySubjectDimension, id: number): 
 
 describe("usageQuerySubjectOfFilter", () => {
     it("round-trips every dimension through the table: the filter built under its wire field reads back as its subject", () => {
-        for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+        for (const dimension of SUBJECT_DIMENSIONS) {
             expect(usageQuerySubjectOfFilter(subjectFilterNamed(dimension, 12))).toEqual({
                 dimension,
                 id: 12,
@@ -245,7 +253,7 @@ describe("usageQuerySubjectOfFilter", () => {
 
 describe("subjectFilterFields", () => {
     it("round-trips every dimension through the table: the id fills its own draft field alone", () => {
-        for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+        for (const dimension of SUBJECT_DIMENSIONS) {
             expect(
                 subjectFilterFields({
                     dimension,

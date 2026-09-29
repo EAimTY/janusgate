@@ -40,6 +40,14 @@ export type ProviderPreset = {
     readonly payload: DefinitionPayload;
 };
 
+/**
+ * The definition JSON the editor prefills for one preset: the preset's
+ * payload serialized pretty-printed with a two-space indent.
+ */
+export function presetDefinitionJson(preset: ProviderPreset): string {
+    return JSON.stringify(preset.payload, null, 2);
+}
+
 /** Reads one preset's stored definition version, when the gateway holds one. */
 export function matchStoredDefinition(
     preset: ProviderPreset,

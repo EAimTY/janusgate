@@ -16,7 +16,12 @@ import {
     modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { matchStoredDefinition, PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
+import {
+    matchStoredDefinition,
+    PROVIDER_PRESETS,
+    type ProviderPreset,
+    presetDefinitionJson,
+} from "/src/presets";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
@@ -108,9 +113,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const stored = createMemo(() => matchStoredDefinition(preset(), definitions()));
 
     /** The definition JSON the operator edits; prefilled from the preset. */
-    const [definitionJson, setDefinitionJson] = createSignal(
-        JSON.stringify(preset().payload, null, 2),
-    );
+    const [definitionJson, setDefinitionJson] = createSignal(presetDefinitionJson(preset()));
     const [isDefinitionTouched, setIsDefinitionTouched] = createSignal(false);
 
     /**
@@ -427,7 +430,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         // With the edit gone there is nothing the preset-switch arming
         // guards, so it goes with the edit.
         setArmedPresetId(null);
-        setDefinitionJson(JSON.stringify(preset().payload, null, 2));
+        setDefinitionJson(presetDefinitionJson(preset()));
         setIsDefinitionTouched(false);
     };
 
@@ -482,7 +485,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         oauth.reset();
 
         setIsDefinitionTouched(false);
-        setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
+        setDefinitionJson(presetDefinitionJson(nextPreset));
 
         if (!isNameTouched()) {
             // The seed computes over the picked preset's own suggestion — the

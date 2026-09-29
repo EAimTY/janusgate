@@ -571,7 +571,7 @@ async fn complete_consumed_flow(
     // The flow row is already consumed either way — this classifies the loss, it does not
     // un-spend the flow.
     if flow.purpose == FlowPurposeStorage::Create {
-        let name = flow.provider_name.as_deref().unwrap_or_default();
+        let name = flow.create_provider_name();
 
         if storage::providers::is_provider_name_taken(database, name).await? {
             return Err(Error::ProviderNameTaken {
@@ -618,9 +618,9 @@ async fn complete_consumed_flow(
         oauth::write_completion_provider(&mut transaction, flow, definition, &product).await?
     else {
         // Only a reauthorize flow's target can vanish mid-write; a create flow always inserts.
-        let target = flow.target_provider_id.unwrap_or_default();
-
-        return Err(Error::ProviderVanishedDuringReauthorization { id: target });
+        return Err(Error::ProviderVanishedDuringReauthorization {
+            id: flow.reauthorize_target_id(),
+        });
     };
 
     transaction
@@ -674,7 +674,7 @@ async fn complete_device(
         None => Ok(CompleteProviderOauthResponse::Pending {}),
 
         Some(FlowOutcome::Succeeded) => {
-            let result_provider_id = flow.result_provider_id.unwrap_or_default();
+            let result_provider_id = flow.result_provider_id();
 
             // The result provider resolves before the consume, so a provider row deleted
             // between the poller's commit and this retrieval never spends the one permitted
@@ -697,8 +697,7 @@ async fn complete_device(
         }
 
         Some(FlowOutcome::Failed) => {
-            let failure_code = flow.failure_code.clone().unwrap_or_default();
-            let failure_message = flow.failure_message.clone().unwrap_or_default();
+            let (failure_code, failure_message) = flow.failure_pair();
 
             storage::oauth_flows::consume_terminal_flow(database, &flow.state_token, now)
                 .await?

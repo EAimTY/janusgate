@@ -12,7 +12,7 @@ export function nowMicros(): number {
 }
 
 /** A wall clock of hours, minutes and seconds — the freshness stamp's today shape. */
-export function formatClock(date: Date): string {
+function formatClock(date: Date): string {
     return date.toLocaleTimeString(undefined, {
         hour: "2-digit",
         minute: "2-digit",
@@ -105,6 +105,18 @@ export function credentialExpiryLine(expiresAtMicros: number, nowMicros: number)
  */
 export function formatTokenCount(value: number | null): string {
     return value === null ? "—" : value.toLocaleString();
+}
+
+/**
+ * A counted phrase's noun — `"model"` beside 1, `"models"` beside every other
+ * count: singular exactly when the count is `1`. A noun that does not
+ * pluralize by suffixing `s` states its plural itself (`pluralNoun(count,
+ * "ID", "IDs")`). The count itself stays the caller's — surfaces spell it
+ * differently (grouped totals, `x of y` fractions) — this only homes the
+ * singular/plural grammar.
+ */
+export function pluralNoun(count: number, singular: string, plural = `${singular}s`): string {
+    return count === 1 ? singular : plural;
 }
 
 /**

@@ -580,7 +580,9 @@ async fn commit_success(
 
 /// Whether another stored provider row already holds the create flow's name: the pre-check
 /// ahead of the commit transaction and the commit path's constraint-loss confirmation share one
-/// probe, so both `name_conflict` diagnoses rest on the same fact (README §7.2).
+/// probe, so both `name_conflict` diagnoses rest on the same fact (README §7.2). Every caller
+/// checks the create purpose before probing, so the name read rides the CHECK-pinned
+/// create-name contract.
 ///
 /// # Errors
 ///
@@ -589,9 +591,7 @@ async fn is_create_name_taken(
     database: &Database,
     flow: &OngoingFlow,
 ) -> Result<bool, storage::Error> {
-    let name = flow.provider_name.as_deref().unwrap_or_default();
-
-    storage::providers::is_provider_name_taken(database, name).await
+    storage::providers::is_provider_name_taken(database, flow.create_provider_name()).await
 }
 
 /// Commits the provider write and the succeeded outcome in one transaction under the fresh

@@ -434,7 +434,7 @@ export type UsageQuerySubject = {
 };
 
 /** The subject dimensions, in the order the subject derivations walk them. */
-export const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
+const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
     "provider",
     "model",
     "api_key",
@@ -499,6 +499,21 @@ export function subjectFilterFields(subject: UsageQuerySubject | null): UsageFil
     return {
         ...EMPTY_USAGE_FILTER_FIELDS,
         ...narrow,
+    };
+}
+
+/**
+ * The stream draft the aggregates page's filter fields become — the crossing
+ * rule both usage doors state: the fields cross verbatim (both pages hold the
+ * shared filter in the one [`UsageFilterFields`] vocabulary, single values on
+ * each side), while the From and To bounds stay behind with no stream
+ * spelling to become, and the stream's own window row governs time there,
+ * opening at all time.
+ */
+export function streamDraftOf(fields: UsageFilterFields): UsageFilterDraft {
+    return {
+        ...fields,
+        window: "all",
     };
 }
 

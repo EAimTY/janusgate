@@ -9,11 +9,9 @@ import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 import {
-    EMPTY_USAGE_FILTER_DRAFT,
+    streamDraftOf,
     subjectFilterFields,
     USAGE_QUERY_SUBJECT_FIELDS,
-    type UsageFilterDraft,
-    type UsageQuerySubject,
     type UsageSubjectFilter,
     usageQuerySubjectOfFilter,
 } from "/src/usage-filter";
@@ -40,21 +38,6 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
     };
 
     return values;
-}
-
-/**
- * The stream draft one subject narrows: the unfiltered listing with the
- * subject's id alone filled into its dimension's draft field — the shared
- * [`subjectFilterFields`] derivation, the same one the aggregates page's
- * arrival reads — so the card's two doors can never spell one entity
- * differently. The window and every other field stay at their default: the
- * stream's own semantics are its own.
- */
-function subjectStreamDraft(subject: UsageQuerySubject): UsageFilterDraft {
-    return {
-        ...EMPTY_USAGE_FILTER_DRAFT,
-        ...subjectFilterFields(subject),
-    };
 }
 
 /**
@@ -138,7 +121,7 @@ export function EntityUsageCard(props: {
                 description="Requests and tokens per day — numbers only, never content."
             >
                 <ButtonLink href={hrefs.usageQuery(subject)}>Open aggregates</ButtonLink>
-                <ButtonLink href={hrefs.usage(subjectStreamDraft(subject))}>
+                <ButtonLink href={hrefs.usage(streamDraftOf(subjectFilterFields(subject)))}>
                     View requests
                 </ButtonLink>
             </CardHeader>
