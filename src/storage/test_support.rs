@@ -2,11 +2,15 @@
 //! its own module beside its statements, and the fixtures more than one of those modules seed
 //! from live here once.
 
-use super::models::ModelEntry;
+use super::{
+    Error,
+    models::ModelEntry,
+    provider_definitions::{NewDefinition, insert_definition},
+};
 use crate::{
     database::Database,
     format::UpstreamFormat,
-    provider::StoredCredentials,
+    provider::{StoredCredentials, definition::ProviderDefinition},
     test_support::{
         self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthDeviceAuthorizationFixture,
         OAuthGrantFixture, OAuthRefreshFixture, OAuthResponseField, OAuthTarget,
@@ -74,7 +78,7 @@ pub(crate) fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a Mod
 ///
 /// Panics if the payload fails to parse or validate — neither can occur for the fixed
 /// fixture payload.
-pub(crate) fn oauth_definition() -> crate::provider::definition::ProviderDefinition {
+pub(crate) fn oauth_definition() -> ProviderDefinition {
     let payload = oauth_definition_payload(OAuthDefinitionFixture {
         format: UpstreamFormat::OpenAiChatCompletion,
         inference_suffix: Some("/chat/completions"),
@@ -100,10 +104,34 @@ pub(crate) fn oauth_definition() -> crate::provider::definition::ProviderDefinit
     #[expect(clippy::unwrap_used, reason = "a positive literal version")]
     let version = std::num::NonZeroI64::new(1).unwrap();
 
-    crate::provider::definition::ProviderDefinition {
+    ProviderDefinition {
         name: "fixture-oauth".to_string(),
         version,
         payload,
         created_at: 1,
     }
+}
+
+/// Inserts the fixture definition as version 1: the seeding ritual every storage OAuth test
+/// performs before building providers or flows on top of [`oauth_definition`]'s output.
+///
+/// # Errors
+///
+/// Returns the storage [`Error`] when the insert fails.
+pub(crate) async fn insert_oauth_definition(
+    database: &Database,
+    definition: &ProviderDefinition,
+) -> Result<(), Error> {
+    insert_definition(
+        database,
+        NewDefinition {
+            name: definition.name.as_str(),
+            base_version: None,
+            payload: &definition.payload,
+            created_at: definition.created_at,
+        },
+    )
+    .await?;
+
+    Ok(())
 }

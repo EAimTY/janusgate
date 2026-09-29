@@ -50,7 +50,7 @@ export function TextField(props: {
     readonly label: string;
     readonly value: string;
     readonly onInput: (value: string) => void;
-    readonly type?: "text" | "password" | "url" | "datetime-local";
+    readonly type?: "text" | "password" | "url";
     readonly placeholder?: string | undefined;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
@@ -107,7 +107,6 @@ export function SelectField<T extends string>(props: {
     readonly absentLabel?: ((value: T) => string) | undefined;
     readonly onChange: (value: T) => void;
     readonly hint?: string | null | undefined;
-    readonly error?: string | null | undefined;
     readonly isDisabled?: boolean;
     readonly class?: string | undefined;
 }): JSX.Element {
@@ -152,7 +151,6 @@ export function SelectField<T extends string>(props: {
             label={props.label}
             controlId={controlId}
             hint={props.hint}
-            error={props.error}
             class={props.class}
         >
             <select
@@ -201,14 +199,44 @@ export function SelectField<T extends string>(props: {
 }
 
 /**
+ * The options an entity select offers: the absent head entry — the
+ * "everything" choice every entity select opens with — followed by one option
+ * per row. A row's option value is its id as an exact decimal string
+ * (`String(row.id)`): the spelling the route seeds, the saved filters, and
+ * the id comparisons all read and write, so ids must ride the options
+ * verbatim, never as numbers or padded text. The label is each row's own,
+ * named by `labelOf`; the head entry's wording is the caller's `absentLabel`.
+ */
+export function entitySelectOptions<
+    TRow extends {
+        readonly id: number;
+    },
+>(
+    rows: ReadonlyArray<TRow>,
+    labelOf: (row: TRow) => string,
+    absentLabel: string,
+): ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+}> {
+    return [
+        {
+            value: "",
+            label: absentLabel,
+        },
+        ...rows.map((row) => ({
+            value: String(row.id),
+            label: labelOf(row),
+        })),
+    ];
+}
+
+/**
  * The glyph-wrapped search field a listing narrows with. The `label` is the
- * field's accessible name; with `isLabelVisible` it also renders above the
- * field, and then `id` pairs the two.
+ * field's accessible name; no listing search renders a visible label.
  */
 export function SearchInput(props: {
     readonly label: string;
-    readonly isLabelVisible?: boolean;
-    readonly id?: string | undefined;
     readonly value: string;
     readonly onInput: (value: string) => void;
     readonly placeholder: string;
@@ -216,23 +244,14 @@ export function SearchInput(props: {
 }): JSX.Element {
     return (
         <div class={props.class}>
-            <Show when={props.isLabelVisible === true}>
-                <label
-                    for={props.id}
-                    class="block text-[13px] font-medium text-ink"
-                >
-                    {props.label}
-                </label>
-            </Show>
-            <div class={props.isLabelVisible === true ? "relative mt-1.5" : "relative"}>
+            <div class="relative">
                 <Glyph
                     name="search"
                     class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
                 />
                 <input
-                    id={props.id}
                     type="search"
-                    aria-label={props.isLabelVisible === true ? undefined : props.label}
+                    aria-label={props.label}
                     placeholder={props.placeholder}
                     value={props.value}
                     onInput={(event) => props.onInput(event.currentTarget.value)}
@@ -301,14 +320,11 @@ export function ButtonLink(props: {
     readonly children: JSX.Element;
     readonly tone?: ButtonTone;
     readonly glyph?: GlyphName | undefined;
-    readonly isCurrent?: boolean;
-    readonly title?: string | undefined;
     readonly class?: string | undefined;
 }): JSX.Element {
     return (
         <AppLink
             href={props.href}
-            isCurrent={props.isCurrent ?? false}
             class={buttonClass(props.tone ?? "secondary", props.class)}
         >
             <Show when={props.glyph}>{(name) => <Glyph name={name()} />}</Show>

@@ -1179,15 +1179,7 @@ mod tests {
     fn reasoning_effort_parses_the_closed_vocabulary() {
         use crate::ir::IrReasoningLevel;
 
-        for (effort, level) in [
-            ("none", IrReasoningLevel::None),
-            ("minimal", IrReasoningLevel::Minimal),
-            ("low", IrReasoningLevel::Low),
-            ("medium", IrReasoningLevel::Medium),
-            ("high", IrReasoningLevel::High),
-            ("xhigh", IrReasoningLevel::XHigh),
-            ("max", IrReasoningLevel::Max),
-        ] {
+        for (level, effort) in IrReasoningLevel::VOCABULARY {
             #[expect(
                 clippy::expect_used,
                 reason = "a vocabulary string is constructed to parse"

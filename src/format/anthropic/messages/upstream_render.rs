@@ -638,14 +638,12 @@ mod tests {
             ..IrRequest::default()
         };
 
-        for (level, effort) in [
-            (IrReasoningLevel::Minimal, "minimal"),
-            (IrReasoningLevel::Low, "low"),
-            (IrReasoningLevel::Medium, "medium"),
-            (IrReasoningLevel::High, "high"),
-            (IrReasoningLevel::XHigh, "xhigh"),
-            (IrReasoningLevel::Max, "max"),
-        ] {
+        for (level, effort) in IrReasoningLevel::VOCABULARY {
+            // `none` renders as the native disabled spelling, asserted separately below.
+            if level == IrReasoningLevel::None {
+                continue;
+            }
+
             let ir = IrRequest {
                 reasoning_effort: Some(level),
                 ..base.clone()

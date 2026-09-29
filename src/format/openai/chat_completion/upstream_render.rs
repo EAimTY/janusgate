@@ -406,15 +406,7 @@ mod tests {
     /// Panics if a rendered slot diverges from the contract.
     #[test]
     fn renders_the_effort_level_verbatim_or_not_at_all() {
-        for (level, effort) in [
-            (IrReasoningLevel::None, "none"),
-            (IrReasoningLevel::Minimal, "minimal"),
-            (IrReasoningLevel::Low, "low"),
-            (IrReasoningLevel::Medium, "medium"),
-            (IrReasoningLevel::High, "high"),
-            (IrReasoningLevel::XHigh, "xhigh"),
-            (IrReasoningLevel::Max, "max"),
-        ] {
+        for (level, effort) in IrReasoningLevel::VOCABULARY {
             let body = render_body(Some(level));
 
             assert_eq!(

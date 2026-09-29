@@ -1,4 +1,3 @@
-import { ContractViolationError } from "/src/management-api/errors";
 import type {
     ApiKeyResponse,
     ModelResponse,
@@ -7,7 +6,8 @@ import type {
     UsageBucketKey,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
+import { bucketKeyField, DIMENSION_KEY_FIELD } from "/src/management-api/usage-buckets";
+import { API_LOG_ENDPOINT_TYPE, API_LOG_OUTCOME } from "/src/management-api/vocabulary";
 import { indexRowsById } from "/src/row-index";
 import type { UsageEntities } from "./usage-read";
 
@@ -75,48 +75,6 @@ export function usageApiKeyLabel(
 }
 
 /**
- * The one sentence a missing bucket-key field is stated with, whatever error
- * domain throws it: the read proves every requested dimension is present
- * while the cycle can still state its diagnosis, and the render asserts the
- * same invariant — two deliberate error domains over one shared sentence.
- */
-export function missingBucketKeyFieldMessage(field: string): string {
-    return `the bucket key carries no ${field}`;
-}
-
-/**
- * The bucket-key field each requested dimension's part rides on: the one
- * pairing the read's per-key proof (`readUsageBuckets`) and the render's
- * per-cell assert (`usageDimensionLabel`) both consume, so a dimension and
- * its wire field cannot drift apart. The literal-preserving type keeps every
- * entry's field exact, so a dimension narrowed by the dispatch reads its key
- * part with precisely the value type its renderer expects.
- */
-export const DIMENSION_KEY_FIELD = {
-    day: "day",
-    model: "model_id",
-    provider: "provider_id",
-    api_key: "api_key_id",
-    endpoint_type: "endpoint_type",
-    outcome: "outcome",
-    is_stream: "is_stream",
-    http_status: "http_status",
-} as const satisfies Readonly<Record<UsageGroupBy, keyof UsageBucketKey>>;
-
-/**
- * Reads one bucket key field the request's own dimension list guarantees:
- * a key carries exactly the requested dimensions, so an absent field is a
- * contract violation, not a blank to render past.
- */
-export function bucketKeyField<TValue>(value: TValue | undefined, field: string): TValue {
-    if (value === undefined) {
-        throw new ContractViolationError(missingBucketKeyFieldMessage(field));
-    }
-
-    return value;
-}
-
-/**
  * The day series as every usage display shows it: newest day first, with the
  * gateway's own order kept within equal days — the comparison answers 0 for
  * equal days, so the stable sort (ES2019+) preserves the answer's order
@@ -177,13 +135,13 @@ export function usageDimensionLabel(
         case "endpoint_type": {
             const field = DIMENSION_KEY_FIELD[dimension];
 
-            return apiLogEndpointLabel(bucketKeyField(key[field], field));
+            return API_LOG_ENDPOINT_TYPE.label(bucketKeyField(key[field], field));
         }
 
         case "outcome": {
             const field = DIMENSION_KEY_FIELD[dimension];
 
-            return apiLogOutcomeLabel(bucketKeyField(key[field], field));
+            return API_LOG_OUTCOME.label(bucketKeyField(key[field], field));
         }
 
         case "is_stream": {

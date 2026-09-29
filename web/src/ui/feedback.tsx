@@ -95,9 +95,7 @@ export type BadgeMark = {
 export function Badge(props: {
     readonly tone: BadgeTone;
     readonly label: string;
-    readonly glyph?: GlyphName | undefined;
     readonly title?: string | undefined;
-    readonly class?: string | undefined;
 }): JSX.Element {
     return (
         <span
@@ -105,10 +103,9 @@ export function Badge(props: {
             class={joinClass(
                 "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12.5px] font-medium whitespace-nowrap",
                 BADGE_CLASS[props.tone],
-                props.class ?? "",
             )}
         >
-            <Glyph name={props.glyph ?? BADGE_GLYPH[props.tone]} />
+            <Glyph name={BADGE_GLYPH[props.tone]} />
             {props.label}
         </span>
     );

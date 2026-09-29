@@ -5,7 +5,7 @@ import type {
     UsageFilter,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import { findApiLogEndpointType, findApiLogOutcome } from "/src/management-api/vocabulary";
+import { API_LOG_ENDPOINT_TYPE, API_LOG_OUTCOME } from "/src/management-api/vocabulary";
 import { DAY_MICROS } from "./format";
 import { parseRowIdentifier } from "./row-id";
 
@@ -152,7 +152,7 @@ function routeOutcome(raw: string | null): UsageOutcomeChoice {
     const values = splitListEntries(raw);
 
     if (values.length === 1) {
-        return findApiLogOutcome(values[0]) ?? "";
+        return API_LOG_OUTCOME.find(values[0]) ?? "";
     }
 
     if (
@@ -183,7 +183,7 @@ export function parseUsageFilterDraft(search: string): UsageFilterDraft {
         providerId: routeRowId(parameters, "provider"),
         modelId: routeRowId(parameters, "model"),
         apiKeyId: routeRowId(parameters, "key"),
-        endpointType: findApiLogEndpointType(parameters.get("endpoint")) ?? "",
+        endpointType: API_LOG_ENDPOINT_TYPE.find(parameters.get("endpoint")) ?? "",
         outcome: routeOutcome(parameters.get("outcome")),
         streamChoice: routeStream(parameters.get("stream")),
         statusInput: parameters.get("status") ?? "",

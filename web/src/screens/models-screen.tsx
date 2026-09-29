@@ -6,7 +6,13 @@ import { hrefs, navigate } from "/src/router";
 import { indexRowsById } from "/src/row-index";
 import { createScreenRead, readOne, readProviderCatalog } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { ButtonLink, noLongerListedLabel, SearchInput, SelectField } from "/src/ui/controls";
+import {
+    ButtonLink,
+    entitySelectOptions,
+    noLongerListedLabel,
+    SearchInput,
+    SelectField,
+} from "/src/ui/controls";
 import { EmptyState, Notice } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
@@ -46,16 +52,9 @@ export function ModelsScreen(props: {
     // states that itself: its absent-value option, worded by
     // `noLongerListedLabel`, keeps the filter in force visible instead of
     // letting the select silently reset to "All providers".
-    const filterOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All providers",
-        },
-        ...providers().map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    const filterOptions = createMemo(() =>
+        entitySelectOptions(providers(), (row) => row.name, "All providers"),
+    );
 
     const visibleModels = createMemo(() => {
         const needle = search().trim().toLowerCase();

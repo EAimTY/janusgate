@@ -2126,6 +2126,63 @@ mod tests {
         ])
     }
 
+    /// The control requests the reference rules read whole: the credential's token exchange,
+    /// its refresh, or the device grant's device authorization.
+    enum ControlStage {
+        /// The OAuth token exchange request.
+        Exchange,
+        /// The refresh-grant renewal request.
+        Refresh,
+        /// The device grant's device-authorization request.
+        DeviceAuthorization,
+    }
+
+    /// Resolves the stage's request object mutable from a payload document.
+    fn stage_request_mut(
+        payload: &mut serde_json::Value,
+        stage: ControlStage,
+    ) -> &mut serde_json::Value {
+        let mut request = &mut payload["credential"];
+
+        let keys: &[&str] = match stage {
+            ControlStage::Exchange => &["exchange", "request"],
+            ControlStage::Refresh => &["refresh", "request"],
+            ControlStage::DeviceAuthorization => &["grant", "authorization", "request"],
+        };
+
+        for key in keys {
+            request = &mut request[*key];
+        }
+
+        request
+    }
+
+    /// Pushes the reference as the stage request's only query row: a `reference` value part in
+    /// a query row satisfies the stage's reference requirement wherever its expressions live.
+    fn satisfy_via_query_row(
+        payload: &mut serde_json::Value,
+        stage: ControlStage,
+        reference: &str,
+    ) {
+        stage_request_mut(payload, stage)["query"] = serde_json::json!([
+            { "name": reference, "value": [{ "type": reference }] }
+        ]);
+    }
+
+    /// Overwrites the stage request's form field at `field_index` with the coalesce-argument
+    /// probe: a `reference` value part nested inside a coalesce argument satisfies the stage's
+    /// reference requirement wherever its expressions live.
+    fn satisfy_via_coalesce(
+        payload: &mut serde_json::Value,
+        stage: ControlStage,
+        field_index: usize,
+        reference: &str,
+    ) {
+        let field = &mut stage_request_mut(payload, stage)["body"]["fields"][field_index];
+
+        field["value"] = coalesce_argument(reference);
+    }
+
     /// The accepted researched shapes (README §5.6): the Antigravity, Copilot, Codex, and
     /// static-key definitions all parse and validate, and each payload round-trips through its
     /// JSON form.
@@ -2908,9 +2965,7 @@ mod tests {
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
 
-            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
-                { "name": "code_verifier", "value": [{ "type": "code_verifier" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Exchange, "code_verifier");
         });
 
         outcome.unwrap();
@@ -2920,9 +2975,7 @@ mod tests {
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
 
-            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][3];
-
-            field["value"] = coalesce_argument("code_verifier");
+            satisfy_via_coalesce(payload, ControlStage::Exchange, 3, "code_verifier");
         });
 
         outcome.unwrap();
@@ -2975,9 +3028,7 @@ mod tests {
                 .unwrap()
                 .remove(4);
 
-            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
-                { "name": "redirect_uri", "value": [{ "type": "redirect_uri" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Exchange, "redirect_uri");
         });
 
         outcome.unwrap();
@@ -2990,9 +3041,7 @@ mod tests {
                 .unwrap()
                 .remove(4);
 
-            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][3];
-
-            field["value"] = coalesce_argument("redirect_uri");
+            satisfy_via_coalesce(payload, ControlStage::Exchange, 3, "redirect_uri");
         });
 
         outcome.unwrap();
@@ -3044,18 +3093,14 @@ mod tests {
                 .unwrap()
                 .remove(1);
 
-            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
-                { "name": "code", "value": [{ "type": "authorization_code" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Exchange, "authorization_code");
         });
 
         outcome.unwrap();
 
         // Inside a coalesce's arguments.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
-            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
-
-            field["value"] = coalesce_argument("authorization_code");
+            satisfy_via_coalesce(payload, ControlStage::Exchange, 1, "authorization_code");
         });
 
         outcome.unwrap();
@@ -3133,9 +3178,7 @@ mod tests {
             fields.remove(3);
             fields.remove(2);
 
-            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
-                { "name": "client_id", "value": [{ "type": "client_id" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Exchange, "client_id");
         });
 
         outcome.unwrap();
@@ -3144,15 +3187,12 @@ mod tests {
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
 
-            let fields = payload["credential"]["exchange"]["request"]["body"]["fields"]
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
                 .as_array_mut()
-                .unwrap();
+                .unwrap()
+                .remove(3);
 
-            fields.remove(3);
-
-            let field = &mut fields[2];
-
-            field["value"] = coalesce_argument("client_id");
+            satisfy_via_coalesce(payload, ControlStage::Exchange, 2, "client_id");
         });
 
         outcome.unwrap();
@@ -3215,18 +3255,14 @@ mod tests {
                 .unwrap()
                 .remove(2);
 
-            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
-                { "name": "device_code", "value": [{ "type": "device_code" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Exchange, "device_code");
         });
 
         outcome.unwrap();
 
         // Inside a coalesce's arguments.
         let outcome = mutate_and_validate(good_copilot_json(), |payload| {
-            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][2];
-
-            field["value"] = coalesce_argument("device_code");
+            satisfy_via_coalesce(payload, ControlStage::Exchange, 2, "device_code");
         });
 
         outcome.unwrap();
@@ -3282,19 +3318,14 @@ mod tests {
                 .unwrap()
                 .remove(0);
 
-            payload["credential"]["grant"]["authorization"]["request"]["query"] =
-                serde_json::json!([{ "name": "client_id", "value": [{ "type": "client_id" }] }]);
+            satisfy_via_query_row(payload, ControlStage::DeviceAuthorization, "client_id");
         });
 
         outcome.unwrap();
 
         // Inside a coalesce's arguments.
         let outcome = mutate_and_validate(good_copilot_json(), |payload| {
-            let request = &mut payload["credential"]["grant"]["authorization"]["request"];
-
-            let field = &mut request["body"]["fields"][0];
-
-            field["value"] = coalesce_argument("client_id");
+            satisfy_via_coalesce(payload, ControlStage::DeviceAuthorization, 0, "client_id");
         });
 
         outcome.unwrap();
@@ -3362,18 +3393,14 @@ mod tests {
                 .unwrap()
                 .remove(1);
 
-            payload["credential"]["refresh"]["request"]["query"] = serde_json::json!([
-                { "name": "refresh_token", "value": [{ "type": "refresh_token" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Refresh, "refresh_token");
         });
 
         outcome.unwrap();
 
         // Inside a coalesce's arguments.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
-            let field = &mut payload["credential"]["refresh"]["request"]["body"]["fields"][1];
-
-            field["value"] = coalesce_argument("refresh_token");
+            satisfy_via_coalesce(payload, ControlStage::Refresh, 1, "refresh_token");
         });
 
         outcome.unwrap();
@@ -3451,9 +3478,7 @@ mod tests {
             fields.remove(3);
             fields.remove(2);
 
-            payload["credential"]["refresh"]["request"]["query"] = serde_json::json!([
-                { "name": "client_id", "value": [{ "type": "client_id" }] }
-            ]);
+            satisfy_via_query_row(payload, ControlStage::Refresh, "client_id");
         });
 
         outcome.unwrap();
@@ -3462,15 +3487,12 @@ mod tests {
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
 
-            let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
                 .as_array_mut()
-                .unwrap();
+                .unwrap()
+                .remove(3);
 
-            fields.remove(3);
-
-            let field = &mut fields[2];
-
-            field["value"] = coalesce_argument("client_id");
+            satisfy_via_coalesce(payload, ControlStage::Refresh, 2, "client_id");
         });
 
         outcome.unwrap();

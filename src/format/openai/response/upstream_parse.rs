@@ -5,7 +5,10 @@
 //! reads, ignore every member it does not, and default what upstreams legitimately omit.
 
 use crate::{
-    format::{self, PayloadError, UpstreamError, UpstreamEventParser},
+    format::{
+        self, PayloadError, UpstreamError, UpstreamEventParser,
+        openai::{CompletionTokensDetails, PromptTokensDetails},
+    },
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
@@ -145,25 +148,16 @@ struct UpstreamUsage {
     output_tokens_details: Option<OutputTokensDetails>,
 }
 
-/// The upstream input token breakdown.
-#[derive(Debug, Default, Deserialize)]
-struct InputTokensDetails {
-    /// Input tokens served from the upstream prompt cache.
-    #[serde(default)]
-    cached_tokens: Option<u64>,
+/// The object the Responses usage wrapper carries as `input_tokens_details`: the shared official
+/// input-side usage detail object [`PromptTokensDetails`] under its product-local name, its
+/// `cached_tokens` and `cache_write_tokens` members spelled identically on both wires (README
+/// §6.2).
+type InputTokensDetails = PromptTokensDetails;
 
-    /// Input tokens written to the upstream prompt cache.
-    #[serde(default)]
-    cache_write_tokens: Option<u64>,
-}
-
-/// The upstream output token breakdown.
-#[derive(Debug, Default, Deserialize)]
-struct OutputTokensDetails {
-    /// Output tokens spent on model reasoning.
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
-}
+/// The object the Responses usage wrapper carries as `output_tokens_details`: the shared official
+/// output-side usage detail object [`CompletionTokensDetails`] under its product-local name, its
+/// lone `reasoning_tokens` member spelled identically on both wires (README §6.2).
+type OutputTokensDetails = CompletionTokensDetails;
 
 /// One upstream output item: the union of the fields the gateway reads across the item kinds it
 /// maps to IR events. Items of other kinds carry none of them and are ignored.
@@ -1130,6 +1124,22 @@ mod tests {
         }
     }
 
+    /// Ingests a terminal `response.completed` frame carrying `output`, returning its events.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the frame fails to parse; the frame is constructed to parse, so a failure is a
+    /// parser regression.
+    fn ingest_completed(parser: &mut UpstreamParser, output: Value) -> Vec<IrEvent> {
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
+        parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses")
+    }
+
     /// The exactly-once recovery contract (README §6.3): a terminal output array carrying several
     /// `message` items — the shape of an upstream that streams no live events — delivers every
     /// item's text exactly once, and the recovery stream still opens with MessageStart, first
@@ -1155,13 +1165,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(
             events,
@@ -1194,13 +1198,7 @@ mod tests {
             {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think two"}]},
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(
             events,
@@ -1259,13 +1257,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(events, vec![IrEvent::finish(IrFinishReason::Stop)]);
     }
@@ -1316,13 +1308,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(events, vec![IrEvent::finish(IrFinishReason::Stop)]);
     }
@@ -1413,13 +1399,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(
             events,
@@ -1516,13 +1496,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(events, vec![IrEvent::finish(IrFinishReason::ToolCall)]);
     }
@@ -1587,13 +1561,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(events, vec![IrEvent::finish(IrFinishReason::ToolCall)]);
     }
@@ -1645,13 +1613,7 @@ mod tests {
             },
         ]);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the completed frame is constructed to parse"
-        )]
-        let events = parser
-            .ingest_frame(&completed_frame(output))
-            .expect("a completed frame parses");
+        let events = ingest_completed(&mut parser, output);
 
         assert_eq!(
             events,

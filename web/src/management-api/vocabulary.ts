@@ -13,7 +13,7 @@ import type {
  * The credential kinds a provider row or a definition carries. The generated
  * bindings render the kinds as their literal union discriminants, so the
  * vocabulary states them here — the `ProviderResponse` union's own `type`
- * members keep the record below exhaustive.
+ * members keep the type below exhaustive.
  */
 export type CredentialKind = "api_key" | "oauth";
 
@@ -34,47 +34,6 @@ function optionsOf<TValue extends string>(
         value,
         label: labels[value],
     }));
-}
-
-/**
- * The credential kinds with the label each is presented under. The record
- * type is exhaustive, so a kind added to the generated union fails to compile
- * until it is listed here.
- */
-const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
-    api_key: "Static API key",
-    oauth: "OAuth account",
-};
-
-/** The credential kinds as options; the record type is exhaustive as above. */
-const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> =
-    optionsOf(CREDENTIAL_KIND_LABELS);
-
-/** The label a provider row's credential kind is presented under. */
-export function credentialKindLabel(kind: CredentialKind): string {
-    return CREDENTIAL_KIND_LABELS[kind];
-}
-
-/**
- * The upstream wire formats with the label each is presented under. The
- * record type is exhaustive, so a format added to the generated union fails
- * to compile until it is listed here.
- */
-const UPSTREAM_FORMAT_LABELS: Record<UpstreamFormat, string> = {
-    openai_response: "OpenAI Responses",
-    openai_chat_completion: "OpenAI Chat Completions",
-    gemini_generate_content: "Gemini GenerateContent",
-    gemini_interaction: "Gemini Interactions",
-    anthropic_messages: "Anthropic Messages",
-};
-
-/** The upstream wire formats as options; the record type is exhaustive as above. */
-const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> =
-    optionsOf(UPSTREAM_FORMAT_LABELS);
-
-/** The label one wire format is presented under. */
-export function upstreamFormatLabel(format: UpstreamFormat): string {
-    return UPSTREAM_FORMAT_LABELS[format];
 }
 
 /** Looks a value up in a vocabulary, returning `null` when it is not a member. */
@@ -112,15 +71,69 @@ function parseOption<TValue extends string>(
     return member;
 }
 
-/** Looks a credential kind up, returning `null` when the value is not one. */
-export function findCredentialKind(value: unknown): CredentialKind | null {
-    return findOption(CREDENTIAL_KIND_OPTIONS, value);
+/**
+ * One closed wire vocabulary raised from its labels record: the select
+ * options, the display labels, and the wire-value narrows behind one named
+ * constant. The record type is exhaustive, so a member added to the generated
+ * union fails to compile until it is listed there — the explicit `TValue` at
+ * each call site ties the record to the contract's own union instead of
+ * letting inference shrink it to the literal's keys.
+ *
+ * The `noun` is the value's noun phrase as `parse`'s violation names it,
+ * article included — e.g. `"a discovery state"` — so every parser's message
+ * stays byte-identical.
+ *
+ * Every member closes over the built options and the labels record, so the
+ * returned methods are plain functions: passing one unbound — a validator
+ * table's `narrow`, say — never depends on the receiver.
+ */
+function defineVocabulary<TValue extends string>(
+    labels: Record<TValue, string>,
+    noun: string,
+): {
+    readonly options: ReadonlyArray<VocabularyOption<TValue>>;
+    label(value: TValue): string;
+    find(value: unknown): TValue | null;
+    parse(value: unknown, context: string): TValue;
+} {
+    const options = optionsOf(labels);
+
+    return {
+        options,
+        label: (value) => labels[value],
+        find: (value) => findOption(options, value),
+        parse: (value, context) => parseOption(options, value, context, noun),
+    };
 }
 
-/** Looks a wire format up, returning `null` when the value is not one. */
-export function findUpstreamFormat(value: unknown): UpstreamFormat | null {
-    return findOption(UPSTREAM_FORMAT_OPTIONS, value);
-}
+/**
+ * The credential kinds as one vocabulary. The labels record's type is
+ * exhaustive, so a kind added to the generated union fails to compile until
+ * it is listed here.
+ */
+export const CREDENTIAL_KIND = defineVocabulary<CredentialKind>(
+    {
+        api_key: "Static API key",
+        oauth: "OAuth account",
+    },
+    "a credential kind",
+);
+
+/**
+ * The upstream wire formats as one vocabulary. The labels record's type is
+ * exhaustive, so a format added to the generated union fails to compile until
+ * it is listed here.
+ */
+export const UPSTREAM_FORMAT = defineVocabulary<UpstreamFormat>(
+    {
+        openai_response: "OpenAI Responses",
+        openai_chat_completion: "OpenAI Chat Completions",
+        gemini_generate_content: "Gemini GenerateContent",
+        gemini_interaction: "Gemini Interactions",
+        anthropic_messages: "Anthropic Messages",
+    },
+    "an upstream format",
+);
 
 /** The OAuth member of the provider row union — the only kind carrying an expiry. */
 export type OauthProviderRow = Extract<
@@ -138,97 +151,57 @@ export function isOAuthProviderRow(provider: ProviderResponse): provider is Oaut
     return provider.type === "oauth";
 }
 
-const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {
-    discovered: "Discovered",
-    // The wire value `vanished` never reaches the operator verbatim: the
-    // label states what it means for them — the upstream no longer lists
-    // this model, while everything curated here is kept.
-    vanished: "No longer reported",
-    manual: "Manual",
-};
-
 /**
- * The discovery lifecycle states as options; the record type is exhaustive,
- * so a state added to the generated union fails to compile until it is
- * listed here.
+ * The discovery lifecycle states as one vocabulary. The labels record's type
+ * is exhaustive, so a state added to the generated union fails to compile
+ * until it is listed here.
  */
-const DISCOVERY_STATE_OPTIONS: ReadonlyArray<VocabularyOption<DiscoveryState>> =
-    optionsOf(DISCOVERY_STATE_LABELS);
+export const DISCOVERY_STATE = defineVocabulary<DiscoveryState>(
+    {
+        discovered: "Discovered",
+        // The wire value `vanished` never reaches the operator verbatim: the
+        // label states what it means for them — the upstream no longer lists
+        // this model, while everything curated here is kept.
+        vanished: "No longer reported",
+        manual: "Manual",
+    },
+    "a discovery state",
+);
 
-/** The label a model row's own `discovery_state` is presented under. */
-export function discoveryStateLabel(state: DiscoveryState): string {
-    return DISCOVERY_STATE_LABELS[state];
-}
+/** The recorded request outcomes as one vocabulary; the labels record's type is exhaustive. */
+export const API_LOG_OUTCOME = defineVocabulary<ApiLogOutcome>(
+    {
+        completed: "Completed",
+        client_aborted: "Client aborted",
+        upstream_error: "Upstream error",
+        internal: "Internal",
+    },
+    "a request outcome",
+);
 
-/** Narrows a wire value that must be one of the discovery lifecycle states. */
-export function parseDiscoveryState(value: unknown, context: string): DiscoveryState {
-    return parseOption(DISCOVERY_STATE_OPTIONS, value, context, "a discovery state");
-}
+/** The outward endpoints as one vocabulary; the labels record's type is exhaustive. */
+export const API_LOG_ENDPOINT_TYPE = defineVocabulary<ApiLogEndpointType>(
+    {
+        openai_chat_completions: "Chat Completions",
+        openai_responses: "Responses",
+        gemini_generate_content: "Gemini GenerateContent",
+        gemini_interactions: "Gemini Interactions",
+        anthropic_messages: "Anthropic Messages",
+    },
+    "an endpoint type",
+);
 
-const API_LOG_OUTCOME_LABELS: Record<ApiLogOutcome, string> = {
-    completed: "Completed",
-    client_aborted: "Client aborted",
-    upstream_error: "Upstream error",
-    internal: "Internal",
-};
-
-/** The recorded request outcomes as filter options; the record type is exhaustive. */
-export const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> =
-    optionsOf(API_LOG_OUTCOME_LABELS);
-
-/** The label one accounting row's own `outcome` is presented under. */
-export function apiLogOutcomeLabel(outcome: ApiLogOutcome): string {
-    return API_LOG_OUTCOME_LABELS[outcome];
-}
-
-/** Looks a wire value up as a recorded outcome, answering `null` when it is not one. */
-export function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
-    return findOption(API_LOG_OUTCOME_OPTIONS, value);
-}
-
-/** Narrows a wire value that must be one of the recorded request outcomes. */
-export function parseApiLogOutcome(value: unknown, context: string): ApiLogOutcome {
-    return parseOption(API_LOG_OUTCOME_OPTIONS, value, context, "a request outcome");
-}
-
-const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
-    openai_chat_completions: "Chat Completions",
-    openai_responses: "Responses",
-    gemini_generate_content: "Gemini GenerateContent",
-    gemini_interactions: "Gemini Interactions",
-    anthropic_messages: "Anthropic Messages",
-};
-
-/** The outward endpoints as filter options; the record type is exhaustive. */
-export const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
-    optionsOf(API_LOG_ENDPOINT_LABELS);
-
-/** The label one accounting row's own `endpoint_type` is presented under. */
-export function apiLogEndpointLabel(endpoint: ApiLogEndpointType): string {
-    return API_LOG_ENDPOINT_LABELS[endpoint];
-}
-
-/** Looks a wire value up as an outward endpoint, answering `null` when it is not one. */
-export function findApiLogEndpointType(value: unknown): ApiLogEndpointType | null {
-    return findOption(API_LOG_ENDPOINT_OPTIONS, value);
-}
-
-/** Narrows a wire value that must be one of the outward endpoints. */
-export function parseApiLogEndpointType(value: unknown, context: string): ApiLogEndpointType {
-    return parseOption(API_LOG_ENDPOINT_OPTIONS, value, context, "an endpoint type");
-}
-
-const USAGE_GROUP_BY_LABELS: Record<UsageGroupBy, string> = {
-    day: "Day",
-    model: "Model",
-    provider: "Provider",
-    api_key: "API key",
-    endpoint_type: "Endpoint",
-    outcome: "Outcome",
-    is_stream: "Stream mode",
-    http_status: "HTTP status",
-};
-
-/** The aggregation dimensions as options; the record type is exhaustive. */
-export const USAGE_GROUP_BY_OPTIONS: ReadonlyArray<VocabularyOption<UsageGroupBy>> =
-    optionsOf(USAGE_GROUP_BY_LABELS);
+/** The aggregation dimensions as one vocabulary; the labels record's type is exhaustive. */
+export const USAGE_GROUP_BY = defineVocabulary<UsageGroupBy>(
+    {
+        day: "Day",
+        model: "Model",
+        provider: "Provider",
+        api_key: "API key",
+        endpoint_type: "Endpoint",
+        outcome: "Outcome",
+        is_stream: "Stream mode",
+        http_status: "HTTP status",
+    },
+    "an aggregation dimension",
+);

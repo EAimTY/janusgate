@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { type CredentialStanding, credentialStanding } from "/src/management-api/serving";
-import { credentialKindLabel, upstreamFormatLabel } from "/src/management-api/vocabulary";
+import { CREDENTIAL_KIND, UPSTREAM_FORMAT } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { Badge, type BadgeTone } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
@@ -89,7 +89,7 @@ function ProviderRow(props: {
                         {props.provider.name}
                     </span>
                 }
-                secondary={`${upstreamFormatLabel(props.provider.format)} · ${credentialKindLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
+                secondary={`${UPSTREAM_FORMAT.label(props.provider.format)} · ${CREDENTIAL_KIND.label(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
                 badges={
                     <>
                         <Badge

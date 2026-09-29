@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createSignal } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { discoveryStateLabel } from "/src/management-api/vocabulary";
+import { DISCOVERY_STATE } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
     createPinnedRow,
@@ -163,7 +163,7 @@ function ModelFacts(props: {
                     />
                     <Fact
                         label="Discovery"
-                        value={discoveryStateLabel(props.model.discovery_state)}
+                        value={DISCOVERY_STATE.label(props.model.discovery_state)}
                         class="text-ink-dim"
                     />
                     {/* The one enabled pair this page speaks: the Details

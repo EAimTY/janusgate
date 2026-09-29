@@ -5,7 +5,10 @@
 //! ignore every field it does not, and default what upstreams legitimately omit.
 
 use crate::{
-    format::{self, PayloadError, UpstreamError, UpstreamEventParser},
+    format::{
+        self, PayloadError, UpstreamError, UpstreamEventParser,
+        openai::{CompletionTokensDetails, PromptTokensDetails},
+    },
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
@@ -185,26 +188,6 @@ struct UpstreamUsage {
     /// Output breakdown: the reasoning column.
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
-}
-
-/// The official `prompt_tokens_details` object; every member is optional.
-#[derive(Debug, Default, Deserialize)]
-struct PromptTokensDetails {
-    /// Input tokens served from the upstream prompt cache.
-    #[serde(default)]
-    cached_tokens: Option<u64>,
-
-    /// Input tokens written to the upstream prompt cache.
-    #[serde(default)]
-    cache_write_tokens: Option<u64>,
-}
-
-/// The official `completion_tokens_details` object; every member is optional.
-#[derive(Debug, Default, Deserialize)]
-struct CompletionTokensDetails {
-    /// Output tokens spent on model reasoning.
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
 }
 
 impl UpstreamParser {

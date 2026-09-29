@@ -12,7 +12,7 @@ import type {
     UsageBucket,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
+import { USAGE_GROUP_BY } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, type UsageQuerySubject } from "/src/router";
 import { Button, ButtonLink, Switch, TextField } from "/src/ui/controls";
@@ -404,7 +404,7 @@ export function UsageQueryScreen(props: {
                     <div>
                         <p class="text-[13px] font-medium text-ink">Group by</p>
                         <div class="mt-2 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
-                            <For each={USAGE_GROUP_BY_OPTIONS}>
+                            <For each={USAGE_GROUP_BY.options}>
                                 {(option) => (
                                     <Switch
                                         label={option.label}

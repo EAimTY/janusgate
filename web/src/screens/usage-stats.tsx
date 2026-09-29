@@ -3,6 +3,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
+import { bucketKeyField } from "/src/management-api/usage-buckets";
 import { hrefs } from "/src/router";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
@@ -18,7 +19,7 @@ import {
 } from "/src/usage-filter";
 import { createScreenRead, readOne } from "./read";
 import { ReadNotice } from "./read-notice";
-import { bucketKeyField, daysNewestFirst } from "./usage-labels";
+import { daysNewestFirst } from "./usage-labels";
 import { readUsageBuckets } from "./usage-read";
 import { BucketCell, BucketHeader, UsageDaysUtcNote, UsageTable } from "./usage-table";
 

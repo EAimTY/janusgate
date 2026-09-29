@@ -75,6 +75,20 @@ pub(crate) enum IrReasoningLevel {
 }
 
 impl IrReasoningLevel {
+    /// The one (level, wire-spelling) table of the closed vocabulary (README §6.4): the
+    /// [`Self::parse`] and [`Self::as_str`] matches and every format surface's conformance test
+    /// pin derive from it, so a spelling change is a single edit here.
+    #[cfg(test)]
+    pub(crate) const VOCABULARY: [(IrReasoningLevel, &'static str); 7] = [
+        (Self::None, "none"),
+        (Self::Minimal, "minimal"),
+        (Self::Low, "low"),
+        (Self::Medium, "medium"),
+        (Self::High, "high"),
+        (Self::XHigh, "xhigh"),
+        (Self::Max, "max"),
+    ];
+
     /// Parses the closed vocabulary string.
     ///
     /// # Errors
@@ -724,6 +738,34 @@ impl Aggregator {
             Some(position) => self.pending_arguments.swap_remove(position).1,
 
             None => String::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IrReasoningLevel;
+
+    /// Pins both matches to [`IrReasoningLevel::VOCABULARY`]: every entry's wire spelling is
+    /// exactly what [`as_str`](IrReasoningLevel::as_str) renders, and `parse(x.as_str())` returns
+    /// `x` again.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a table entry diverges from either match.
+    #[test]
+    fn vocabulary_round_trips_through_as_str_and_parse() {
+        for (level, spelling) in IrReasoningLevel::VOCABULARY {
+            assert_eq!(level.as_str(), spelling);
+
+            #[expect(
+                clippy::expect_used,
+                reason = "a vocabulary spelling is constructed to parse"
+            )]
+            let parsed = IrReasoningLevel::parse(level.as_str(), "reasoning_effort")
+                .expect("a vocabulary spelling must parse");
+
+            assert_eq!(parsed, level);
         }
     }
 }

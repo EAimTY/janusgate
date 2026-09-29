@@ -6,9 +6,9 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { performManagementCall } from "/src/management-api/outcome";
 import { lapsedCredentialStanding } from "/src/management-api/serving";
 import {
-    credentialKindLabel,
+    CREDENTIAL_KIND,
     isOAuthProviderRow,
-    upstreamFormatLabel,
+    UPSTREAM_FORMAT,
 } from "/src/management-api/vocabulary";
 import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
 import { hrefs } from "/src/router";
@@ -226,7 +226,7 @@ export function ProviderDetailScreen(props: {
                 <>
                     <PageHeader
                         title={row.name}
-                        description={`${upstreamFormatLabel(row.format)} · ${credentialKindLabel(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
+                        description={`${UPSTREAM_FORMAT.label(row.format)} · ${CREDENTIAL_KIND.label(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
                         backHref={hrefs.providers()}
                         backLabel="Providers"
                     >
@@ -342,7 +342,7 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
             <FactList>
                 <Fact
                     label="Type"
-                    value={upstreamFormatLabel(props.provider.format)}
+                    value={UPSTREAM_FORMAT.label(props.provider.format)}
                 />
                 <Fact
                     label="Definition"

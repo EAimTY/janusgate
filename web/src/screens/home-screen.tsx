@@ -8,7 +8,7 @@ import {
     servingModelCountsByProvider,
 } from "/src/management-api/serving";
 import {
-    credentialKindLabel,
+    CREDENTIAL_KIND,
     isOAuthProviderRow,
     type OauthProviderRow,
 } from "/src/management-api/vocabulary";
@@ -362,7 +362,7 @@ export function HomeScreen(props: {
                                                     {item.provider.name}
                                                 </span>
                                                 <span class="text-ink-dim">
-                                                    {` · ${credentialKindLabel(item.provider.type)} · ${item.attention.detail}`}
+                                                    {` · ${CREDENTIAL_KIND.label(item.provider.type)} · ${item.attention.detail}`}
                                                 </span>
                                             </p>
                                         </AttentionRow>

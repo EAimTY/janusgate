@@ -775,7 +775,10 @@ mod tests {
     };
     use crate::{
         provider::StoredCredentials,
-        storage::{self as storage_cr, test_support::oauth_definition},
+        storage::{
+            self as storage_cr,
+            test_support::{insert_oauth_definition, oauth_definition},
+        },
         test_support,
     };
     use std::{collections::BTreeMap, error::Error as StdError};
@@ -794,16 +797,7 @@ mod tests {
 
         let definition = oauth_definition();
 
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
+        insert_oauth_definition(&database, &definition).await?;
 
         let provider = test_support::insert_provider(
             &database,
@@ -970,16 +964,7 @@ mod tests {
 
         let definition = oauth_definition();
 
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
+        insert_oauth_definition(&database, &definition).await?;
 
         let provider = test_support::insert_provider(
             &database,

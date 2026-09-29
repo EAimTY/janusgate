@@ -753,10 +753,7 @@ mod tests {
         find_flow_by_state, insert_flow, persist_device_poll, sweep_expired_flows,
     };
     use crate::{
-        storage::{
-            self as storage_cr,
-            test_support::{insert_test_provider, oauth_definition},
-        },
+        storage::test_support::{insert_oauth_definition, insert_test_provider, oauth_definition},
         test_support,
     };
     use std::{collections::BTreeMap, error::Error as StdError};
@@ -794,16 +791,7 @@ mod tests {
 
         let definition = oauth_definition();
 
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
+        insert_oauth_definition(&database, &definition).await?;
 
         let flow =
             test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta())
@@ -977,16 +965,7 @@ mod tests {
 
         let definition = oauth_definition();
 
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
+        insert_oauth_definition(&database, &definition).await?;
 
         test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta()).await;
 

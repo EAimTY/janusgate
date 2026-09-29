@@ -10,8 +10,11 @@ import type {
     QueryUsageResponse,
     UsageFilter,
 } from "/src/management-api/generated/v0";
+import {
+    DIMENSION_KEY_FIELD,
+    missingBucketKeyFieldMessage,
+} from "/src/management-api/usage-buckets";
 import { type ReadCall, readAll, readApiKeys, readModels, readProviders } from "./read";
-import { DIMENSION_KEY_FIELD, missingBucketKeyFieldMessage } from "./usage-labels";
 import { USAGE_PAGE_SIZE } from "./usage-pagination";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */

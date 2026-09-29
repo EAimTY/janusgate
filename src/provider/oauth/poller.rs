@@ -687,8 +687,8 @@ mod tests {
     )]
 
     use super::{
-        ExchangeOutcome, ExchangeProduct, claim_next_due_flow, commit_success, execute_exchange,
-        process, schedule_retry,
+        Error, ExchangeOutcome, ExchangeProduct, claim_next_due_flow, commit_success,
+        execute_exchange, process, schedule_retry,
     };
     use crate::{
         format::UpstreamFormat,
@@ -703,7 +703,7 @@ mod tests {
         },
         storage,
         storage::oauth_flows::{
-            FlowOutcome, FlowPurpose, claim_due_device_flow, find_flow_by_state,
+            FlowOutcome, FlowPurpose, OngoingFlow, claim_due_device_flow, find_flow_by_state,
             persist_exchange_checkpoint, restamp_claim,
         },
         test_support::{
@@ -777,24 +777,11 @@ mod tests {
             .unwrap()
             .expect("the due flow is claimed");
 
-        commit_success(
-            &database,
-            &http_client::control_plane(),
-            &claimed,
-            &definition,
-            ExchangeOutcome {
-                access_token: Some("exchange-token".to_string()),
-                ..ExchangeOutcome::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
+        commit_exchange_success(&database, &claimed, &definition)
             .await
-            .unwrap()
-            .expect("the flow row persists");
+            .unwrap();
+
+        let settled = settled_flow(&database, now).await;
 
         assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
         assert_eq!(settled.failure_code.as_deref(), Some("name_conflict"));
@@ -898,17 +885,7 @@ mod tests {
             }
         });
 
-        let result = commit_success(
-            &database,
-            &http_client::control_plane(),
-            &claimed,
-            &definition,
-            ExchangeOutcome {
-                access_token: Some("exchange-token".to_string()),
-                ..ExchangeOutcome::default()
-            },
-        )
-        .await;
+        let result = commit_exchange_success(&database, &claimed, &definition).await;
 
         assert!(
             result.is_err(),
@@ -918,11 +895,7 @@ mod tests {
         #[expect(clippy::unwrap_used, reason = "the claim task cannot panic")]
         conflicting.await.unwrap();
 
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
-            .await
-            .unwrap()
-            .expect("the flow row persists");
+        let settled = settled_flow(&database, now).await;
 
         assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
         assert_eq!(settled.failure_code.as_deref(), Some("name_conflict"));
@@ -981,13 +954,7 @@ mod tests {
     async fn a_transport_timeout_backs_off_transitorily_and_never_ratchets_the_stored_interval() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1081,13 +1048,7 @@ mod tests {
     async fn a_transport_timeout_backoff_caps_the_delay_without_raising_the_stored_interval() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1149,13 +1110,7 @@ mod tests {
     async fn a_claim_recovers_a_claim_stale_at_the_claim_call_s_own_instant() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1322,6 +1277,67 @@ mod tests {
         .unwrap()
     }
 
+    /// Inserts the plain device-grant definition the poll tests share: named `device-def`, its
+    /// exchange pointed at the unroutable `http://127.0.0.1:1/token`, carrying no provisioning
+    /// steps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture definition fails to insert — a broken fixture is the failure
+    /// report.
+    async fn insert_plain_device_definition(
+        database: &crate::database::Database,
+    ) -> crate::provider::ProviderDefinition {
+        insert_device_poll_definition(
+            database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            ProvisioningFixture::None,
+        )
+        .await
+    }
+
+    /// Commits the claimed flow's success under `definition` with the plain exchange outcome —
+    /// one mapped access token, every other member defaulted — against the control-plane
+    /// client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] when the commit fails; the failure-path tests assert exactly that
+    /// propagation.
+    async fn commit_exchange_success(
+        database: &crate::database::Database,
+        claimed: &OngoingFlow,
+        definition: &crate::provider::ProviderDefinition,
+    ) -> Result<(), Error> {
+        commit_success(
+            database,
+            &http_client::control_plane(),
+            claimed,
+            definition,
+            ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..ExchangeOutcome::default()
+            },
+        )
+        .await
+    }
+
+    /// The flow row the fixture's `state-token` still holds at `read_at`, read back for
+    /// assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the read fails or no unexpired row answers: the fixtures keep the row alive
+    /// well past `read_at`, so a missing row is the failure report.
+    async fn settled_flow(database: &crate::database::Database, read_at: i64) -> OngoingFlow {
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        find_flow_by_state(database, "state-token", read_at)
+            .await
+            .unwrap()
+            .expect("the flow row persists")
+    }
+
     /// A failure code outside the configured terminal codes is not a terminal outcome (README
     /// §5.3): the attempt schedules a retry at the stored interval and the flow survives until
     /// its own expiry — a transient upstream rejection, such as a 2xx
@@ -1393,13 +1409,7 @@ mod tests {
     async fn restamping_a_held_claim_freshens_it_and_a_stolen_one_fails() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1430,11 +1440,7 @@ mod tests {
             .unwrap()
             .expect("the held claim re-stamps");
 
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let restamped = find_flow_by_state(&database, "state-token", now)
-            .await
-            .unwrap()
-            .expect("the flow row persists");
+        let restamped = settled_flow(&database, now).await;
 
         assert_eq!(restamped.device_poll_started_at, Some(fresh));
 
@@ -1462,11 +1468,7 @@ mod tests {
             "a re-stamp over a stolen claim matches no row"
         );
 
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
-            .await
-            .unwrap()
-            .expect("the flow row persists");
+        let settled = settled_flow(&database, now).await;
 
         assert_eq!(
             settled.device_poll_started_at,
@@ -1486,13 +1488,7 @@ mod tests {
     async fn provisioning_outliving_the_claim_window_still_commits_the_success() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1517,24 +1513,11 @@ mod tests {
             .unwrap()
             .expect("the due flow is claimed");
 
-        commit_success(
-            &database,
-            &http_client::control_plane(),
-            &claimed,
-            &definition,
-            ExchangeOutcome {
-                access_token: Some("exchange-token".to_string()),
-                ..ExchangeOutcome::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
+        commit_exchange_success(&database, &claimed, &definition)
             .await
-            .unwrap()
-            .expect("the flow row persists");
+            .unwrap();
+
+        let settled = settled_flow(&database, now).await;
 
         assert_eq!(settled.outcome, Some(FlowOutcome::Succeeded));
         assert_eq!(settled.device_poll_started_at, None);
@@ -1558,13 +1541,7 @@ mod tests {
     async fn a_claim_stolen_during_provisioning_abandons_the_success() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1601,24 +1578,11 @@ mod tests {
 
         assert_eq!(stolen.id, claimed.id);
 
-        commit_success(
-            &database,
-            &http_client::control_plane(),
-            &claimed,
-            &definition,
-            ExchangeOutcome {
-                access_token: Some("exchange-token".to_string()),
-                ..ExchangeOutcome::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
+        commit_exchange_success(&database, &claimed, &definition)
             .await
-            .unwrap()
-            .expect("the flow row persists");
+            .unwrap();
+
+        let settled = settled_flow(&database, now).await;
 
         assert_eq!(settled.outcome, None, "the winner owns the flow's schedule");
 
@@ -1646,13 +1610,7 @@ mod tests {
     async fn a_reauthorize_flow_whose_target_vanishes_mid_commit_fails_under_the_fresh_stamp() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1685,24 +1643,11 @@ mod tests {
 
         assert_eq!(claimed.device_poll_started_at, Some(claim_at));
 
-        commit_success(
-            &database,
-            &http_client::control_plane(),
-            &claimed,
-            &definition,
-            ExchangeOutcome {
-                access_token: Some("exchange-token".to_string()),
-                ..ExchangeOutcome::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
+        commit_exchange_success(&database, &claimed, &definition)
             .await
-            .unwrap()
-            .expect("the flow row persists");
+            .unwrap();
+
+        let settled = settled_flow(&database, now).await;
 
         // The vanished-target failure is recorded under the fresh re-stamped claim: the
         // terminal outcome, its gateway-owned pair, and the cleared claim stamp.
@@ -1762,11 +1707,7 @@ mod tests {
             .await
             .unwrap();
 
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
-            .await
-            .unwrap()
-            .expect("the flow row persists");
+        let settled = settled_flow(&database, now).await;
 
         // The gateway-owned terminal pair, with no upstream body content in the message.
         assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
@@ -1825,13 +1766,7 @@ mod tests {
     async fn a_commit_failure_after_a_completed_exchange_fails_the_flow_terminally() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition = insert_device_poll_definition(
-            &database,
-            "device-def",
-            "http://127.0.0.1:1/token",
-            ProvisioningFixture::None,
-        )
-        .await;
+        let definition = insert_plain_device_definition(&database).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1865,28 +1800,14 @@ mod tests {
             .await
             .unwrap();
 
-        let result = commit_success(
-            &database,
-            &http_client::control_plane(),
-            &claimed,
-            &definition,
-            ExchangeOutcome {
-                access_token: Some("exchange-token".to_string()),
-                ..ExchangeOutcome::default()
-            },
-        )
-        .await;
+        let result = commit_exchange_success(&database, &claimed, &definition).await;
 
         assert!(
             result.is_err(),
             "the commit failure propagates for the spawn loop's warning"
         );
 
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", now)
-            .await
-            .unwrap()
-            .expect("the flow row persists");
+        let settled = settled_flow(&database, now).await;
 
         // The gateway-owned terminal pair: the grant succeeded, the record failed — never an
         // overclaiming `succeeded` outcome, never a pending row awaiting a doomed re-run.
@@ -2057,11 +1978,7 @@ mod tests {
             "the consumed grant is never re-presented to the upstream"
         );
 
-        #[expect(clippy::expect_used, reason = "the flow row persists")]
-        let settled = find_flow_by_state(&database, "state-token", later)
-            .await
-            .unwrap()
-            .expect("the flow row persists");
+        let settled = settled_flow(&database, later).await;
 
         assert_eq!(
             settled.outcome,

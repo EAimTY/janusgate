@@ -1,6 +1,6 @@
 import { DAY_MICROS } from "/src/format";
 import type { UsageBucket } from "/src/management-api/generated/v0";
-import { bucketKeyField } from "/src/screens/usage-labels";
+import { bucketKeyField } from "/src/management-api/usage-buckets";
 import { USAGE_OUTCOME_FAILURES } from "/src/usage-filter";
 
 /** The number of UTC days the overview's daily chart covers, today included. */

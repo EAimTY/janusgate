@@ -440,15 +440,7 @@ mod tests {
     fn renders_thinking_level_verbatim_and_never_a_budget() {
         use crate::ir::IrReasoningLevel;
 
-        for (level, thinking_level) in [
-            (IrReasoningLevel::None, "none"),
-            (IrReasoningLevel::Minimal, "minimal"),
-            (IrReasoningLevel::Low, "low"),
-            (IrReasoningLevel::Medium, "medium"),
-            (IrReasoningLevel::High, "high"),
-            (IrReasoningLevel::XHigh, "xhigh"),
-            (IrReasoningLevel::Max, "max"),
-        ] {
+        for (level, thinking_level) in IrReasoningLevel::VOCABULARY {
             let ir = IrRequest {
                 model: "m".to_string(),
                 reasoning_effort: Some(level),

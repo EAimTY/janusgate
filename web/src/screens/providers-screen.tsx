@@ -3,7 +3,7 @@ import { createMemo, createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { modelCountsByProvider } from "/src/management-api/serving";
-import { credentialKindLabel, upstreamFormatLabel } from "/src/management-api/vocabulary";
+import { CREDENTIAL_KIND, UPSTREAM_FORMAT } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { createScreenRead, readOne, readProviderCatalog } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
@@ -45,9 +45,9 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
         return providers().filter(
             (provider) =>
                 provider.name.toLowerCase().includes(needle) ||
-                credentialKindLabel(provider.type).toLowerCase().includes(needle) ||
+                CREDENTIAL_KIND.label(provider.type).toLowerCase().includes(needle) ||
                 // The wire format is the row's most identifying label.
-                upstreamFormatLabel(provider.format).toLowerCase().includes(needle),
+                UPSTREAM_FORMAT.label(provider.format).toLowerCase().includes(needle),
         );
     });
 

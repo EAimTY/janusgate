@@ -4,7 +4,7 @@ import { formatDuration, formatTimestamp, formatTokenCount, nowMicros } from "/s
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiLogOutcome, ApiLogResponse, UsageFilter } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
+import { API_LOG_ENDPOINT_TYPE, API_LOG_OUTCOME } from "/src/management-api/vocabulary";
 import { hrefs, isCurrentAddress, navigate } from "/src/router";
 import { ReadNotice, StatedNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
@@ -492,7 +492,7 @@ function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | 
 
 /** The badge behind one recorded outcome. */
 function usageOutcomeBadge(outcome: ApiLogOutcome): BadgeMark {
-    const label = apiLogOutcomeLabel(outcome);
+    const label = API_LOG_OUTCOME.label(outcome);
 
     // The failure tone reads the one shared set — the same one the Failures
     // filter narrows by and the overview's error figure counts — so a failure
@@ -538,7 +538,7 @@ function UsageRow(props: {
                     label={outcome().label}
                 />
                 <span class="text-[12.5px] text-ink-faint">
-                    {apiLogEndpointLabel(props.row.endpoint_type)}
+                    {API_LOG_ENDPOINT_TYPE.label(props.row.endpoint_type)}
                     {props.row.is_stream ? " · Stream" : ""}
                 </span>
             </div>

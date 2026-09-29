@@ -24,11 +24,11 @@ import {
 } from "/src/management-api/generated/v0";
 
 import {
-    findCredentialKind,
-    findUpstreamFormat,
-    parseApiLogEndpointType,
-    parseApiLogOutcome,
-    parseDiscoveryState,
+    API_LOG_ENDPOINT_TYPE,
+    API_LOG_OUTCOME,
+    CREDENTIAL_KIND,
+    DISCOVERY_STATE,
+    UPSTREAM_FORMAT,
 } from "/src/management-api/vocabulary";
 
 /**
@@ -197,11 +197,11 @@ const BUCKET_KEY_FIELDS: ReadonlyArray<BucketKeyField> = [
     },
     {
         name: "endpoint_type",
-        narrow: parseApiLogEndpointType,
+        narrow: API_LOG_ENDPOINT_TYPE.parse,
     },
     {
         name: "outcome",
-        narrow: parseApiLogOutcome,
+        narrow: API_LOG_OUTCOME.parse,
     },
     {
         name: "is_stream",
@@ -291,7 +291,7 @@ function parseProviderResponse(value: unknown, context: string): ProviderRespons
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     const shared = parseSharedProviderFields(record, context);
 
-    const kind = findCredentialKind(type);
+    const kind = CREDENTIAL_KIND.find(type);
 
     if (kind === "oauth") {
         return {
@@ -316,7 +316,7 @@ function parseProviderResponse(value: unknown, context: string): ProviderRespons
 
 /** Narrows a wire value that must be one of the five upstream wire formats. */
 export function parseUpstreamFormat(value: unknown, context: string): ProviderResponse["format"] {
-    const format = findUpstreamFormat(value);
+    const format = UPSTREAM_FORMAT.find(value);
 
     if (format === null) {
         throw new ContractViolationError(`${context} is not an upstream format: ${String(value)}`);
@@ -344,7 +344,7 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
             `${context}.id_override`,
         ),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
-        discovery_state: parseDiscoveryState(
+        discovery_state: DISCOVERY_STATE.parse(
             Reflect.get(record, "discovery_state"),
             `${context}.discovery_state`,
         ),
@@ -363,7 +363,7 @@ function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
         api_key_id: expectInteger(Reflect.get(record, "api_key_id"), `${context}.api_key_id`),
         provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
         model_id: expectInteger(Reflect.get(record, "model_id"), `${context}.model_id`),
-        endpoint_type: parseApiLogEndpointType(
+        endpoint_type: API_LOG_ENDPOINT_TYPE.parse(
             Reflect.get(record, "endpoint_type"),
             `${context}.endpoint_type`,
         ),
@@ -372,7 +372,7 @@ function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
             Reflect.get(record, "http_status"),
             `${context}.http_status`,
         ),
-        outcome: parseApiLogOutcome(Reflect.get(record, "outcome"), `${context}.outcome`),
+        outcome: API_LOG_OUTCOME.parse(Reflect.get(record, "outcome"), `${context}.outcome`),
         duration: expectInteger(Reflect.get(record, "duration"), `${context}.duration`),
         input_tokens: expectNullableInteger(
             Reflect.get(record, "input_tokens"),

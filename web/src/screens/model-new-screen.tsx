@@ -7,7 +7,14 @@ import { routingTokenError } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import { ReadNotice, StatedNotice } from "/src/screens/read-notice";
-import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
+import {
+    Button,
+    ButtonLink,
+    entitySelectOptions,
+    SelectField,
+    Switch,
+    TextField,
+} from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
@@ -201,16 +208,9 @@ function ModelCreateForm(props: {
 
     const canCreate = (): boolean => canCompose() && !create.isCreating();
 
-    const providerOptions = createMemo(() => [
-        {
-            value: "",
-            label: "Choose a provider",
-        },
-        ...props.providers.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    const providerOptions = createMemo(() =>
+        entitySelectOptions(props.providers, (row) => row.name, "Choose a provider"),
+    );
 
     return (
         <>

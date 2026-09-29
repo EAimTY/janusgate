@@ -5,8 +5,8 @@ import type {
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
-import { API_LOG_ENDPOINT_OPTIONS, API_LOG_OUTCOME_OPTIONS } from "/src/management-api/vocabulary";
-import { noLongerListedLabel, SelectField, TextField } from "/src/ui/controls";
+import { API_LOG_ENDPOINT_TYPE, API_LOG_OUTCOME } from "/src/management-api/vocabulary";
+import { entitySelectOptions, noLongerListedLabel, SelectField, TextField } from "/src/ui/controls";
 import type { UsageFilterFields, UsageOutcomeChoice, UsageStreamChoice } from "/src/usage-filter";
 
 /**
@@ -27,7 +27,7 @@ const OUTCOME_CHOICE_OPTIONS: ReadonlyArray<{
         value: "failures",
         label: "Failures (upstream or internal)",
     },
-    ...API_LOG_OUTCOME_OPTIONS,
+    ...API_LOG_OUTCOME.options,
 ];
 
 const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
@@ -77,38 +77,17 @@ export function UsageFilterControls(props: {
     readonly isDisabled: boolean;
     readonly onEdit: (edits: Partial<UsageFilterFields>) => void;
 }): JSX.Element {
-    const providerOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All providers",
-        },
-        ...props.providers.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    const providerOptions = createMemo(() =>
+        entitySelectOptions(props.providers, (row) => row.name, "All providers"),
+    );
 
-    const modelOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All models",
-        },
-        ...props.models.map((row) => ({
-            value: String(row.id),
-            label: row.public_id,
-        })),
-    ]);
+    const modelOptions = createMemo(() =>
+        entitySelectOptions(props.models, (row) => row.public_id, "All models"),
+    );
 
-    const apiKeyOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All API keys",
-        },
-        ...props.apiKeys.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    const apiKeyOptions = createMemo(() =>
+        entitySelectOptions(props.apiKeys, (row) => row.name, "All API keys"),
+    );
 
     return (
         <>
@@ -156,7 +135,7 @@ export function UsageFilterControls(props: {
                         value: "",
                         label: "All endpoints",
                     },
-                    ...API_LOG_ENDPOINT_OPTIONS,
+                    ...API_LOG_ENDPOINT_TYPE.options,
                 ]}
                 onChange={(endpointType) =>
                     props.onEdit({

@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { isModelEffectivelyServing } from "/src/management-api/serving";
-import { discoveryStateLabel } from "/src/management-api/vocabulary";
+import { DISCOVERY_STATE } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
@@ -68,19 +68,19 @@ export function modelDiscoveryBadge(model: ModelResponse): BadgeMark {
         case "discovered":
             return {
                 tone: "muted",
-                label: discoveryStateLabel("discovered"),
+                label: DISCOVERY_STATE.label("discovered"),
             };
 
         case "manual":
             return {
                 tone: "info",
-                label: discoveryStateLabel("manual"),
+                label: DISCOVERY_STATE.label("manual"),
             };
 
         case "vanished":
             return {
                 tone: "warn",
-                label: discoveryStateLabel("vanished"),
+                label: DISCOVERY_STATE.label("vanished"),
             };
     }
 }
