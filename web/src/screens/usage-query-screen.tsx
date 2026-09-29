@@ -39,7 +39,7 @@ import {
     type UsageEntityIndex,
     usageDimensionLabel,
 } from "./usage-labels";
-import { readUsageBuckets, readUsageEntities, type UsageEntities } from "./usage-read";
+import { EMPTY_USAGE_ENTITIES, readUsageBuckets, readUsageEntities } from "./usage-read";
 import { BucketCell, BucketHeader, UsageDaysUtcNote, UsageTable } from "./usage-table";
 
 /**
@@ -107,11 +107,7 @@ export function UsageQueryScreen(props: {
     readonly api: ManagementApi;
     readonly subject: UsageQuerySubject | null;
 }): JSX.Element {
-    const [entities, setEntities] = createSignal<UsageEntities>({
-        providers: [],
-        models: [],
-        apiKeys: [],
-    });
+    const [entities, setEntities] = createSignal(EMPTY_USAGE_ENTITIES);
     // The entity listings' first successful read flips this, permanently for
     // the mount: only a read listing states a row's absence, so the filter
     // fields carry the `(no longer listed)` verdict only past it. The write

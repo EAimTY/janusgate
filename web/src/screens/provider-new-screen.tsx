@@ -59,6 +59,17 @@ const FLOW_LOCK_NOTICE =
     "Locked while the authorization is live — the provider is created from what the flow's start already sent.";
 
 /**
+ * The lock notice's one rendering: the quiet-ink paragraph stating
+ * `FLOW_LOCK_NOTICE`, whose wording's design rule — stated once per card
+ * rather than as a hint on every disabled control — lives at the constant.
+ * Callers own the gate: live-flow sites wrap this in `Show when={isFlowLive()}`,
+ * and a site already inside a live branch renders it bare.
+ */
+function FlowLockNotice(): JSX.Element {
+    return <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>;
+}
+
+/**
  * The creation page: one preset catalog, one definition, one provider. A
  * preset prefills the definition JSON the gateway stores under
  * `provider-definitions:create` — or reuses the stored version untouched —
@@ -706,7 +717,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         {preset().provenance}
                     </p>
                     <Show when={isFlowLive()}>
-                        <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
+                        <FlowLockNotice />
                     </Show>
                 </div>
             </Card>
@@ -728,7 +739,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     />
                 </div>
                 <Show when={isFlowLive()}>
-                    <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
+                    <FlowLockNotice />
                 </Show>
             </Card>
 
@@ -808,9 +819,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                                 isDisabled={true}
                                             />
                                         </div>
-                                        <p class="mt-3 text-[12.5px] text-ink-faint">
-                                            {FLOW_LOCK_NOTICE}
-                                        </p>
+                                        <FlowLockNotice />
                                     </Show>
                                     <Show
                                         when={startedAuthorizationCode()}
@@ -915,7 +924,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         )}
                     </Show>
                     <Show when={isFlowLive()}>
-                        <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
+                        <FlowLockNotice />
                     </Show>
                     <details
                         class="group mt-2"

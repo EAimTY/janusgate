@@ -29,8 +29,19 @@ export type UsageFilterFields = {
 /** The outcome control's value: nothing, the two failure outcomes together, or one outcome. */
 export type UsageOutcomeChoice = "" | "failures" | ApiLogOutcome;
 
+/**
+ * The stream modes the route can carry beyond the absent choice, spelled once
+ * here: [`UsageStreamChoice`] is derived from this list, so a mode added to it
+ * is a member of the union at once — everywhere the union is used, this list
+ * is what it says — with no second place to name a mode.
+ */
+const USAGE_STREAM_MODES = [
+    "streamed",
+    "non-streamed",
+] as const;
+
 /** Whether the client streamed, as the stream control spells it. */
-export type UsageStreamChoice = "" | "streamed" | "non-streamed";
+export type UsageStreamChoice = "" | (typeof USAGE_STREAM_MODES)[number];
 
 /**
  * The outcomes the app calls failures — the set the "Failures" choice filters
@@ -119,9 +130,16 @@ function routeRowId(parameters: URLSearchParams, name: string): string {
     return raw !== null && parseRowIdentifier(raw) !== null ? raw : "";
 }
 
-/** Reads one route value as a window, answering all time when it names no window. */
+/**
+ * Reads one route value as a window, answering all time when it names no
+ * window. The read walks [`USAGE_WINDOW_OPTIONS`] — the control's own option
+ * list — instead of restating the union as unchecked literals, so a window
+ * added to [`UsageWindowChoice`] and the options is carried on the route and
+ * read back with no edit here, and the reader can never keep silently
+ * answering all time for a window the vocabulary and the control offer.
+ */
 function routeWindow(raw: string | null): UsageWindowChoice {
-    return raw === "24h" || raw === "7d" || raw === "30d" ? raw : "all";
+    return USAGE_WINDOW_OPTIONS.find((option) => option.value === raw)?.value ?? "all";
 }
 
 /**
@@ -165,9 +183,16 @@ function routeOutcome(raw: string | null): UsageOutcomeChoice {
     return "";
 }
 
-/** Reads the stream choice, answering absent when the value names no mode. */
+/**
+ * Reads the stream choice, answering absent when the value names no mode.
+ * Because [`UsageStreamChoice`] is derived from [`USAGE_STREAM_MODES`], the
+ * read walks the very list the union comes from: every mode the union can
+ * name is read back on the route, the stream control's options are typed
+ * against the same union so a choice it can put on the route is one this read
+ * names, and the fallback answers only a value no listed mode produced.
+ */
 function routeStream(raw: string | null): UsageStreamChoice {
-    return raw === "streamed" || raw === "non-streamed" ? raw : "";
+    return USAGE_STREAM_MODES.find((mode) => mode === raw) ?? "";
 }
 
 /**

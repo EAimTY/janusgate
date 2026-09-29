@@ -40,9 +40,9 @@ import {
 } from "./usage-labels";
 import { nextUsagePage, usageCursor } from "./usage-pagination";
 import {
+    EMPTY_USAGE_ENTITIES,
     readUsageEntities,
     readUsagePage,
-    type UsageEntities,
     usageListRequest,
 } from "./usage-read";
 
@@ -66,11 +66,7 @@ export function UsageScreen(props: {
     readonly api: ManagementApi;
     readonly filter: UsageFilterDraft;
 }): JSX.Element {
-    const [entities, setEntities] = createSignal<UsageEntities>({
-        providers: [],
-        models: [],
-        apiKeys: [],
-    });
+    const [entities, setEntities] = createSignal(EMPTY_USAGE_ENTITIES);
     const [rows, setRows] = createSignal<ReadonlyArray<ApiLogResponse>>([]);
     // The read's first success flips this, permanently for the mount: the
     // read lands the listings and the page together, and a failure installs

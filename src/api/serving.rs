@@ -850,61 +850,15 @@ mod tests {
         (sender, Box::pin(ReceiverStream::new(receiver)))
     }
 
-    /// Sends one clean completion's event sequence — start, text, usage, finish, done — through
-    /// the fixture channel and closes the stream.
+    /// Sends an event sequence through the fixture channel in order.
     ///
     /// # Panics
     ///
     /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
-    async fn send_clean_events(sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>) {
-        let events = [
-            IrEvent::MessageStart {
-                id: "resp-1".to_string(),
-                model: "upstream-model".to_string(),
-            },
-            IrEvent::TextDelta("hello".to_string()),
-            IrEvent::Usage(IrUsage {
-                input_tokens: 11,
-                output_tokens: 7,
-                cached_tokens: None,
-                cache_write_tokens: None,
-                reasoning_tokens: None,
-            }),
-            IrEvent::finish(IrFinishReason::Stop),
-            IrEvent::Done,
-        ];
-
-        for event in events {
-            #[expect(
-                clippy::expect_used,
-                reason = "the fixture channel is wide enough and its receiver lives in the task \
-                          under test"
-            )]
-            sender
-                .send(Ok(event))
-                .await
-                .expect("the fixture channel accepts the event");
-        }
-    }
-
-    /// Sends a mid-stream upstream failure — one start event, the transport failure, the pump's
-    /// terminal `Done` — through the fixture channel and closes the stream.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
-    async fn send_failing_events(sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>) {
-        let events = [
-            Ok(IrEvent::MessageStart {
-                id: "resp-1".to_string(),
-                model: "upstream-model".to_string(),
-            }),
-            Err(gateway::Error::Unavailable {
-                detail: "upstream stream failed: broken".to_string(),
-            }),
-            Ok(IrEvent::Done),
-        ];
-
+    async fn send_events(
+        sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>,
+        events: impl IntoIterator<Item = Result<IrEvent, gateway::Error>>,
+    ) {
         for event in events {
             #[expect(
                 clippy::expect_used,
@@ -916,6 +870,66 @@ mod tests {
                 .await
                 .expect("the fixture channel accepts the event");
         }
+    }
+
+    /// The usage observation fixture shared by the clean and failing-with-usage sequences.
+    fn usage_event() -> IrEvent {
+        IrEvent::Usage(IrUsage {
+            input_tokens: 11,
+            output_tokens: 7,
+            cached_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        })
+    }
+
+    /// The mid-stream upstream failure sequence — one start event, the transport failure, the
+    /// pump's terminal `Done`.
+    fn failing_events() -> [Result<IrEvent, gateway::Error>; 3] {
+        [
+            Ok(IrEvent::MessageStart {
+                id: "resp-1".to_string(),
+                model: "upstream-model".to_string(),
+            }),
+            Err(gateway::Error::Unavailable {
+                detail: "upstream stream failed: broken".to_string(),
+            }),
+            Ok(IrEvent::Done),
+        ]
+    }
+
+    /// Sends one clean completion's event sequence — start, text, usage, finish, done — through
+    /// the fixture channel and closes the stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
+    async fn send_clean_events(sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>) {
+        send_events(
+            sender,
+            [
+                IrEvent::MessageStart {
+                    id: "resp-1".to_string(),
+                    model: "upstream-model".to_string(),
+                },
+                IrEvent::TextDelta("hello".to_string()),
+                usage_event(),
+                IrEvent::finish(IrFinishReason::Stop),
+                IrEvent::Done,
+            ]
+            .map(Ok),
+        )
+        .await;
+    }
+
+    /// Sends a mid-stream upstream failure — one start event, the transport failure, the pump's
+    /// terminal `Done` — through the fixture channel and closes the stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
+    async fn send_failing_events(sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>) {
+        send_events(sender, failing_events()).await;
     }
 
     /// Sends a mid-stream upstream failure that first delivers a usage observation — one start
@@ -928,35 +942,9 @@ mod tests {
     async fn send_failing_events_with_usage(
         sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>,
     ) {
-        let events = [
-            Ok(IrEvent::MessageStart {
-                id: "resp-1".to_string(),
-                model: "upstream-model".to_string(),
-            }),
-            Ok(IrEvent::Usage(IrUsage {
-                input_tokens: 11,
-                output_tokens: 7,
-                cached_tokens: None,
-                cache_write_tokens: None,
-                reasoning_tokens: None,
-            })),
-            Err(gateway::Error::Unavailable {
-                detail: "upstream stream failed: broken".to_string(),
-            }),
-            Ok(IrEvent::Done),
-        ];
+        let [start, tail @ ..] = failing_events();
 
-        for event in events {
-            #[expect(
-                clippy::expect_used,
-                reason = "the fixture channel is wide enough and its receiver lives in the task \
-                          under test"
-            )]
-            sender
-                .send(event)
-                .await
-                .expect("the fixture channel accepts the event");
-        }
+        send_events(sender, [start, Ok(usage_event())].into_iter().chain(tail)).await;
     }
 
     /// Reads every recorded row of `store`.

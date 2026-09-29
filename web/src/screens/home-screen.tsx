@@ -24,7 +24,7 @@ import {
 } from "/src/screens/overview-stats";
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { readUsageBuckets, readUsageEntities, type UsageEntities } from "/src/screens/usage-read";
+import { EMPTY_USAGE_ENTITIES, readUsageBuckets, readUsageEntities } from "/src/screens/usage-read";
 import { AppLink } from "/src/ui/app-link";
 import { proseLinkClass } from "/src/ui/attributes";
 import { BarChart } from "/src/ui/bar-chart";
@@ -81,11 +81,7 @@ export function HomeScreen(props: {
     readonly api: ManagementApi;
     readonly baseUrl: string;
 }): JSX.Element {
-    const [entities, setEntities] = createSignal<UsageEntities>({
-        providers: [],
-        models: [],
-        apiKeys: [],
-    });
+    const [entities, setEntities] = createSignal(EMPTY_USAGE_ENTITIES);
     const [traffic, setTraffic] = createSignal<OverviewTraffic>({
         requests: 0,
         errors: 0,

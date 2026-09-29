@@ -24,6 +24,13 @@ export type UsageEntities = {
     readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
 };
 
+/** The entity listings before a read lands: every list empty. */
+export const EMPTY_USAGE_ENTITIES: UsageEntities = {
+    providers: [],
+    models: [],
+    apiKeys: [],
+};
+
 /**
  * The three entity listings a screen reads to name entities — the usage
  * screens alongside their rows, the overview for its health counts — as one
