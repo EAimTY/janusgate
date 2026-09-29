@@ -125,6 +125,10 @@ pub(crate) const PROVIDER_JOINED_FROM_MODELS: &str = "FROM models m \
      JOIN providers p ON p.id = m.provider_id JOIN provider_definitions d \
      ON d.name = p.provider_definition_name AND d.version = p.provider_definition_version";
 
+/// The models-to-providers join: models first, then the owning provider — the `(m, p)` aliases
+/// the projections and row-offset mappings over this join depend on.
+const MODELS_JOINED_PROVIDERS: &str = "FROM models m JOIN providers p ON p.id = m.provider_id";
+
 /// Column order of model selects: the row identity first, then the upstream identifier, the
 /// routing columns, and the discovery state. The owning provider is never carried in the row
 /// itself — every read knows it through the query's filter or its join.
@@ -530,8 +534,10 @@ async fn read_routed_holders_in_transaction(
 ) -> Result<HashMap<String, RoutedHolder>, Error> {
     let routed_rows = transaction
         .query(
-            "SELECT m.public_id, m.provider_id, m.upstream_id, p.name \
-             FROM models m JOIN providers p ON p.id = m.provider_id",
+            format!(
+                "SELECT m.public_id, m.provider_id, m.upstream_id, p.name {}",
+                MODELS_JOINED_PROVIDERS
+            ),
             (),
         )
         .await?;
@@ -632,8 +638,10 @@ async fn ensure_id_routable_in_transaction(
 ) -> Result<(), Error> {
     let rows = transaction
         .query(
-            "SELECT m.provider_id, m.upstream_id, p.name \
-             FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.public_id = ?1",
+            format!(
+                "SELECT m.provider_id, m.upstream_id, p.name {} WHERE m.public_id = ?1",
+                MODELS_JOINED_PROVIDERS
+            ),
             params![new_id],
         )
         .await?;

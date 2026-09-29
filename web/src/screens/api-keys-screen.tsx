@@ -7,7 +7,7 @@ import { hrefs } from "/src/router";
 import { createScreenRead, readApiKeys, readOne } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { CopyButton } from "/src/ui/clipboard";
-import { ButtonLink, SearchInput } from "/src/ui/controls";
+import { ButtonLink, listingNeedle, SearchInput } from "/src/ui/controls";
 import { Badge, EmptyState, Notice } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
 import { RowLink } from "/src/ui/row-link";
@@ -32,7 +32,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
     });
 
     const visibleKeys = createMemo(() => {
-        const needle = search().trim().toLowerCase();
+        const needle = listingNeedle(search());
 
         if (needle === "") {
             return keys();
@@ -60,7 +60,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
         const totalNoun = pluralNoun(total, "key");
         const shown = visibleKeys().length;
 
-        if (search().trim() === "") {
+        if (listingNeedle(search()).length === 0) {
             return `${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
         }
 
@@ -71,7 +71,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="API keys"
-                description="Serving keys. Clients send one as Authorization: Bearer <key>; open one for its secret and usage."
+                description="Serving keys. OpenAI clients send one as Authorization: Bearer <key>, Gemini as x-goog-api-key, and Anthropic as x-api-key; open one for its secret and usage."
             >
                 <ButtonLink
                     href={hrefs.apiKeyNew()}

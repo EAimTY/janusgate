@@ -262,6 +262,15 @@ export function SearchInput(props: {
     );
 }
 
+/**
+ * The needle a listing's search box narrows by: the search value trimmed and
+ * case-folded for the listing's per-field `.includes` match. An empty needle
+ * narrows nothing — the listing shows everything.
+ */
+export function listingNeedle(value: string): string {
+    return value.trim().toLowerCase();
+}
+
 type ButtonTone = "primary" | "secondary" | "danger" | "ghost";
 
 const BUTTON_TONE_CLASS: Record<ButtonTone, string> = {

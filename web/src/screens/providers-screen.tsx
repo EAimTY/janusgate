@@ -7,7 +7,7 @@ import { CREDENTIAL_KIND, UPSTREAM_FORMAT } from "/src/management-api/vocabulary
 import { hrefs } from "/src/router";
 import { createScreenRead, readOne, readProviderCatalog } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { ButtonLink, SearchInput } from "/src/ui/controls";
+import { ButtonLink, listingNeedle, SearchInput } from "/src/ui/controls";
 import { EmptyState, Notice } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
 import { ProviderList } from "/src/ui/providers-table";
@@ -36,7 +36,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
     const modelCounts = createMemo(() => modelCountsByProvider(models()));
 
     const visibleProviders = createMemo(() => {
-        const needle = search().trim().toLowerCase();
+        const needle = listingNeedle(search());
 
         if (needle === "") {
             return providers();

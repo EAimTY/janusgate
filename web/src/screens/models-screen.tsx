@@ -10,6 +10,7 @@ import { ReadNotice } from "/src/screens/read-notice";
 import {
     ButtonLink,
     entitySelectOptions,
+    listingNeedle,
     noLongerListedLabel,
     SearchInput,
     SelectField,
@@ -58,7 +59,7 @@ export function ModelsScreen(props: {
     );
 
     const visibleModels = createMemo(() => {
-        const needle = search().trim().toLowerCase();
+        const needle = listingNeedle(search());
 
         if (needle === "") {
             return models();
@@ -85,7 +86,7 @@ export function ModelsScreen(props: {
         const total = models().length;
         const totalNoun = pluralNoun(total, "model");
 
-        if (search().trim() === "") {
+        if (listingNeedle(search()).length === 0) {
             return `${total} ${totalNoun}`;
         }
 
@@ -108,12 +109,14 @@ export function ModelsScreen(props: {
     // listed)" option, which already does — instead of a models verdict the
     // empty filtered list cannot prove.
     const emptyNoticeTitle = createMemo(() => {
-        const needle = search().trim();
+        // The title quotes the query as typed, so it reads the trimmed raw
+        // value, not the case-folded `listingNeedle` the emptiness test uses.
+        const query = search().trim();
 
-        if (needle !== "") {
+        if (listingNeedle(search()).length !== 0) {
             return props.providerFilter === null
-                ? `No models match "${needle}".`
-                : `No models of this provider match "${needle}".`;
+                ? `No models match "${query}".`
+                : `No models of this provider match "${query}".`;
         }
 
         if (props.providerFilter === null) {

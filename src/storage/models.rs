@@ -172,9 +172,9 @@ async fn find_model_entry_by_id_in_transaction(
     let rows = transaction
         .query(
             format!(
-                "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
-                 WHERE m.id = ?1",
-                super::MODEL_ENTRY_COLUMNS
+                "SELECT {} {} WHERE m.id = ?1",
+                super::MODEL_ENTRY_COLUMNS,
+                super::MODELS_JOINED_PROVIDERS
             ),
             params![model_id],
         )
@@ -196,9 +196,9 @@ async fn find_model_entry_in_transaction(
     let rows = transaction
         .query(
             format!(
-                "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
-                 WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
-                super::MODEL_ENTRY_COLUMNS
+                "SELECT {} {} WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
+                super::MODEL_ENTRY_COLUMNS,
+                super::MODELS_JOINED_PROVIDERS
             ),
             params![provider_id, upstream_id],
         )
@@ -222,15 +222,15 @@ pub(crate) async fn list_model_entries(
 ) -> Result<Vec<ModelEntry>, Error> {
     let sql = match provider_id {
         None => format!(
-            "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
-             ORDER BY m.public_id",
-            super::MODEL_ENTRY_COLUMNS
+            "SELECT {} {} ORDER BY m.public_id",
+            super::MODEL_ENTRY_COLUMNS,
+            super::MODELS_JOINED_PROVIDERS
         ),
 
         Some(_) => format!(
-            "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
-             WHERE m.provider_id = ?1 ORDER BY m.public_id",
-            super::MODEL_ENTRY_COLUMNS
+            "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.public_id",
+            super::MODEL_ENTRY_COLUMNS,
+            super::MODELS_JOINED_PROVIDERS
         ),
     };
 
@@ -263,9 +263,11 @@ pub(crate) async fn list_enabled_models_with_owner(
 ) -> Result<Vec<(String, String)>, Error> {
     let rows = database
         .query(
-            "SELECT m.public_id, p.name FROM models m JOIN providers p ON p.id = m.provider_id \
-             WHERE p.is_enabled != 0 AND m.is_enabled != 0 \
-             AND m.discovery_state != ?1 ORDER BY m.public_id",
+            format!(
+                "SELECT m.public_id, p.name {} WHERE p.is_enabled != 0 AND m.is_enabled != 0 \
+                 AND m.discovery_state != ?1 ORDER BY m.public_id",
+                super::MODELS_JOINED_PROVIDERS
+            ),
             params![DiscoveryState::Vanished],
         )
         .await?;
@@ -396,9 +398,9 @@ pub(crate) async fn apply_discovered_models(
         let rows = transaction
             .query(
                 format!(
-                    "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
-                     WHERE m.provider_id = ?1 ORDER BY m.public_id",
-                    super::MODEL_ENTRY_COLUMNS
+                    "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.public_id",
+                    super::MODEL_ENTRY_COLUMNS,
+                    super::MODELS_JOINED_PROVIDERS
                 ),
                 params![provider.id],
             )

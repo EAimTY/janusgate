@@ -196,6 +196,26 @@ function isPresentValue(value: unknown): boolean {
 }
 
 /**
+ * Narrows one value to a closed string vocabulary: the member itself when
+ * the value is one of `members`, else a contract violation naming the path,
+ * the vocabulary's noun, and the offending value.
+ */
+function expectOneOf<TValue extends string>(
+    value: unknown,
+    members: ReadonlyArray<TValue>,
+    context: string,
+    noun: string,
+): TValue {
+    const member = members.find((candidate) => candidate === value);
+
+    if (member !== undefined) {
+        return member;
+    }
+
+    throw new ContractViolationError(`${context} is not ${noun}: ${String(value)}`);
+}
+
+/**
  * One authored definition payload, rebuilt field by field. The context is the
  * JSON path the messages name, `"definition"` at the top of an authored
  * payload and the response path inside a stored-definition parse.
@@ -237,31 +257,40 @@ function expectDefinitionPayload(value: unknown, context: string): DefinitionPay
 
 /** The upstream streaming mode a definition pins (README §5.2). */
 function expectUpstreamStreaming(value: unknown, context: string): UpstreamStreaming {
-    if (value === "always" || value === "match_client") {
-        return value;
-    }
-
-    throw new ContractViolationError(
-        `${context} is not an upstream streaming mode: ${String(value)}`,
+    return expectOneOf(
+        value,
+        [
+            "always",
+            "match_client",
+        ],
+        context,
+        "an upstream streaming mode",
     );
 }
 
 /** The closed render-option vocabulary of the format codecs (README §5.2). */
 function expectRenderOption(value: unknown, context: string): RenderOption {
-    if (value === "omit_max_output_tokens") {
-        return value;
-    }
-
-    throw new ContractViolationError(`${context} is not a render option: ${String(value)}`);
+    return expectOneOf(
+        value,
+        [
+            "omit_max_output_tokens",
+        ],
+        context,
+        "a render option",
+    );
 }
 
 /** The wire encoding a control response arrives in (README §5.1). */
 function expectResponseEncoding(value: unknown, context: string): ResponseEncoding {
-    if (value === "json" || value === "form") {
-        return value;
-    }
-
-    throw new ContractViolationError(`${context} is not a response encoding: ${String(value)}`);
+    return expectOneOf(
+        value,
+        [
+            "json",
+            "form",
+        ],
+        context,
+        "a response encoding",
+    );
 }
 
 /**
@@ -603,11 +632,15 @@ function expectControlRequest(value: unknown, context: string): ControlRequest {
         context,
     );
 
-    const method = expectString(Reflect.get(record, "method"), `${context}.method`);
-
-    if (method !== "GET" && method !== "POST") {
-        throw new ContractViolationError(`${context}.method is not a control method: ${method}`);
-    }
+    const method = expectOneOf(
+        expectString(Reflect.get(record, "method"), `${context}.method`),
+        [
+            "GET",
+            "POST",
+        ],
+        `${context}.method`,
+        "a control method",
+    );
 
     const request: ControlRequest = {
         method,
@@ -1075,13 +1108,15 @@ function expectSlotInitializer(
         ],
         context,
     );
-    const generator = expectString(Reflect.get(record, "generator"), `${context}.generator`);
-
-    if (generator !== "uuid" && generator !== "uuid_hex") {
-        throw new ContractViolationError(
-            `${context}.generator is not a slot generator: ${generator}`,
-        );
-    }
+    const generator = expectOneOf(
+        expectString(Reflect.get(record, "generator"), `${context}.generator`),
+        [
+            "uuid",
+            "uuid_hex",
+        ],
+        `${context}.generator`,
+        "a slot generator",
+    );
 
     return {
         name: expectString(Reflect.get(record, "name"), `${context}.name`),
@@ -1107,11 +1142,15 @@ function expectGrant(value: unknown, context: string): Grant {
             context,
         );
 
-        const pkce = expectString(Reflect.get(record, "pkce"), `${context}.pkce`);
-
-        if (pkce !== "none" && pkce !== "s256") {
-            throw new ContractViolationError(`${context}.pkce is not a PKCE mode: ${pkce}`);
-        }
+        const pkce = expectOneOf(
+            expectString(Reflect.get(record, "pkce"), `${context}.pkce`),
+            [
+                "none",
+                "s256",
+            ],
+            `${context}.pkce`,
+            "a PKCE mode",
+        );
 
         const grant: Grant = {
             type: "authorization_code",

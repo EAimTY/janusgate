@@ -134,7 +134,7 @@ export function ApiKeySecretField(props: {
                 error={props.error}
                 hint={
                     props.hint ??
-                    requiredHint("Sent as Authorization: Bearer <key> by serving clients.")
+                    requiredHint("A serving client authenticates with it on every surface.")
                 }
             />
             <SecretRevealToggle
