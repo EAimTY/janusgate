@@ -3,11 +3,13 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { servingModelCountsByProvider } from "/src/management-api/serving";
+import {
+    lapsedCredentialStanding,
+    servingModelCountsByProvider,
+} from "/src/management-api/serving";
 import {
     credentialKindLabel,
     isOAuthProviderRow,
-    lapsedCredentialStanding,
     type OauthProviderRow,
 } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
@@ -61,8 +63,10 @@ type ProviderServingAttention = {
     readonly provider: ProviderResponse;
     readonly attention: {
         readonly detail: string;
-        readonly action: string;
-        readonly href: string;
+        readonly action: {
+            readonly href: string;
+            readonly label: string;
+        };
     };
 };
 
@@ -373,10 +377,7 @@ export function HomeScreen(props: {
                                                     class="shrink-0 text-ink-faint"
                                                 />
                                             }
-                                            action={{
-                                                href: item.attention.href,
-                                                label: item.attention.action,
-                                            }}
+                                            action={item.attention.action}
                                         >
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                                                 <span class="font-medium">
@@ -494,21 +495,27 @@ function servingGapAttention(
     providerId: number,
 ): {
     readonly detail: string;
-    readonly action: string;
-    readonly href: string;
+    readonly action: {
+        readonly href: string;
+        readonly label: string;
+    };
 } {
     const hasNoModels = !models.some((model) => model.provider_id === providerId);
 
     return hasNoModels
         ? {
               detail: " has no models yet.",
-              action: "Open and discover",
-              href: hrefs.providerDetail(providerId),
+              action: {
+                  label: "Open and discover",
+                  href: hrefs.providerDetail(providerId),
+              },
           }
         : {
               detail: " has no models serving — every model is switched off or suspended.",
-              action: "Review models",
-              href: hrefs.models(providerId),
+              action: {
+                  label: "Review models",
+                  href: hrefs.models(providerId),
+              },
           };
 }
 
@@ -521,7 +528,7 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
     readonly label: string;
     readonly detail: string;
 } | null {
-    // The gate is the vocabulary's one lapsed composition over the row. The
+    // The gate is `serving.ts`'s one lapsed composition over the row. The
     // missing-expiry column below is the never-fresh standing's own
     // definition in `credentialStanding`, so past the gate the branch is
     // already fixed and the non-null column feeds the expired line's

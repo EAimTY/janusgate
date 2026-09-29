@@ -22,6 +22,7 @@ import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
+import { InlineConfirmQuestion } from "/src/ui/inline-confirm-question";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     CompatibleConnectionFields,
@@ -678,13 +679,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     >
                         {(armed) => (
                             <div class="mt-3 flex flex-wrap items-center gap-2">
-                                <p
-                                    class="w-full text-[13.5px] text-ink-dim"
-                                    tabindex={-1}
-                                    ref={confirmFocus.focusArmed}
-                                >
-                                    {`Switch to ${armed.title}? Your edited connection recipe will be replaced.`}
-                                </p>
+                                <InlineConfirmQuestion
+                                    question={`Switch to ${armed.title}? Your edited connection recipe will be replaced.`}
+                                    focusArmed={confirmFocus.focusArmed}
+                                />
                                 <Button
                                     tone="danger"
                                     isDisabled={isBusy()}

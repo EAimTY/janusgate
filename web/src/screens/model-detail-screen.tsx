@@ -18,7 +18,7 @@ import { VanishedModelNotice } from "/src/screens/vanished-model-notice";
 import { AppLink } from "/src/ui/app-link";
 import { proseLinkClass } from "/src/ui/attributes";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, type BadgeTone } from "/src/ui/feedback";
+import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 import { RowNotFound } from "./row-not-found";
@@ -102,15 +102,9 @@ function ModelFacts(props: {
     readonly provider: ProviderResponse | null;
     readonly model: ModelResponse;
 }): JSX.Element {
-    const serving = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } => modelServingBadge(props.model, props.provider ?? undefined);
+    const serving = (): BadgeMark => modelServingBadge(props.model, props.provider ?? undefined);
 
-    const discovery = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } => modelDiscoveryBadge(props.model);
+    const discovery = (): BadgeMark => modelDiscoveryBadge(props.model);
 
     return (
         <>

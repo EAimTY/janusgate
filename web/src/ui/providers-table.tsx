@@ -1,12 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
-import {
-    type CredentialStanding,
-    credentialKindLabel,
-    credentialStanding,
-    upstreamFormatLabel,
-} from "/src/management-api/vocabulary";
+import { type CredentialStanding, credentialStanding } from "/src/management-api/serving";
+import { credentialKindLabel, upstreamFormatLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { Badge, type BadgeTone } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
@@ -39,7 +35,7 @@ export const NO_STORED_EXPIRY_SENTENCE: string = "No expiry is stored for this p
 
 /**
  * The badge each non-null credential standing is presented under. The record
- * type is exhaustive, so a standing added to the vocabulary fails to compile
+ * type is exhaustive, so a standing added to `serving.ts` fails to compile
  * until it is listed here.
  */
 const CREDENTIAL_STANDING_BADGES: Record<Exclude<CredentialStanding, null>, CredentialBadge> = {
@@ -59,7 +55,7 @@ const CREDENTIAL_STANDING_BADGES: Record<Exclude<CredentialStanding, null>, Cred
 };
 
 /**
- * The one glance at a credential that can go stale, read off the vocabulary's
+ * The one glance at a credential that can go stale, read off `serving.ts`'s
  * single standing derivation: a fresh OAuth login reads `Valid`, one past its
  * expiry `Expired`, and one with no stored expiry was never fresh — `Stale`,
  * titled with the sentence the provider's page states, since a bare word

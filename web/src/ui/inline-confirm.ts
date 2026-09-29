@@ -27,9 +27,11 @@ export interface InlineConfirmFocus {
     readonly arm: () => void;
     /**
      * Focuses the armed question once it mounts; attach to the question
-     * with `ref` and give it `tabindex="-1"`. A branch remount no arm asked
-     * for — the armed state yielding to an unrelated signal — takes no
-     * focus.
+     * with `ref` and give it `tabindex="-1"` — the armed branches do so
+     * through the shared `InlineConfirmQuestion` fragment
+     * (`./inline-confirm-question`), which renders exactly that element. A
+     * branch remount no arm asked for — the armed state yielding to an
+     * unrelated signal — takes no focus.
      */
     readonly focusArmed: (question: HTMLElement) => void;
     /**

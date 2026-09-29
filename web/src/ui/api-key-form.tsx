@@ -3,6 +3,7 @@ import { createSignal, Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { CopyButton } from "./clipboard";
+import { InlineConfirmQuestion } from "./inline-confirm-question";
 import { requiredHint } from "./required-hint";
 import { SecretRevealToggle } from "./secret-reveal";
 
@@ -167,13 +168,10 @@ export function ApiKeySecretField(props: {
                         </span>
                     }
                 >
-                    <p
-                        class="w-full text-[13.5px] text-ink-dim"
-                        tabindex={-1}
-                        ref={confirmFocus.focusArmed}
-                    >
-                        Replace the {generateConfirmSubject()} secret?
-                    </p>
+                    <InlineConfirmQuestion
+                        question={`Replace the ${generateConfirmSubject()} secret?`}
+                        focusArmed={confirmFocus.focusArmed}
+                    />
                     <Button
                         tone="danger"
                         glyph="key"

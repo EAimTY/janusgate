@@ -12,7 +12,8 @@ import {
     modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { isOAuthProviderRow, lapsedCredentialStanding } from "/src/management-api/vocabulary";
+import { lapsedCredentialStanding } from "/src/management-api/serving";
+import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -577,7 +578,7 @@ function CredentialsCard(props: {
         return credentialExpiryLine(row.expires_at, nowMicros());
     };
 
-    // The reconnect offer gates on the vocabulary's lapsed verdict read over
+    // The reconnect offer gates on `serving.ts`'s lapsed verdict read over
     // the gateway's latest row, so a current credential is never invited
     // into a second authorization flow.
     const isReconnectOffered = (): boolean => lapsedCredentialStanding(credentialRow()) !== null;

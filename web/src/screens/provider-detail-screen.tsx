@@ -4,10 +4,10 @@ import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
+import { lapsedCredentialStanding } from "/src/management-api/serving";
 import {
     credentialKindLabel,
     isOAuthProviderRow,
-    lapsedCredentialStanding,
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
 import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
@@ -248,8 +248,8 @@ export function ProviderDetailScreen(props: {
                     {/* A lapsed credential's fix lives one page over, where
                         reauthorization runs — named and linked the way the
                         overview's attention rows name it, not left to a bare
-                        badge beside a generic edit button. The gate is the
-                        vocabulary's standing, never a badge's rendered word,
+                        badge beside a generic edit button. The gate is
+                        `serving.ts`'s standing, never a badge's rendered word,
                         so a renamed label cannot silently detach the notice.
                         A parked provider defers the way the overview's
                         attention row defers: reconnecting waits for the

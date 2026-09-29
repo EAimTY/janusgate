@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
     buttonWithText,
     createDisposals,
+    labeledCheckbox,
     labeledInput,
     paragraphWithText,
     settle,
@@ -64,22 +65,6 @@ function mountField(
     };
 }
 
-/**
- * The reveal checkbox living inside its own toggle label — no `for` pairing,
- * so the lookup walks the labels' contained checkboxes.
- */
-function revealCheckbox(text: string): HTMLInputElement {
-    for (const candidate of document.querySelectorAll("label")) {
-        const input = candidate.querySelector("input[type='checkbox']");
-
-        if (input instanceof HTMLInputElement && candidate.textContent?.includes(text) === true) {
-            return input;
-        }
-    }
-
-    throw new Error(`No checkbox labeled ${text}`);
-}
-
 describe("ApiKeySecretField masking", () => {
     it("opens masked, stays masked while typed, and reveals only on the checkbox", async () => {
         mountField("");
@@ -91,11 +76,11 @@ describe("ApiKeySecretField masking", () => {
         await settle();
         expect(labeledInput("Key").getAttribute("type")).toBe("password");
 
-        revealCheckbox("Show the key while typing").click();
+        labeledCheckbox("Show the key while typing").click();
         await settle();
         expect(labeledInput("Key").getAttribute("type")).toBe("text");
 
-        revealCheckbox("Show the key while typing").click();
+        labeledCheckbox("Show the key while typing").click();
         await settle();
         expect(labeledInput("Key").getAttribute("type")).toBe("password");
     });
@@ -110,11 +95,11 @@ describe("ApiKeySecretField masking", () => {
 
         expect(document.body.textContent).not.toContain("Show the key while typing");
 
-        revealCheckbox("Show the current key").click();
+        labeledCheckbox("Show the current key").click();
         await settle();
         expect(labeledInput("Key").getAttribute("type")).toBe("text");
 
-        revealCheckbox("Show the current key").click();
+        labeledCheckbox("Show the current key").click();
         await settle();
         expect(labeledInput("Key").getAttribute("type")).toBe("password");
     });

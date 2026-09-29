@@ -9,7 +9,7 @@ use crate::{
     unix_time,
 };
 use log::warn;
-use std::{num::NonZero, path::PathBuf, sync::Arc, time::Duration};
+use std::{future::Future, num::NonZero, path::PathBuf, sync::Arc, time::Duration};
 
 /// Microseconds in one UTC day: the width of one shard.
 pub(super) const MICROS_PER_DAY: i64 = 86_400_000_000;
@@ -236,7 +236,24 @@ impl ApiLogStore {
         }
 
         let path = self.shard_path(day);
-        let (database, is_new) = Self::open_shard_blocking(path).await?;
+        let (database, is_new) = Self::open_shard_classifying_panics(day, async move {
+            // The existence probe sits directly before the open — both polled on the blocking
+            // thread, the open creating the file and its parent directory — so a file that
+            // appears or vanishes between the probe and the open keeps exactly the documented
+            // edge behavior of the probe's answer.
+            let is_new = !path.exists();
+
+            let database = Database::open(
+                path,
+                Registry::ApiLogShard,
+                shard_write_pool_connections(),
+                SHARD_POOL_WAIT,
+            )
+            .await?;
+
+            Ok::<_, crate::database::Error>((database, is_new))
+        })
+        .await?;
 
         if is_new {
             // Creating a new file is the sweep's only trigger; opening an existing shard for
@@ -281,56 +298,46 @@ impl ApiLogStore {
         Ok(database)
     }
 
-    /// Opens one day's shard database on the blocking thread pool, reporting alongside the
-    /// opened database whether the open found no file at its path — the sweep's `is_new`
-    /// trigger. The existence probe sits directly before [`Database::open`] on the blocking
-    /// thread — which creates the file and its parent directory and runs the engine open and
-    /// the shard schema bootstrap synchronously inside Turso — so the probe, the open future,
-    /// and the open's panic containment all live off the async executor thread, and a file
-    /// that appears or vanishes between the probe and the open keeps exactly the documented
-    /// edge behavior of the probe's answer. The caller holds the store lock across the call,
-    /// so the get-or-open serialization is unchanged.
+    /// Runs one day's shard-database open on the blocking thread pool and classifies a panicked
+    /// open — a damaged shard file failing its schema bootstrap, most commonly — as
+    /// [`Error::Drift`] naming the shard day. The open future is created by the caller and
+    /// polled inside the blocking task via [`tokio::runtime::Handle::block_on`], so every
+    /// filesystem effect of the open — an existence probe composed ahead of it, the engine open
+    /// and its schema bootstrap — happens off the async executor thread, in the future's own
+    /// order. Both shard opens share this containment: the write path swallows the
+    /// classification as a best-effort recording failure (README §8), and the read path fails
+    /// its request explicitly with it, a corrupt shard never killing the process (README §3
+    /// *ApiLog Shard Store*).
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when [`Database::open`] fails, and classifies a panicked open — a
-    /// damaged shard file failing its schema bootstrap, most commonly — as a recording
-    /// failure the caller logs and swallows (README §3 *ApiLog Shard Store*): the shard write
-    /// path is best-effort accounting, so the panic never resumes into the request pipeline,
-    /// where it would kill served responses and lose their rows. The startup and
+    /// Returns [`Error`] when the open fails, and classifies a panicked open as drift — stored
+    /// file state that violates the shard registry's contract. The startup and
     /// main-database open paths are unaffected and stay fatal.
     ///
     /// # Panics
     ///
-    /// Never in practice: the underlying open's panics are classified as recording failures
-    /// above, and the final arm only marks the open task's cancellation — possible only while
-    /// the runtime is shutting down — as unreachable.
-    async fn open_shard_blocking(path: PathBuf) -> Result<(Database, bool), Error> {
+    /// Never in practice: the underlying open's panics are classified as drift above, and the
+    /// final arm only marks the open task's cancellation — possible only while the runtime is
+    /// shutting down — as unreachable.
+    pub(super) async fn open_shard_classifying_panics<T, F>(
+        day: ShardDay,
+        open: F,
+    ) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, crate::database::Error>> + Send + 'static,
+    {
         let runtime = tokio::runtime::Handle::current();
 
-        let opened = tokio::task::spawn_blocking(move || {
-            let is_new = !path.exists();
-
-            let opened = runtime.block_on(Database::open(
-                path,
-                Registry::ApiLogShard,
-                shard_write_pool_connections(),
-                SHARD_POOL_WAIT,
-            ));
-
-            (is_new, opened)
-        })
-        .await;
+        let opened = tokio::task::spawn_blocking(move || runtime.block_on(open)).await;
 
         match opened {
-            Ok((is_new, outcome)) => outcome
-                .map(|database| (database, is_new))
-                .map_err(Error::from),
+            Ok(outcome) => outcome.map_err(Error::from),
 
-            // A panicked open is a recording failure at this best-effort boundary: the panic
-            // payload's message, when it carries one, classifies as drift — stored file state
-            // that violates the shard registry's contract — and the caller logs and swallows
-            // the error like any other open failure.
+            // A panicked open is contained at this boundary: the panic payload's message, when
+            // it carries one, classifies as drift — stored file state that violates the shard
+            // registry's contract — naming the shard day for the surface that renders it.
             Err(join_error) if join_error.is_panic() => {
                 let payload = join_error.into_panic();
 
@@ -341,7 +348,10 @@ impl ApiLogStore {
                     .unwrap_or_else(|| "unknown panic payload".to_string());
 
                 Err(Error::Drift {
-                    message: format!("the shard database open panicked: {detail}"),
+                    message: format!(
+                        "the {} shard database open panicked: {detail}",
+                        day.file_stem()
+                    ),
                 })
             }
 

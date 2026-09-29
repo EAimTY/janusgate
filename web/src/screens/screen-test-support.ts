@@ -422,17 +422,29 @@ export function buttonWithText(text: string): HTMLButtonElement {
     throw new Error(`No button reading ${text}`);
 }
 
+/**
+ * The labels whose visible text is exactly the given text, in document
+ * order — the one label walk every label lookup resolves through. Exact
+ * text, never a substring match: a `contains` walk answers a longer label
+ * that merely embeds the asked-for text. Distinct controls can share a
+ * visible text while pairing differently — a dimension switch's label and
+ * a filter select's label both read `Outcome` — so each caller resolves
+ * its own pairing over the owners and picks the first that pairs its way.
+ */
+function labelsWithText(label: string): Array<HTMLLabelElement> {
+    return Array.from(document.querySelectorAll("label")).filter(
+        (candidate) => candidate.textContent === label,
+    );
+}
+
 /** The input the given field label names, through the label's `for` pairing. */
 export function labeledInput(label: string): HTMLInputElement {
-    for (const candidate of document.querySelectorAll("label")) {
-        const id = candidate.getAttribute("for");
+    for (const owner of labelsWithText(label)) {
+        const id = owner.getAttribute("for");
+        const input = id === null ? null : document.getElementById(id);
 
-        if (candidate.textContent === label && id !== null) {
-            const input = document.getElementById(id);
-
-            if (input instanceof HTMLInputElement) {
-                return input;
-            }
+        if (input instanceof HTMLInputElement) {
+            return input;
         }
     }
 
@@ -441,19 +453,33 @@ export function labeledInput(label: string): HTMLInputElement {
 
 /** The select the given field label names, through the label's `for` pairing. */
 export function labeledSelect(label: string): HTMLSelectElement {
-    for (const candidate of document.querySelectorAll("label")) {
-        const id = candidate.getAttribute("for");
+    for (const owner of labelsWithText(label)) {
+        const id = owner.getAttribute("for");
+        const select = id === null ? null : document.getElementById(id);
 
-        if (candidate.textContent === label && id !== null) {
-            const select = document.getElementById(id);
-
-            if (select instanceof HTMLSelectElement) {
-                return select;
-            }
+        if (select instanceof HTMLSelectElement) {
+            return select;
         }
     }
 
     throw new Error(`No select labeled ${label}`);
+}
+
+/**
+ * The checkbox the given label text wraps — the toggle-label pairing, which
+ * carries no `for` attribute, so the lookup takes the label's own input and
+ * holds it to the checkbox type.
+ */
+export function labeledCheckbox(label: string): HTMLInputElement {
+    for (const owner of labelsWithText(label)) {
+        const control = owner.querySelector("input");
+
+        if (control instanceof HTMLInputElement && control.type === "checkbox") {
+            return control;
+        }
+    }
+
+    throw new Error(`No checkbox labeled ${label}`);
 }
 
 /** The search input the given aria-label names, as every listing's is. */
@@ -489,6 +515,17 @@ export function switchWithLabel(label: string): HTMLButtonElement {
     }
 
     return candidate as HTMLButtonElement;
+}
+
+/** The label element the given switch's visible text stands in. */
+export function switchLabel(label: string): HTMLLabelElement {
+    const owner = labelsWithText(label).at(0);
+
+    if (owner === undefined) {
+        throw new Error(`No switch label ${label}`);
+    }
+
+    return owner;
 }
 
 /** The page's whole text content, as the assertions read it. */

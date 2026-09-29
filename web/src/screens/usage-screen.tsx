@@ -10,7 +10,7 @@ import { ReadNotice, StatedNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { proseLinkClass } from "/src/ui/attributes";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
-import { Badge, type BadgeTone, EmptyState, Notice } from "/src/ui/feedback";
+import { Badge, type BadgeMark, EmptyState, Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
@@ -491,10 +491,7 @@ function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | 
 }
 
 /** The badge behind one recorded outcome. */
-function usageOutcomeBadge(outcome: ApiLogOutcome): {
-    readonly tone: BadgeTone;
-    readonly label: string;
-} {
+function usageOutcomeBadge(outcome: ApiLogOutcome): BadgeMark {
     const label = apiLogOutcomeLabel(outcome);
 
     // The failure tone reads the one shared set — the same one the Failures
@@ -524,10 +521,7 @@ function UsageRow(props: {
     readonly row: ApiLogResponse;
     readonly index: UsageEntityIndex;
 }): JSX.Element {
-    const outcome = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } => usageOutcomeBadge(props.row.outcome);
+    const outcome = (): BadgeMark => usageOutcomeBadge(props.row.outcome);
 
     const model = () => usageModelLabel(props.index.modelsById, props.row.model_id);
     const provider = () => usageProviderLabel(props.index.providersById, props.row.provider_id);

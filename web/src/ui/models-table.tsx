@@ -4,7 +4,7 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { isModelEffectivelyServing } from "/src/management-api/serving";
 import { discoveryStateLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { Badge, type BadgeTone } from "/src/ui/feedback";
+import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
 
 /**
@@ -18,10 +18,7 @@ import { RowLink } from "/src/ui/row-link";
 export function modelServingBadge(
     model: ModelResponse,
     provider: ProviderResponse | undefined,
-): {
-    readonly tone: BadgeTone;
-    readonly label: string;
-} {
+): BadgeMark {
     if (isModelEffectivelyServing(model, provider)) {
         return {
             tone: "ok",
@@ -66,10 +63,7 @@ export function modelServingBadge(
  * keeps its curated settings and can be claimed back; it never serves
  * meanwhile.
  */
-export function modelDiscoveryBadge(model: ModelResponse): {
-    readonly tone: BadgeTone;
-    readonly label: string;
-} {
+export function modelDiscoveryBadge(model: ModelResponse): BadgeMark {
     switch (model.discovery_state) {
         case "discovered":
             return {
@@ -101,15 +95,9 @@ function ModelRow(props: {
     readonly provider: ProviderResponse | undefined;
     readonly showProvider?: boolean | undefined;
 }): JSX.Element {
-    const serving = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } => modelServingBadge(props.model, props.provider);
+    const serving = (): BadgeMark => modelServingBadge(props.model, props.provider);
 
-    const discovery = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } => modelDiscoveryBadge(props.model);
+    const discovery = (): BadgeMark => modelDiscoveryBadge(props.model);
 
     // The provider's name prefixes the upstream id wherever the row's own
     // provider column is not shown; a hand-set override appends its notice.

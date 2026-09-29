@@ -4,6 +4,7 @@ import {
     ConnectionProbeCancelled,
     cancelConnectionProbe,
     connectionService,
+    deadlineController,
     PROBE_TIMEOUT_MS,
 } from "/src/connection/app-service";
 import { normalizeBaseUrl } from "/src/connection/model";
@@ -151,18 +152,13 @@ export function ConnectionScreen(): JSX.Element {
             // This diagnosis owns its probe: a re-run of this effect (a newer
             // refusal) or the screen going away aborts it, so superseded
             // diagnoses never leave an in-flight probe behind (README §6.4).
-            // The connection probe's deadline stays on as the secondary
-            // backstop, forwarding its abort into the same controller —
-            // whichever fires first ends the request — so a blackhole address
-            // cannot leave the refinement pending minutes after the screen
-            // gave up. The flag still discards an answer that outlives this
-            // diagnosis, the aborted probe's "unknown" included.
+            // The deadline stays on as the secondary backstop, so a
+            // blackhole address cannot leave the refinement pending minutes
+            // after the screen gave up. The flag still discards an answer
+            // that outlives this diagnosis, the aborted probe's "unknown"
+            // included.
             let isCurrent = true;
-            const refinementController = new AbortController();
-            const deadline = AbortSignal.timeout(PROBE_TIMEOUT_MS);
-            deadline.addEventListener("abort", () => {
-                refinementController.abort(deadline.reason);
-            });
+            const refinementController = deadlineController(PROBE_TIMEOUT_MS);
 
             void probeReachability(attempted, refinementController.signal).then((reachability) => {
                 if (!isCurrent) {

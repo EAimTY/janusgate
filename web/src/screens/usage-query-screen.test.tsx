@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import { DAY_MICROS, nowMicros, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
+    ApiKeyResponse,
     ListApiKeysResponse,
     ListModelsResponse,
     ListProvidersResponse,
+    ModelResponse,
+    ProviderResponse,
     QueryUsageRequest,
     QueryUsageResponse,
     UsageBucket,
@@ -128,6 +131,37 @@ function bucketWith(key: UsageBucket["key"]): UsageBucket {
     };
 }
 
+/**
+ * Answers the three listings one read cycle holds back, in their read order
+ * — providers, models, then API keys — each kind with the rows handed for it
+ * or empty, then settles the cycle's continuation.
+ */
+async function answerListings(
+    holder: HeldListings,
+    rows: {
+        readonly providers?: ReadonlyArray<ProviderResponse>;
+        readonly models?: ReadonlyArray<ModelResponse>;
+        readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
+    } = {},
+): Promise<void> {
+    answerLast(holder.providers, {
+        providers: [
+            ...(rows.providers ?? []),
+        ],
+    });
+    answerLast(holder.models, {
+        models: [
+            ...(rows.models ?? []),
+        ],
+    });
+    answerLast(holder.apiKeys, {
+        api_keys: [
+            ...(rows.apiKeys ?? []),
+        ],
+    });
+    await settle();
+}
+
 describe("UsageQueryScreen request assembly", () => {
     const disposes = createDisposals();
 
@@ -164,16 +198,7 @@ describe("UsageQueryScreen request assembly", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The untouched form asks for the day dimension and filters nothing.
         expect(requests).toEqual([
@@ -192,16 +217,7 @@ describe("UsageQueryScreen request assembly", () => {
         buttonWithText("Run query").click();
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(requests[1]).toEqual({
             group_by: [
@@ -260,16 +276,7 @@ describe("UsageQueryScreen refresh racing the initial read", () => {
         expect(queryCount).toBe(0);
 
         // The newer cycle's reads answer and its query runs to completion.
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(queryCount).toBe(1);
         expect(skeleton()).toBeNull();
@@ -322,22 +329,17 @@ describe("UsageQueryScreen submit during the initial read", () => {
         expect(queryCount).toBe(0);
         expect(buttonWithText("Querying…").disabled).toBe(true);
 
-        answerLast(holder.providers, {
+        await answerListings(holder, {
             providers: [
                 providerRow(),
             ],
-        });
-        answerLast(holder.models, {
             models: [
                 modelRow(),
             ],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [
+            apiKeys: [
                 apiKeyRow(),
             ],
         });
-        await settle();
 
         // The bucket's label resolves through the freshly read lists — an
         // existing provider never reads as a deleted row.
@@ -406,22 +408,17 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
         expect(skeleton()).not.toBeNull();
 
         // The refresh's cycle answers and its query runs to completion.
-        answerLast(holder.providers, {
+        await answerListings(holder, {
             providers: [
                 providerRow(),
             ],
-        });
-        answerLast(holder.models, {
             models: [
                 modelRow(),
             ],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [
+            apiKeys: [
                 apiKeyRow(),
             ],
         });
-        await settle();
 
         // The busy state is neither stuck nor handed back by the superseded
         // cycle: the submit button reads its idle label, enabled.
@@ -480,16 +477,7 @@ describe("UsageQueryScreen a resolved query superseded before its continuation r
         await settle();
 
         // The initial cycle's listings answer and its query call is held.
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(skeleton()).not.toBeNull();
         expect(queries).toHaveLength(1);
@@ -517,16 +505,7 @@ describe("UsageQueryScreen a resolved query superseded before its continuation r
         expect(buttonWithText("Querying…").disabled).toBe(true);
 
         // The superseding submit's cycle answers whole and owns the screen.
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // Its query is the one now held; answering it lands the cycle.
         expect(queries).toHaveLength(2);
@@ -575,16 +554,7 @@ describe("UsageQueryScreen arrival subject", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
     }
 
     it("prefills the route's subject as the grouping and the filter", async () => {
@@ -673,16 +643,7 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The blank-bounds mount query ran as always.
         expect(requests).toHaveLength(1);
@@ -718,16 +679,7 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         buttonWithText("Run query").click();
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(requests).toHaveLength(2);
         expect(requests[1]?.filter?.from).toBeTypeOf("number");
@@ -774,16 +726,7 @@ describe("UsageQueryScreen rolling-window quick-sets", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         return holder;
     }
@@ -793,16 +736,7 @@ describe("UsageQueryScreen rolling-window quick-sets", () => {
         buttonWithText("Run query").click();
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
     }
 
     it("fills both bounds with the stream's window and runs the query with them", async () => {
@@ -890,16 +824,7 @@ describe("UsageQueryScreen hand-typed status list", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The blank-field mount query ran as always.
         expect(requests).toHaveLength(1);
@@ -925,16 +850,7 @@ describe("UsageQueryScreen hand-typed status list", () => {
         buttonWithText("Run query").click();
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(requests).toHaveLength(2);
         expect(requests[1]?.filter).toEqual({});
@@ -968,16 +884,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The mount query ran and its answer stands.
         expect(queryCount).toBe(1);
@@ -995,16 +902,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         // The refresh's cycle re-reads the entity lists — a second held
         // round.
         expect(holder.providers).toHaveLength(2);
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The query never ran again, and the half-run is stated: the hold
         // notice names the way out while the standing buckets stay visible
@@ -1040,16 +938,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The hold arrives the way the screen can only produce it: a shell
         // refresh landing on a marked field.
@@ -1059,16 +948,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         await settle();
 
         expect(holder.providers).toHaveLength(2);
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(document.body.textContent).toContain(
             "The query did not run — a filter value is invalid.",
@@ -1082,16 +962,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         await settle();
 
         expect(holder.providers).toHaveLength(3);
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(queryCount).toBe(2);
         expect(document.body.textContent).not.toContain(
@@ -1136,16 +1007,7 @@ describe("UsageQueryScreen failed query", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The first cycle's query fails: its diagnosis is stated on the
         // failure channel, the skeleton is gone, and the form stands
@@ -1158,16 +1020,7 @@ describe("UsageQueryScreen failed query", () => {
         isQueryFailing = false;
         buttonWithText("Run query").click();
         await settle();
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         expect(document.body.textContent).not.toContain("query refused");
         expect(document.body.textContent).toContain("2026-09-01");
@@ -1235,16 +1088,7 @@ describe("UsageQueryScreen clear filters", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The arrival subject's prefilled field is a set filter, so the
         // clear action stands beside the submit from the start.
@@ -1265,16 +1109,7 @@ describe("UsageQueryScreen clear filters", () => {
         // The clear re-runs the whole cycle — a second held round of
         // listings behind the query.
         expect(holder.providers).toHaveLength(2);
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The subject's id narrow, the status list, and the bound are
         // gone, while the dimension switches — the arrival subject's
@@ -1318,16 +1153,7 @@ describe("UsageQueryScreen empty answer", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
     }
 
     it("states the filter mismatch, naming the clear action it stands beside, while filters are set", async () => {
@@ -1368,19 +1194,6 @@ describe("UsageQueryScreen displayed bucket order", () => {
         ).map((cell) => cell.textContent);
     }
 
-    /** Answers one cycle's own held entity listings — a submit reads them itself. */
-    function answerListings(holder: HeldListings): void {
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-    }
-
     /**
      * Mounts the bare page whose query answers whatever `answer` currently
      * holds, and settles its first cycle — the held entity listings included.
@@ -1415,8 +1228,7 @@ describe("UsageQueryScreen displayed bucket order", () => {
         );
         await settle();
 
-        answerListings(holder);
-        await settle();
+        await answerListings(holder);
 
         return holder;
     }
@@ -1484,8 +1296,7 @@ describe("UsageQueryScreen displayed bucket order", () => {
         buttonWithText("Run query").click();
         await settle();
 
-        answerListings(holder);
-        await settle();
+        await answerListings(holder);
 
         // Newest day first; within the equal 09-01 days the gateway's own
         // order — completed before upstream error — stands.
@@ -1523,8 +1334,7 @@ describe("UsageQueryScreen displayed bucket order", () => {
         buttonWithText("Run query").click();
         await settle();
 
-        answerListings(holder);
-        await settle();
+        await answerListings(holder);
 
         // Nothing reorders the answer — the gateway's order stands as it
         // came — and no day boundary is stated where no day is rendered.
@@ -1588,7 +1398,7 @@ describe("UsageQueryScreen filter options before the listings land", () => {
 
         // The listings land without provider 1: the absence is now a fact a
         // read listing states, and the trailing option carries the verdict.
-        answerLast(holder.providers, {
+        await answerListings(holder, {
             providers: [
                 providerRow({
                     id: 2,
@@ -1597,13 +1407,6 @@ describe("UsageQueryScreen filter options before the listings land", () => {
                 }),
             ],
         });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
 
         expect(providerOptions().at(-1)).toEqual({
             value: "1",
@@ -1639,16 +1442,7 @@ describe("UsageQueryScreen aggregates-to-stream door", () => {
         );
         await settle();
 
-        answerLast(holder.providers, {
-            providers: [],
-        });
-        answerLast(holder.models, {
-            models: [],
-        });
-        answerLast(holder.apiKeys, {
-            api_keys: [],
-        });
-        await settle();
+        await answerListings(holder);
 
         // The shared filter fields stand set the way an operator's diagnostic
         // question holds them: the arrival subject's provider narrow, the

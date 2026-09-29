@@ -1,12 +1,15 @@
+import { isCredentialExpired, nowMicros } from "/src/format";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 
 /**
  * The serving derivations the wire contract leaves to the client: rule 7
- * (§4.5 *Responses carry only what the caller cannot derive*) ships a model
- * row's inputs — never the three-input verdict over them — so the verdict
- * and its counts are computed here, under the gateway's own definition
- * (root README §3). The generic row indexing these derivations' callers
- * share lives outside the contract, in `/src/row-index`.
+ * (§4.5 *Responses carry only what the caller cannot derive*) ships the
+ * model row's inputs — never the three-input verdict over them — and the
+ * provider row's credential columns — never the standing over them — so the
+ * verdicts and the counts taken over the first are computed here, under the
+ * gateway's own definitions (root README §3). The generic row indexing these
+ * derivations' callers share lives outside the contract, in `/src/row-index`.
  */
 
 /**
@@ -62,4 +65,70 @@ export function isModelEffectivelyServing(
     return (
         (provider?.is_enabled ?? false) && model.is_enabled && model.discovery_state !== "vanished"
     );
+}
+
+/**
+ * A provider row's credential standing — the one verdict every credential
+ * presentation branches on: `"valid"` while a stored OAuth expiry still
+ * holds, `"expired"` once it has passed, `"never-fresh"` when an OAuth row
+ * stores no expiry at all, and `null` for a static-key row, which never
+ * expires and so has no credential standing to state.
+ */
+export type CredentialStanding = "valid" | "expired" | "never-fresh" | null;
+
+/**
+ * Derives a provider row's credential standing from its own columns — the
+ * single home of the verdict the providers table's credential badge, the
+ * provider page's reconnect notice, and the overview's lapsed-credential
+ * attention each branch on, so the three presentations cannot drift. An
+ * OAuth row with no stored expiry was never fresh, an expiry already past
+ * at the reading moment is expired, one still ahead is valid, and a static
+ * key — which never expires — states no standing at all.
+ */
+export function credentialStanding(provider: ProviderResponse): CredentialStanding {
+    if (!isOAuthProviderRow(provider)) {
+        return null;
+    }
+
+    if (provider.expires_at === null) {
+        return "never-fresh";
+    }
+
+    return isCredentialExpired(provider.expires_at, nowMicros()) ? "expired" : "valid";
+}
+
+/**
+ * Whether a credential standing states a credential the gateway cannot use as
+ * stored — the "needs a human" verdict over the standing: `"expired"` once
+ * the stored OAuth expiry has passed, or `"never-fresh"` when an OAuth row
+ * stores no expiry at all. A `"valid"` login is not lapsed, and a static
+ * key — which never expires and states no standing at all — never is. The
+ * internal disjunction the exported row-level verdict
+ * `lapsedCredentialStanding` composes over `credentialStanding`'s
+ * derivation.
+ */
+function isLapsedCredentialStanding(
+    standing: CredentialStanding,
+): standing is "expired" | "never-fresh" {
+    return standing === "expired" || standing === "never-fresh";
+}
+
+/**
+ * A provider row's credential standing when it names a credential the gateway
+ * cannot use as stored — the "needs a human" verdict: `"expired"` once the
+ * stored OAuth expiry has passed, or `"never-fresh"` when an OAuth row stores
+ * no expiry at all — and `null` when there is nothing to show: a valid OAuth
+ * login needs no human, and a static key, which never expires, states no
+ * standing at all. The composition of `credentialStanding` with
+ * `isLapsedCredentialStanding` over the row itself, hoisted beside its two
+ * pieces so the overview's lapsed-credential attention, the provider page's
+ * reconnect notice, and the edit page's reconnect offer state one verdict
+ * instead of spelling the composition three times.
+ */
+export function lapsedCredentialStanding(
+    provider: ProviderResponse,
+): "expired" | "never-fresh" | null {
+    const standing = credentialStanding(provider);
+
+    return isLapsedCredentialStanding(standing) ? standing : null;
 }

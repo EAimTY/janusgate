@@ -177,7 +177,7 @@ pub(crate) fn parse_form(body: &str) -> BTreeMap<String, String> {
 /// not carry.
 fn render_json_node(
     node: &TemplateNode,
-    body: Json,
+    body: &Json,
     env: &ValueEnv<'_>,
     what: &str,
 ) -> Result<Json, ControlFailure> {
@@ -291,7 +291,7 @@ pub(crate) fn build_request(
         }
 
         Some(ControlBody::Json { node }) => {
-            let body = render_json_node(node, Json::Null, env, what)?;
+            let body = render_json_node(node, &Json::Null, env, what)?;
 
             builder = builder.json(&body);
         }

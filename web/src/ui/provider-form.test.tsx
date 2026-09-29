@@ -2,7 +2,13 @@ import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
 import { modelPrefixError } from "/src/management-api/identifiers";
 import { CompatibleConnectionFields, ProviderIdentityFields } from "/src/ui/provider-form";
-import { createDisposals, labeledInput, settle } from "../screens/screen-test-support";
+import {
+    createDisposals,
+    labeledCheckbox,
+    labeledInput,
+    settle,
+    switchLabel,
+} from "../screens/screen-test-support";
 
 const disposes = createDisposals();
 
@@ -22,25 +28,6 @@ function mountFields(): void {
             document.body,
         ),
     );
-}
-
-/** The checkbox the given label text wraps. */
-function checkboxWithLabel(label: string): HTMLInputElement {
-    const owner = Array.from(document.querySelectorAll("label")).find(
-        (candidate) => candidate.textContent === label,
-    );
-
-    if (owner === undefined) {
-        throw new Error(`No checkbox labelled ${label}`);
-    }
-
-    const control = owner.querySelector("input");
-
-    if (!(control instanceof HTMLInputElement) || control.type !== "checkbox") {
-        throw new Error(`No checkbox labelled ${label}`);
-    }
-
-    return control;
 }
 
 /** Mounts the identity fields holding the given prefix verdict. */
@@ -109,13 +96,13 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
         expect(keyInput.type).toBe("password");
         // The address beside it is never masked.
         expect(labeledInput("Upstream base URL").type).toBe("url");
-        expect(checkboxWithLabel("Show the API key while typing").checked).toBe(false);
+        expect(labeledCheckbox("Show the API key while typing").checked).toBe(false);
     });
 
     it("reveals and re-masks the pasted key through the toggle", async () => {
         mountFields();
 
-        const toggle = checkboxWithLabel("Show the API key while typing");
+        const toggle = labeledCheckbox("Show the API key while typing");
         const keyInput = labeledInput("Upstream API key");
 
         toggle.click();
@@ -129,19 +116,6 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
         expect(keyInput.type).toBe("password");
     });
 });
-
-/** The label element the given switch's visible text stands in. */
-function switchLabel(label: string): HTMLLabelElement {
-    const owner = Array.from(document.querySelectorAll("label")).find(
-        (candidate) => candidate.textContent === label,
-    );
-
-    if (owner === undefined) {
-        throw new Error(`No switch label ${label}`);
-    }
-
-    return owner;
-}
 
 describe("ProviderIdentityFields switch label", () => {
     it("toggles the switch when its visible label is clicked", () => {

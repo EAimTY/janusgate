@@ -3,6 +3,7 @@ import { createSignal, Show } from "solid-js";
 import { Button } from "/src/ui/controls";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { Card, CardHeader } from "/src/ui/layout";
+import { InlineConfirmQuestion } from "./inline-confirm-question";
 
 /**
  * A deletion card, confirmed where it states its blast radius: an armed
@@ -66,13 +67,10 @@ export function ConfirmDeleteCard(props: {
                 }
             >
                 <div class="mt-4 flex flex-wrap items-center gap-2">
-                    <p
-                        class="w-full text-[13.5px] text-ink-dim"
-                        tabindex={-1}
-                        ref={confirmFocus.focusArmed}
-                    >
-                        {props.question}
-                    </p>
+                    <InlineConfirmQuestion
+                        question={props.question}
+                        focusArmed={confirmFocus.focusArmed}
+                    />
                     <Button
                         tone="danger"
                         isBusy={isDeleting()}

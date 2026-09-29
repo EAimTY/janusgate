@@ -47,16 +47,24 @@ impl ApiLogStore {
     /// [`Database::open_existing`], so a shard file absent at the open — one the retention sweep
     /// deleted between the directory listing and this open — reads as the empty partition it
     /// became (README §3 *ApiLog Shard Store*), and a read never recreates a shard file or its
-    /// directory.
+    /// directory. The open runs on the blocking thread pool through
+    /// [`ApiLogStore::open_shard_classifying_panics`], so a panicked open — a damaged shard file
+    /// failing its schema bootstrap, most commonly — classifies as the explicit drift error this
+    /// read fails its request with, never a resumed panic into the request task (README §3
+    /// *ApiLog Shard Store*). Reads hold no store lock: only the writers serialize.
     async fn open_shard_for_read(&self, day: ShardDay) -> Result<Option<Database>, Error> {
-        Database::open_existing(
-            self.shard_path(day),
-            Registry::ApiLogShard,
-            shard_read_pool_connections(),
-            SHARD_POOL_WAIT,
-        )
+        let path = self.shard_path(day);
+
+        Self::open_shard_classifying_panics(day, async move {
+            Database::open_existing(
+                path,
+                Registry::ApiLogShard,
+                shard_read_pool_connections(),
+                SHARD_POOL_WAIT,
+            )
+            .await
+        })
         .await
-        .map_err(Error::from)
     }
 
     /// The retained shard days a read with `filter` must consider, ascending: the directory
@@ -865,6 +873,7 @@ mod tests {
     use super::{
         super::{
             ApiLogWrite,
+            store::shard_write_pool_connections,
             test_support::{create_test_store, open_shard, write},
         },
         *,
@@ -1828,6 +1837,62 @@ mod tests {
         assert!(
             !store.shard_path(day).exists(),
             "a usage read must not recreate the vanished shard file"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies that a read whose shard open panics — here a file stamped for the main registry,
+    /// which the shard open's stamp verification rejects fatally — fails the request explicitly
+    /// instead of resuming the panic into the request task, where the startup panic hook would
+    /// kill the whole gateway (README §3 *ApiLog Shard Store*, §2.2): the read open classifies
+    /// the panic as drift naming the shard day, and the full `usage:list` read over the damaged
+    /// directory surfaces that same explicit error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a store operation or assertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the damaged shard's panic resumes anywhere or the classification diverges from
+    /// the documented drift error.
+    #[tokio::test]
+    async fn fails_a_panicked_shard_read_open_explicitly() -> Result<(), Box<dyn StdError>> {
+        let (store, _guard) = create_test_store(90);
+        let damaged_day = ShardDay::of_started_at(unix_time::unix_now_micros());
+
+        // Plant a main-registry database at the shard path and drop its pool: the read's
+        // shard-registry open of this file then hits the stamp verification, which panics by
+        // contract (README §3 *Database Abstraction & Connection Pooling*).
+        drop(
+            Database::open(
+                store.shard_path(damaged_day),
+                Registry::Main,
+                shard_write_pool_connections(),
+                SHARD_POOL_WAIT,
+            )
+            .await?,
+        );
+
+        // The read open answers the explicit drift classification, naming the shard day.
+        let outcome = store.open_shard_for_read(damaged_day).await;
+
+        assert!(
+            matches!(
+                outcome,
+                Err(Error::Drift { message })
+                    if message.contains(&damaged_day.file_stem())
+            ),
+            "a panicked shard read open must classify as explicit drift naming the shard day"
+        );
+
+        // The full usage read fails explicitly with the same classification — never a panic.
+        let outcome = list_api_logs(Some(&store), 100, None, &UsageFilter::default()).await;
+
+        assert!(
+            matches!(outcome, Err(Error::Drift { .. })),
+            "a usage read over a shard whose open panics must fail explicitly, not panic"
         );
 
         Ok(())

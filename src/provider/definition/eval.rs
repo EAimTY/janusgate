@@ -287,7 +287,7 @@ impl ValueEnv<'_> {
     pub(crate) fn render_json(
         &self,
         node: &TemplateNode,
-        body: Json,
+        body: &Json,
         what: &str,
     ) -> Result<Json, EvalError> {
         match node {
@@ -295,13 +295,15 @@ impl ValueEnv<'_> {
 
             TemplateNode::String { expr } => Ok(Json::String(self.evaluate(expr, what)?)),
 
-            TemplateNode::Body => Ok(body),
+            // The write boundary pins exactly one body placeholder per envelope, so this is the
+            // walk's single clone of the spliced body; the container arms borrow it through.
+            TemplateNode::Body => Ok(body.clone()),
 
             TemplateNode::Object { fields } => {
                 let mut object = serde_json::Map::new();
 
                 for (name, field) in fields {
-                    object.insert(name.clone(), self.render_json(field, body.clone(), what)?);
+                    object.insert(name.clone(), self.render_json(field, body, what)?);
                 }
 
                 Ok(Json::Object(object))
@@ -311,7 +313,7 @@ impl ValueEnv<'_> {
                 let mut array = Vec::with_capacity(items.len());
 
                 for item in items {
-                    array.push(self.render_json(item, body.clone(), what)?);
+                    array.push(self.render_json(item, body, what)?);
                 }
 
                 Ok(Json::Array(array))
@@ -670,7 +672,7 @@ mod tests {
         let body = serde_json::json!({"contents": []});
 
         #[expect(clippy::unwrap_used, reason = "the test envelope always renders")]
-        let rendered = env.render_json(&node, body, "test").unwrap();
+        let rendered = env.render_json(&node, &body, "test").unwrap();
 
         assert_eq!(
             rendered,

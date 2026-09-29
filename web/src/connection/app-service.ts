@@ -32,6 +32,24 @@ function browserStorage(): Storage | null {
 export const PROBE_TIMEOUT_MS = 15_000;
 
 /**
+ * A fresh `AbortController` paired with a deadline of `timeoutMs`. One
+ * signal reaches the transport: the deadline forwards its abort — reason
+ * included — into the controller, and a direct abort of the controller
+ * (an operator cancel, a screen going away) ends the request the same
+ * way — whichever fires first. The forwarding is what makes an expiry
+ * distinguishable at the transport, the fact the diagnosis's "a deadline
+ * is never an answer" rule rests on.
+ */
+export function deadlineController(timeoutMs: number): AbortController {
+    const controller = new AbortController();
+    const deadline = AbortSignal.timeout(timeoutMs);
+    deadline.addEventListener("abort", () => {
+        controller.abort(deadline.reason);
+    });
+    return controller;
+}
+
+/**
  * The connection probe the operator cancelled. The service records it like
  * any probe outcome, but it is control flow, never a refusal (README §6.4):
  * the setup screen recognizes it and reopens the form pristine instead of
@@ -69,14 +87,7 @@ export function cancelConnectionProbe(): void {
 export const connectionService = createConnectionService({
     storage: browserStorage(),
     probe: async (connection: Connection) => {
-        const controller = new AbortController();
-        const deadline = AbortSignal.timeout(PROBE_TIMEOUT_MS);
-        // One signal reaches the transport: the deadline forwards its abort
-        // into the controller, and an operator cancel aborts the same
-        // controller directly — whichever fires first ends the request.
-        deadline.addEventListener("abort", () => {
-            controller.abort(deadline.reason);
-        });
+        const controller = deadlineController(PROBE_TIMEOUT_MS);
         isProbeCancelled = false;
         inFlightProbe = controller;
 

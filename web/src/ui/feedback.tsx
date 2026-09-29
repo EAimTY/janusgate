@@ -78,6 +78,16 @@ const BADGE_GLYPH: Record<BadgeTone, GlyphName> = {
 };
 
 /**
+ * The tone-and-words pair a badge-deriving helper answers, named once beside
+ * `Badge` so every helper and consumer types against one record and a field
+ * added to a derivation propagates instead of splitting across private twins.
+ */
+export type BadgeMark = {
+    readonly tone: BadgeTone;
+    readonly label: string;
+};
+
+/**
  * A status that reads as icon plus words, never color alone. The optional
  * title rides the native tooltip, for a state whose one word needs its
  * sentence carried on hand where no room to state it inline exists.

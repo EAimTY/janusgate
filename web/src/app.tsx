@@ -47,6 +47,7 @@ import { joinClass } from "/src/ui/attributes";
 import { Button } from "/src/ui/controls";
 import { Glyph, type GlyphName, JanusMark } from "/src/ui/glyph";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
+import { InlineConfirmQuestion } from "/src/ui/inline-confirm-question";
 
 /**
  * The connection screen's document title: the one page outside the routes,
@@ -635,13 +636,10 @@ function DisconnectControl(): JSX.Element {
             }
         >
             <div class="flex flex-wrap items-center gap-2">
-                <p
-                    class="w-full text-[13.5px] text-ink-dim"
-                    tabindex={-1}
-                    ref={confirmFocus.focusArmed}
-                >
-                    Disconnect and forget the stored token? Reconnecting means entering it again.
-                </p>
+                <InlineConfirmQuestion
+                    focusArmed={confirmFocus.focusArmed}
+                    question="Disconnect and forget the stored token? Reconnecting means entering it again."
+                />
                 <Button
                     tone="danger"
                     onClick={() => {

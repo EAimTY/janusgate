@@ -460,8 +460,10 @@ fn attach_body<T: serde::Serialize>(
         return Ok(builder.json(body));
     };
 
+    let serialized = serialize_body(body);
+
     let body = env
-        .render_json(envelope, serialize_body(body), "inference envelope")
+        .render_json(envelope, &serialized, "inference envelope")
         .map_err(|error| Error::Internal {
             message: error.to_string(),
         })?;
