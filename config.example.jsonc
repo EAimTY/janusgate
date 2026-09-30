@@ -68,18 +68,20 @@
         }
     },
 
-    // Request accounting (README §3 ApiLog Shard Store). The presence of this
+    // Request accounting (README §3 ApiLog Store). The presence of this
     // section is the recording switch: present, one accounting row is recorded
-    // per dispatched inference request into the day-partitioned shard files;
-    // absent, none are, while existing shards stay readable. Omitting the whole
-    // section turns recording off. The path is consumed once at startup, so
-    // adding the section or changing its path applies after restart.
+    // per dispatched inference request into the day-partitioned api-log files;
+    // absent, none are, while existing api-log files stay readable. Omitting
+    // the whole section turns recording off. The path is consumed once at
+    // startup, so adding the section or changing its path applies after
+    // restart.
     "api_logs": {
-        // Directory holding the shard files (YYYY-MM-DD.db, one per UTC day of
-        // the dispatch instant). Created lazily on the first recorded request.
+        // Directory holding the api-log files (YYYY-MM-DD.db, one per UTC day
+        // of the dispatch instant). Created lazily on the first recorded
+        // request.
         "path": "api-logs",
-        // Retention of the shard files in whole days: when a new shard file is
-        // created, older shards are deleted file-and-all. Defaults to 90.
+        // Retention of the api-log files in whole days: when a new file is
+        // created, older files are deleted file-and-all. Defaults to 90.
         "retention_days": 90
     }
 }

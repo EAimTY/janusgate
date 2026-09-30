@@ -1,6 +1,6 @@
-//! The api-log shard store (README §3 *ApiLog Shard Store*): the day-partitioned shard files
-//! under its directory, the hot-shard write cache over them, the retention sweep, and the INSERT
-//! write path. The management read engine over the same shards lives in [`super::usage`].
+//! The api-log store (README §3 *ApiLog Store*): the day-partitioned api-log files under its
+//! directory, the hot-file write cache over them, the retention sweep, and the INSERT write
+//! path. The management read engine over the same files lives in [`super::usage`].
 
 use super::ApiLogWrite;
 use crate::{
@@ -11,36 +11,39 @@ use crate::{
 use log::warn;
 use std::{future::Future, num::NonZero, path::PathBuf, sync::Arc, time::Duration};
 
-/// Microseconds in one UTC day: the width of one shard.
+/// Microseconds in one UTC day: the width of one api-log file's partition.
 pub(super) const MICROS_PER_DAY: i64 = 86_400_000_000;
 
-/// How many shards the hot cache holds: today + yesterday + margin for stragglers finalized
-/// after midnight. A performance hint, never a correctness bound — a miss beyond it lazily opens
-/// the existing file.
-const HOT_SHARD_CAPACITY: usize = 3;
+/// How many api-log files the hot cache holds: today + yesterday + margin for stragglers
+/// finalized after midnight. A performance hint, never a correctness bound — a miss beyond it
+/// lazily opens the existing file.
+const HOT_FILE_CAPACITY: usize = 3;
 
-/// Wait for a free shard pool connection, matching the main database's connection configuration.
-pub(super) const SHARD_POOL_WAIT: Duration = Duration::from_secs(5);
+/// Wait for a free api-log file pool connection, matching the main database's connection
+/// configuration.
+pub(super) const FILE_POOL_WAIT: Duration = Duration::from_secs(5);
 
-/// The fixed shard connection pool size for writes; a performance choice, not configuration.
+/// The fixed api-log file connection pool size for writes; a performance choice, not
+/// configuration.
 ///
 /// # Panics
 ///
 /// Never: the literal 2 is nonzero, and the `expect` states that invariant.
-pub(super) fn shard_write_pool_connections() -> NonZero<usize> {
+pub(super) fn write_pool_connections() -> NonZero<usize> {
     #[expect(clippy::expect_used, reason = "the literal 2 is nonzero")]
     let connections = NonZero::new(2).expect("2 is nonzero");
 
     connections
 }
 
-/// One UTC calendar day: the shard key, derived purely from a row's `started_at`. There is no
-/// manifest or registry anywhere — the shard directory's listing is the only truth.
+/// One UTC calendar day: the key of the day's api-log file, derived purely from a row's
+/// `started_at`. There is no manifest or registry anywhere — the store directory's listing is
+/// the only truth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct ShardDay(i64);
+pub(super) struct ApiLogDay(i64);
 
-impl ShardDay {
-    /// Derives the shard of a `started_at` stamp: the stamp's UTC calendar day.
+impl ApiLogDay {
+    /// Derives the day of a `started_at` stamp: the stamp's UTC calendar day.
     pub(super) fn of_started_at(started_at: i64) -> Self {
         Self(started_at.div_euclid(MICROS_PER_DAY))
     }
@@ -51,14 +54,14 @@ impl ShardDay {
         i128::from(self.0 + 1) * i128::from(MICROS_PER_DAY)
     }
 
-    /// Renders the shard file's stem: `YYYY-MM-DD`, zero-padded, sortable.
+    /// Renders the api-log file's stem: `YYYY-MM-DD`, zero-padded, sortable.
     pub(super) fn file_stem(self) -> String {
         let (year, month, day) = self.civil();
 
         format!("{year:04}-{month:02}-{day:02}")
     }
 
-    /// Parses a shard file name back into its day: exactly `YYYY-MM-DD.db` naming a real
+    /// Parses an api-log file name back into its day: exactly `YYYY-MM-DD.db` naming a real
     /// calendar day. Anything else — including an impossible date such as `2026-02-30` — is
     /// unparseable, and the caller leaves such files alone.
     fn parse_file_stem_of_file_name(file_name: &str) -> Option<Self> {
@@ -121,7 +124,7 @@ impl ShardDay {
         )
     }
 
-    /// The day number of a proleptic Gregorian calendar date — the inverse of [`ShardDay::civil`].
+    /// The day number of a proleptic Gregorian calendar date — the inverse of [`ApiLogDay::civil`].
     fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
         // Howard Hinnant's days_from_civil, era division truncating toward zero as above.
         let y = year - i64::from(month <= 2);
@@ -152,9 +155,9 @@ impl ShardDay {
     }
 }
 
-/// The api-log shard store (README §3 *ApiLog Shard Store*): the day-partitioned shard files
-/// under its directory, the hot-shard write cache over them, and the retention policy. Cloned
-/// handles share one directory, one retention, and one cache. The read-side methods live in
+/// The api-log store (README §3 *ApiLog Store*): the day-partitioned api-log files under its
+/// directory, the hot-file write cache over them, and the retention policy. Cloned handles
+/// share one directory, one retention, and one cache. The read-side methods live in
 /// [`super::usage`].
 #[derive(Clone, Debug)]
 pub(crate) struct ApiLogStore {
@@ -165,23 +168,23 @@ pub(crate) struct ApiLogStore {
 /// The shared state of an [`ApiLogStore`].
 #[derive(Debug)]
 struct StoreInner {
-    /// Directory holding the shard files; consumed once at startup from the configuration.
+    /// Directory holding the api-log files; consumed once at startup from the configuration.
     directory: PathBuf,
 
-    /// Retention in whole days: the sweep deletes shard files whose day-end is strictly older
+    /// Retention in whole days: the sweep deletes api-log files whose day-end is strictly older
     /// than now minus this.
     retention_days: NonZero<u32>,
 
-    /// The hot-shard cache, most recently written shard first and at most
-    /// [`HOT_SHARD_CAPACITY`] entries. The lock is asynchronous and covers the whole
-    /// get-or-open decision, so two racing writers for one shard can never both apply the
-    /// shard DDL.
-    hot: tokio::sync::Mutex<Vec<(ShardDay, Database)>>,
+    /// The hot-file cache, most recently written day first and at most
+    /// [`HOT_FILE_CAPACITY`] entries. The lock is asynchronous and covers the whole
+    /// get-or-open decision, so two racing writers for one day can never both apply the
+    /// day's DDL.
+    hot: tokio::sync::Mutex<Vec<(ApiLogDay, Database)>>,
 }
 
 impl ApiLogStore {
     /// Builds the store over `directory` with `retention_days`. Nothing is touched on the
-    /// filesystem: the directory is created lazily when the first shard file is created.
+    /// filesystem: the directory is created lazily when the first api-log file is created.
     pub(crate) fn new(directory: PathBuf, retention_days: NonZero<u32>) -> Self {
         Self {
             inner: Arc::new(StoreInner {
@@ -192,51 +195,51 @@ impl ApiLogStore {
         }
     }
 
-    /// The path of one day's shard file.
-    pub(super) fn shard_path(&self, day: ShardDay) -> PathBuf {
+    /// The path of one day's api-log file.
+    pub(super) fn day_file_path(&self, day: ApiLogDay) -> PathBuf {
         self.inner.directory.join(format!("{}.db", day.file_stem()))
     }
 
-    /// Inserts one accounting row into its day's shard, deriving the shard from the row's own
+    /// Inserts one accounting row into its day's file, deriving the day from the row's own
     /// `started_at` stamp — never from the finalization clock.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the shard cannot be opened or the insert fails — a shard open
-    /// that panics, a damaged shard file's failed schema bootstrap most commonly, classifies
-    /// as a recording failure like any other open failure. The caller logs and swallows every
+    /// Returns [`Error`] when the day's file cannot be opened or the insert fails — a file open
+    /// that panics, a damaged file's failed schema bootstrap most commonly, classifies as a
+    /// recording failure like any other open failure. The caller logs and swallows every
     /// failure: recording never enters any HTTP error domain.
     pub(super) async fn record(&self, write: ApiLogWrite) -> Result<(), Error> {
         let database = self
-            .shard_for_write(ShardDay::of_started_at(write.started_at))
+            .database_for_write(ApiLogDay::of_started_at(write.started_at))
             .await?;
 
         insert_api_log(&database, write).await
     }
 
-    /// Returns a pooled shard connection for `day`, consulting the hot cache and, on a miss,
-    /// lazily opening the shard file — creating it, and with it running the retention sweep,
-    /// only when no file is present yet.
+    /// Returns a pooled connection to `day`'s file, consulting the hot cache and, on a miss,
+    /// lazily opening the file — creating it, and with it running the retention sweep, only
+    /// when no file is present yet.
     ///
     /// The asynchronous lock is held across the whole decision, so concurrent writers
     /// serialize on cache misses only; the returned handle is pooled and used outside the
-    /// lock. Every blocking filesystem step of a miss — the existence probe and the shard
+    /// lock. Every blocking filesystem step of a miss — the existence probe and the file
     /// open inside it, and the retention sweep — runs on the blocking thread pool while the
     /// lock stays held, so no syscall of this decision ever blocks a worker thread and the
     /// get-or-open serialization is unchanged.
-    async fn shard_for_write(&self, day: ShardDay) -> Result<Database, Error> {
+    async fn database_for_write(&self, day: ApiLogDay) -> Result<Database, Error> {
         let mut hot = self.inner.hot.lock().await;
 
         if let Some(position) = hot.iter().position(|(cached, _)| *cached == day) {
-            // Restamp the entry as the most recently written shard.
+            // Restamp the entry as the most recently written day.
             let (_, database) = hot.remove(position);
             hot.insert(0, (day, database.clone()));
 
             return Ok(database);
         }
 
-        let path = self.shard_path(day);
-        let (database, is_new) = Self::open_shard_classifying_panics(day, async move {
+        let path = self.day_file_path(day);
+        let (database, is_new) = Self::open_day_file_classifying_panics(day, async move {
             // The existence probe sits directly before the open — both polled on the blocking
             // thread, the open creating the file and its parent directory — so a file that
             // appears or vanishes between the probe and the open keeps exactly the documented
@@ -245,9 +248,9 @@ impl ApiLogStore {
 
             let database = Database::open(
                 path,
-                Registry::ApiLogShard,
-                shard_write_pool_connections(),
-                SHARD_POOL_WAIT,
+                Registry::ApiLogs,
+                write_pool_connections(),
+                FILE_POOL_WAIT,
             )
             .await?;
 
@@ -256,7 +259,7 @@ impl ApiLogStore {
         .await?;
 
         if is_new {
-            // Creating a new file is the sweep's only trigger; opening an existing shard for
+            // Creating a new file is the sweep's only trigger; opening an existing file for
             // a late write never sweeps. The sweep's directory listing and unlinking are
             // blocking syscalls, so they run on the blocking thread pool while this lock
             // stays held, keeping the eviction-before-unlink ordering atomic with respect to
@@ -285,7 +288,7 @@ impl ApiLogStore {
 
                 // The task was cancelled before it ran — only possible while the runtime is
                 // shutting down — and the taken cache died with it. An empty cache is
-                // correct: it is a performance hint, and misses lazily reopen their shards.
+                // correct: it is a performance hint, and misses lazily reopen their files.
                 Err(join_error) => {
                     warn!("the api log retention sweep task never ran: {join_error}");
                 }
@@ -293,26 +296,26 @@ impl ApiLogStore {
         }
 
         hot.insert(0, (day, database.clone()));
-        hot.truncate(HOT_SHARD_CAPACITY);
+        hot.truncate(HOT_FILE_CAPACITY);
 
         Ok(database)
     }
 
-    /// Runs one day's shard-database open on the blocking thread pool and classifies a panicked
-    /// open — a damaged shard file failing its schema bootstrap, most commonly — as
-    /// [`Error::Drift`] naming the shard day. The open future is created by the caller and
+    /// Runs one day's api-log database open on the blocking thread pool and classifies a
+    /// panicked open — a damaged file failing its schema bootstrap, most commonly — as
+    /// [`Error::Drift`] naming the day. The open future is created by the caller and
     /// polled inside the blocking task via [`tokio::runtime::Handle::block_on`], so every
     /// filesystem effect of the open — an existence probe composed ahead of it, the engine open
     /// and its schema bootstrap — happens off the async executor thread, in the future's own
-    /// order. Both shard opens share this containment: the write path swallows the
+    /// order. Both file opens share this containment: the write path swallows the
     /// classification as a best-effort recording failure (README §8), and the read path fails
-    /// its request explicitly with it, a corrupt shard never killing the process (README §3
-    /// *ApiLog Shard Store*).
+    /// its request explicitly with it, a corrupt file never killing the process (README §3
+    /// *ApiLog Store*).
     ///
     /// # Errors
     ///
     /// Returns [`Error`] when the open fails, and classifies a panicked open as drift — stored
-    /// file state that violates the shard registry's contract. The startup and
+    /// file state that violates the api_logs registry's contract. The startup and
     /// main-database open paths are unaffected and stay fatal.
     ///
     /// # Panics
@@ -320,8 +323,8 @@ impl ApiLogStore {
     /// Never in practice: the underlying open's panics are classified as drift above, and the
     /// final arm only marks the open task's cancellation — possible only while the runtime is
     /// shutting down — as unreachable.
-    pub(super) async fn open_shard_classifying_panics<T, F>(
-        day: ShardDay,
+    pub(super) async fn open_day_file_classifying_panics<T, F>(
+        day: ApiLogDay,
         open: F,
     ) -> Result<T, Error>
     where
@@ -336,8 +339,8 @@ impl ApiLogStore {
             Ok(outcome) => outcome.map_err(Error::from),
 
             // A panicked open is contained at this boundary: the panic payload's message, when
-            // it carries one, classifies as drift — stored file state that violates the shard
-            // registry's contract — naming the shard day for the surface that renders it.
+            // it carries one, classifies as drift — stored file state that violates the
+            // api_logs registry's contract — naming the day for the surface that renders it.
             Err(join_error) if join_error.is_panic() => {
                 let payload = join_error.into_panic();
 
@@ -349,7 +352,7 @@ impl ApiLogStore {
 
                 Err(Error::Drift {
                     message: format!(
-                        "the {} shard database open panicked: {detail}",
+                        "the {} api-log database open panicked: {detail}",
                         day.file_stem()
                     ),
                 })
@@ -361,16 +364,16 @@ impl ApiLogStore {
                           in the arm above; only runtime shutdown can cancel the task"
             )]
             Err(join_error) => {
-                unreachable!("the shard-open blocking task cannot be cancelled: {join_error}")
+                unreachable!("the api-log open blocking task cannot be cancelled: {join_error}")
             }
         }
     }
 
-    /// Deletes the expired shard files: every shard whose day-end is strictly older than now
-    /// minus the retention, except the file just created. A cached shard is evicted before its
-    /// file is unlinked, so the pool never keeps writing into a deleted file. Unparseable
-    /// filenames are left alone, and every failure here is logged and swallowed — retention is
-    /// a maintenance sweep, never an error surface.
+    /// Deletes the expired api-log files: every file whose day-end is strictly older than now
+    /// minus the retention, except the file just created. A cached file is evicted before it is
+    /// unlinked, so the pool never keeps writing into a deleted file. Unparseable filenames are
+    /// left alone, and every failure here is logged and swallowed — retention is a
+    /// maintenance sweep, never an error surface.
     ///
     /// Runs on the blocking thread pool, called with the store lock held by the caller: the
     /// guarded cache is handed over owned and returned, so the eviction-before-unlink ordering
@@ -378,9 +381,9 @@ impl ApiLogStore {
     fn sweep(
         directory: PathBuf,
         retention_days: NonZero<u32>,
-        mut cache: Vec<(ShardDay, Database)>,
-        just_created: ShardDay,
-    ) -> Vec<(ShardDay, Database)> {
+        mut cache: Vec<(ApiLogDay, Database)>,
+        just_created: ApiLogDay,
+    ) -> Vec<(ApiLogDay, Database)> {
         let cutoff = i128::from(unix_time::unix_now_micros())
             - i128::from(retention_days.get()) * i128::from(MICROS_PER_DAY);
 
@@ -389,7 +392,7 @@ impl ApiLogStore {
 
             Err(failure) => {
                 warn!(
-                    "failed to list the api log shard directory {}: {failure}",
+                    "failed to list the api log file directory {}: {failure}",
                     directory.display()
                 );
 
@@ -402,7 +405,7 @@ impl ApiLogStore {
                 Ok(entry) => entry,
 
                 Err(failure) => {
-                    warn!("failed to read an api log shard directory entry: {failure}");
+                    warn!("failed to read an api log file directory entry: {failure}");
 
                     continue;
                 }
@@ -411,7 +414,7 @@ impl ApiLogStore {
             let Some(day) = entry
                 .file_name()
                 .to_str()
-                .and_then(ShardDay::parse_file_stem_of_file_name)
+                .and_then(ApiLogDay::parse_file_stem_of_file_name)
             else {
                 continue;
             };
@@ -424,7 +427,7 @@ impl ApiLogStore {
 
             if let Err(failure) = std::fs::remove_file(entry.path()) {
                 warn!(
-                    "failed to delete the expired api log shard file {}: {failure}",
+                    "failed to delete the expired api log file {}: {failure}",
                     entry.path().display()
                 );
 
@@ -432,7 +435,7 @@ impl ApiLogStore {
             }
 
             // A stale `-wal`/`-shm` sibling — from a crash mid-write, say — must not outlive
-            // its shard file.
+            // its api-log file.
             for suffix in ["-wal", "-shm"] {
                 let mut sibling = entry.file_name().to_os_string();
                 sibling.push(suffix);
@@ -444,9 +447,9 @@ impl ApiLogStore {
         cache
     }
 
-    /// Every shard day the directory currently holds, ascending. An absent directory reads as
-    /// empty; an unreadable one fails the read explicitly, as does an entry the listing fails
-    /// to deliver mid-iteration — a shard day must never read as absent. The walk runs on the
+    /// Every day the directory currently holds a file for, ascending. An absent directory reads
+    /// as empty; an unreadable one fails the read explicitly, as does an entry the listing fails
+    /// to deliver mid-iteration — a day must never read as absent. The walk runs on the
     /// blocking thread pool, like the sweep: the directory listing is a syscall that must never
     /// block a worker thread.
     ///
@@ -454,7 +457,7 @@ impl ApiLogStore {
     ///
     /// Returns [`Error`] when the directory exists but cannot be listed, and when a directory
     /// entry fails to be delivered mid-iteration.
-    pub(super) async fn retained_days(&self) -> Result<Vec<ShardDay>, Error> {
+    pub(super) async fn retained_days(&self) -> Result<Vec<ApiLogDay>, Error> {
         let directory = self.inner.directory.clone();
 
         match tokio::task::spawn_blocking(move || Self::retained_days_blocking(directory)).await {
@@ -478,15 +481,15 @@ impl ApiLogStore {
     }
 
     /// The blocking body of [`ApiLogStore::retained_days`]: lists the directory and parses
-    /// every shard filename, ascending. Unparseable file names — non-UTF8 ones included — stay
-    /// skipped (README §3 *ApiLog Shard Store*), while an entry the iteration fails to deliver
-    /// fails the listing: see [`Self::shard_day_of_listing_entry`].
+    /// every api-log filename, ascending. Unparseable file names — non-UTF8 ones included — stay
+    /// skipped (README §3 *ApiLog Store*), while an entry the iteration fails to deliver
+    /// fails the listing: see [`Self::day_of_listing_entry`].
     ///
     /// # Errors
     ///
     /// Returns [`Error`] when the directory exists but cannot be listed, and when a directory
     /// entry fails to be delivered mid-iteration.
-    fn retained_days_blocking(directory: PathBuf) -> Result<Vec<ShardDay>, Error> {
+    fn retained_days_blocking(directory: PathBuf) -> Result<Vec<ApiLogDay>, Error> {
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
 
@@ -500,7 +503,7 @@ impl ApiLogStore {
         let mut days = Vec::new();
 
         for entry in entries {
-            if let Some(day) = Self::shard_day_of_listing_entry(entry)? {
+            if let Some(day) = Self::day_of_listing_entry(entry)? {
                 days.push(day);
             }
         }
@@ -510,27 +513,28 @@ impl ApiLogStore {
         Ok(days)
     }
 
-    /// Classifies one entry of the shard directory's listing: [`Some`] with the entry's
-    /// [`ShardDay`] when its file name parses as a shard's, [`None`] for the names that are not
-    /// shards' — unparseable names and non-UTF8 names alike, which the listing leaves alone
-    /// (README §3 *ApiLog Shard Store*). An entry the iteration itself failed to deliver — a
-    /// transient failure on network storage, a permission blip — is an [`Error`]: the entry's
-    /// shard day must not read as absent, so the failure propagates into the read that consumes
-    /// the listing, the same explicit failure a corrupt shard fails its read with.
-    fn shard_day_of_listing_entry(
+    /// Classifies one entry of the store directory's listing: [`Some`] with the entry's
+    /// [`ApiLogDay`] when its file name parses as an api-log file's, [`None`] for the names
+    /// that are not api-log files' — unparseable names and non-UTF8 names alike, which the
+    /// listing leaves alone (README §3 *ApiLog Store*). An entry the iteration itself failed
+    /// to deliver — a transient failure on network storage, a permission blip — is an
+    /// [`Error`]: the entry's day must not read as absent, so the failure propagates into the
+    /// read that consumes the listing, the same explicit failure a corrupt file fails its read
+    /// with.
+    fn day_of_listing_entry(
         entry: std::io::Result<std::fs::DirEntry>,
-    ) -> Result<Option<ShardDay>, Error> {
+    ) -> Result<Option<ApiLogDay>, Error> {
         let entry = entry.map_err(crate::database::Error::Io)?;
 
         let Some(name) = entry.file_name().into_string().ok() else {
             return Ok(None);
         };
 
-        Ok(ShardDay::parse_file_stem_of_file_name(&name))
+        Ok(ApiLogDay::parse_file_stem_of_file_name(&name))
     }
 }
 
-/// Inserts one accounting row into the shard database behind `database` — a single synchronous
+/// Inserts one accounting row into the api-log database behind `database` — a single synchronous
 /// statement on a pooled connection.
 ///
 /// # Errors
@@ -614,8 +618,8 @@ mod tests {
         &row[index]
     }
 
-    /// Reads every column of every stored row of one shard, in rowid order, as raw values the
-    /// test asserts positionally.
+    /// Reads every column of every stored row of one api-log file, in rowid order, as raw
+    /// values the test asserts positionally.
     ///
     /// # Errors
     ///
@@ -643,7 +647,7 @@ mod tests {
 
     /// The complete row used by the round-trip test: every nullable column populated and the
     /// non-default endpoint, outcome, and stream flag set. The dispatch stamp is caller-chosen,
-    /// so a fixture can stay inside the retention window the sweep enforces on every new shard
+    /// so a fixture can stay inside the retention window the sweep enforces on every new api-log
     /// file.
     fn full_write(started_at: i64) -> ApiLogWrite {
         ApiLogWrite {
@@ -664,14 +668,14 @@ mod tests {
         }
     }
 
-    /// The first microsecond of a shard day: the inverse of [`ShardDay::of_started_at`], for
+    /// The first microsecond of a day: the inverse of [`ApiLogDay::of_started_at`], for
     /// placing fixture stamps inside a chosen day.
-    fn day_start(day: ShardDay) -> i64 {
+    fn day_start(day: ApiLogDay) -> i64 {
         // `of_started_at` divides by `MICROS_PER_DAY`, so the product can never overflow.
         day.0 * MICROS_PER_DAY
     }
 
-    /// Verifies the shard day mapping end to end: a stamp maps to its UTC calendar day, the day
+    /// Verifies the day mapping end to end: a stamp maps to its UTC calendar day, the day
     /// boundaries round-trip, the file stem renders `YYYY-MM-DD` and parses back — leap years
     /// included — and every malformed file name is unparseable, so a sweep leaves such files
     /// alone.
@@ -680,29 +684,29 @@ mod tests {
     ///
     /// Panics if a mapping or parse diverges from the documented behavior.
     #[test]
-    fn shard_days_map_to_file_names_and_back() {
+    fn days_map_to_file_names_and_back() {
         // Day boundaries: the day of a stamp is the stamp's own calendar day, and the first
-        // microsecond of the next day already belongs to the next shard.
-        let day = ShardDay::of_started_at(1_700_000_000_000_000);
+        // microsecond of the next day already belongs to the next day's file.
+        let day = ApiLogDay::of_started_at(1_700_000_000_000_000);
         let start = day_start(day);
 
-        assert_eq!(ShardDay::of_started_at(start), day);
+        assert_eq!(ApiLogDay::of_started_at(start), day);
         assert_eq!(
-            ShardDay::of_started_at(start + MICROS_PER_DAY - 1),
+            ApiLogDay::of_started_at(start + MICROS_PER_DAY - 1),
             day,
             "the day's last microsecond stays in the day",
         );
         assert_ne!(
-            ShardDay::of_started_at(start + MICROS_PER_DAY),
+            ApiLogDay::of_started_at(start + MICROS_PER_DAY),
             day,
             "the next day's first microsecond moves on",
         );
 
         // The civil conversion renders sortable ISO days, before the epoch included.
-        assert_eq!(ShardDay::of_started_at(0).file_stem(), "1970-01-01");
+        assert_eq!(ApiLogDay::of_started_at(0).file_stem(), "1970-01-01");
         assert_eq!(day.file_stem(), "2023-11-14");
         assert_eq!(
-            ShardDay::of_started_at(-1).file_stem(),
+            ApiLogDay::of_started_at(-1).file_stem(),
             "1969-12-31",
             "the mapping is UTC-calendar exact across the epoch",
         );
@@ -714,19 +718,19 @@ mod tests {
             ("1969-12-31.db", -1),
         ] {
             #[expect(clippy::unwrap_used, reason = "the name is constructed to parse")]
-            let parsed = ShardDay::parse_file_stem_of_file_name(name).unwrap();
+            let parsed = ApiLogDay::parse_file_stem_of_file_name(name).unwrap();
 
-            assert_eq!(parsed, ShardDay::of_started_at(stamp), "{name}");
+            assert_eq!(parsed, ApiLogDay::of_started_at(stamp), "{name}");
         }
 
         #[expect(clippy::unwrap_used, reason = "2024 is a leap year")]
-        let leap_day = ShardDay::parse_file_stem_of_file_name("2024-02-29.db").unwrap();
+        let leap_day = ApiLogDay::parse_file_stem_of_file_name("2024-02-29.db").unwrap();
         assert_eq!(leap_day.file_stem(), "2024-02-29");
 
         // Every malformed name is unparseable: wrong shape, impossible dates, non-leap February
         // 29ths, and foreign extensions.
         for name in [
-            "not-a-shard.db",
+            "not-an-api-log.db",
             "20260101.db",
             "2026-1-01.db",
             "2026-01-1.db",
@@ -741,7 +745,7 @@ mod tests {
             "",
         ] {
             assert_eq!(
-                ShardDay::parse_file_stem_of_file_name(name),
+                ApiLogDay::parse_file_stem_of_file_name(name),
                 None,
                 "{name} must not parse",
             );
@@ -751,7 +755,7 @@ mod tests {
     /// Verifies the write path column by column: a fully populated row round-trips exactly as
     /// written — the closed-vocabulary columns stored through `as_str`, the stream flag as
     /// `0`/`1` — a row whose seven nullable columns are all `NULL` reads back as `NULL` rather
-    /// than a default, and each row lands in its own stamp's day shard. The `as_str` spellings
+    /// than a default, and each row lands in its own stamp's day file. The `as_str` spellings
     /// are asserted equal to the serde vocabulary, because the storage string and the published
     /// wire string are one vocabulary.
     ///
@@ -790,9 +794,9 @@ mod tests {
 
         store.record(sparse).await?;
 
-        let full_shard =
-            test_support::open_shard(&store, ShardDay::of_started_at(full_stamp)).await;
-        let rows = read_all(&full_shard).await?;
+        let full_day_file =
+            test_support::open_day_file(&store, ApiLogDay::of_started_at(full_stamp)).await;
+        let rows = read_all(&full_day_file).await?;
         assert_eq!(rows.len(), 1);
 
         #[expect(clippy::unwrap_used, reason = "the fixture wrote exactly one row")]
@@ -815,9 +819,9 @@ mod tests {
         assert_eq!(column(full, 12), &Value::Integer(4));
         assert_eq!(column(full, 13), &Value::Integer(5));
 
-        let today_shard =
-            test_support::open_shard(&store, ShardDay::of_started_at(sparse_stamp)).await;
-        let rows = read_all(&today_shard).await?;
+        let today_day_file =
+            test_support::open_day_file(&store, ApiLogDay::of_started_at(sparse_stamp)).await;
+        let rows = read_all(&today_day_file).await?;
         assert_eq!(rows.len(), 1);
 
         #[expect(clippy::unwrap_used, reason = "the fixture wrote exactly one row")]
@@ -864,7 +868,7 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that a schema `CHECK` rejection surfacing through a shard's write path
+    /// Verifies that a schema `CHECK` rejection surfacing through a file's write path
     /// classifies as a storage constraint violation — the same classification the management
     /// taxonomy maps to a conflict — rather than as a generic engine failure. First-party writes
     /// only ever insert parsed enums, so each probe bypasses the types with a raw statement.
@@ -879,7 +883,7 @@ mod tests {
     #[tokio::test]
     async fn classifies_check_rejections_as_constraint_errors() -> Result<(), Box<dyn StdError>> {
         let (store, _guard) = test_support::create_test_store(90);
-        let database = test_support::open_shard(&store, ShardDay::of_started_at(1)).await;
+        let database = test_support::open_day_file(&store, ApiLogDay::of_started_at(1)).await;
 
         let base = "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
                     endpoint_type, is_stream, outcome, duration) VALUES (1, 1, 1, 1, ";
@@ -910,8 +914,8 @@ mod tests {
 
     /// Verifies the no-FK attribution invariant (README §3 *ApiLog*): deleting the gateway API
     /// key, the model, and the provider a recorded row references — through their first-party
-    /// delete paths, the provider's cascade included — leaves the log row byte-for-byte intact in
-    /// its shard, still attributing by the never-recycled ids it stores.
+    /// delete paths, the provider's cascade included — leaves the log row byte-for-byte intact
+    /// in its day's file, still attributing by the never-recycled ids it stores.
     ///
     /// # Errors
     ///
@@ -993,7 +997,7 @@ mod tests {
         assert!(storage::providers::delete_provider(&database, provider.id).await?);
 
         let rows =
-            read_all(&test_support::open_shard(&store, ShardDay::of_started_at(1_000)).await)
+            read_all(&test_support::open_day_file(&store, ApiLogDay::of_started_at(1_000)).await)
                 .await?;
 
         assert_eq!(rows.len(), 1);
@@ -1011,11 +1015,11 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the best-effort accounting boundary (README §8): finalizing against a store whose
-    /// shard directory cannot be created — the configured path sits beneath a regular file —
-    /// neither panics nor surfaces anywhere, and the main database keeps serving reads and writes
-    /// of other tables afterwards. The unstamped-draft path — the switch-off shape — performs no
-    /// INSERT at all, with or without a store.
+    /// Verifies the best-effort accounting boundary (README §8): finalizing against a store
+    /// whose file directory cannot be created — the configured path sits beneath a regular
+    /// file — neither panics nor surfaces anywhere, and the main database keeps serving reads
+    /// and writes of other tables afterwards. The unstamped-draft path — the switch-off shape —
+    /// performs no INSERT at all, with or without a store.
     ///
     /// # Errors
     ///
@@ -1029,8 +1033,8 @@ mod tests {
     -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
-        // The shard directory path is doomed: its parent is a regular file, so no shard file can
-        // ever be created beneath it.
+        // The store's directory path is doomed: its parent is a regular file, so no api-log
+        // file can ever be created beneath it.
         let blocker =
             std::env::temp_dir().join(format!("janusgate-apilogs-block-{}", rand::random::<u64>()));
 
@@ -1038,7 +1042,7 @@ mod tests {
 
         #[expect(clippy::unwrap_used, reason = "non-zero test retention")]
         let retention = NonZero::new(90).unwrap();
-        let store = ApiLogStore::new(blocker.join("shards"), retention);
+        let store = ApiLogStore::new(blocker.join("api-logs"), retention);
 
         let draft = ApiLogDraft {
             started_at: Some(1_000),
@@ -1097,12 +1101,12 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the best-effort accounting boundary against a damaged shard file (README §3
-    /// *ApiLog Shard Store*): a shard whose open panics inside its schema bootstrap — here a
-    /// file stamped for the main registry, which the shard open's stamp verification rejects
+    /// Verifies the best-effort accounting boundary against a damaged api-log file (README §3
+    /// *ApiLog Store*): a file whose open panics inside its schema bootstrap — here a
+    /// file stamped for the main registry, which the api-log open's stamp verification rejects
     /// fatally — classifies as a recording failure. `record` answers `Err` instead of resuming
     /// the panic into the caller's task, the finalization swallows it without surfacing
-    /// anywhere, and a write into a healthy shard still succeeds afterwards.
+    /// anywhere, and a write into a healthy file still succeeds afterwards.
     ///
     /// # Errors
     ///
@@ -1110,21 +1114,21 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if the damaged shard's panic resumes anywhere or a later operation fails.
+    /// Panics if the damaged file's panic resumes anywhere or a later operation fails.
     #[tokio::test]
-    async fn swallows_a_panicked_shard_open() -> Result<(), Box<dyn StdError>> {
+    async fn swallows_a_panicked_day_file_open() -> Result<(), Box<dyn StdError>> {
         let (store, _guard) = test_support::create_test_store(90);
-        let damaged_day = ShardDay::of_started_at(unix_time::unix_now_micros());
+        let damaged_day = ApiLogDay::of_started_at(unix_time::unix_now_micros());
 
-        // Plant a main-registry database at the shard path and drop its pool: the store's
-        // shard-registry open of this file then hits the stamp verification, which panics by
-        // contract (README §3 *Database Abstraction & Connection Pooling*).
+        // Plant a main-registry database at the day's file path and drop its pool: the
+        // store's api_logs-registry open of this file then hits the stamp verification,
+        // which panics by contract (README §3 *Database Abstraction & Connection Pooling*).
         drop(
             Database::open(
-                store.shard_path(damaged_day),
+                store.day_file_path(damaged_day),
                 Registry::Main,
-                shard_write_pool_connections(),
-                SHARD_POOL_WAIT,
+                write_pool_connections(),
+                FILE_POOL_WAIT,
             )
             .await?,
         );
@@ -1142,7 +1146,7 @@ mod tests {
 
         assert!(
             outcome.is_err(),
-            "a panicked shard open must classify as a recording failure, not resume"
+            "a panicked api-log open must classify as a recording failure, not resume"
         );
 
         // The finalization boundary swallows it: this call returns no Result and must not panic.
@@ -1162,8 +1166,8 @@ mod tests {
         )
         .await;
 
-        // One damaged shard must not poison the store: a healthy day's shard still records.
-        let healthy_day = ShardDay::of_started_at(unix_time::unix_now_micros() - MICROS_PER_DAY);
+        // One damaged file must not poison the store: a healthy day's file still records.
+        let healthy_day = ApiLogDay::of_started_at(unix_time::unix_now_micros() - MICROS_PER_DAY);
         store
             .record(test_support::write(
                 day_start(healthy_day) + 100,
@@ -1174,17 +1178,18 @@ mod tests {
             ))
             .await?;
 
-        let rows = read_all(&test_support::open_shard(&store, healthy_day).await).await?;
-        assert_eq!(rows.len(), 1, "the healthy shard keeps recording");
+        let rows = read_all(&test_support::open_day_file(&store, healthy_day).await).await?;
+        assert_eq!(rows.len(), 1, "the healthy file keeps recording");
 
         Ok(())
     }
 
-    /// Verifies the retention sweep (README §3 *ApiLog Shard Store*): creating a shard file
-    /// deletes the expired shards — day-end strictly older than now minus the retention — while
-    /// never deleting the file just created, leaving unparseable filenames alone; a cached shard
-    /// is evicted before its unlink, so a late finalization whose shard was already deleted
-    /// recreates the file with its one row; and writing into an existing shard never sweeps.
+    /// Verifies the retention sweep (README §3 *ApiLog Store*): creating an api-log file
+    /// deletes the expired files — day-end strictly older than now minus the retention — while
+    /// never deleting the file just created, leaving unparseable filenames alone; a cached
+    /// file is evicted before its unlink, so a late finalization whose file was already
+    /// deleted recreates the file with its one row; and writing into an existing file never
+    /// sweeps.
     ///
     /// # Errors
     ///
@@ -1192,17 +1197,17 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if a shard file survives or vanishes contrary to the documented sweep behavior.
+    /// Panics if a file survives or vanishes contrary to the documented sweep behavior.
     #[tokio::test]
-    async fn retention_sweeps_expired_shards_only_when_a_file_is_created()
+    async fn retention_sweeps_expired_files_only_when_a_file_is_created()
     -> Result<(), Box<dyn StdError>> {
         let (store, guard) = test_support::create_test_store(90);
         let now = unix_time::unix_now_micros();
 
-        let old_day = ShardDay::of_started_at(now - 91 * MICROS_PER_DAY);
-        let fresh_day = ShardDay::of_started_at(now);
+        let old_day = ApiLogDay::of_started_at(now - 91 * MICROS_PER_DAY);
+        let fresh_day = ApiLogDay::of_started_at(now);
 
-        // Creating the expired shard sweeps nothing else and never deletes itself.
+        // Creating the expired day's file sweeps nothing else and never deletes itself.
         store
             .record(test_support::write(
                 day_start(old_day) + 100,
@@ -1212,14 +1217,14 @@ mod tests {
                 [None; 5],
             ))
             .await?;
-        assert!(store.shard_path(old_day).exists());
+        assert!(store.day_file_path(old_day).exists());
 
         // Unparseable filenames a sweep must leave alone.
         std::fs::write(guard.0.join("garbage.db"), b"junk")?;
         std::fs::write(guard.0.join("2026-02-30.db"), b"junk")?;
 
-        // Creating the fresh shard sweeps the expired one — now strictly past its retention —
-        // leaving the just-created file and the unparseable names alone.
+        // Creating the fresh day's file sweeps the expired one — now strictly past its
+        // retention — leaving the just-created file and the unparseable names alone.
         store
             .record(test_support::write(
                 day_start(fresh_day) + 100,
@@ -1230,15 +1235,15 @@ mod tests {
             ))
             .await?;
         assert!(
-            !store.shard_path(old_day).exists(),
-            "the expired shard must be deleted when a new shard file is created"
+            !store.day_file_path(old_day).exists(),
+            "the expired api-log file must be deleted when a new file is created"
         );
-        assert!(store.shard_path(fresh_day).exists());
+        assert!(store.day_file_path(fresh_day).exists());
         assert!(guard.0.join("garbage.db").exists());
         assert!(guard.0.join("2026-02-30.db").exists());
 
-        // A late finalization whose shard was already retention-deleted recreates the file with
-        // that one row — deterministic attribution, accepted.
+        // A late finalization whose file was already retention-deleted recreates the file
+        // with that one row — deterministic attribution, accepted.
         store
             .record(test_support::write(
                 day_start(old_day) + 200,
@@ -1249,22 +1254,22 @@ mod tests {
             ))
             .await?;
 
-        let rows = read_all(&test_support::open_shard(&store, old_day).await).await?;
+        let rows = read_all(&test_support::open_day_file(&store, old_day).await).await?;
         assert_eq!(
             rows.len(),
             1,
-            "the recreated shard carries exactly the late row"
+            "the recreated file carries exactly the late row"
         );
 
         #[expect(clippy::unwrap_used, reason = "the fixture wrote exactly one row")]
         let row = rows.first().unwrap();
         assert_eq!(column(row, 0), &Value::Integer(day_start(old_day) + 200));
 
-        // Writing into an existing, cached shard never sweeps: an expired shard planted now
-        // survives the next write, which hits the hot cache.
-        let planted_day = ShardDay::of_started_at(now - 92 * MICROS_PER_DAY);
-        test_support::open_shard(&store, planted_day).await;
-        assert!(store.shard_path(planted_day).exists());
+        // Writing into an existing, cached file never sweeps: an expired day's file planted
+        // now survives the next write, which hits the hot cache.
+        let planted_day = ApiLogDay::of_started_at(now - 92 * MICROS_PER_DAY);
+        test_support::open_day_file(&store, planted_day).await;
+        assert!(store.day_file_path(planted_day).exists());
 
         store
             .record(test_support::write(
@@ -1276,22 +1281,22 @@ mod tests {
             ))
             .await?;
         assert!(
-            store.shard_path(planted_day).exists(),
-            "a write into an existing shard must not run the sweep"
+            store.day_file_path(planted_day).exists(),
+            "a write into an existing file must not run the sweep"
         );
 
         Ok(())
     }
 
-    /// Verifies the shard directory listing's per-entry classification (README §3 *ApiLog Shard
-    /// Store*): a shard-named entry yields its day, an unparseable name stays skipped, and an
-    /// entry the iteration fails to deliver is an explicit database-I/O storage error — the same
-    /// class a corrupt shard fails its read with — instead of reading its shard day as absent.
+    /// Verifies the store directory listing's per-entry classification (README §3 *ApiLog
+    /// Store*): an api-log-named entry yields its day, an unparseable name stays skipped, and
+    /// an entry the iteration fails to deliver is an explicit database-I/O storage error — the
+    /// same class a corrupt file fails its read with — instead of reading its day as absent.
     /// A mid-iteration delivery failure is unreachable through a real filesystem without races,
     /// so the test drives the per-entry classification seam directly; the listing over real
-    /// directories stays covered by the usage-read suite. The non-UTF8 skip is not fixture-able
-    /// portably — APFS makes the whole iteration fail on such a name while Linux delivers it —
-    /// so it stays with the code path it shares with the unparseable name.
+    /// directories stays covered by the usage-read suite. The non-UTF8 skip is not
+    /// fixture-able portably — APFS makes the whole iteration fail on such a name while Linux
+    /// delivers it — so it stays with the code path it shares with the unparseable name.
     ///
     /// # Errors
     ///
@@ -1314,7 +1319,7 @@ mod tests {
         std::fs::write(directory.join("garbage.db"), b"junk")?;
 
         let mut classified = std::fs::read_dir(&directory)?
-            .map(ApiLogStore::shard_day_of_listing_entry)
+            .map(ApiLogStore::day_of_listing_entry)
             .collect::<Result<Vec<_>, _>>()?;
 
         classified.sort_by_key(|day| day.map(|day| day.0));
@@ -1323,19 +1328,19 @@ mod tests {
             clippy::unwrap_used,
             reason = "the planted file name is constructed to parse"
         )]
-        let expected = ShardDay::parse_file_stem_of_file_name("2026-01-02.db").unwrap();
+        let expected = ApiLogDay::parse_file_stem_of_file_name("2026-01-02.db").unwrap();
 
-        // The shard-named entry yields its day; every other name stays skipped.
+        // The api-log-named entry yields its day; every other name stays skipped.
         assert_eq!(classified.last(), Some(&Some(expected)));
 
         assert!(
             classified.iter().rev().skip(1).all(|day| day.is_none()),
-            "only the shard-named entry may classify as a day",
+            "only the api-log-named entry may classify as a day",
         );
 
-        // An entry the iteration fails to deliver fails the listing explicitly: the shard day
-        // it carries must not read as absent.
-        let undelivered = ApiLogStore::shard_day_of_listing_entry(Err(std::io::Error::other(
+        // An entry the iteration fails to deliver fails the listing explicitly: the day it
+        // carries must not read as absent.
+        let undelivered = ApiLogStore::day_of_listing_entry(Err(std::io::Error::other(
             "transient directory iteration failure",
         )));
 

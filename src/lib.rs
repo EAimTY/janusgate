@@ -85,9 +85,9 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     .await
     .expect("failed to open database");
 
-    // The shard store is constructed once at startup from the `api_logs` section; its presence is
-    // the recording switch, and the section's absence is the empty store (README §3 *ApiLog Shard
-    // Store*).
+    // The api-log store is constructed once at startup from the `api_logs` section; its
+    // presence is the recording switch, and the section's absence is the empty store (README
+    // §3 *ApiLog Store*).
     let api_log_store = CONFIG
         .api_logs
         .as_ref()

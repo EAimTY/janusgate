@@ -1,21 +1,20 @@
 //! Schema version 1: the initial database layout.
 //!
-//! Version 1 creates every current object — the `gateway_database_registry` marker, the
-//! `provider_definitions`, `providers`, `models`, `ongoing_oauth_flows`, and `api_keys` tables
-//! and the `idx_ongoing_oauth_flows_expires_at` and
+//! Version 1 creates every current object — the `provider_definitions`, `providers`, `models`,
+//! `ongoing_oauth_flows`, and `api_keys` tables and the `idx_ongoing_oauth_flows_expires_at` and
 //! `idx_ongoing_oauth_flows_device_next_poll_at` indexes — so its [`Schema::migration`] is
 //! empty: there is no previous version to migrate from. A fresh database receives this version's
 //! DDL directly, and every later version's migration transforms it. The request-accounting table
-//! is not part of this layout: `api_logs` lives in the day-partitioned shard files under its own
-//! registry (the `shard_version_1` module, README §3 *ApiLog Shard Store*). A database predating
-//! the shard store keeps its old in-main `api_logs` table as an unread orphan; historical rows
-//! are not migrated.
+//! is not part of this layout: `api_logs` lives in the day-partitioned api-log files under its
+//! own registry (the `api_logs_version_1` module, README §3 *ApiLog Store*). A database
+//! predating the api-log store keeps its old in-main `api_logs` table as an unread orphan;
+//! historical rows are not migrated.
 //!
-//! The `gateway_database_registry` marker stamps the file's registry: one row whose `registry`
-//! column is `CHECK`-pinned to `main`, written by version 1's DDL itself and never at runtime.
-//! The bootstrap verifies the stamp on any database that already carries a schema version, so a
-//! file opened under the wrong registry — or a file predating the stamp, an unreleased
-//! development artifact the operator recreates — fails at startup instead of at first query.
+//! The version's SQL opens by stamping the file's registry identity into `PRAGMA application_id`
+//! — the fourcc `JGMD` — written by version 1's SQL itself and never at runtime. The bootstrap
+//! verifies the stamp on any database that already carries a schema version, so a file opened
+//! under the wrong registry — or a file predating the stamp, an unreleased development artifact
+//! the operator recreates — fails at startup instead of at first query.
 //!
 //! `provider_definitions` holds the immutable, one-format connection recipes keyed by the
 //! composite `(name, version)` primary key; `providers` holds account instances, each bound to
@@ -72,12 +71,7 @@ pub(super) const SCHEMA: Schema = Schema {
 
 /// Complete DDL of version 1, applied to a fresh database.
 const SCHEMA_SQL: &str = r###"
-CREATE TABLE gateway_database_registry (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    registry TEXT NOT NULL CHECK (registry = 'main')
-) STRICT;
-
-INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'main');
+PRAGMA application_id = 0x4A474D44;
 
 CREATE TABLE provider_definitions (
     name TEXT NOT NULL,

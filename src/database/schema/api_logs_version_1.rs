@@ -1,16 +1,15 @@
-//! Shard schema version 1: the initial api-log shard layout (README §3 *ApiLog Shard Store*).
+//! Api-log schema version 1: the initial api-log file layout (README §3 *ApiLog Store*).
 //!
-//! Version 1 creates the `gateway_database_registry` marker, the `api_logs` table, and its four
-//! indexes — moved verbatim from the main schema's history into the shard store's own registry —
-//! so its [`Schema::migration`] is empty: there is no previous version to migrate from. A fresh
-//! shard file receives this version's DDL directly, and every later version's migration
-//! transforms it.
+//! Version 1 creates the `api_logs` table and its four indexes — moved verbatim from the main
+//! schema's history into the api-log store's own registry — so its [`Schema::migration`] is
+//! empty: there is no previous version to migrate from. A fresh api-log file receives this
+//! version's DDL directly, and every later version's migration transforms it.
 //!
-//! The `gateway_database_registry` marker stamps the file's registry: one row whose `registry`
-//! column is `CHECK`-pinned to `shard`, written by version 1's DDL itself and never at runtime.
-//! The bootstrap verifies the stamp on any shard that already carries a schema version, so a
-//! file opened under the wrong registry — or a file predating the stamp, an unreleased
-//! development artifact the operator recreates — fails at startup instead of at first query.
+//! The version's SQL opens by stamping the file's registry identity into `PRAGMA application_id`
+//! — the fourcc `JGAL` — written by version 1's SQL itself and never at runtime. The bootstrap
+//! verifies the stamp on any file that already carries a schema version, so a file opened under
+//! the wrong registry — or a file predating the stamp, an unreleased development artifact the
+//! operator recreates — fails at startup instead of at first query.
 //!
 //! `api_logs` is request accounting: one row per dispatched inference request:
 //!
@@ -18,7 +17,7 @@
 //!   was issued (`send()` called). Everything before that instant — authentication, routing 404s,
 //!   token refresh, upstream payload rendering failures — never reaches this table.
 //! - `id` deliberately carries no `AUTOINCREMENT`: no identity reference points at `api_logs` rows
-//!   and the id is never published — it stays internal as the per-shard tie-break of the list
+//!   and the id is never published — it stays internal as the per-file tie-break of the list
 //!   ordering (`ORDER BY started_at DESC, id DESC`), so its number may be recycled.
 //! - No foreign keys: `api-keys:delete`, `providers:delete`, and `models:delete` neither cascade
 //!   into nor block log rows. A deleted row's logs remain untouched and keep attributing by id —
@@ -61,14 +60,9 @@ pub(super) const SCHEMA: Schema = Schema {
     migration: MIGRATION_SQL,
 };
 
-/// Complete DDL of version 1, applied to a fresh shard file.
+/// Complete DDL of version 1, applied to a fresh api-log file.
 const SCHEMA_SQL: &str = r###"
-CREATE TABLE gateway_database_registry (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    registry TEXT NOT NULL CHECK (registry = 'shard')
-) STRICT;
-
-INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'shard');
+PRAGMA application_id = 0x4A47414C;
 
 CREATE TABLE api_logs (
     id INTEGER PRIMARY KEY NOT NULL,
@@ -183,7 +177,7 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the `api_logs` index set on a fresh shard: exactly the four declared indexes
+    /// Verifies the `api_logs` index set on a fresh api-log file: exactly the four declared indexes
     /// exist, each carrying its documented columns in order — the time index alone, and one
     /// composite per attribution id pairing the id with the dispatch time.
     ///

@@ -1,21 +1,21 @@
-//! The management read engine over the api-log shards: `usage:list` and `usage:query` (README
+//! The management read engine over the api-log files: `usage:list` and `usage:query` (README
 //! §7.1).
 //!
-//! Both reads run per shard — each retained shard answers its own page or aggregation under the
+//! Both reads run per file — each retained file answers its own page or aggregation under the
 //! shared [`UsageFilter`] — and merge in Rust: pages sort newest first on `started_at` with each
-//! shard's per-shard rowid tie-break preserved, and buckets merge by key, then order by the
+//! file's own rowid tie-break preserved, and buckets merge by key, then order by the
 //! key expressions in request order under SQLite's ordering, re-implemented by
-//! [`compare_bucket_keys`]. The day dimension derives no SQL key column: one shard is one UTC
-//! day, so the merge stamps the bucket day from each row's own shard — the same [`ShardDay`]
-//! mapping the write path used to place the row — and day buckets never straddle shards, so
-//! the merge is exact. The page read walks the shards newest day first and stops once a
-//! finished shard has filled the page — every row of a newer shard outranks every row of an
-//! older one, so the aggregation scan of every remaining shard is never paid for a page that is
-//! already complete; `usage:query` keeps scanning all candidate shards, since an aggregation
+//! [`compare_bucket_keys`]. The day dimension derives no SQL key column: one file is one UTC
+//! day, so the merge stamps the bucket day from each row's own file — the same [`ApiLogDay`]
+//! mapping the write path used to place the row — and day buckets never straddle files, so
+//! the merge is exact. The page read walks the files newest day first and stops once a
+//! finished file has filled the page — every row of a newer file outranks every row of an
+//! older one, so the aggregation scan of every remaining file is never paid for a page that is
+//! already complete; `usage:query` keeps scanning all candidate files, since an aggregation
 //! needs everything. The reads are never gated by the recording switch: an absent store
 //! answers empty (README §3 *ApiLog*).
 
-use super::store::{ApiLogStore, SHARD_POOL_WAIT, ShardDay};
+use super::store::{ApiLogDay, ApiLogStore, FILE_POOL_WAIT};
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     database::{Database, Row, Value, schema::Registry},
@@ -30,12 +30,13 @@ const API_LOG_COLUMNS: &str = "started_at, api_key_id, provider_id, model_id, \
      endpoint_type, is_stream, http_status, outcome, duration, input_tokens, \
      output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens";
 
-/// The fixed shard connection pool size for reads: one read query runs per shard at a time.
+/// The fixed api-log file connection pool size for reads: one read query runs per file at a
+/// time.
 ///
 /// # Panics
 ///
 /// Never: the literal 1 is nonzero, and the `expect` states that invariant.
-fn shard_read_pool_connections() -> std::num::NonZero<usize> {
+fn read_pool_connections() -> std::num::NonZero<usize> {
     #[expect(clippy::expect_used, reason = "the literal 1 is nonzero")]
     let connections = std::num::NonZero::new(1).expect("1 is nonzero");
 
@@ -43,39 +44,39 @@ fn shard_read_pool_connections() -> std::num::NonZero<usize> {
 }
 
 impl ApiLogStore {
-    /// Opens an existing shard file for reading, refusing to create: the open is
-    /// [`Database::open_existing`], so a shard file absent at the open — one the retention sweep
+    /// Opens an existing api-log file for reading, refusing to create: the open is
+    /// [`Database::open_existing`], so a file absent at the open — one the retention sweep
     /// deleted between the directory listing and this open — reads as the empty partition it
-    /// became (README §3 *ApiLog Shard Store*), and a read never recreates a shard file or its
+    /// became (README §3 *ApiLog Store*), and a read never recreates an api-log file or its
     /// directory. The open runs on the blocking thread pool through
-    /// [`ApiLogStore::open_shard_classifying_panics`], so a panicked open — a damaged shard file
-    /// failing its schema bootstrap, most commonly — classifies as the explicit drift error this
-    /// read fails its request with, never a resumed panic into the request task (README §3
-    /// *ApiLog Shard Store*). Reads hold no store lock: only the writers serialize.
-    async fn open_shard_for_read(&self, day: ShardDay) -> Result<Option<Database>, Error> {
-        let path = self.shard_path(day);
+    /// [`ApiLogStore::open_day_file_classifying_panics`], so a panicked open — a damaged file
+    /// failing its schema bootstrap, most commonly — classifies as the explicit drift error
+    /// this read fails its request with, never a resumed panic into the request task (README
+    /// §3 *ApiLog Store*). Reads hold no store lock: only the writers serialize.
+    async fn open_day_file_for_read(&self, day: ApiLogDay) -> Result<Option<Database>, Error> {
+        let path = self.day_file_path(day);
 
-        Self::open_shard_classifying_panics(day, async move {
+        Self::open_day_file_classifying_panics(day, async move {
             Database::open_existing(
                 path,
-                Registry::ApiLogShard,
-                shard_read_pool_connections(),
-                SHARD_POOL_WAIT,
+                Registry::ApiLogs,
+                read_pool_connections(),
+                FILE_POOL_WAIT,
             )
             .await
         })
         .await
     }
 
-    /// The retained shard days a read with `filter` must consider, ascending: the directory
+    /// The retained days a read with `filter` must consider, ascending: the directory
     /// listing narrowed by the filter's time window — the window's `from` is inclusive and its
     /// `to` exclusive, so the last candidate day is the day of `to - 1`. The listing runs on
-    /// the blocking thread pool (README §3 *ApiLog Shard Store*).
-    async fn candidate_days(&self, filter: &UsageFilter) -> Result<Vec<ShardDay>, Error> {
-        let lower = filter.from.map(ShardDay::of_started_at);
+    /// the blocking thread pool (README §3 *ApiLog Store*).
+    async fn candidate_days(&self, filter: &UsageFilter) -> Result<Vec<ApiLogDay>, Error> {
+        let lower = filter.from.map(ApiLogDay::of_started_at);
         let upper = filter
             .to
-            .map(|to| ShardDay::of_started_at(to.saturating_sub(1)));
+            .map(|to| ApiLogDay::of_started_at(to.saturating_sub(1)));
 
         Ok(self
             .retained_days()
@@ -89,20 +90,21 @@ impl ApiLogStore {
 
     /// Lists accounting rows newest first: at most `limit` rows inside `filter` whose
     /// `started_at` is strictly below `before`, the timestamp cursor derived by the client from
-    /// the previous page's last row. Each retained shard answers its own newest-first page
+    /// the previous page's last row. Each retained file answers its own newest-first page
     /// under the same filter and cursor, and the pages merge on `started_at`.
     ///
-    /// The shards are walked newest day first, and the walk stops once a finished shard has
-    /// filled the page: every row of a newer shard outranks every row of an older one — a row's
-    /// own stamp selects its shard — so the newer shards' answers already contain the whole page
-    /// and the remaining, strictly older shards can contribute nothing to it. Within the page,
-    /// equal stamps never span shards, so the stable merge preserves each shard's own `id DESC`
-    /// tie-break and the result is one global `ORDER BY started_at DESC, id DESC`.
+    /// The files are walked newest day first, and the walk stops once a finished file has
+    /// filled the page: every row of a newer file outranks every row of an older one — a
+    /// row's own stamp selects its file — so the newer files' answers already contain the
+    /// whole page and the remaining, strictly older files can contribute nothing to it.
+    /// Within the page, equal stamps never span files, so the stable merge preserves each
+    /// file's own `id DESC` tie-break and the result is one global
+    /// `ORDER BY started_at DESC, id DESC`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when a shard cannot be opened, a query fails, or a row is malformed —
-    /// a corrupt shard fails the request explicitly.
+    /// Returns [`Error`] when a file cannot be opened, a query fails, or a row is malformed —
+    /// a corrupt file fails the request explicitly.
     async fn list(
         &self,
         limit: i64,
@@ -115,7 +117,7 @@ impl ApiLogStore {
         let mut page = Vec::new();
 
         for day in self.candidate_days(filter).await?.into_iter().rev() {
-            let Some(database) = self.open_shard_for_read(day).await? else {
+            let Some(database) = self.open_day_file_for_read(day).await? else {
                 continue;
             };
 
@@ -143,9 +145,9 @@ impl ApiLogStore {
                     .collect::<Result<Vec<_>, _>>()?,
             );
 
-            // A shard's answer is only superseded by newer shards, all of which finished before
-            // it: once the page is full, every still-unread shard holds strictly older rows
-            // alone. The last shard's answer can overflow the page, so the truncation below
+            // A file's answer is only superseded by newer files, all of which finished before
+            // it: once the page is full, every still-unread file holds strictly older rows
+            // alone. The last file's answer can overflow the page, so the truncation below
             // still runs.
             if page.len() >= page_limit {
                 break;
@@ -158,20 +160,20 @@ impl ApiLogStore {
         Ok(page)
     }
 
-    /// Aggregates accounting rows into `selection`'s buckets: each retained shard groups and
-    /// sums its own rows under [`key_expression`]'s SQL key columns, and the per-shard buckets
+    /// Aggregates accounting rows into `selection`'s buckets: each retained file groups and
+    /// sums its own rows under [`key_expression`]'s SQL key columns, and the per-file buckets
     /// merge in Rust — counts and sums combine, buckets merge by key, and the merged buckets
     /// order by the key expressions in request order under SQLite's ordering, re-implemented
-    /// by [`compare_bucket_keys`]. Day grouping is shard-aligned — the merge stamps each day
-    /// bucket with its shard's own day, and one shard is one day — so day buckets never
-    /// straddle shards and the merge is exact.
+    /// by [`compare_bucket_keys`]. Day grouping is file-aligned — the merge stamps each day
+    /// bucket with its file's own day, and one file is one day — so day buckets never
+    /// straddle files and the merge is exact.
     ///
     /// An empty grouping aggregates one total bucket: over an empty store, exactly one zeroed
     /// bucket, never an empty list.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when a shard cannot be opened, a query fails, or a row is malformed.
+    /// Returns [`Error`] when a file cannot be opened, a query fails, or a row is malformed.
     async fn query(&self, selection: &UsageSelection) -> Result<Vec<UsageAggregate>, Error> {
         let key_expressions: Vec<&str> = selection
             .group_by
@@ -186,7 +188,7 @@ impl ApiLogStore {
              COALESCE(SUM(reasoning_tokens), 0)";
 
         // No SQL-backed dimensions — an empty selection, or the day dimension alone, whose key
-        // the merge stamps from each shard — no key columns and no grouping: every shard answers
+        // the merge stamps from each file — no key columns and no grouping: every file answers
         // the single row an aggregate without `GROUP BY` produces.
         let (select_keys, grouping) = if key_expressions.is_empty() {
             (String::new(), String::new())
@@ -197,13 +199,13 @@ impl ApiLogStore {
         let mut merged: HashMap<UsageBucketKey, UsageAggregate> = HashMap::new();
 
         if selection.group_by.is_empty() {
-            // The total bucket exists even when no shard answers: one zeroed bucket, never an
+            // The total bucket exists even when no file answers: one zeroed bucket, never an
             // empty list.
             merged.insert(UsageBucketKey::default(), UsageAggregate::default());
         }
 
         for day in self.candidate_days(&selection.filter).await? {
-            let Some(database) = self.open_shard_for_read(day).await? else {
+            let Some(database) = self.open_day_file_for_read(day).await? else {
                 continue;
             };
 
@@ -240,13 +242,13 @@ impl ApiLogStore {
     }
 }
 
-/// Lists accounting rows through the shard store; `None` — the gateway started without an
+/// Lists accounting rows through the api-log store; `None` — the gateway started without an
 /// `api_logs` section — is the empty store, answering an empty page. See [`ApiLogStore::list`]
 /// for the merge semantics (README §7.1).
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when a shard cannot be opened, a query fails, or a row is malformed.
+/// Returns [`Error`] when a file cannot be opened, a query fails, or a row is malformed.
 pub(crate) async fn list_api_logs(
     store: Option<&ApiLogStore>,
     limit: i64,
@@ -259,13 +261,13 @@ pub(crate) async fn list_api_logs(
     }
 }
 
-/// Aggregates accounting rows through the shard store; `None` — the gateway started without an
-/// `api_logs` section — is the empty store, answering one zeroed total bucket for an empty
+/// Aggregates accounting rows through the api-log store; `None` — the gateway started without
+/// an `api_logs` section — is the empty store, answering one zeroed total bucket for an empty
 /// grouping and no buckets otherwise. See [`ApiLogStore::query`] for the merge semantics.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when a shard cannot be opened, a query fails, or a row is malformed.
+/// Returns [`Error`] when a file cannot be opened, a query fails, or a row is malformed.
 pub(crate) async fn query_usage(
     store: Option<&ApiLogStore>,
     selection: &UsageSelection,
@@ -531,20 +533,20 @@ fn api_log_from_row(row: &Row) -> Result<ApiLog, Error> {
 
 /// Parses one aggregation row: one SQL key column per SQL-backed requested dimension, in
 /// request order, then the count and the five coalesced sums. The day dimension carries no key
-/// column (see [`key_expression`]): the key is stamped with the row's own shard's day before
+/// column (see [`key_expression`]): the key is stamped with the row's own file's day before
 /// the columns walk.
 ///
-/// Answers [`None`] for the one row a day-only selection must never see: a shard whose
+/// Answers [`None`] for the one row a day-only selection must never see: a file whose
 /// selection matched no rows still answers one zero-count row when the query groups by
-/// nothing, and a day-only selection is exactly such a query — one shard is one day, so SQL
-/// groups by nothing and the shard's empty partition must stay bucketless, as a `GROUP BY`-ed
+/// nothing, and a day-only selection is exactly such a query — one file is one day, so SQL
+/// groups by nothing and the file's empty partition must stay bucketless, as a `GROUP BY`-ed
 /// day query would answer. A group in any other selection forms only around rows, so its
 /// `requests` is never zero, and the empty selection's total bucket needs its zero row (README
 /// §7.1).
 fn usage_aggregate_from_row(
     row: &Row,
     group_by: &[UsageGroupBy],
-    shard_day: ShardDay,
+    day: ApiLogDay,
 ) -> Result<Option<UsageAggregate>, Error> {
     let key_columns = group_by
         .iter()
@@ -558,12 +560,12 @@ fn usage_aggregate_from_row(
 
     let mut key = UsageBucketKey::default();
 
-    // One shard is one UTC day (README §3 *ApiLog Shard Store*): every row this shard answers
-    // carries the shard's own day, stamped here so the bucket day is the floor-day of every
-    // stamp by construction — the same [`ShardDay`] mapping the write path used — never a
+    // One file is one UTC day (README §3 *ApiLog Store*): every row this file answers
+    // carries the file's own day, stamped here so the bucket day is the floor-day of every
+    // stamp by construction — the same [`ApiLogDay`] mapping the write path used — never a
     // SQL-side re-derivation of it.
     if group_by.contains(&UsageGroupBy::Day) {
-        key.day = Some(shard_day.file_stem());
+        key.day = Some(day.file_stem());
     }
 
     let mut column = 0;
@@ -609,7 +611,7 @@ fn text_enum_column<T>(
 
 /// One stored accounting row: the fourteen published columns exactly as stored — the row the
 /// management read surface mirrors (README §3 *ApiLog*). The rowid stays internal: it never
-/// appears here, serving only as the per-shard tie-break of the list ordering.
+/// appears here, serving only as the per-file tie-break of the list ordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApiLog {
     /// Dispatch-start instant in UTC microseconds.
@@ -715,9 +717,9 @@ pub(crate) struct UsageAggregate {
 }
 
 impl UsageAggregate {
-    /// Folds another shard's identical-key bucket into this one: counts and sums combine. Sums
+    /// Folds another file's identical-key bucket into this one: counts and sums combine. Sums
     /// saturate because a merge of real token counts never approaches `i64::MAX` and a merge
-    /// must not fail where no single shard's query would.
+    /// must not fail where no single file's query would.
     fn absorb(&mut self, other: &Self) {
         self.requests = self.requests.saturating_add(other.requests);
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
@@ -787,13 +789,13 @@ fn key_part(key: &UsageBucketKey, dimension: UsageGroupBy) -> Option<KeyPart<'_>
 }
 
 /// The SQL key column a dimension groups, selects, and orders by — [`None`] when it needs no
-/// SQL column at all. Only the day dimension needs none: one shard is one UTC day (README §3
-/// *ApiLog Shard Store*), so [`usage_aggregate_from_row`] stamps the bucket day from each row's
-/// own shard — the very [`ShardDay`] mapping the write path used to place the row — and the key
-/// is the floor-day of every stamp by construction, signed stamps included. Deriving the day in
-/// SQL instead would re-implement that mapping with SQLite's `/`, which truncates toward zero
-/// and so disagrees with the shard's floor division for a pre-epoch stamp — a divergence from
-/// the shard-alignment invariant, unreachable through the dispatch clock but never the
+/// SQL column at all. Only the day dimension needs none: one file is one UTC day (README §3
+/// *ApiLog Store*), so [`usage_aggregate_from_row`] stamps the bucket day from each row's
+/// own file — the very [`ApiLogDay`] mapping the write path used to place the row — and the key
+/// is the floor-day of every stamp by construction, signed stamps included. Deriving the day
+/// in SQL instead would re-implement that mapping with SQLite's `/`, which truncates toward
+/// zero and so disagrees with the file's floor division for a pre-epoch stamp — a divergence
+/// from the file-alignment invariant, unreachable through the dispatch clock but never the
 /// mapping's to assume.
 fn key_expression(dimension: UsageGroupBy) -> Option<&'static str> {
     match dimension {
@@ -812,7 +814,7 @@ fn key_expression(dimension: UsageGroupBy) -> Option<&'static str> {
 /// order — into its key field. Every column carries exactly its stored type's values (README §3
 /// *ApiLog*): the ids, the flag, and the enum spellings are `NOT NULL`, and only `http_status`
 /// may read `NULL`, landing as the [`None`] that [`key_part`] orders first. The day dimension
-/// carries no column — [`usage_aggregate_from_row`] stamps its key from the shard.
+/// carries no column — [`usage_aggregate_from_row`] stamps its key from the file.
 fn read_key_part(
     key: &mut UsageBucketKey,
     dimension: UsageGroupBy,
@@ -873,19 +875,20 @@ mod tests {
     use super::{
         super::{
             ApiLogWrite,
-            store::shard_write_pool_connections,
-            test_support::{create_test_store, open_shard, write},
+            store::write_pool_connections,
+            test_support::{create_test_store, open_day_file, write},
         },
         *,
     };
     use crate::{accounting::ApiLogEndpointType, database::params, test_support::list1, unix_time};
     use std::error::Error as StdError;
 
-    /// Verifies `usage:list` over the shards (README §7.1): an empty store answers an empty
-    /// page; rows order newest first across shards — equal stamps never span shards, and each
-    /// shard's own rowid tie-break survives the merge — the limit bounds each page, `before` is
-    /// strictly older by `started_at` — the cursor row itself never reappears — the rows sharing
-    /// a boundary microsecond may be skipped, and the filter composes with the cursor.
+    /// Verifies `usage:list` over the api-log files (README §7.1): an empty store answers an
+    /// empty page; rows order newest first across files — equal stamps never span files, and
+    /// each file's own rowid tie-break survives the merge — the limit bounds each page,
+    /// `before` is strictly older by `started_at` — the cursor row itself never reappears —
+    /// the rows sharing a boundary microsecond may be skipped, and the filter composes with
+    /// the cursor.
     ///
     /// # Errors
     ///
@@ -911,12 +914,12 @@ mod tests {
 
         const DAY_MICROS: i64 = 86_400_000_000;
         // Three recent days, safely inside the retention window the sweep enforces on every new
-        // shard file.
+        // api-log file.
         let third_day = unix_time::unix_now_micros();
         let second_day = third_day - DAY_MICROS;
         let first_day = third_day - 2 * DAY_MICROS;
 
-        // Five rows over three shards; the two first-day rows share one stamp and are told
+        // Five rows over three files; the two first-day rows share one stamp and are told
         // apart only by their rowids, the second-inserted one carrying the higher rowid.
         store
             .record(write(first_day + 1_000, 1, 1, 1, [None; 5]))
@@ -937,8 +940,8 @@ mod tests {
         let stamps = |logs: &[ApiLog]| logs.iter().map(|log| log.started_at).collect::<Vec<i64>>();
         let models = |logs: &[ApiLog]| logs.iter().map(|log| log.model_id).collect::<Vec<i64>>();
 
-        // The default page merges every shard newest first; the equal-stamp pair orders by the
-        // per-shard rowid tie-break, higher rowid (inserted later) first.
+        // The default page merges every file newest first; the equal-stamp pair orders by the
+        // per-file rowid tie-break, higher rowid (inserted later) first.
         let page = list_api_logs(Some(&store), 100, None, &no_filter).await?;
         assert_eq!(
             stamps(&page),
@@ -972,7 +975,7 @@ mod tests {
         let page = list_api_logs(Some(&store), 100, Some(first_day + 1_000), &no_filter).await?;
         assert!(page.is_empty());
 
-        // The filter narrows the stream to its own rows, newest first across shards.
+        // The filter narrows the stream to its own rows, newest first across files.
         let model_one = UsageFilter {
             model_id: Some(list1(&[1])),
             ..UsageFilter::default()
@@ -987,8 +990,8 @@ mod tests {
         let page = list_api_logs(Some(&store), 100, Some(second_day + 1_000), &model_one).await?;
         assert_eq!(stamps(&page), [first_day + 1_000]);
 
-        // The time window bounds the shards considered: the window below the second day never
-        // reaches the later shards.
+        // The time window bounds the files considered: the window below the second day never
+        // reaches the later files.
         let windowed = UsageFilter {
             to: Some(second_day),
             ..UsageFilter::default()
@@ -1009,13 +1012,13 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies `usage:query` end to end over a hand-checked fixture spanning two shards (README
-    /// §7.1): every dimension buckets and orders by its own key, dimension sets compose the key
-    /// and the ordering in request order, the empty set aggregates one total bucket — zero rows
-    /// included — `NULL` statuses form their own bucket ahead of every answered one, sums exclude
-    /// `NULL` tokens while still counting their row, the window is inclusive from and exclusive
-    /// to, the filter locates, and the cross-shard merge reproduces exactly the buckets one
-    /// unsharded table would answer.
+    /// Verifies `usage:query` end to end over a hand-checked fixture spanning two files
+    /// (README §7.1): every dimension buckets and orders by its own key, dimension sets compose
+    /// the key and the ordering in request order, the empty set aggregates one total bucket —
+    /// zero rows included — `NULL` statuses form their own bucket ahead of every answered one,
+    /// sums exclude `NULL` tokens while still counting their row, the window is inclusive from
+    /// and exclusive to, the filter locates, and the cross-file merge reproduces exactly the
+    /// buckets one undivided table would answer.
     ///
     /// # Errors
     ///
@@ -1030,13 +1033,13 @@ mod tests {
         let (store, _guard) = create_test_store(90);
 
         const DAY_MICROS: i64 = 86_400_000_000;
-        // Two recent days — and so two shards — safely inside the retention window.
+        // Two recent days — and so two files — safely inside the retention window.
         let second_day = unix_time::unix_now_micros();
         let first_day = second_day - DAY_MICROS;
-        let first_stem = ShardDay::of_started_at(first_day).file_stem();
-        let second_stem = ShardDay::of_started_at(second_day).file_stem();
+        let first_stem = ApiLogDay::of_started_at(first_day).file_stem();
+        let second_stem = ApiLogDay::of_started_at(second_day).file_stem();
 
-        // Four rows spanning both days — and so both shards — two models, two providers, two
+        // Four rows spanning both days — and so both files — two models, two providers, two
         // keys, two endpoints, both stream flags, three outcomes, and one `NULL` status (recorded
         // no usage at all).
         let fixture = [
@@ -1131,7 +1134,7 @@ mod tests {
 
         let no_filter = UsageFilter::default();
 
-        // Grouping by UTC day: ISO keys ascending across the two shards, NULL-excluding sums,
+        // Grouping by UTC day: ISO keys ascending across the two files, NULL-excluding sums,
         // the usage-less row still counted.
         let buckets = query_usage(
             Some(&store),
@@ -1169,7 +1172,7 @@ mod tests {
         );
 
         // The empty dimension set aggregates one total bucket whose key is empty, merging the
-        // two shards' totals.
+        // two files' totals.
         let buckets = query_usage(Some(&store), &selection(vec![], no_filter.clone())).await?;
         assert_eq!(
             buckets,
@@ -1487,7 +1490,7 @@ mod tests {
         );
 
         // The window is inclusive at `from` — the row stamped exactly at the bound is in — and
-        // exclusive at `to`; the bounds also bound which shards are read.
+        // exclusive at `to`; the bounds also bound which files are read.
         let windowed = UsageFilter {
             from: Some(second_day),
             ..UsageFilter::default()
@@ -1562,14 +1565,15 @@ mod tests {
         Ok(())
     }
 
-    /// Performance-and-correctness sanity over a ten-thousand-row fixture spread over two shards
-    /// (README §3 *ApiLog* coverage): both read paths stay correct across the merge — newest-first
-    /// pagination over the whole store and aggregations whose recomputed sums match the generating
-    /// formula exactly — and each shard's aggregation window still reads through its own
-    /// `idx_api_logs_started_at`, asserted through `EXPLAIN QUERY PLAN`. If Turso's plan output
-    /// ever stops naming the index, this assertion fails loudly instead of silently weakening to a
-    /// mere-existence check. No timing assertion exists: CI jitter makes wall-clock bounds
-    /// meaningless, and the write side is a single INSERT by contract rather than by benchmark.
+    /// Performance-and-correctness sanity over a ten-thousand-row fixture spread over two
+    /// files (README §3 *ApiLog* coverage): both read paths stay correct across the merge —
+    /// newest-first pagination over the whole store and aggregations whose recomputed sums
+    /// match the generating formula exactly — and each file's aggregation window still reads
+    /// through its own `idx_api_logs_started_at`, asserted through `EXPLAIN QUERY PLAN`. If
+    /// Turso's plan output ever stops naming the index, this assertion fails loudly instead of
+    /// silently weakening to a mere-existence check. No timing assertion exists: CI jitter
+    /// makes wall-clock bounds meaningless, and the write side is a single INSERT by contract
+    /// rather than by benchmark.
     ///
     /// # Errors
     ///
@@ -1586,17 +1590,17 @@ mod tests {
         const ROWS: i64 = 10_000;
         const DAY_MICROS: i64 = 86_400_000_000;
         // Two recent days, safely inside the retention window the sweep enforces on every new
-        // shard file.
+        // api-log file.
         let second_day = unix_time::unix_now_micros();
         let first_day = second_day - DAY_MICROS;
-        let first_stem = ShardDay::of_started_at(first_day).file_stem();
-        let second_stem = ShardDay::of_started_at(second_day).file_stem();
+        let first_stem = ApiLogDay::of_started_at(first_day).file_stem();
+        let second_stem = ApiLogDay::of_started_at(second_day).file_stem();
 
-        // Even-indexed rows stamp the first day, odd-indexed the second; each shard receives its
+        // Even-indexed rows stamp the first day, odd-indexed the second; each file receives its
         // own rows in one statement. Rows alternate days, cycle three models, and report no usage
         // every fifth row.
         for (parity, day) in [(0, first_day), (1, second_day)] {
-            let database = open_shard(&store, ShardDay::of_started_at(day)).await;
+            let database = open_day_file(&store, ApiLogDay::of_started_at(day)).await;
             let mut fixture = String::from(
                 "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
                  endpoint_type, is_stream, http_status, outcome, duration, input_tokens, \
@@ -1630,7 +1634,7 @@ mod tests {
             database.execute(&fixture, ()).await?;
         }
 
-        // Both read paths agree with the generating formula across the shard merge.
+        // Both read paths agree with the generating formula across the file merge.
         let no_filter = UsageFilter::default();
         let first_page = list_api_logs(Some(&store), 100, None, &no_filter).await?;
         let page_stamps = first_page
@@ -1718,7 +1722,7 @@ mod tests {
             assert_eq!(bucket.output_tokens, expected_sum(model_id, 5));
         }
 
-        // A one-sided window reads only the second day's shard.
+        // A one-sided window reads only the second day's file.
         let window_buckets = query_usage(
             Some(&store),
             &UsageSelection {
@@ -1739,9 +1743,9 @@ mod tests {
             vec![(Some(second_stem.clone()), ROWS / 2)]
         );
 
-        // The window predicate reads through the started_at index, inside a shard.
-        let second_shard = open_shard(&store, ShardDay::of_started_at(second_day)).await;
-        let plan = second_shard
+        // The window predicate reads through the started_at index, inside a file.
+        let second_day_file = open_day_file(&store, ApiLogDay::of_started_at(second_day)).await;
+        let plan = second_day_file
             .query(
                 "EXPLAIN QUERY PLAN SELECT id FROM api_logs \
                  WHERE started_at >= ?1 AND started_at < ?2",
@@ -1763,7 +1767,7 @@ mod tests {
 
         // An id filter paired with the time window reads through the matching composite index
         // (README §3 *ApiLog*): the filter shape the management surface issues most.
-        let filtered_plan = second_shard
+        let filtered_plan = second_day_file
             .query(
                 "EXPLAIN QUERY PLAN SELECT id FROM api_logs \
                  WHERE model_id IN (?1, ?2) AND started_at >= ?3 AND started_at < ?4",
@@ -1787,11 +1791,11 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that shard reads refuse to create (README §3 *ApiLog Shard Store*): a read whose
-    /// shard file is absent — one the retention sweep deleted between the directory listing and
-    /// the open — answers the empty partition and leaves neither a shard file nor a directory
+    /// Verifies that api-log reads refuse to create (README §3 *ApiLog Store*): a read whose
+    /// file is absent — one the retention sweep deleted between the directory listing and the
+    /// open — answers the empty partition and leaves neither an api-log file nor a directory
     /// behind, and the full `usage:list` and `usage:query` reads over a directory holding no
-    /// shard files do the same.
+    /// api-log files do the same.
     ///
     /// # Errors
     ///
@@ -1799,21 +1803,21 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if a read recreates the vanished shard file or its directory.
+    /// Panics if a read recreates the vanished api-log file or its directory.
     #[tokio::test]
-    async fn reads_against_absent_shards_leave_nothing_behind() -> Result<(), Box<dyn StdError>> {
+    async fn reads_against_absent_files_leave_nothing_behind() -> Result<(), Box<dyn StdError>> {
         let (store, guard) = create_test_store(90);
-        let day = ShardDay::of_started_at(unix_time::unix_now_micros());
+        let day = ApiLogDay::of_started_at(unix_time::unix_now_micros());
 
-        // The store's directory exists — any served day creates it — but this shard's file was
-        // deleted, as the retention sweep deletes an expired shard between the directory listing
-        // and a read's open.
+        // The store's directory exists — any served day creates it — but this day's file was
+        // deleted, as the retention sweep deletes an expired file between the directory
+        // listing and a read's open.
         std::fs::create_dir(&guard.0)?;
 
-        assert!(store.open_shard_for_read(day).await?.is_none());
+        assert!(store.open_day_file_for_read(day).await?.is_none());
         assert!(
-            !store.shard_path(day).exists(),
-            "a shard read must not recreate the vanished shard file"
+            !store.day_file_path(day).exists(),
+            "an api-log read must not recreate the vanished file"
         );
 
         // The full usage reads answer the empty partition the same way, still creating nothing.
@@ -1835,19 +1839,19 @@ mod tests {
         assert!(buckets.is_empty());
 
         assert!(
-            !store.shard_path(day).exists(),
-            "a usage read must not recreate the vanished shard file"
+            !store.day_file_path(day).exists(),
+            "a usage read must not recreate the vanished api-log file"
         );
 
         Ok(())
     }
 
-    /// Verifies that a read whose shard open panics — here a file stamped for the main registry,
-    /// which the shard open's stamp verification rejects fatally — fails the request explicitly
-    /// instead of resuming the panic into the request task, where the startup panic hook would
-    /// kill the whole gateway (README §3 *ApiLog Shard Store*, §2.2): the read open classifies
-    /// the panic as drift naming the shard day, and the full `usage:list` read over the damaged
-    /// directory surfaces that same explicit error.
+    /// Verifies that a read whose file open panics — here a file stamped for the main registry,
+    /// which the api-log open's stamp verification rejects fatally — fails the request
+    /// explicitly instead of resuming the panic into the request task, where the startup
+    /// panic hook would kill the whole gateway (README §3 *ApiLog Store*, §2.2): the read
+    /// open classifies the panic as drift naming the day, and the full `usage:list` read over
+    /// the damaged directory surfaces that same explicit error.
     ///
     /// # Errors
     ///
@@ -1855,28 +1859,28 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if the damaged shard's panic resumes anywhere or the classification diverges from
+    /// Panics if the damaged file's panic resumes anywhere or the classification diverges from
     /// the documented drift error.
     #[tokio::test]
-    async fn fails_a_panicked_shard_read_open_explicitly() -> Result<(), Box<dyn StdError>> {
+    async fn fails_a_panicked_day_file_read_open_explicitly() -> Result<(), Box<dyn StdError>> {
         let (store, _guard) = create_test_store(90);
-        let damaged_day = ShardDay::of_started_at(unix_time::unix_now_micros());
+        let damaged_day = ApiLogDay::of_started_at(unix_time::unix_now_micros());
 
-        // Plant a main-registry database at the shard path and drop its pool: the read's
-        // shard-registry open of this file then hits the stamp verification, which panics by
-        // contract (README §3 *Database Abstraction & Connection Pooling*).
+        // Plant a main-registry database at the day's file path and drop its pool: the
+        // read's api_logs-registry open of this file then hits the stamp verification,
+        // which panics by contract (README §3 *Database Abstraction & Connection Pooling*).
         drop(
             Database::open(
-                store.shard_path(damaged_day),
+                store.day_file_path(damaged_day),
                 Registry::Main,
-                shard_write_pool_connections(),
-                SHARD_POOL_WAIT,
+                write_pool_connections(),
+                FILE_POOL_WAIT,
             )
             .await?,
         );
 
-        // The read open answers the explicit drift classification, naming the shard day.
-        let outcome = store.open_shard_for_read(damaged_day).await;
+        // The read open answers the explicit drift classification, naming the day.
+        let outcome = store.open_day_file_for_read(damaged_day).await;
 
         assert!(
             matches!(
@@ -1884,7 +1888,7 @@ mod tests {
                 Err(Error::Drift { message })
                     if message.contains(&damaged_day.file_stem())
             ),
-            "a panicked shard read open must classify as explicit drift naming the shard day"
+            "a panicked api-log read open must classify as explicit drift naming the day"
         );
 
         // The full usage read fails explicitly with the same classification — never a panic.
@@ -1892,7 +1896,7 @@ mod tests {
 
         assert!(
             matches!(outcome, Err(Error::Drift { .. })),
-            "a usage read over a shard whose open panics must fail explicitly, not panic"
+            "a usage read over a file whose open panics must fail explicitly, not panic"
         );
 
         Ok(())

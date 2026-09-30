@@ -1,16 +1,16 @@
-//! Request accounting: the `api_logs` shard store — its write path and read paths (README §3
-//! *ApiLog Shard Store*).
+//! Request accounting: the `api_logs` store — its write path and read paths (README §3
+//! *ApiLog Store*).
 //!
 //! One row is one dispatched inference request — the instant the upstream HTTP request was issued
 //! (`send()`). Everything before that instant (authentication, routing, token refresh, upstream
 //! payload rendering) is never recorded, and no content — prompt, completion, headers, upstream
 //! error bodies — ever reaches the table. The rows live outside the main database: one SQLite
 //! (Turso) file per UTC calendar day of `started_at`, created lazily on first write, written
-//! through a hot-shard connection cache, and expired by whole-file deletion.
+//! through a hot-file connection cache, and expired by whole-file deletion.
 //!
-//! The module splits by direction: [`store`] is the shard store itself — the shard-day mapping,
+//! The module splits by direction: [`store`] is the api-log store itself — the day mapping,
 //! the hot connection cache, file creation, the retention sweep, and the INSERT write path — and
-//! [`usage`] is the management read engine — the shared filter, the per-shard queries, and the
+//! [`usage`] is the management read engine — the shared filter, the per-file queries, and the
 //! aggregation merge. This module carries the write contract the pipeline sees: the draft
 //! lifecycle ([`ApiLogDraft`]) and its single finalization entry point ([`finalize_api_log`]).
 //!
@@ -138,7 +138,7 @@ impl ApiLogDraft {
 }
 
 /// Closes one dispatched request's accounting: builds the terminal write from `draft` plus the
-/// finalization facts and inserts it into the draft's own day's shard. Every call site runs at
+/// finalization facts and inserts it into the draft's own day's file. Every call site runs at
 /// exactly one of the three mutually exclusive finalization points (README §3 *ApiLog*), so each
 /// dispatched request is recorded exactly once.
 ///
@@ -187,11 +187,11 @@ pub(crate) async fn finalize_api_log(
 
     let Some(store) = store else {
         // Reachable only when the `api_logs` section was added by a reload after a startup
-        // without it: the stamp read the live switch, but the shard store is constructed at
+        // without it: the stamp read the live switch, but the api-log store is constructed at
         // startup alone (README §8). The row is dropped with a logged attribution.
         error!(
-            "api log recording is configured but the shard store was not constructed at startup; \
-             dropping the row for API key {} (provider {}, model {})",
+            "api log recording is configured but the api-log store was not constructed at \
+             startup; dropping the row for API key {} (provider {}, model {})",
             draft.api_key_id, draft.provider_id, draft.model_id,
         );
 

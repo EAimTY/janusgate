@@ -2,8 +2,8 @@
 //!
 //! Both reads answer `POST` with typed bodies (README §7.0 rule 6), share one filter type,
 //! serve rows and aggregates that carry only the log's own facts — never a name, never content
-//! (rule 7) — and are never gated by the `api_logs` write switch: existing shards stay readable
-//! (README §3 *ApiLog*).
+//! (rule 7) — and are never gated by the `api_logs` write switch: existing api-log files stay
+//! readable (README §3 *ApiLog*).
 
 use super::{Error, Nullable, UsageFilter, route};
 use crate::{
@@ -46,7 +46,7 @@ const MAX_LIMIT: i64 = 1000;
 const FILTER_VALUES_CAP: usize = 100;
 
 /// One accounting row in its management wire shape (README §7.1): the row's fourteen published
-/// columns — the rowid never appears, serving only as the per-shard tie-break of the read
+/// columns — the rowid never appears, serving only as the per-file tie-break of the read
 /// ordering. `http_status` and the five token columns mirror their nullable storage columns
 /// (`T | null`, rule 2), and no field carries a name or content: labels are resolved through the
 /// entity list routes (rule 7).
@@ -162,7 +162,7 @@ pub(super) struct ListUsageRequest {
 }
 
 /// The `usage:list` success body (README §7.1): rows ordered by `started_at` descending, the
-/// per-shard rowid breaking ties.
+/// per-file rowid breaking ties.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListUsageResponse {

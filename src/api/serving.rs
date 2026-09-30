@@ -618,7 +618,7 @@ where
 }
 
 /// Wraps an IR event stream into a live `text/event-stream` response, carrying the request's
-/// accounting draft and shard store handle into the render task: that task is the streaming
+/// accounting draft and api-log store handle into the render task: that task is the streaming
 /// finalization point (README §3 *ApiLog*) and records exactly one row when the stream closes —
 /// `completed` + 200 for a clean end, the classified outcome under the already-declared 200 for
 /// an error frame (the first enqueued frame declares the status, so an error frame never changes
@@ -805,7 +805,7 @@ mod tests {
     /// without awaiting the consumer.
     const EVENT_CHANNEL_BUFFER: usize = 8;
 
-    /// Creates a shard store over a fresh temporary directory, with its cleanup guard.
+    /// Creates an api-log store over a fresh temporary directory, with its cleanup guard.
     ///
     /// # Panics
     ///

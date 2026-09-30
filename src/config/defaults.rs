@@ -26,7 +26,7 @@ pub(super) fn pool_timeout() -> Duration {
     Duration::from_millis(5000)
 }
 
-/// Default request-accounting shard retention, in whole days.
+/// Default request-accounting retention, in whole days.
 ///
 /// # Panics
 ///

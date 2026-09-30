@@ -2,10 +2,10 @@
 //! management surface publishes (README §3 *ApiLog*, §7.1).
 //!
 //! One home for [`ApiLogEndpointType`], [`ApiLogOutcome`], and [`UsageGroupBy`]: every layer
-//! that names a recorded fact — the outward surfaces stamping the accounting draft, the shard
-//! store writing the rows, the management reads filtering and grouping them, and the wire
-//! payloads echoing them — speaks these types directly, so no layer imports another's internals
-//! to name a vocabulary word.
+//! that names a recorded fact — the outward surfaces stamping the accounting draft, the
+//! api-log store writing the rows, the management reads filtering and grouping them, and the
+//! wire payloads echoing them — speaks these types directly, so no layer imports another's
+//! internals to name a vocabulary word.
 //!
 //! The serde and TypeScript names of the stored sets are the storage names — the `CHECK`
 //! vocabulary of the `api_logs` columns and the `as_str` renderings are one vocabulary (README

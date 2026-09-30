@@ -2,23 +2,23 @@
 //!
 //! The schema is versioned linearly: every modification to a database schema is a new version,
 //! defined by one `version_x.rs` submodule whose only item is `const SCHEMA: Schema` and
-//! registered in its registry — [`MAIN_SCHEMAS`] for the main database, [`SHARD_SCHEMAS`] for the
-//! api-log shard files, selected by [`Registry`]. A version's `schema` field carries the complete
-//! DDL of that version as hand-written SQL, and its `migration` field carries the SQL that
-//! transforms the previous version's database into it.
+//! registered in its registry — [`MAIN_SCHEMAS`] for the main database, [`API_LOGS_SCHEMAS`]
+//! for the api-log files, selected by [`Registry`]. A version's `schema` field carries the
+//! complete DDL of that version as hand-written SQL, and its `migration` field carries the SQL
+//! that transforms the previous version's database into it.
 //!
 //! [`migrate`] runs when a database is opened: it reads `PRAGMA user_version`, applies the first
 //! version's DDL to a fresh database and walks forward from there, applying one migration per
 //! version, each committed atomically together with its `user_version` advance — so a fresh
 //! database and an outdated one both end at the latest version of their registry.
 //!
-//! Each registry stamps its identity into the schema itself: version 1's DDL creates a one-row
-//! `gateway_database_registry` marker table whose `registry` column is `CHECK`-pinned to the
-//! registry's closed value — `main` or `shard`. Before walking an existing database, the
-//! bootstrap verifies the stamp and panics on a mismatch, so a file opened under the wrong
-//! registry fails at startup instead of surfacing later as missing-table errors on first query.
-//! A database file predating the stamp carries none and fails the same startup verification —
-//! an unreleased development artifact the operator recreates.
+//! Each registry stamps its identity into the database header: version 1's SQL sets
+//! `PRAGMA application_id` to the registry's fourcc — `JGMD` for the main database, `JGAL` for
+//! an api-log file. Before walking an existing database, the bootstrap verifies the stamp and
+//! panics on a mismatch, so a file opened under the wrong registry fails at startup instead of
+//! surfacing later as missing-table errors on first query. A database file predating the stamp
+//! carries the default `0` and fails the same startup verification — an unreleased development
+//! artifact the operator recreates.
 //!
 //! Migration texts run under foreign key enforcement: the bootstrap connection enables
 //! `PRAGMA foreign_keys` before the walk, and each text executes inside its own transaction, where
@@ -28,7 +28,7 @@
 //! statement — a table rebuild, for instance, orders its steps so referential integrity holds at
 //! every intermediate state.
 
-mod shard_version_1;
+mod api_logs_version_1;
 mod version_1;
 
 use log::{debug, info};
@@ -69,10 +69,18 @@ struct Schema {
 /// gaps.
 const MAIN_SCHEMAS: &[Schema] = &[version_1::SCHEMA];
 
-/// Every schema version of an api-log shard file, ordered by ascending version starting at 1 with
-/// no gaps. Shards are immutable history: a column added later is a new version whose migration
-/// existing shard files walk when opened, so they stay readable.
-const SHARD_SCHEMAS: &[Schema] = &[shard_version_1::SCHEMA];
+/// Every schema version of an api-log file, ordered by ascending version starting at 1 with no
+/// gaps. Api-log versions are immutable history: a column added later is a new version whose
+/// migration existing files walk when opened, so they stay readable.
+const API_LOGS_SCHEMAS: &[Schema] = &[api_logs_version_1::SCHEMA];
+
+/// The `PRAGMA application_id` value stamped into the main database: the fourcc `JGMD` —
+/// *JanusGate main database*.
+const MAIN_APPLICATION_ID: i64 = 0x4a474d44;
+
+/// The `PRAGMA application_id` value stamped into an api-log file: the fourcc `JGAL` —
+/// *JanusGate api logs*.
+const API_LOGS_APPLICATION_ID: i64 = 0x4a47414c;
 
 /// The schema registry a database migrates under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,8 +88,8 @@ pub(crate) enum Registry {
     /// The main control-plane database.
     Main,
 
-    /// One api-log shard file (README §3 *ApiLog Shard Store*).
-    ApiLogShard,
+    /// One api-log file of the day-partitioned api-log store (README §3 *ApiLog Store*).
+    ApiLogs,
 }
 
 impl Registry {
@@ -89,16 +97,24 @@ impl Registry {
     fn schemas(self) -> &'static [Schema] {
         match self {
             Self::Main => MAIN_SCHEMAS,
-            Self::ApiLogShard => SHARD_SCHEMAS,
+            Self::ApiLogs => API_LOGS_SCHEMAS,
         }
     }
 
-    /// The closed value the registry's version-1 DDL stamps into the `gateway_database_registry`
-    /// marker table, and the value the bootstrap expects to find on an existing database.
-    fn stamp(self) -> &'static str {
+    /// The value the registry's version-1 SQL stamps into `PRAGMA application_id`, and the value
+    /// the bootstrap expects to find on an existing database.
+    fn application_id(self) -> i64 {
+        match self {
+            Self::Main => MAIN_APPLICATION_ID,
+            Self::ApiLogs => API_LOGS_APPLICATION_ID,
+        }
+    }
+
+    /// The registry's name for startup diagnostics.
+    fn name(self) -> &'static str {
         match self {
             Self::Main => "main",
-            Self::ApiLogShard => "shard",
+            Self::ApiLogs => "api_logs",
         }
     }
 }
@@ -121,32 +137,32 @@ pub(super) async fn migrate(connection: &Connection, registry: Registry, path: &
 /// progress under the database's `path`.
 ///
 /// The current version is read from `PRAGMA user_version`. A fresh database (`0`) receives the
-/// first version's DDL — which stamps `registry` into the `gateway_database_registry` marker —
-/// and joins the walk from there, so a fresh database ends at the latest version, however many
-/// exist, through the same later migrations an outdated database applies. The fresh-database
-/// decision re-runs inside the write-locked bootstrap transaction: of several opens
-/// bootstrapping one file at once — a shard write racing a shard read — exactly one applies the
-/// DDL, and the others join the version it committed, stamp verification included. Every
-/// migration step re-checks the stored version inside its own transaction the same way, so two
-/// opens walking one outdated file apply each migration exactly once between them. A database at
-/// a known version first has its stamp verified against `registry` — a mismatch, or a missing
-/// stamp on a file predating it, is fatal — and then applies the migrations of every later
-/// version in order; a database already at the latest version does nothing. Each step — one
-/// schema or migration text plus its `user_version` write — commits atomically, so a crash
-/// mid-chain leaves the database on its last committed version and the next startup resumes
-/// from there.
+/// first version's DDL — which stamps the registry into `PRAGMA application_id` — and joins the
+/// walk from there, so a fresh database ends at the latest version, however many exist, through
+/// the same later migrations an outdated database applies. The fresh-database decision re-runs
+/// inside the write-locked bootstrap transaction: of several opens bootstrapping one file at
+/// once — an api-log write racing an api-log read — exactly one applies the DDL, and the others
+/// join the version it committed, stamp verification included. Every migration step re-checks
+/// the stored version inside its own transaction the same way, so two opens walking one
+/// outdated file apply each migration exactly once between them. A database at a known version
+/// first has its application id verified against `registry` — a mismatch, or the default `0` on
+/// a file predating the stamp, is fatal — and then applies the migrations of every later version
+/// in order; a database already at the latest version does nothing. Each step — one schema or
+/// migration text plus its `user_version` write — commits atomically, so a crash mid-chain
+/// leaves the database on its last committed version and the next startup resumes from there.
 ///
 /// The schema versions and the registry are parameters rather than [`MAIN_SCHEMAS`],
-/// [`SHARD_SCHEMAS`], and their [`Registry`] values themselves so tests can exercise the walk
+/// [`API_LOGS_SCHEMAS`], and their [`Registry`] values themselves so tests can exercise the walk
 /// over chains with more versions than a registry currently contains; a synthetic chain carries
-/// the marker in its version 1 exactly like a real registry.
+/// the application-id stamp in its version 1 exactly like a real registry.
 ///
 /// # Panics
 ///
 /// Panics if reading `user_version`, beginning or aborting a bootstrap transaction, verifying
-/// the registry stamp, applying a schema or migration batch, or advancing `user_version` fails,
-/// if the stored version is negative or newer than the latest known version — a database this
-/// build cannot interpret — or if the database's stamp names a registry other than `registry`.
+/// the registry's application-id stamp, applying a schema or migration batch, or advancing
+/// `user_version` fails, if the stored version is negative or newer than the latest known
+/// version — a database this build cannot interpret — or if the database's application id is not
+/// the one `registry` stamps.
 async fn bring_up_to_latest(
     connection: &Connection,
     registry: Registry,
@@ -161,9 +177,9 @@ async fn bring_up_to_latest(
         // versions exist still apply.
         current_version = apply_first_version(connection, registry, schemas, path).await;
     } else {
-        // An existing database carries a schema version, so it must carry this registry's stamp;
-        // verify it before any DDL runs against the file.
-        verify_registry_stamp(connection, registry, path).await;
+        // An existing database carries a schema version, so it must carry this registry's
+        // application-id stamp; verify it before any DDL runs against the file.
+        verify_application_id(connection, registry, path).await;
     }
 
     match schemas.binary_search_by(|schema| schema.version.cmp(&current_version)) {
@@ -206,14 +222,14 @@ async fn bring_up_to_latest(
 /// write-locked bootstrap transaction — [`begin_write_transaction`] serializes it against every
 /// other writer of the file: a connection still reading `0` inside the transaction is the
 /// bootstrapper and applies the DDL; one finding the version a racing bootstrap committed aborts
-/// its empty transaction and verifies that database's stamp — a mismatch stays fatal — returning
-/// the found version to continue the walk from.
+/// its empty transaction and verifies that database's application id — a mismatch stays fatal —
+/// returning the found version to continue the walk from.
 ///
 /// # Panics
 ///
 /// Panics if beginning or aborting the transaction, reading `user_version`, applying the DDL
-/// batch, or verifying the registry stamp fails, or if the database's stamp names a registry
-/// other than `registry`.
+/// batch, or verifying the application id fails, or if the database's application id is not the
+/// one `registry` stamps.
 async fn apply_first_version(
     connection: &Connection,
     registry: Registry,
@@ -231,7 +247,7 @@ async fn apply_first_version(
         let raced_version = query_user_version(connection).await;
 
         rollback_write_transaction(connection).await;
-        verify_registry_stamp(connection, registry, path).await;
+        verify_application_id(connection, registry, path).await;
 
         raced_version
     }
@@ -246,8 +262,9 @@ async fn apply_first_version(
 /// Like the fresh-bootstrap decision in [`apply_first_version`], the walk's own version decision
 /// re-runs inside the write-locked bootstrap transaction: the caller selected this migration from
 /// a `user_version` read taken before any lock was held, and a racing bootstrap of the same
-/// outdated file can commit this very migration first — two opens walking one file, a shard write
-/// racing a shard read, serialize on the write lock here. A connection finding the version at or
+/// outdated file can commit this very migration first — two opens walking one file, an api-log
+/// write racing an api-log read, serialize on the write lock here. A connection finding the
+/// version at or
 /// past `version` inside the transaction aborts its empty transaction and joins the racing walk's
 /// outcome; the stored version can only have moved forward since the caller's read, so
 /// at-or-past the target means this migration is already applied.
@@ -360,67 +377,68 @@ async fn query_user_version(connection: &Connection) -> i64 {
         .expect("failed to get the user_version integer value")
 }
 
-/// Verifies that the database behind `connection` is stamped for `registry`, panicking with both
-/// registries named when the stored stamp disagrees.
+/// Verifies that the database behind `connection` carries `registry`'s `PRAGMA application_id`
+/// stamp, panicking with the stored and the expected value named when they disagree.
 ///
-/// The marker's value is written by the registry's own version-1 DDL and never again, so the
-/// stored value is the file's registry identity; a disagreement means the file belongs to the
-/// other registry and no statement may run against it.
+/// The stamp is written by the registry's own version-1 SQL and never again, so the stored value
+/// is the file's registry identity; a disagreement means the file belongs to the other registry
+/// — or predates the stamp, carrying the default `0` — and no statement may run against it.
 ///
 /// # Panics
 ///
-/// Panics if reading the stamp fails — a file predating the stamp carries no marker table — or
-/// if the stored stamp names a registry other than `registry`.
-async fn verify_registry_stamp(connection: &Connection, registry: Registry, path: &str) {
-    let stored = query_registry_stamp(connection).await;
-    let expected = registry.stamp();
+/// Panics if reading the pragma fails, or if the stored application id is not the one `registry`
+/// stamps.
+async fn verify_application_id(connection: &Connection, registry: Registry, path: &str) {
+    let stored = query_application_id(connection).await;
+    let expected = registry.application_id();
 
     if stored != expected {
         #[expect(
             clippy::panic,
-            reason = "a registry mismatch is fatal: the file is another registry's database"
+            reason = "an application-id mismatch is fatal: the file is another registry's \
+                      database, or predates the stamp"
         )]
         {
             panic!(
-                "database {path} is stamped for the {stored} registry but was opened under the \
-                 {expected} registry; the main and api-log shard registries live in separate files"
+                "database {path} carries the application_id {stored:#x}, but the {name} registry \
+                 stamps {expected:#x}; the main and api-log registries live in separate files",
+                name = registry.name(),
             );
         }
     }
 }
 
-/// Reads the `registry` value of the database's one-row `gateway_database_registry` marker.
+/// Retrieves the application id stored in `PRAGMA application_id`.
 ///
 /// # Panics
 ///
-/// Panics if executing the query or extracting its single text value fails, or if the marker
-/// table holds no row.
-async fn query_registry_stamp(connection: &Connection) -> String {
+/// Panics if executing the pragma query or extracting its value fails.
+async fn query_application_id(connection: &Connection) -> i64 {
     #[expect(
         clippy::expect_used,
-        reason = "reading the registry stamp of a versioned database is fatal on failure"
+        reason = "reading the application id of a versioned database is fatal on failure"
     )]
     let mut rows = connection
-        .query("SELECT registry FROM gateway_database_registry", ())
+        .query("PRAGMA application_id", ())
         .await
-        .expect("failed to query the database's registry stamp");
+        .expect("failed to query the database's application id");
 
     #[expect(
         clippy::expect_used,
-        reason = "the marker table holds exactly one row, enforced by its primary key"
+        reason = "the PRAGMA application_id query always produces a row"
     )]
     let row = rows
         .next()
         .await
-        .expect("failed to read the registry stamp row")
-        .expect("the registry stamp table holds no row");
+        .expect("failed to read the application id row")
+        .expect("missing application id row");
 
     #[expect(
         clippy::expect_used,
-        reason = "the registry stamp column is a text value"
+        reason = "the application id column is an integer value"
     )]
     row.get(0)
-        .expect("failed to get the registry stamp text value")
+        .expect("failed to get the application id integer value")
 }
 
 /// Returns the first schema version of `schemas`.
@@ -548,7 +566,7 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn schema_versions_are_contiguous_from_one() {
-        for schemas in [MAIN_SCHEMAS, SHARD_SCHEMAS] {
+        for schemas in [MAIN_SCHEMAS, API_LOGS_SCHEMAS] {
             assert_eq!(
                 first_schema(schemas).version,
                 1,
@@ -574,7 +592,7 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn first_migration_is_empty() {
-        for schemas in [MAIN_SCHEMAS, SHARD_SCHEMAS] {
+        for schemas in [MAIN_SCHEMAS, API_LOGS_SCHEMAS] {
             assert_eq!(
                 first_schema(schemas).migration,
                 "",
@@ -601,7 +619,7 @@ mod tests {
     /// DDL fails to parse.
     #[tokio::test]
     async fn migrations_produce_their_target_schemas() -> Result<(), Box<dyn StdError>> {
-        for schemas in [MAIN_SCHEMAS, SHARD_SCHEMAS] {
+        for schemas in [MAIN_SCHEMAS, API_LOGS_SCHEMAS] {
             let first = first_schema(schemas);
             let connection = open_memory_connection().await;
             connection.execute_batch(first.schema).await?;
@@ -620,15 +638,15 @@ mod tests {
 
     /// Verifies the full startup workflow on a fresh database for each registry: [`migrate`]
     /// brings `user_version` to the registry's latest version, and a second run over the
-    /// now-current database is a no-op. The second run exercises the stamp verification on an
-    /// existing database: the stamp the fresh run wrote must satisfy the same registry.
+    /// now-current database is a no-op. The second run exercises the application-id verification
+    /// on an existing database: the stamp the fresh run wrote must satisfy the same registry.
     ///
     /// # Panics
     ///
     /// Panics if the workflow fails or `user_version` does not reach the latest version.
     #[tokio::test]
     async fn migrate_bringup_is_complete_and_idempotent() -> Result<(), Box<dyn StdError>> {
-        for registry in [Registry::Main, Registry::ApiLogShard] {
+        for registry in [Registry::Main, Registry::ApiLogs] {
             let connection = open_memory_connection().await;
 
             migrate(&connection, registry, ":memory:").await;
@@ -648,28 +666,20 @@ mod tests {
     }
 
     /// Builds the synthetic two-version main-registry chain the walk tests exercise: version 1
-    /// carries the registry marker exactly like a real registry's version 1 — so stamp
+    /// stamps the registry's application id exactly like a real registry's version 1 — so stamp
     /// verification sees what a real stamped database carries — and version 2 adds a column to
     /// the synthetic table.
     fn synthetic_schemas() -> [Schema; 2] {
         [
             Schema {
                 version: 1,
-                schema: "CREATE TABLE gateway_database_registry (\
-                             id INTEGER PRIMARY KEY CHECK (id = 1),\
-                             registry TEXT NOT NULL CHECK (registry = 'main')\
-                         ) STRICT;\n\
-                         INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'main');\n\
+                schema: "PRAGMA application_id = 0x4A474D44;\n\
                          CREATE TABLE synthetic (value INTEGER) STRICT;\n",
                 migration: "",
             },
             Schema {
                 version: 2,
-                schema: "CREATE TABLE gateway_database_registry (\
-                             id INTEGER PRIMARY KEY CHECK (id = 1),\
-                             registry TEXT NOT NULL CHECK (registry = 'main')\
-                         ) STRICT;\n\
-                         INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'main');\n\
+                schema: "PRAGMA application_id = 0x4A474D44;\n\
                          CREATE TABLE synthetic (value INTEGER, label TEXT) STRICT;\n",
                 migration: "ALTER TABLE synthetic ADD COLUMN label TEXT;\n",
             },
@@ -707,12 +717,13 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the fresh-bootstrap race: a concurrent bootstrap commits version 1 — DDL, stamp
-    /// row, and version advance — into the database while [`bring_up_to_latest`], whose initial
-    /// version read already returned 0, waits on the write lock. The raced bootstrap must join
-    /// the committed version instead of re-applying the DDL: two opens bootstrapping one file at
-    /// once — a shard write racing a shard read — would otherwise both apply the first version,
-    /// and the duplicate `CREATE TABLE` of the registry marker kills the loser.
+    /// Verifies the fresh-bootstrap race: a concurrent bootstrap commits version 1 — DDL, the
+    /// application-id stamp, and version advance — into the database while
+    /// [`bring_up_to_latest`], whose initial version read already returned 0, waits on the write
+    /// lock. The raced bootstrap must join the committed version instead of re-applying the DDL:
+    /// two opens bootstrapping one file at once — an api-log write racing an api-log read —
+    /// would otherwise both apply the first version, and the duplicate `CREATE TABLE` of the
+    /// first table kills the loser.
     ///
     /// # Panics
     ///
@@ -752,8 +763,8 @@ mod tests {
     /// [`bring_up_to_latest`], whose initial version read already returned 1, waits on the write
     /// lock. The raced walk must re-check `user_version` inside its own transaction and join the
     /// committed version instead of re-applying the migration: two opens walking one outdated
-    /// file at once — a shard write racing a shard read — would otherwise both select the same
-    /// migration from the stale outer read, and the loser's duplicate `ALTER TABLE` dies in
+    /// file at once — an api-log write racing an api-log read — would otherwise both select the
+    /// same migration from the stale outer read, and the loser's duplicate `ALTER TABLE` dies in
     /// [`apply_batch`].
     ///
     /// # Panics
@@ -796,25 +807,23 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that the loser of the fresh-bootstrap race still verifies the registry stamp: a
-    /// racer committing the shard registry's stamped version 1 into a database the bootstrap is
-    /// bringing up under the main registry is fatal, naming both registries — the race must not
-    /// bypass the startup stamp verification.
+    /// Verifies that the loser of the fresh-bootstrap race still verifies the application id: a
+    /// racer committing the api_logs registry's stamped version 1 into a database the bootstrap
+    /// is bringing up under the main registry is fatal, naming the opened registry — the race
+    /// must not bypass the startup stamp verification.
     ///
     /// # Panics
     ///
     /// Panics if the bootstrap does not panic.
     #[tokio::test]
-    #[should_panic(
-        expected = "is stamped for the shard registry but was opened under the main registry"
-    )]
+    #[should_panic(expected = "but the main registry stamps")]
     async fn a_bootstrap_racing_a_foreign_registry_fresh_bootstrap_is_fatal() {
         let database = open_memory_database().await;
         let racer = connect_staging(&database).await;
         let raced = connect_staging(&database).await;
 
         stage(&racer, "BEGIN IMMEDIATE;").await;
-        stage(&racer, shard_version_1::SCHEMA.schema).await;
+        stage(&racer, api_logs_version_1::SCHEMA.schema).await;
         stage(&racer, "PRAGMA user_version = 1;").await;
 
         tokio::join!(
@@ -872,8 +881,9 @@ mod tests {
             .expect("the bootstrap-race staging applies");
     }
 
-    /// Stamps an in-memory database by hand: applies `schema` — DDL plus its stamp row — and
-    /// advances `user_version` to 1, reproducing the database an existing file carries.
+    /// Stamps an in-memory database by hand: applies `schema` — DDL plus its `application_id`
+    /// stamp — and advances `user_version` to 1, reproducing the database an existing file
+    /// carries.
     ///
     /// # Panics
     ///
@@ -902,41 +912,37 @@ mod tests {
         connection
     }
 
-    /// Verifies the registry-stamp fatality in the shard-under-main direction: a database
-    /// stamped for the shard registry panics when the bootstrap brings it up under the main
-    /// registry, naming both registries — instead of passing validation and failing later with
-    /// a missing-table error on first query.
+    /// Verifies the application-id fatality in the api_logs-under-main direction: a database
+    /// stamped for the api_logs registry panics when the bootstrap brings it up under the main
+    /// registry, naming the opened registry — instead of passing validation and failing later
+    /// with a missing-table error on first query.
     ///
     /// # Panics
     ///
     /// Panics if the bootstrap does not panic.
     #[tokio::test]
-    #[should_panic(
-        expected = "is stamped for the shard registry but was opened under the main registry"
-    )]
-    async fn a_shard_stamped_database_is_fatal_under_the_main_registry() {
-        let connection = open_stamped_memory_database(shard_version_1::SCHEMA.schema).await;
+    #[should_panic(expected = "but the main registry stamps")]
+    async fn an_api_log_stamped_database_is_fatal_under_the_main_registry() {
+        let connection = open_stamped_memory_database(api_logs_version_1::SCHEMA.schema).await;
 
         migrate(&connection, Registry::Main, ":memory:").await;
     }
 
-    /// Verifies the registry-stamp fatality in the mirror direction: a database stamped for the
-    /// main registry panics when the bootstrap brings it up under the shard registry.
+    /// Verifies the application-id fatality in the mirror direction: a database stamped for the
+    /// main registry panics when the bootstrap brings it up under the api_logs registry.
     ///
     /// # Panics
     ///
     /// Panics if the bootstrap does not panic.
     #[tokio::test]
-    #[should_panic(
-        expected = "is stamped for the main registry but was opened under the shard registry"
-    )]
-    async fn a_main_stamped_database_is_fatal_under_the_shard_registry() {
+    #[should_panic(expected = "but the api_logs registry stamps")]
+    async fn a_main_stamped_database_is_fatal_under_the_api_logs_registry() {
         let connection = open_stamped_memory_database(version_1::SCHEMA.schema).await;
 
-        migrate(&connection, Registry::ApiLogShard, ":memory:").await;
+        migrate(&connection, Registry::ApiLogs, ":memory:").await;
     }
 
-    /// Verifies that a database carrying a schema version but no registry stamp — a file
+    /// Verifies that a database carrying a schema version but no application-id stamp — a file
     /// predating the stamp, from before this change — fails the startup verification like any
     /// other database this build cannot interpret; the operator recreates the file.
     ///
@@ -944,11 +950,12 @@ mod tests {
     ///
     /// Panics if the bootstrap does not panic.
     #[tokio::test]
-    #[should_panic(expected = "failed to query the database's registry stamp")]
-    async fn a_database_predating_the_registry_stamp_is_fatal() {
+    #[should_panic(expected = "but the main registry stamps")]
+    async fn a_database_predating_the_application_id_stamp_is_fatal() {
         let connection = open_memory_connection().await;
 
-        // The era's layout without the marker: one table, a stamped version.
+        // The era's layout without the stamp: one table, a stamped version, and the default
+        // application id.
         #[expect(
             clippy::expect_used,
             reason = "the synthetic pre-stamp layout always applies to a fresh test database"
@@ -1127,9 +1134,9 @@ mod tests {
                 vec![line]
             }
 
-            // The registry stamp row is data, not a schema object: the structural comparison
-            // covers stored objects only, and the row itself is never compared.
-            Stmt::Insert { .. } => Vec::new(),
+            // The application-id pragma is header state, not a schema object: the structural
+            // comparison covers stored objects only, and the header's stamp is never compared.
+            Stmt::Pragma { .. } => Vec::new(),
 
             _ => {
                 #[expect(

@@ -44,11 +44,11 @@ pub(crate) struct Config {
     pub(crate) api: ApiConfig,
 
     /// Request accounting (`api_logs`) configuration. The section's presence is the recording
-    /// switch: present, dispatched requests are recorded into the day-partitioned shard store
-    /// (README §3 *ApiLog Shard Store*); absent, none are, while existing shards stay readable.
-    /// The write path reads the presence live per dispatched request, so a reload applies to the
-    /// next dispatch; the section itself is consumed once at startup when the shard store is
-    /// constructed, so adding it applies after restart.
+    /// switch: present, dispatched requests are recorded into the day-partitioned api-log
+    /// store (README §3 *ApiLog Store*); absent, none are, while existing api-log files stay
+    /// readable. The write path reads the presence live per dispatched request, so a reload
+    /// applies to the next dispatch; the section itself is consumed once at startup when the
+    /// api-log store is constructed, so adding it applies after restart.
     #[serde(default)]
     pub(crate) api_logs: Option<ApiLogsConfig>,
 }
@@ -140,19 +140,19 @@ pub(crate) struct ApiConfig {
     pub(crate) cors: CorsConfig,
 }
 
-/// Request accounting configuration (`api_logs`, README §3 *ApiLog Shard Store*).
+/// Request accounting configuration (`api_logs`, README §3 *ApiLog Store*).
 ///
 /// Unknown fields are strictly rejected. The section itself is the recording switch and carries
 /// no further switch field: present, rows are written; absent, none are.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiLogsConfig {
-    /// Directory holding the day-partitioned shard files (`YYYY-MM-DD.db`). Consumed once at
-    /// startup when the shard store is constructed; a changed path applies after restart.
+    /// Directory holding the day-partitioned api-log files (`YYYY-MM-DD.db`). Consumed once at
+    /// startup when the api-log store is constructed; a changed path applies after restart.
     pub(crate) path: PathBuf,
 
-    /// Retention of the shard files, in whole days: when a new shard file is created, the sweep
-    /// deletes shard files whose day-end is strictly older than now minus this many days.
+    /// Retention of the api-log files, in whole days: when a new api-log file is created, the
+    /// sweep deletes files whose day-end is strictly older than now minus this many days.
     /// Defaults to 90.
     #[serde(default = "super::defaults::api_logs_retention_days")]
     pub(crate) retention_days: NonZero<u32>,
@@ -240,7 +240,7 @@ mod tests {
             "the omitted api_logs section means recording is off"
         );
 
-        // The section's presence is the recording switch: present, it must state the shard
+        // The section's presence is the recording switch: present, it must state the api-log
         // directory, and retention may ride along or fall back to its default.
         let schema = parse(
             br#"{

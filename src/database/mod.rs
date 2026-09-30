@@ -95,16 +95,15 @@ impl Database {
     /// parent directory when absent, and initializes a connection pool with at most
     /// `max_connections` concurrent connections, waiting at most `pool_timeout` for a free
     /// connection when every connection is checked out. The `registry` names the schema version
-    /// registry the database migrates under — the main control-plane schema, or the api-log shard
-    /// schema for shard files.
+    /// registry the database migrates under — the main control-plane schema, or the api_logs
+    /// schema for api-log files.
     ///
     /// Before the pool is created, the schema version stored in `PRAGMA user_version` is verified
     /// and the database is migrated forward to the latest schema version of the registry: a fresh
     /// database receives the initial schema, an outdated one is migrated step by step, and an
-    /// unknown version is fatal. The registry's stamp in the database's
-    /// `gateway_database_registry` marker table is verified on an existing database, so a file
-    /// belonging to the other registry is fatal too. See the [`schema`] module for the versioning
-    /// and migration design.
+    /// unknown version is fatal. The registry's `PRAGMA application_id` stamp is verified on an
+    /// existing database, so a file belonging to the other registry is fatal too. See the
+    /// [`schema`] module for the versioning and migration design.
     ///
     /// # Errors
     ///
@@ -137,17 +136,17 @@ impl Database {
     }
 
     /// Opens the existing database at the specified path without creating anything: a missing
-    /// file is `Ok(None)` — the empty partition a missing shard file reads as (README §3
-    /// *ApiLog Shard Store*) — and neither the file nor its parent directory is ever created.
+    /// file is `Ok(None)` — the empty partition a missing api-log file reads as (README §3
+    /// *ApiLog Store*) — and neither the file nor its parent directory is ever created.
     /// Otherwise the open is exactly [`Database::open`]: the same pool sizing, wait, schema
-    /// verification, and forward migration, so an outdated shard a read opens first walks to
+    /// verification, and forward migration, so an outdated file a read opens first walks to
     /// the latest schema version before it serves.
     ///
     /// The existence check sits directly before the engine open, and the engine's open itself is
     /// create-on-open: a file that still vanishes between the two is replaced by a fresh, empty
     /// database, which the read answers as the empty partition the vanished file became. The
     /// residue is an empty schema'd file at the path, which retention expires like any other
-    /// shard when a sweep next runs.
+    /// api-log file when a sweep next runs.
     ///
     /// # Errors
     ///
@@ -571,7 +570,7 @@ mod tests {
         NonZero::new(1).expect("1 is nonzero")
     }
 
-    /// Verifies the refuse-to-create open mode (README §3 *ApiLog Shard Store*): `open_existing`
+    /// Verifies the refuse-to-create open mode (README §3 *ApiLog Store*): `open_existing`
     /// against an absent database file answers `Ok(None)` — the empty partition — and creates
     /// neither the file nor its parent directory, while the creating `open` still builds both;
     /// once the file exists, `open_existing` opens that same file.
@@ -588,7 +587,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("janusgate-db-open-{}", rand::random::<u64>()));
         let _guard = TempDirGuard(directory.clone());
-        let path = directory.join("shard.db");
+        let path = directory.join("api-logs.db");
 
         let connections = pool_connections();
         let wait = Duration::from_secs(5);
@@ -619,30 +618,28 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the registry-stamp fatality through the real open path: a file created under the
-    /// shard registry panics at open under the main registry — the startup-time fatal, not a
+    /// Verifies the application-id fatality through the real open path: a file created under the
+    /// api_logs registry panics at open under the main registry — the startup-time fatal, not a
     /// pool that serves and fails later on first query.
     ///
     /// # Panics
     ///
     /// Panics if the second open does not panic.
     #[tokio::test]
-    #[should_panic(
-        expected = "is stamped for the shard registry but was opened under the main registry"
-    )]
-    async fn open_panics_when_a_shard_file_opens_under_the_main_registry() {
+    #[should_panic(expected = "but the main registry stamps")]
+    async fn open_panics_when_an_api_log_file_opens_under_the_main_registry() {
         let directory =
             std::env::temp_dir().join(format!("janusgate-db-registry-{}", rand::random::<u64>()));
         let _guard = TempDirGuard(directory.clone());
-        let path = directory.join("shard.db");
+        let path = directory.join("api-logs.db");
 
         let connections = pool_connections();
         let wait = Duration::from_secs(5);
 
-        #[expect(clippy::expect_used, reason = "the creating shard open must succeed")]
-        Database::open(&path, Registry::ApiLogShard, connections, wait)
+        #[expect(clippy::expect_used, reason = "the creating api-log open must succeed")]
+        Database::open(&path, Registry::ApiLogs, connections, wait)
             .await
-            .expect("the creating shard open succeeds");
+            .expect("the creating api-log open succeeds");
 
         let _ = Database::open(&path, Registry::Main, connections, wait).await;
     }

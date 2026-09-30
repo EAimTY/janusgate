@@ -1,9 +1,9 @@
-//! Shared fixtures for the shard-store and read-engine tests: the store constructor, the raw
-//! shard opener, and the write fixture both test modules place rows with.
+//! Shared fixtures for the api-log store and read-engine tests: the store constructor, the raw
+//! day-file opener, and the write fixture both test modules place rows with.
 
 use super::{
     ApiLogWrite,
-    store::{ApiLogStore, SHARD_POOL_WAIT, ShardDay, shard_write_pool_connections},
+    store::{ApiLogDay, ApiLogStore, FILE_POOL_WAIT, write_pool_connections},
 };
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome},
@@ -12,7 +12,7 @@ use crate::{
 };
 use std::num::NonZero;
 
-/// Creates a shard store over a fresh temporary directory with `retention_days`.
+/// Creates an api-log store over a fresh temporary directory with `retention_days`.
 ///
 /// # Panics
 ///
@@ -30,18 +30,19 @@ pub(super) fn create_test_store(retention_days: u32) -> (ApiLogStore, TempDirGua
     )
 }
 
-/// Opens one shard of `store` for raw statement probes, creating the file when absent.
+/// Opens one day's api-log file of `store` for raw statement probes, creating the file when
+/// absent.
 ///
 /// # Panics
 ///
-/// Panics if opening the shard fails.
-pub(super) async fn open_shard(store: &ApiLogStore, day: ShardDay) -> Database {
-    #[expect(clippy::unwrap_used, reason = "a test shard file always opens")]
+/// Panics if opening the file fails.
+pub(super) async fn open_day_file(store: &ApiLogStore, day: ApiLogDay) -> Database {
+    #[expect(clippy::unwrap_used, reason = "a test api-log file always opens")]
     Database::open(
-        store.shard_path(day),
-        Registry::ApiLogShard,
-        shard_write_pool_connections(),
-        SHARD_POOL_WAIT,
+        store.day_file_path(day),
+        Registry::ApiLogs,
+        write_pool_connections(),
+        FILE_POOL_WAIT,
     )
     .await
     .unwrap()

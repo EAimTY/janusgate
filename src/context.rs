@@ -3,15 +3,15 @@
 use super::{database::Database, storage::api_logs::ApiLogStore};
 use reqwest::Client;
 
-/// State shared by every router handler: the database handle, the api-log shard store, and the
+/// State shared by every router handler: the database handle, the api-log store, and the
 /// two upstream HTTP clients, one per traffic class.
 #[derive(Clone)]
 pub(crate) struct Context {
     /// Database handle all handlers execute against.
     pub(crate) database: Database,
 
-    /// The api-log shard store, constructed at startup when the `api_logs` configuration section
-    /// was present. `None` records nothing and reads as the empty store (README §3 *ApiLog Shard
+    /// The api-log store, constructed at startup when the `api_logs` configuration section
+    /// was present. `None` records nothing and reads as the empty store (README §3 *ApiLog
     /// Store*).
     pub(crate) api_log_store: Option<ApiLogStore>,
 
