@@ -595,19 +595,29 @@ mod tests {
         assert!(first.contains("export type BindingsTestBetaRequest"));
 
         // Closed sets publish as plain unions: the discovery-state union is declared, and no
-        // ordered-vocabulary artifact — `ThinkingLevel`, `THINKING_LEVEL_ORDER` — renders anywhere
-        // in the file (README §7.3).
+        // ordered-vocabulary artifact — the vocabulary-ordered level type or its order constant
+        // — renders anywhere in the file (README §7.3). The descriptor's level-extraction shapes
+        // — `ThinkingLevelsExtraction` — are payload types, not vocabulary artifacts, and publish
+        // legitimately.
         assert!(first.contains("export type DiscoveryState"));
         assert!(first.contains(r#""discovered""#));
         assert!(first.contains(r#""vanished""#));
         assert!(first.contains(r#""manual""#));
 
         assert!(!first.contains("THINKING_LEVEL_ORDER"));
-        assert!(!first.contains("ThinkingLevel"));
+        assert!(!first.contains("ThinkingLevel "));
+        assert!(!first.contains("ThinkingLevel="));
         assert!(
             !first.contains("IrReasoningEffort"),
             "the Rust type name never reaches the bindings"
         );
+
+        // The capability-override mirrors of the model rows publish as their two-state shapes
+        // (rule 2): the required-nullable array and number overrides on create and update, the
+        // always-present nullable columns on the row (README §7.1).
+        assert!(first.contains("thinking_levels_override: Array<string> | null"));
+        assert!(first.contains("max_input_tokens_override: number | null"));
+        assert!(first.contains("thinking_levels: Array<string> | null"));
 
         // The `models:delete` route is part of the published route table.
         assert!(first.contains("\"/models:delete\""));

@@ -49,11 +49,23 @@ struct ModelList {
     models: Vec<ModelEntry>,
 }
 
-/// One served model in the native Gemini shape.
+/// One served model in the native Gemini shape, carrying the official token-limit members
+/// when their effective values are known (README §6.5) — `inputTokenLimit` and
+/// `outputTokenLimit` — and omitting each when unknown, never fabricating a value.
 #[derive(Debug, Serialize)]
 struct ModelEntry {
     /// Resource name in the official `models/<id>` form.
     name: String,
+
+    /// Effective maximum input tokens in the official member's camelCase spelling; omitted when
+    /// unknown.
+    #[serde(rename = "inputTokenLimit", skip_serializing_if = "Option::is_none")]
+    input_token_limit: Option<i64>,
+
+    /// Effective maximum output tokens in the official member's camelCase spelling; omitted when
+    /// unknown.
+    #[serde(rename = "outputTokenLimit", skip_serializing_if = "Option::is_none")]
+    output_token_limit: Option<i64>,
 }
 
 /// Handles `GET /models`: the native `{"models": [...]}` shape over the same
@@ -63,8 +75,10 @@ async fn models(State(context): State<Context>) -> Response {
     serving::model_list_response::<super::Surface, _, _>(&context.database, |listed| ModelList {
         models: listed
             .into_iter()
-            .map(|(public_id, _)| ModelEntry {
-                name: format!("models/{public_id}"),
+            .map(|model| ModelEntry {
+                name: format!("models/{}", model.public_id),
+                input_token_limit: model.max_input_tokens,
+                output_token_limit: model.max_output_tokens,
             })
             .collect(),
     })
@@ -258,24 +272,26 @@ mod tests {
     }
 
     /// Verifies the native model-listing shape renders `models/<id>` names with no
-    /// pagination token.
+    /// pagination token, and that the official token-limit members ride along when known and
+    /// stay absent when unknown (README §6.5).
     ///
     /// # Panics
     ///
     /// Panics if the rendered shape diverges from the native contract.
     #[test]
     fn renders_native_model_listing_shape() {
-        let listed = [
-            ("b-model".to_string(), "b-provider".to_string()),
-            ("a-model".to_string(), "a-provider".to_string()),
+        let models = vec![
+            ModelEntry {
+                name: "models/b-model".to_string(),
+                input_token_limit: None,
+                output_token_limit: None,
+            },
+            ModelEntry {
+                name: "models/a-model".to_string(),
+                input_token_limit: Some(1_048_576),
+                output_token_limit: Some(65_535),
+            },
         ];
-
-        let models = listed
-            .iter()
-            .map(|(public_id, _)| ModelEntry {
-                name: format!("models/{public_id}"),
-            })
-            .collect();
 
         #[expect(clippy::expect_used, reason = "the listing body always serializes")]
         let value = serde_json::to_value(&ModelList { models }).expect("the listing serializes");
@@ -285,7 +301,11 @@ mod tests {
             serde_json::json!({
                 "models": [
                     {"name": "models/b-model"},
-                    {"name": "models/a-model"},
+                    {
+                        "name": "models/a-model",
+                        "inputTokenLimit": 1048576,
+                        "outputTokenLimit": 65535,
+                    },
                 ],
             })
         );

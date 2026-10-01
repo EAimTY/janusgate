@@ -8,6 +8,7 @@ import {
     bodyText,
     buttonWithText,
     createDisposals,
+    labeledCheckbox,
     labeledInput,
     labeledSelect,
     linkTo,
@@ -16,6 +17,7 @@ import {
     providerRow,
     settle,
     stubManagementApi,
+    switchWithLabel,
     typeInto,
 } from "./screen-test-support";
 
@@ -251,9 +253,61 @@ describe("ModelNewScreen creation", () => {
                 upstream_id: "gpt-4o",
                 id_override: null,
                 is_enabled: true,
+                thinking_levels_override: null,
+                max_input_tokens_override: null,
+                max_output_tokens_override: null,
             },
         ]);
         expect(window.location.pathname).toBe(hrefs.modelDetail(11));
+    });
+
+    it("carries capability overrides beside the identity", async () => {
+        const sent: CreateModelRequest[] = [];
+        mountScreen(
+            screenApi(
+                [
+                    providerRow({
+                        id: 5,
+                        name: "solo",
+                        model_prefix: "solo-",
+                    }),
+                ],
+                {
+                    sent,
+                },
+            ),
+        );
+        await settle();
+
+        typeInto(labeledInput("Upstream ID"), "gpt-4o");
+        await settle();
+
+        switchWithLabel("Override reasoning levels").click();
+        await settle();
+        labeledCheckbox("low").click();
+        await settle();
+
+        switchWithLabel("Override max output tokens").click();
+        await settle();
+        typeInto(labeledInput("Max output tokens override"), "32768");
+        await settle();
+
+        buttonWithText("Create model").click();
+        await settle();
+
+        expect(sent).toEqual([
+            {
+                provider_id: 5,
+                upstream_id: "gpt-4o",
+                id_override: null,
+                is_enabled: true,
+                thinking_levels_override: [
+                    "low",
+                ],
+                max_input_tokens_override: null,
+                max_output_tokens_override: 32_768,
+            },
+        ]);
     });
 });
 

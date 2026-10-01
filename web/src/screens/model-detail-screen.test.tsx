@@ -97,3 +97,70 @@ describe("ModelDetailScreen facts", () => {
         expect(bodyText()).not.toContain("Enabled");
     });
 });
+
+describe("ModelDetailScreen capabilities", () => {
+    const disposes = createDisposals();
+
+    function mount(model: ModelResponse): void {
+        disposes.push(
+            render(
+                () => (
+                    <ModelDetailScreen
+                        api={screenApi(provider, model)}
+                        modelId={9}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("states each effective declaration with its provenance", async () => {
+        mount(
+            modelRow({
+                provider_id: 5,
+                thinking_levels: [
+                    "low",
+                    "high",
+                ],
+                max_input_tokens: 200_000,
+                max_output_tokens_override: 32_768,
+            }),
+        );
+        await settle();
+
+        const capabilities = cardWithTitle("Capabilities");
+        expect(capabilities.textContent).toContain("low, high");
+        expect(capabilities.textContent).toContain("From the latest discovery.");
+        expect(capabilities.textContent).toContain("200,000");
+        expect(capabilities.textContent).toContain("32,768");
+        expect(capabilities.textContent).toContain("Overridden by administrator.");
+    });
+
+    it("states unknown declarations as omitted from the listings", async () => {
+        mount(
+            modelRow({
+                provider_id: 5,
+            }),
+        );
+        await settle();
+
+        const capabilities = cardWithTitle("Capabilities");
+        expect(capabilities.textContent).toContain("Unknown");
+        expect(capabilities.textContent).toContain("omitted from model listings");
+    });
+
+    it("states an empty level set as the positive declaration of no levels", async () => {
+        mount(
+            modelRow({
+                provider_id: 5,
+                thinking_levels_override: [],
+            }),
+        );
+        await settle();
+
+        const capabilities = cardWithTitle("Capabilities");
+        expect(capabilities.textContent).toContain("No levels");
+        expect(capabilities.textContent).toContain("Overridden by administrator.");
+    });
+});

@@ -5,7 +5,7 @@
 //! holding every database statement — including the providers' own rows — lives beside this
 //! module in [`crate::storage`].
 
-use crate::storage::Error as StorageError;
+use crate::{ir::IrReasoningLevel, storage::Error as StorageError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -334,6 +334,50 @@ pub(crate) struct Model {
 
     /// Discovery lifecycle state of the row.
     pub(crate) discovery_state: DiscoveryState,
+
+    /// Discovered thinking levels — the latest upstream knowledge in the shared vocabulary
+    /// (README §6.4), canonicalized. `None` is *unknown* (nothing extracted), never "none";
+    /// an empty set is the positive declaration that no level is supported. Discovery-owned:
+    /// every refresh rewrites it for a listed row.
+    pub(crate) thinking_levels: Option<Vec<IrReasoningLevel>>,
+
+    /// Discovered maximum input tokens; `None` is unknown. Discovery-owned.
+    pub(crate) max_input_tokens: Option<i64>,
+
+    /// Discovered maximum output tokens; `None` is unknown. Discovery-owned.
+    pub(crate) max_output_tokens: Option<i64>,
+
+    /// Administrator's replacement declaration for the thinking levels; `None` keeps the
+    /// discovered value. The canonicalized set mirrors the base column's semantics, empty set
+    /// included.
+    pub(crate) thinking_levels_override: Option<Vec<IrReasoningLevel>>,
+
+    /// Administrator's replacement declaration for the maximum input tokens; `None` keeps the
+    /// discovered value.
+    pub(crate) max_input_tokens_override: Option<i64>,
+
+    /// Administrator's replacement declaration for the maximum output tokens; `None` keeps the
+    /// discovered value.
+    pub(crate) max_output_tokens_override: Option<i64>,
+}
+
+/// One upstream-discovered model with its extracted capability facts (README §5.5): every
+/// fact `None` when the descriptor extracts no such capability or the entry carries none —
+/// *unknown*, never "none". The discovered set is canonicalized and vocabulary-filtered at
+/// extraction; the gateway never dispatches against any of these values.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DiscoveredModel {
+    /// Exact upstream model identifier, already validated as a routing token.
+    pub(crate) upstream_id: String,
+
+    /// Extracted thinking levels; `None` when unknown.
+    pub(crate) thinking_levels: Option<Vec<IrReasoningLevel>>,
+
+    /// Extracted maximum input tokens; `None` when unknown.
+    pub(crate) max_input_tokens: Option<i64>,
+
+    /// Extracted maximum output tokens; `None` when unknown.
+    pub(crate) max_output_tokens: Option<i64>,
 }
 
 /// A provider row joined with the model row a public ID resolved to.
@@ -372,5 +416,24 @@ impl Model {
     /// only writes `discovery_state`).
     pub(crate) fn is_effectively_enabled(&self, is_provider_enabled: bool) -> bool {
         is_provider_enabled && self.is_enabled && self.discovery_state != DiscoveryState::Vanished
+    }
+
+    /// The model's effective thinking-level declaration: the override when present, else the
+    /// discovered set — `None` when neither is known, the value the outward listings omit
+    /// (README §3/§6.5). A declaration, never an enforcement: dispatch never consults it.
+    pub(crate) fn effective_thinking_levels(&self) -> Option<&[IrReasoningLevel]> {
+        self.thinking_levels_override
+            .as_deref()
+            .or(self.thinking_levels.as_deref())
+    }
+
+    /// The model's effective maximum-input-tokens declaration (README §3).
+    pub(crate) fn effective_max_input_tokens(&self) -> Option<i64> {
+        self.max_input_tokens_override.or(self.max_input_tokens)
+    }
+
+    /// The model's effective maximum-output-tokens declaration (README §3).
+    pub(crate) fn effective_max_output_tokens(&self) -> Option<i64> {
+        self.max_output_tokens_override.or(self.max_output_tokens)
     }
 }

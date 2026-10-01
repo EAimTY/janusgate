@@ -23,8 +23,14 @@ import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     composedPublicId,
+    isSameLevelSet,
     ModelIdOverrideFields,
     normalizedPublicIdOverride,
+    normalizedThinkingLevelsOverride,
+    normalizedTokenCapOverride,
+    ThinkingLevelsOverrideFields,
+    TokenCapOverrideFields,
+    tokenCapOverrideError,
 } from "/src/ui/model-form";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { RowNotFound } from "./row-not-found";
@@ -164,6 +170,24 @@ function ModelSettingsForm(props: {
     const [isEnabled, setIsEnabled] = createSignal(props.initialModel.is_enabled);
     const [hasIdOverride, setHasIdOverride] = createSignal(props.initialModel.id_override !== null);
     const [idOverride, setIdOverride] = createSignal(props.initialModel.id_override ?? "");
+    const [hasLevelsOverride, setHasLevelsOverride] = createSignal(
+        props.initialModel.thinking_levels_override !== null,
+    );
+    const [selectedLevels, setSelectedLevels] = createSignal<ReadonlyArray<string>>(
+        props.initialModel.thinking_levels_override ?? [],
+    );
+    const [hasMaxInputOverride, setHasMaxInputOverride] = createSignal(
+        props.initialModel.max_input_tokens_override !== null,
+    );
+    const [maxInputText, setMaxInputText] = createSignal(
+        props.initialModel.max_input_tokens_override?.toString() ?? "",
+    );
+    const [hasMaxOutputOverride, setHasMaxOutputOverride] = createSignal(
+        props.initialModel.max_output_tokens_override !== null,
+    );
+    const [maxOutputText, setMaxOutputText] = createSignal(
+        props.initialModel.max_output_tokens_override?.toString() ?? "",
+    );
 
     // Both derivations run through the shared toggle-aware helpers, so the
     // off-hint always names the ID the write produces — even with stale text
@@ -182,15 +206,49 @@ function ModelSettingsForm(props: {
     const overrideError = (): string | null =>
         routingTokenError(normalizedOverride(), "Public ID override");
 
-    const isDirty = (): boolean =>
-        isEnabled() !== current().is_enabled || normalizedOverride() !== current().id_override;
+    /** Inline errors for the token-cap overrides, shown where each was typed. */
+    const maxInputError = (): string | null =>
+        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "Max input tokens override");
 
-    const canSave = (): boolean => isDirty() && overrideError() === null;
+    const maxOutputError = (): string | null =>
+        tokenCapOverrideError(
+            hasMaxOutputOverride(),
+            maxOutputText(),
+            "Max output tokens override",
+        );
+
+    const normalizedLevels = (): Array<string> | null =>
+        normalizedThinkingLevelsOverride(hasLevelsOverride(), selectedLevels());
+
+    const normalizedMaxInput = (): number | null =>
+        normalizedTokenCapOverride(hasMaxInputOverride(), maxInputText());
+
+    const normalizedMaxOutput = (): number | null =>
+        normalizedTokenCapOverride(hasMaxOutputOverride(), maxOutputText());
+
+    const isDirty = (): boolean =>
+        isEnabled() !== current().is_enabled ||
+        normalizedOverride() !== current().id_override ||
+        !isSameLevelSet(normalizedLevels(), current().thinking_levels_override) ||
+        normalizedMaxInput() !== current().max_input_tokens_override ||
+        normalizedMaxOutput() !== current().max_output_tokens_override;
+
+    const canSave = (): boolean =>
+        isDirty() &&
+        overrideError() === null &&
+        maxInputError() === null &&
+        maxOutputError() === null;
 
     const revert = (): void => {
         setIsEnabled(current().is_enabled);
         setHasIdOverride(current().id_override !== null);
         setIdOverride(current().id_override ?? "");
+        setHasLevelsOverride(current().thinking_levels_override !== null);
+        setSelectedLevels(current().thinking_levels_override ?? []);
+        setHasMaxInputOverride(current().max_input_tokens_override !== null);
+        setMaxInputText(current().max_input_tokens_override?.toString() ?? "");
+        setHasMaxOutputOverride(current().max_output_tokens_override !== null);
+        setMaxOutputText(current().max_output_tokens_override?.toString() ?? "");
         // Reverting resolves a held row onto the gateway's current version.
         props.read.reload();
     };
@@ -205,6 +263,9 @@ function ModelSettingsForm(props: {
                 toUpdateModelRequest(current(), {
                     id_override: normalizedOverride(),
                     is_enabled: isEnabled(),
+                    thinking_levels_override: normalizedLevels(),
+                    max_input_tokens_override: normalizedMaxInput(),
+                    max_output_tokens_override: normalizedMaxOutput(),
                 }),
             ),
         onSucceeded: (envelope) => {
@@ -216,6 +277,12 @@ function ModelSettingsForm(props: {
             setIsEnabled(saved.is_enabled);
             setHasIdOverride(saved.id_override !== null);
             setIdOverride(saved.id_override ?? "");
+            setHasLevelsOverride(saved.thinking_levels_override !== null);
+            setSelectedLevels(saved.thinking_levels_override ?? []);
+            setHasMaxInputOverride(saved.max_input_tokens_override !== null);
+            setMaxInputText(saved.max_input_tokens_override?.toString() ?? "");
+            setHasMaxOutputOverride(saved.max_output_tokens_override !== null);
+            setMaxOutputText(saved.max_output_tokens_override?.toString() ?? "");
 
             // The routing line speaks only where clients calling the composed
             // ID actually reach the gateway. A vanished row stays suspended
@@ -266,6 +333,39 @@ function ModelSettingsForm(props: {
                     onIdOverrideInput={setIdOverride}
                     composedId={composedId()}
                     idOverrideError={overrideError()}
+                    isDisabled={form.isSaving()}
+                />
+
+                <ThinkingLevelsOverrideFields
+                    hasOverride={hasLevelsOverride()}
+                    onHasOverrideToggle={setHasLevelsOverride}
+                    selected={selectedLevels()}
+                    onSelectedChange={setSelectedLevels}
+                    discovered={current().thinking_levels}
+                    isDisabled={form.isSaving()}
+                />
+
+                <TokenCapOverrideFields
+                    switchLabel="Override max input tokens"
+                    fieldLabel="Max input tokens override"
+                    hasOverride={hasMaxInputOverride()}
+                    onHasOverrideToggle={setHasMaxInputOverride}
+                    value={maxInputText()}
+                    onValueInput={setMaxInputText}
+                    discovered={current().max_input_tokens}
+                    valueError={maxInputError()}
+                    isDisabled={form.isSaving()}
+                />
+
+                <TokenCapOverrideFields
+                    switchLabel="Override max output tokens"
+                    fieldLabel="Max output tokens override"
+                    hasOverride={hasMaxOutputOverride()}
+                    onHasOverrideToggle={setHasMaxOutputOverride}
+                    value={maxOutputText()}
+                    onValueInput={setMaxOutputText}
+                    discovered={current().max_output_tokens}
+                    valueError={maxOutputError()}
                     isDisabled={form.isSaving()}
                 />
 

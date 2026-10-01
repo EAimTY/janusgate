@@ -89,25 +89,89 @@ impl IrReasoningLevel {
         (Self::Max, "max"),
     ];
 
+    /// The vocabulary in canonical order — the storage and declaration order of a level set
+    /// (README §3/§5.5): a stored or declared set is deduplicated into this order at write.
+    pub(crate) const CANONICAL: [Self; 7] = [
+        Self::None,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+        Self::Max,
+    ];
+
+    /// Parses a vocabulary string domain-neutrally: [`Some`] for a member, [`None`] for a
+    /// foreign string. The vocabulary is shared by the request boundary (which 400s on a
+    /// foreign value through [`Self::parse`]), the discovery ingestion boundary (which skips a
+    /// foreign level, README §5.5), and the management override boundary (which rejects one) —
+    /// each naming the vocabulary in its own error domain.
+    #[must_use]
+    pub(crate) fn from_vocabulary_str(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    /// Canonicalizes a set of levels: deduplicated, in [`Self::CANONICAL`] order. Both write
+    /// paths that store a level set — discovery ingestion and the management override — pass
+    /// through here, so a stored set is always the canonical form (README §3).
+    #[must_use]
+    pub(crate) fn canonicalize_levels(levels: impl IntoIterator<Item = Self>) -> Vec<Self> {
+        let mut present = [false; 7];
+
+        for level in levels {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the canonical index of a vocabulary member is within the table by \
+                          construction"
+            )]
+            {
+                present[Self::canonical_index(level)] = true;
+            }
+        }
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "every enumerated index of CANONICAL is within the table by construction"
+        )]
+        Self::CANONICAL
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| present[*index])
+            .map(|(_, level)| level)
+            .collect()
+    }
+
+    /// The level's index in [`Self::CANONICAL`].
+    const fn canonical_index(level: Self) -> usize {
+        match level {
+            Self::None => 0,
+            Self::Minimal => 1,
+            Self::Low => 2,
+            Self::Medium => 3,
+            Self::High => 4,
+            Self::XHigh => 5,
+            Self::Max => 6,
+        }
+    }
+
     /// Parses the closed vocabulary string.
     ///
     /// # Errors
     ///
     /// Returns [`InvalidRequest`] naming `param` for unknown strings.
     pub(crate) fn parse(value: &str, param: &str) -> Result<Self, InvalidRequest> {
-        match value {
-            "none" => Ok(Self::None),
-            "minimal" => Ok(Self::Minimal),
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            "xhigh" => Ok(Self::XHigh),
-            "max" => Ok(Self::Max),
-            other => Err(InvalidRequest::field(
-                param,
-                format!("Unknown reasoning effort `{other}`"),
-            )),
-        }
+        Self::from_vocabulary_str(value).ok_or_else(|| {
+            InvalidRequest::field(param, format!("Unknown reasoning effort `{value}`"))
+        })
     }
 
     /// Renders the canonical vocabulary string, written verbatim into the target's own level

@@ -27,6 +27,7 @@ use crate::{
         Database, Error as DatabaseError, IntoParams, Row, Transaction, TursoError, Value, params,
         params::IntoValue,
     },
+    ir::IrReasoningLevel,
     provider::{CredentialKind, DiscoveryState, Model, Provider, definition::ProviderDefinition},
 };
 use std::{collections::HashMap, num::NonZeroI64};
@@ -130,19 +131,26 @@ pub(crate) const PROVIDER_JOINED_FROM_MODELS: &str = "FROM models m \
 const MODELS_JOINED_PROVIDERS: &str = "FROM models m JOIN providers p ON p.id = m.provider_id";
 
 /// Column order of model selects: the row identity first, then the upstream identifier, the
-/// routing columns, and the discovery state. The owning provider is never carried in the row
-/// itself — every read knows it through the query's filter or its join.
-const MODEL_COLUMNS: &str = "id, upstream_id, public_id, id_override, is_enabled, discovery_state";
+/// routing columns, the discovery state, the three capability base columns, and the three
+/// capability override mirrors. The owning provider is never carried in the row itself — every
+/// read knows it through the query's filter or its join.
+const MODEL_COLUMNS: &str = "id, upstream_id, public_id, id_override, is_enabled, \
+     discovery_state, thinking_levels, max_input_tokens, max_output_tokens, \
+     thinking_levels_override, max_input_tokens_override, max_output_tokens_override";
 
 /// The model columns as a provider-model join projects them, appended after
 /// [`PROVIDER_COLUMNS`].
-const MODEL_COLUMNS_JOINED: &str =
-    "m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
+const MODEL_COLUMNS_JOINED: &str = "m.id, m.upstream_id, m.public_id, m.id_override, \
+     m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
+     m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
+     m.max_output_tokens_override";
 
 /// The combined column order of the model-entry join, consumed positionally by
 /// [`model_entry_from_row`]: the provider id and name, then the model columns.
-const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, \
-     m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
+const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, m.public_id, \
+     m.id_override, m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
+     m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
+     m.max_output_tokens_override";
 
 /// Provider, model, and OAuth state persistence failures.
 ///
@@ -336,6 +344,53 @@ fn discovery_state_from_value(value: Value) -> Result<DiscoveryState, Error> {
     }
 }
 
+/// Reads a thinking-level set column (README §3): `NULL` is the unknown state ([`None`]); a JSON
+/// array of vocabulary strings is the canonicalized set; anything else — non-JSON text, a JSON
+/// value that is not an array, an array element that is not a string or not a vocabulary member —
+/// is storage drift, because both write paths (discovery ingestion and the management override)
+/// write only canonicalized vocabulary sets.
+fn levels_from_column(
+    value: Option<String>,
+    column: &str,
+) -> Result<Option<Vec<IrReasoningLevel>>, Error> {
+    let Some(json) = value else {
+        return Ok(None);
+    };
+
+    let parsed = serde_json::from_str::<Vec<String>>(&json).map_err(|error| Error::Drift {
+        message: format!("{column} column carries a malformed level set: {error}"),
+    })?;
+
+    parsed
+        .into_iter()
+        .map(|level| {
+            IrReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| Error::Drift {
+                message: format!("{column} column carries the foreign level `{level}`"),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Renders a thinking-level set column value for a statement parameter: [`Value::Null`] for the
+/// unknown state, else the set's canonical JSON array text. The caller passes a canonicalized set
+/// (both write paths canonicalize before storage, README §3), so the rendering needs no
+/// re-canonicalization.
+fn levels_into_value(levels: Option<&[IrReasoningLevel]>) -> Result<Value, TursoError> {
+    let Some(levels) = levels else {
+        return Ok(Value::Null);
+    };
+
+    let spelled = levels
+        .iter()
+        .map(|level| level.as_str())
+        .collect::<Vec<_>>();
+
+    serde_json::to_string(&spelled)
+        .map(Value::Text)
+        .map_err(|error| TursoError::ToSqlConversionFailure(error.into()))
+}
+
 /// The column count of [`PROVIDER_COLUMNS`]: a provider-model join appends the model columns
 /// after it.
 pub(crate) const PROVIDER_COLUMN_COUNT: usize = 14;
@@ -438,6 +493,15 @@ fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, Error> {
         id_override: row.get(offset + 3)?,
         is_enabled: row.get::<i64>(offset + 4)? != 0,
         discovery_state: discovery_state_from_value(row.get_value(offset + 5)?)?,
+        thinking_levels: levels_from_column(row.get(offset + 6)?, "thinking_levels")?,
+        max_input_tokens: row.get(offset + 7)?,
+        max_output_tokens: row.get(offset + 8)?,
+        thinking_levels_override: levels_from_column(
+            row.get(offset + 9)?,
+            "thinking_levels_override",
+        )?,
+        max_input_tokens_override: row.get(offset + 10)?,
+        max_output_tokens_override: row.get(offset + 11)?,
     })
 }
 
@@ -667,8 +731,8 @@ mod tests {
 
     use super::{
         models::{
-            ModelUpdate, apply_discovered_models, find_routing, list_enabled_models_with_owner,
-            list_model_entries, update_model_overrides_checked,
+            ModelUpdate, apply_discovered_models, discovered, find_routing,
+            list_enabled_models_with_owner, list_model_entries, update_model_overrides_checked,
         },
         providers::{ProviderUpdate, list_providers, update_provider},
         test_support::{entry, insert_test_provider, oauth_definition},
@@ -879,7 +943,7 @@ mod tests {
         let discovered = apply_discovered_models(
             &database,
             provider_id,
-            &["gpt-4".to_string(), "claude".to_string()],
+            &[discovered("gpt-4"), discovered("claude")],
         )
         .await?;
 
@@ -916,6 +980,9 @@ mod tests {
                 model_id: gpt4_id,
                 id_override: Some("top-gpt"),
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;
@@ -964,6 +1031,9 @@ mod tests {
                 model_id: gpt4_id,
                 id_override: None,
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;
@@ -979,6 +1049,9 @@ mod tests {
                 model_id: claude_id,
                 id_override: Some("new-p1-gpt-4"),
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await;
@@ -995,6 +1068,9 @@ mod tests {
                 model_id: claude_id,
                 id_override: None,
                 is_enabled: false,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;
@@ -1010,9 +1086,7 @@ mod tests {
         assert_eq!(enabled_models.len(), 1);
 
         assert_eq!(
-            enabled_models
-                .first()
-                .map(|(public_id, _)| public_id.as_str()),
+            enabled_models.first().map(|model| model.public_id.as_str()),
             Some("new-p1-gpt-4")
         );
 
@@ -1064,7 +1138,7 @@ mod tests {
         let (database, _guard) = test_support::create_test_database().await;
         let provider_id = insert_test_provider(&database, "provider-1", "").await?;
 
-        apply_discovered_models(&database, provider_id, &["b".to_string(), "xb".to_string()])
+        apply_discovered_models(&database, provider_id, &[discovered("b"), discovered("xb")])
             .await?;
 
         let entries = list_model_entries(&database, Some(provider_id)).await?;
@@ -1109,11 +1183,11 @@ mod tests {
         let provider_id = insert_test_provider(&database, "provider-1", "").await?;
         let other_provider_id = insert_test_provider(&database, "provider-2", "x").await?;
 
-        apply_discovered_models(&database, provider_id, &["b".to_string(), "xb".to_string()])
+        apply_discovered_models(&database, provider_id, &[discovered("b"), discovered("xb")])
             .await?;
 
         // The other provider pre-reserves `xxb`, the ID provider-1's `xb` row recomputes to.
-        apply_discovered_models(&database, other_provider_id, &["xb".to_string()]).await?;
+        apply_discovered_models(&database, other_provider_id, &[discovered("xb")]).await?;
 
         let conflict = update_provider(
             &database,

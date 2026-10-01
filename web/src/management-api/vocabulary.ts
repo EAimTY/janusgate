@@ -10,6 +10,15 @@ import type {
 } from "/src/management-api/generated/v0";
 
 /**
+ * The reasoning-level vocabulary as the gateway declares it: the closed set
+ * of level spellings a capability declaration may carry. The generated
+ * bindings render capability columns as `Array<string>`, not as this
+ * union — the declaration's whole value domain is still this set, so the
+ * vocabulary below narrows each member explicitly.
+ */
+export type ReasoningLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
  * The credential kinds a provider row or a definition carries. The generated
  * bindings render the kinds as their literal union discriminants, so the
  * vocabulary states them here — the `ProviderResponse` union's own `type`
@@ -166,6 +175,27 @@ export const DISCOVERY_STATE = defineVocabulary<DiscoveryState>(
         manual: "Manual",
     },
     "a discovery state",
+);
+
+/**
+ * The reasoning levels as one vocabulary (gateway README §6.4): the closed
+ * set the gateway parses per surface and renders verbatim into the target
+ * upstream's own parameter — and the value domain of the per-model
+ * capability declarations, where the effective set (`override ?? base`) is
+ * rendered on the outward model listings. Labels are the spellings
+ * themselves, since the gateway writes them verbatim.
+ */
+export const REASONING_LEVEL = defineVocabulary<ReasoningLevel>(
+    {
+        none: "none",
+        minimal: "minimal",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+    },
+    "a reasoning level",
 );
 
 /** The recorded request outcomes as one vocabulary; the labels record's type is exhaustive. */

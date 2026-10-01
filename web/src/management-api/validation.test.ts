@@ -96,6 +96,12 @@ const model = {
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
+    thinking_levels: null,
+    max_input_tokens: null,
+    max_output_tokens: null,
+    thinking_levels_override: null,
+    max_input_tokens_override: null,
+    max_output_tokens_override: null,
 };
 
 const apiLog = {
@@ -250,6 +256,68 @@ describe("response validation", () => {
             overridden,
             vanished,
         ]);
+    });
+
+    it("parses the six capability columns beside the routing inputs", () => {
+        const response = parseListModelsResponse({
+            models: [
+                {
+                    ...model,
+                    thinking_levels: [
+                        "low",
+                        "high",
+                    ],
+                    max_input_tokens: 200_000,
+                    max_output_tokens: 32_768,
+                    thinking_levels_override: [],
+                    max_input_tokens_override: null,
+                    max_output_tokens_override: 65_536,
+                },
+            ],
+        });
+
+        expect(response.models).toEqual([
+            {
+                ...model,
+                thinking_levels: [
+                    "low",
+                    "high",
+                ],
+                max_input_tokens: 200_000,
+                max_output_tokens: 32_768,
+                thinking_levels_override: [],
+                max_input_tokens_override: null,
+                max_output_tokens_override: 65_536,
+            },
+        ]);
+    });
+
+    it("rejects a thinking level outside the closed vocabulary", () => {
+        expect(() =>
+            parseListModelsResponse({
+                models: [
+                    {
+                        ...model,
+                        thinking_levels: [
+                            "ultra",
+                        ],
+                    },
+                ],
+            }),
+        ).toThrow(/response\.models\[0\]\.thinking_levels\[0\] is not a reasoning level/);
+    });
+
+    it("rejects a non-array thinking-level set", () => {
+        expect(() =>
+            parseListModelsResponse({
+                models: [
+                    {
+                        ...model,
+                        thinking_levels_override: "low",
+                    },
+                ],
+            }),
+        ).toThrow(/response\.models\[0\]\.thinking_levels_override must be an array/);
     });
 
     it("rejects a discovery state outside the closed set", () => {

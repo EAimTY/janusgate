@@ -964,6 +964,12 @@ mod tests {
                 id_override: None,
                 is_enabled: true,
                 discovery_state: DiscoveryState::Manual,
+                thinking_levels: None,
+                max_input_tokens: None,
+                max_output_tokens: None,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
             is_effectively_enabled: true,
         };

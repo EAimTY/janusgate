@@ -68,6 +68,50 @@ export function isModelEffectivelyServing(
 }
 
 /**
+ * One model's effective thinking-level declaration (gateway README §3):
+ * the administrator's override when present, else the discovered set —
+ * `null` when neither is known, the value every model listing omits. A
+ * declaration, never an enforcement: dispatch never consults it.
+ */
+export function effectiveThinkingLevels(model: ModelResponse): ReadonlyArray<string> | null {
+    return model.thinking_levels_override ?? model.thinking_levels;
+}
+
+/** One model's effective maximum-input-tokens declaration (gateway README §3). */
+export function effectiveMaxInputTokens(model: ModelResponse): number | null {
+    return model.max_input_tokens_override ?? model.max_input_tokens;
+}
+
+/** One model's effective maximum-output-tokens declaration (gateway README §3). */
+export function effectiveMaxOutputTokens(model: ModelResponse): number | null {
+    return model.max_output_tokens_override ?? model.max_output_tokens;
+}
+
+/**
+ * Where one effective capability declaration comes from: `"override"`
+ * while the administrator's replacement stands, `"discovered"` while the
+ * latest discovery knowledge stands, `"unknown"` while neither does —
+ * the provenance the model page states beside each effective value.
+ */
+export type CapabilitySource = "override" | "discovered" | "unknown";
+
+/**
+ * The provenance of one effective declaration: the override's presence
+ * decides, whatever the base holds — a standing override replaces the
+ * declaration wholesale, even where the base is unknown.
+ */
+export function capabilitySource(
+    override: ReadonlyArray<string> | number | null,
+    base: ReadonlyArray<string> | number | null,
+): CapabilitySource {
+    if (override !== null) {
+        return "override";
+    }
+
+    return base !== null ? "discovered" : "unknown";
+}
+
+/**
  * A provider row's credential standing — the one verdict every credential
  * presentation branches on: `"valid"` while a stored OAuth expiry still
  * holds, `"expired"` once it has passed, `"never-fresh"` when an OAuth row

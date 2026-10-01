@@ -1,7 +1,14 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal } from "solid-js";
+import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import {
+    capabilitySource,
+    effectiveMaxInputTokens,
+    effectiveMaxOutputTokens,
+    effectiveThinkingLevels,
+} from "/src/management-api/serving";
 import { DISCOVERY_STATE } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
@@ -97,6 +104,102 @@ export function ModelDetailScreen(props: {
     );
 }
 
+/**
+ * One model's capability declarations (gateway README §3): each effective
+ * value (`override ?? base`, derived client-side under rule 7) with the
+ * provenance the listings render from — the administrator's override, the
+ * latest discovery knowledge, or unknown, which every listing omits. A
+ * declaration, never an enforcement: the upstream stays the sole authority.
+ */
+function CapabilityFacts(props: { readonly model: ModelResponse }): JSX.Element {
+    const levels = (): ReadonlyArray<string> | null => effectiveThinkingLevels(props.model);
+    const maxInput = (): number | null => effectiveMaxInputTokens(props.model);
+    const maxOutput = (): number | null => effectiveMaxOutputTokens(props.model);
+
+    const levelsSource = (): string => {
+        switch (
+            capabilitySource(props.model.thinking_levels_override, props.model.thinking_levels)
+        ) {
+            case "override":
+                return "Overridden by administrator.";
+            case "discovered":
+                return "From the latest discovery.";
+            case "unknown":
+                return "Unknown — omitted from model listings.";
+        }
+    };
+
+    const tokenSource = (override: number | null, base: number | null): string => {
+        switch (capabilitySource(override, base)) {
+            case "override":
+                return "Overridden by administrator.";
+            case "discovered":
+                return "From the latest discovery.";
+            case "unknown":
+                return "Unknown — omitted from model listings.";
+        }
+    };
+
+    const levelsDisplay = (): string => {
+        const effective = levels();
+
+        if (effective === null) {
+            return "Unknown";
+        }
+
+        return effective.length === 0 ? "No levels" : effective.join(", ");
+    };
+
+    return (
+        <Card>
+            <CardHeader
+                title="Capabilities"
+                description="What the model listings declare for this model. Nothing here gates a request — the upstream answers what it answers."
+            />
+            <FactList>
+                <Fact
+                    label="Reasoning levels"
+                    value={
+                        <span>
+                            <span class="tnum">{levelsDisplay()}</span>
+                            <span class="block text-[12.5px] text-ink-faint">{levelsSource()}</span>
+                        </span>
+                    }
+                    class="break-all"
+                />
+                <Fact
+                    label="Max input tokens"
+                    value={
+                        <span>
+                            <span class="tnum">{formatTokenCount(maxInput())}</span>
+                            <span class="block text-[12.5px] text-ink-faint">
+                                {tokenSource(
+                                    props.model.max_input_tokens_override,
+                                    props.model.max_input_tokens,
+                                )}
+                            </span>
+                        </span>
+                    }
+                />
+                <Fact
+                    label="Max output tokens"
+                    value={
+                        <span>
+                            <span class="tnum">{formatTokenCount(maxOutput())}</span>
+                            <span class="block text-[12.5px] text-ink-faint">
+                                {tokenSource(
+                                    props.model.max_output_tokens_override,
+                                    props.model.max_output_tokens,
+                                )}
+                            </span>
+                        </span>
+                    }
+                />
+            </FactList>
+        </Card>
+    );
+}
+
 function ModelFacts(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse | null;
@@ -177,6 +280,8 @@ function ModelFacts(props: {
                     />
                 </FactList>
             </Card>
+
+            <CapabilityFacts model={props.model} />
 
             <EntityUsageCard
                 api={props.api}

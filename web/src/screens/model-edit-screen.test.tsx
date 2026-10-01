@@ -9,6 +9,7 @@ import {
     buttonWithText,
     createDisposals,
     goneFailure,
+    labeledCheckbox,
     labeledInput,
     linkTo,
     modelRow,
@@ -81,6 +82,9 @@ function screenApi(holder: {
                     ...row,
                     id_override: override,
                     is_enabled: request.is_enabled,
+                    thinking_levels_override: request.thinking_levels_override,
+                    max_input_tokens_override: request.max_input_tokens_override,
+                    max_output_tokens_override: request.max_output_tokens_override,
                     public_id:
                         override ??
                         `${owner === undefined ? "" : owner.model_prefix}${row.upstream_id}`,
@@ -308,6 +312,58 @@ describe("ModelEditScreen refresh against an open form", () => {
         expect(document.body.textContent).not.toContain("changed on the gateway");
         expect(document.body.textContent).not.toContain("Unsaved changes");
         expect(document.body.textContent).toContain("Clients now call it custom-gpt-x.");
+    });
+
+    it("saves capability overrides beside the routing settings", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        // The levels override replaces the discovered set wholesale; the
+        // token overrides replace their own values. Each switch gates its
+        // own field, and an invalid token entry holds the save.
+        switchWithLabel("Override reasoning levels").click();
+        await settle();
+        labeledCheckbox("low").click();
+        await settle();
+        labeledCheckbox("high").click();
+        await settle();
+
+        switchWithLabel("Override max input tokens").click();
+        await settle();
+        typeInto(labeledInput("Max input tokens override"), "0");
+        await settle();
+        expect(document.body.textContent).toContain(
+            "Max input tokens override must be a positive integer.",
+        );
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+
+        typeInto(labeledInput("Max input tokens override"), "200000");
+        await settle();
+
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(holder.models).toEqual([
+            {
+                ...model,
+                thinking_levels_override: [
+                    "low",
+                    "high",
+                ],
+                max_input_tokens_override: 200_000,
+                max_output_tokens_override: null,
+            },
+        ]);
+        expect(document.body.textContent).toContain("Model saved.");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
     });
 
     it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {

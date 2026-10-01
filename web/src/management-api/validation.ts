@@ -28,6 +28,7 @@ import {
     API_LOG_OUTCOME,
     CREDENTIAL_KIND,
     DISCOVERY_STATE,
+    REASONING_LEVEL,
     UPSTREAM_FORMAT,
 } from "/src/management-api/vocabulary";
 
@@ -326,9 +327,42 @@ export function parseUpstreamFormat(value: unknown, context: string): ProviderRe
 }
 
 /**
- * One model row: its never-recycled row identifier, its routing string, and
- * its own inputs — the nullable mirror column, the serving switch, the
- * discovery state. The effective verdict is never on the wire (rule 7).
+ * One nullable string array: `null` stays `null` (the unknown state), an
+ * array narrows each member to a string. Non-array, non-null input is a
+ * contract violation.
+ */
+function expectNullableStringArray(value: unknown, context: string): Array<string> | null {
+    if (value === null) {
+        return null;
+    }
+
+    const entries = expectArray(value, context);
+
+    return entries.map((entry, index) => expectString(entry, `${context}[${index}]`));
+}
+
+/**
+ * One nullable reasoning-level set: `null` is unknown, an array narrows
+ * each member against the closed vocabulary — a foreign level is a
+ * contract violation, since both gateway write paths store canonicalized
+ * vocabulary sets only.
+ */
+function expectNullableReasoningLevels(value: unknown, context: string): Array<string> | null {
+    const levels = expectNullableStringArray(value, context);
+
+    if (levels === null) {
+        return null;
+    }
+
+    return levels.map((level, index) => REASONING_LEVEL.parse(level, `${context}[${index}]`));
+}
+
+/**
+ * One model row: its never-recycled row identifier, its routing string, its
+ * own inputs — the nullable mirror column, the serving switch, the
+ * discovery state — and its six capability columns: the three
+ * discovery-owned base columns beside the three administrator-owned
+ * override mirrors. The effective verdicts are never on the wire (rule 7).
  */
 function parseModelResponse(value: unknown, context: string): ModelResponse {
     const record = expectRecord(value, context);
@@ -347,6 +381,30 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
         discovery_state: DISCOVERY_STATE.parse(
             Reflect.get(record, "discovery_state"),
             `${context}.discovery_state`,
+        ),
+        thinking_levels: expectNullableReasoningLevels(
+            Reflect.get(record, "thinking_levels"),
+            `${context}.thinking_levels`,
+        ),
+        max_input_tokens: expectNullableInteger(
+            Reflect.get(record, "max_input_tokens"),
+            `${context}.max_input_tokens`,
+        ),
+        max_output_tokens: expectNullableInteger(
+            Reflect.get(record, "max_output_tokens"),
+            `${context}.max_output_tokens`,
+        ),
+        thinking_levels_override: expectNullableReasoningLevels(
+            Reflect.get(record, "thinking_levels_override"),
+            `${context}.thinking_levels_override`,
+        ),
+        max_input_tokens_override: expectNullableInteger(
+            Reflect.get(record, "max_input_tokens_override"),
+            `${context}.max_input_tokens_override`,
+        ),
+        max_output_tokens_override: expectNullableInteger(
+            Reflect.get(record, "max_output_tokens_override"),
+            `${context}.max_output_tokens_override`,
         ),
     };
 }

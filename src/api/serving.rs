@@ -28,7 +28,7 @@ use crate::{
     storage::{
         api_keys,
         api_logs::{self, ApiLogDraft},
-        models,
+        models::{self, EnabledModel},
     },
 };
 use axum::{
@@ -591,17 +591,19 @@ where
 }
 
 /// Renders the outward `GET /models` listing shared by every surface (README §6.3/§6.5): it
-/// lists the effectively enabled models with their owning provider names over the shared
-/// pipeline's database and maps them onto the surface's native page shape, or converts the
-/// storage failure and renders it through the surface's error envelope under the shared
+/// lists the effectively enabled models with their effective capability declarations over the
+/// shared pipeline's database and maps them onto the surface's native page shape, or converts
+/// the storage failure and renders it through the surface's error envelope under the shared
 /// `"model listing"` log target. Each surface supplies only its success-shape mapping.
 ///
-/// `render_page` receives the listed `(public_id, provider_name)` pairs by value, ordered by
-/// public ID, and returns the surface's typed success body, which [`json_response`] serializes.
+/// `render_page` receives the listed models by value, ordered by public ID, and returns the
+/// surface's typed success body, which [`json_response`] serializes; each entry's capability
+/// values are already the effective `override ?? base` composition, with `None` (unknown) left
+/// for the surface to omit (README §6.5).
 pub(super) async fn model_list_response<S, T, F>(database: &Database, render_page: F) -> Response
 where
     S: Surface,
-    F: FnOnce(Vec<(String, String)>) -> T,
+    F: FnOnce(Vec<EnabledModel>) -> T,
     T: Serialize,
 {
     match models::list_enabled_models_with_owner(database).await {

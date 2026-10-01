@@ -58,6 +58,12 @@ const model: ModelResponse = {
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
+    thinking_levels: null,
+    max_input_tokens: null,
+    max_output_tokens: null,
+    thinking_levels_override: null,
+    max_input_tokens_override: null,
+    max_output_tokens_override: null,
 };
 
 describe("toUpdateProviderRequest", () => {
@@ -172,11 +178,14 @@ describe("toUpdateProviderRequest", () => {
 });
 
 describe("toUpdateModelRequest", () => {
-    it("restates the row's two writable columns and addresses it by model_id", () => {
+    it("restates the row's five writable columns and addresses it by model_id", () => {
         expect(toUpdateModelRequest(model)).toEqual({
             model_id: 9,
             id_override: null,
             is_enabled: true,
+            thinking_levels_override: null,
+            max_input_tokens_override: null,
+            max_output_tokens_override: null,
         });
     });
 
@@ -189,6 +198,57 @@ describe("toUpdateModelRequest", () => {
             model_id: 9,
             id_override: null,
             is_enabled: false,
+            thinking_levels_override: null,
+            max_input_tokens_override: null,
+            max_output_tokens_override: null,
+        });
+    });
+
+    it("applies capability overrides explicitly, including clearing them", () => {
+        const overridden: ModelResponse = {
+            ...model,
+            thinking_levels_override: [
+                "low",
+            ],
+            max_input_tokens_override: 200_000,
+            max_output_tokens_override: 32_768,
+        };
+
+        // A present value replaces the declaration wholesale.
+        expect(
+            toUpdateModelRequest(model, {
+                thinking_levels_override: [
+                    "low",
+                    "high",
+                ],
+                max_input_tokens_override: 200_000,
+            }),
+        ).toEqual({
+            model_id: 9,
+            id_override: null,
+            is_enabled: true,
+            thinking_levels_override: [
+                "low",
+                "high",
+            ],
+            max_input_tokens_override: 200_000,
+            max_output_tokens_override: null,
+        });
+
+        // An explicit `null` clears the override back to the discovered value.
+        expect(
+            toUpdateModelRequest(overridden, {
+                thinking_levels_override: null,
+                max_input_tokens_override: null,
+                max_output_tokens_override: null,
+            }),
+        ).toEqual({
+            model_id: 9,
+            id_override: null,
+            is_enabled: true,
+            thinking_levels_override: null,
+            max_input_tokens_override: null,
+            max_output_tokens_override: null,
         });
     });
 
@@ -206,6 +266,9 @@ describe("toUpdateModelRequest", () => {
             model_id: 9,
             id_override: null,
             is_enabled: true,
+            thinking_levels_override: null,
+            max_input_tokens_override: null,
+            max_output_tokens_override: null,
         });
     });
 
@@ -267,20 +330,33 @@ describe("toCreateModelRequest", () => {
             upstream_id: "gpt-4o",
             id_override: null,
             is_enabled: true,
+            thinking_levels_override: null,
+            max_input_tokens_override: null,
+            max_output_tokens_override: null,
         });
     });
 
-    it("carries the two writable columns explicitly", () => {
+    it("carries the writable columns explicitly", () => {
         expect(
             toCreateModelRequest(4, "gpt-4o", {
                 id_override: "custom",
                 is_enabled: false,
+                thinking_levels_override: [
+                    "low",
+                ],
+                max_input_tokens_override: 200_000,
+                max_output_tokens_override: 32_768,
             }),
         ).toEqual({
             provider_id: 4,
             upstream_id: "gpt-4o",
             id_override: "custom",
             is_enabled: false,
+            thinking_levels_override: [
+                "low",
+            ],
+            max_input_tokens_override: 200_000,
+            max_output_tokens_override: 32_768,
         });
     });
 });

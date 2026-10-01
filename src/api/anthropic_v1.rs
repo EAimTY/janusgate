@@ -108,20 +108,32 @@ struct ModelObject {
     /// "unknown release date" convention the OpenAI surface expresses through its integer
     /// `created: 0`.
     created_at: &'static str,
+
+    /// Effective maximum input tokens — the official `ModelInfo` member's own name (README
+    /// §6.5); omitted when unknown, never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_input_tokens: Option<i64>,
+
+    /// Effective maximum output tokens, rendered in the official `ModelInfo` member's own
+    /// spelling `max_tokens` (README §6.5); omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<i64>,
 }
 
 /// Builds the native model-list page from one effective-model listing: every entry renders its
 /// public routing ID as both `id` and `display_name` at the epoch `created_at`, and the page
 /// bookends are the page's own first and last entry ids. Shared by the `GET /models` handler
 /// and the shape test, so the test pins the handler's actual mapping.
-fn native_model_page(listed: Vec<(String, String)>) -> ModelList {
+fn native_model_page(listed: Vec<crate::storage::models::EnabledModel>) -> ModelList {
     let data: Vec<ModelObject> = listed
         .into_iter()
-        .map(|(public_id, _provider_name)| ModelObject {
+        .map(|model| ModelObject {
             kind: "model",
-            display_name: public_id.clone(),
-            id: public_id,
+            display_name: model.public_id.clone(),
+            id: model.public_id,
             created_at: "1970-01-01T00:00:00Z",
+            max_input_tokens: model.max_input_tokens,
+            max_tokens: model.max_output_tokens,
         })
         .collect();
 
@@ -172,10 +184,34 @@ async fn models(State(context): State<Context>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::models::EnabledModel;
+
+    /// One unknown-capability listing entry: every declaration `None` (README §3).
+    fn unknown_entry(public_id: &str, provider_name: &str) -> EnabledModel {
+        EnabledModel {
+            public_id: public_id.to_string(),
+            provider_name: provider_name.to_string(),
+            thinking_levels: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        }
+    }
+
+    /// One known-capability listing entry: both token caps declared (the Anthropic surface renders
+    /// exactly those two, README §6.5).
+    fn known_entry(public_id: &str, max_input_tokens: i64, max_tokens: i64) -> EnabledModel {
+        EnabledModel {
+            max_input_tokens: Some(max_input_tokens),
+            max_output_tokens: Some(max_tokens),
+            ..unknown_entry(public_id, "provider")
+        }
+    }
 
     /// Verifies the native model-listing shape: every entry carries the doc-pinned members
     /// (`type`, `id`, `display_name`, `created_at`), the page carries `first_id`/`last_id`
-    /// bookending its `data` (`null` when the page is empty), and `has_more` is always `false`.
+    /// bookending its `data` (`null` when the page is empty), `has_more` is always `false`, and
+    /// the official token-cap members ride along when known and stay absent when unknown (README
+    /// §6.5).
     ///
     /// # Panics
     ///
@@ -185,8 +221,8 @@ mod tests {
         let render = native_model_page;
 
         let listed = vec![
-            ("b-model".to_string(), "b-provider".to_string()),
-            ("a-model".to_string(), "a-provider".to_string()),
+            unknown_entry("b-model", "b-provider"),
+            known_entry("a-model", 200_000, 32_000),
         ];
 
         #[expect(clippy::expect_used, reason = "the listing body always serializes")]
@@ -207,6 +243,8 @@ mod tests {
                         "display_name": "a-model",
                         "id": "a-model",
                         "created_at": "1970-01-01T00:00:00Z",
+                        "max_input_tokens": 200000,
+                        "max_tokens": 32000,
                     },
                 ],
                 "first_id": "b-model",

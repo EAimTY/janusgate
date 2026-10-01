@@ -822,6 +822,9 @@ mod tests {
                 upstream_id: "model",
                 id_override: None,
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;
@@ -845,6 +848,9 @@ mod tests {
                 upstream_id: "model",
                 id_override: None,
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;
@@ -880,6 +886,9 @@ mod tests {
                 upstream_id: "model",
                 id_override: None,
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;

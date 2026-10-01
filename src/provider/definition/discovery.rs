@@ -27,12 +27,69 @@ pub enum DiscoveryExtract {
         /// names Gemini lists carry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         strip_prefix: Option<String>,
+
+        /// The per-entry capability extraction (README §5.5); absent means the discovery
+        /// extracts identifiers only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<CapabilityExtraction>,
     },
 
-    /// The identifiers are the keys of one upstream object.
+    /// The identifiers are the keys of one upstream object. The map-keys shape carries no
+    /// per-entry object, so it declares no capability extraction — its models store every
+    /// capability unknown.
     MapKeys {
         /// The closed path of the object.
         at: ResponsePath,
+    },
+}
+
+/// The per-entry capability extraction a discovery may declare (README §5.5): the optional
+/// facts each listed model entry carries beside its identifier. Every member is optional — a
+/// descriptor that declares none discovers identifiers only, and an entry whose configured
+/// path is absent or `null` leaves that capability unknown (`NULL` storage), never a default;
+/// a present value of the wrong shape fails the refresh as an upstream error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityExtraction {
+    /// The thinking-level extraction; absent means levels are never extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_levels: Option<ThinkingLevelsExtraction>,
+
+    /// The maximum-input-tokens member path inside each entry; absent means never extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<ResponsePath>,
+
+    /// The maximum-output-tokens member path inside each entry; absent means never extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<ResponsePath>,
+}
+
+/// The two wire shapes a thinking-level set is extracted from (README §5.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ThinkingLevelsExtraction {
+    /// An array of objects, each naming one level in one string member — the Codex backend's
+    /// `supported_reasoning_levels[].effort` shape.
+    MemberArray {
+        /// The closed path of the array.
+        array_at: ResponsePath,
+
+        /// The closed path of the level-naming string member inside each element.
+        level_field: ResponsePath,
+    },
+
+    /// An object whose member names are levels, each member an object carrying its boolean
+    /// flag at `flag_field` or a bare boolean standing as its own flag — the Anthropic
+    /// `capabilities.effort` shape, whose aggregate `supported` member is a bare boolean no
+    /// vocabulary filter can admit.
+    FlaggedKeys {
+        /// The closed path of the object.
+        object_at: ResponsePath,
+
+        /// The closed path of the boolean flag inside each member's value.
+        flag_field: ResponsePath,
     },
 }
 

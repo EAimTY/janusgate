@@ -21,6 +21,11 @@ import {
     composedPublicId,
     ModelIdOverrideFields,
     normalizedPublicIdOverride,
+    normalizedThinkingLevelsOverride,
+    normalizedTokenCapOverride,
+    ThinkingLevelsOverrideFields,
+    TokenCapOverrideFields,
+    tokenCapOverrideError,
 } from "/src/ui/model-form";
 import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
@@ -144,6 +149,12 @@ function ModelCreateForm(props: {
     const [isEnabled, setIsEnabled] = createSignal(true);
     const [hasIdOverride, setHasIdOverride] = createSignal(false);
     const [idOverride, setIdOverride] = createSignal("");
+    const [hasLevelsOverride, setHasLevelsOverride] = createSignal(false);
+    const [selectedLevels, setSelectedLevels] = createSignal<ReadonlyArray<string>>([]);
+    const [hasMaxInputOverride, setHasMaxInputOverride] = createSignal(false);
+    const [maxInputText, setMaxInputText] = createSignal("");
+    const [hasMaxOutputOverride, setHasMaxOutputOverride] = createSignal(false);
+    const [maxOutputText, setMaxOutputText] = createSignal("");
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const selectedProvider = createMemo(
@@ -161,6 +172,16 @@ function ModelCreateForm(props: {
     const overrideError = (): string | null =>
         routingTokenError(normalizedOverride(), "Public ID override");
 
+    const maxInputError = (): string | null =>
+        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "Max input tokens override");
+
+    const maxOutputError = (): string | null =>
+        tokenCapOverrideError(
+            hasMaxOutputOverride(),
+            maxOutputText(),
+            "Max output tokens override",
+        );
+
     const composedId = (): string =>
         composedPublicId(
             selectedProvider()?.model_prefix ?? "",
@@ -173,7 +194,9 @@ function ModelCreateForm(props: {
         selectedProvider() !== null &&
         trimmedUpstream() !== "" &&
         upstreamError() === null &&
-        overrideError() === null;
+        overrideError() === null &&
+        maxInputError() === null &&
+        maxOutputError() === null;
 
     const create = createCreateAction({
         action: "create-model",
@@ -196,6 +219,18 @@ function ModelCreateForm(props: {
                         toCreateModelRequest(provider.id, trimmedUpstream(), {
                             id_override: normalizedOverride(),
                             is_enabled: isEnabled(),
+                            thinking_levels_override: normalizedThinkingLevelsOverride(
+                                hasLevelsOverride(),
+                                selectedLevels(),
+                            ),
+                            max_input_tokens_override: normalizedTokenCapOverride(
+                                hasMaxInputOverride(),
+                                maxInputText(),
+                            ),
+                            max_output_tokens_override: normalizedTokenCapOverride(
+                                hasMaxOutputOverride(),
+                                maxOutputText(),
+                            ),
                         }),
                     ),
                 ),
@@ -289,6 +324,39 @@ function ModelCreateForm(props: {
                             onIdOverrideInput={setIdOverride}
                             composedId={composedId()}
                             idOverrideError={overrideError()}
+                            isDisabled={create.isCreating()}
+                        />
+
+                        <ThinkingLevelsOverrideFields
+                            hasOverride={hasLevelsOverride()}
+                            onHasOverrideToggle={setHasLevelsOverride}
+                            selected={selectedLevels()}
+                            onSelectedChange={setSelectedLevels}
+                            discovered={null}
+                            isDisabled={create.isCreating()}
+                        />
+
+                        <TokenCapOverrideFields
+                            switchLabel="Override max input tokens"
+                            fieldLabel="Max input tokens override"
+                            hasOverride={hasMaxInputOverride()}
+                            onHasOverrideToggle={setHasMaxInputOverride}
+                            value={maxInputText()}
+                            onValueInput={setMaxInputText}
+                            discovered={null}
+                            valueError={maxInputError()}
+                            isDisabled={create.isCreating()}
+                        />
+
+                        <TokenCapOverrideFields
+                            switchLabel="Override max output tokens"
+                            fieldLabel="Max output tokens override"
+                            hasOverride={hasMaxOutputOverride()}
+                            onHasOverrideToggle={setHasMaxOutputOverride}
+                            value={maxOutputText()}
+                            onValueInput={setMaxOutputText}
+                            discovered={null}
+                            valueError={maxOutputError()}
                             isDisabled={create.isCreating()}
                         />
 

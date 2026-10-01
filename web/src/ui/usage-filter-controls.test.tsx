@@ -35,6 +35,12 @@ const modelRow: ModelResponse = {
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
+    thinking_levels: null,
+    max_input_tokens: null,
+    max_output_tokens: null,
+    thinking_levels_override: null,
+    max_input_tokens_override: null,
+    max_output_tokens_override: null,
 };
 
 const apiKeyRow: ApiKeyResponse = {

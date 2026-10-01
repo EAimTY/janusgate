@@ -242,6 +242,12 @@ describe("createManagementApi", () => {
                         id_override: null,
                         is_enabled: true,
                         discovery_state: "discovered",
+                        thinking_levels: null,
+                        max_input_tokens: null,
+                        max_output_tokens: null,
+                        thinking_levels_override: null,
+                        max_input_tokens_override: null,
+                        max_output_tokens_override: null,
                     },
                 });
             }
@@ -280,6 +286,9 @@ describe("createManagementApi", () => {
             upstream_id: "gpt-4o",
             id_override: null,
             is_enabled: true,
+            thinking_levels_override: null,
+            max_input_tokens_override: null,
+            max_output_tokens_override: null,
         });
         await api.deleteModel({
             model_id: 9,
@@ -323,6 +332,9 @@ describe("createManagementApi", () => {
                 upstream_id: "gpt-4o",
                 id_override: null,
                 is_enabled: true,
+                thinking_levels_override: null,
+                max_input_tokens_override: null,
+                max_output_tokens_override: null,
             },
             {
                 model_id: 9,

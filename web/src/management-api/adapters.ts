@@ -51,16 +51,28 @@ export function toUpdateProviderRequest(
 }
 
 /**
- * Optional overrides of the model row's two writable columns (README §4.5).
- * The nullable mirror column is stated explicitly — `null` is the no-override
- * state — so an override that clears it sends `null` rather than omitting the
- * field. `models:create` applies the overrides over the defaults,
- * `models:update` over the listed row. `discovery_state` is never among them:
- * neither route can restore a vanished row.
+ * Optional overrides of the model row's five writable columns (README
+ * §4.5). The nullable mirror columns are stated explicitly — `null` is
+ * the no-override state — so an override that clears one sends `null`
+ * rather than omitting the field. `models:create` applies the overrides
+ * over the defaults, `models:update` over the listed row.
+ * `discovery_state` and the capability base columns are never among them:
+ * neither route can restore a vanished row, and no write states discovery
+ * knowledge.
  */
 type ModelOverrides = {
     readonly id_override?: string | null;
     readonly is_enabled?: boolean;
+    /**
+     * The thinking-level override; `null` keeps the discovered value, an
+     * array replaces the declaration wholesale — the empty array is the
+     * positive declaration of no levels.
+     */
+    readonly thinking_levels_override?: Array<string> | null;
+    /** The maximum-input-tokens override; `null` keeps the discovered value. */
+    readonly max_input_tokens_override?: number | null;
+    /** The maximum-output-tokens override; `null` keeps the discovered value. */
+    readonly max_output_tokens_override?: number | null;
 };
 
 /**
@@ -76,6 +88,18 @@ export function toUpdateModelRequest(
         model_id: model.id,
         id_override: edits.id_override === undefined ? model.id_override : edits.id_override,
         is_enabled: edits.is_enabled ?? model.is_enabled,
+        thinking_levels_override:
+            edits.thinking_levels_override === undefined
+                ? model.thinking_levels_override
+                : edits.thinking_levels_override,
+        max_input_tokens_override:
+            edits.max_input_tokens_override === undefined
+                ? model.max_input_tokens_override
+                : edits.max_input_tokens_override,
+        max_output_tokens_override:
+            edits.max_output_tokens_override === undefined
+                ? model.max_output_tokens_override
+                : edits.max_output_tokens_override,
     };
 }
 
@@ -121,5 +145,8 @@ export function toCreateModelRequest(
         upstream_id: upstreamId,
         id_override: overrides.id_override ?? null,
         is_enabled: overrides.is_enabled ?? true,
+        thinking_levels_override: overrides.thinking_levels_override ?? null,
+        max_input_tokens_override: overrides.max_input_tokens_override ?? null,
+        max_output_tokens_override: overrides.max_output_tokens_override ?? null,
     };
 }

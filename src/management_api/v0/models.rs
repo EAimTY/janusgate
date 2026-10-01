@@ -3,7 +3,8 @@
 use super::{EmptyResponse, Error, Nullable, route};
 use crate::{
     context::Context,
-    provider::{DiscoveryState, discovery},
+    ir::IrReasoningLevel,
+    provider::{DiscoveredModel, DiscoveryState, discovery},
     storage::{
         self,
         models::{ModelCreate, ModelEntry, ModelUpdate},
@@ -93,20 +94,58 @@ pub(super) struct ModelResponse {
 
     /// Discovery lifecycle state of the row.
     pub discovery_state: DiscoveryState,
+
+    /// Discovered thinking levels in the vocabulary spellings, canonicalized; `null` is unknown
+    /// — the latest upstream knowledge, never "none" (README §3).
+    pub thinking_levels: Option<Vec<String>>,
+
+    /// Discovered maximum input tokens; `null` is unknown.
+    pub max_input_tokens: Option<i64>,
+
+    /// Discovered maximum output tokens; `null` is unknown.
+    pub max_output_tokens: Option<i64>,
+
+    /// Administrator's thinking-level override in the vocabulary spellings, canonicalized;
+    /// `null` keeps the discovered value (rule 2).
+    pub thinking_levels_override: Option<Vec<String>>,
+
+    /// Administrator's maximum-input-tokens override; `null` keeps the discovered value.
+    pub max_input_tokens_override: Option<i64>,
+
+    /// Administrator's maximum-output-tokens override; `null` keeps the discovered value.
+    pub max_output_tokens_override: Option<i64>,
 }
 
 impl ModelResponse {
     /// Renders one stored entry.
     fn from_entry(entry: &ModelEntry) -> Self {
+        let model = &entry.model;
+
         Self {
-            id: entry.model.id,
+            id: model.id,
             provider_id: entry.provider_id,
             provider: entry.provider_name.clone(),
-            upstream_id: entry.model.upstream_id.clone(),
-            public_id: entry.model.public_id.clone(),
-            id_override: entry.model.id_override.clone(),
-            is_enabled: entry.model.is_enabled,
-            discovery_state: entry.model.discovery_state,
+            upstream_id: model.upstream_id.clone(),
+            public_id: model.public_id.clone(),
+            id_override: model.id_override.clone(),
+            is_enabled: model.is_enabled,
+            discovery_state: model.discovery_state,
+            thinking_levels: model.thinking_levels.as_ref().map(|levels| {
+                levels
+                    .iter()
+                    .map(|level| level.as_str().to_string())
+                    .collect()
+            }),
+            max_input_tokens: model.max_input_tokens,
+            max_output_tokens: model.max_output_tokens,
+            thinking_levels_override: model.thinking_levels_override.as_ref().map(|levels| {
+                levels
+                    .iter()
+                    .map(|level| level.as_str().to_string())
+                    .collect()
+            }),
+            max_input_tokens_override: model.max_input_tokens_override,
+            max_output_tokens_override: model.max_output_tokens_override,
         }
     }
 }
@@ -158,9 +197,10 @@ pub(super) struct DiscoverModelsRequest {
 }
 
 /// Strictly parsed `models:create` request (README §7.1): the complete desired initial state of
-/// one manually added row, every field required (README §7.0 rule 3). `id_override` is the
-/// required-nullable mirror column (rule 2) — `null` means no override, exactly like the storage
-/// column. Addressed by the natural key `(provider_id, upstream_id)` — the row does not exist yet.
+/// one manually added row, every field required (README §7.0 rule 3). `id_override` and the three
+/// capability overrides are the required-nullable mirror columns (rule 2) — `null` means no
+/// override, exactly like the storage columns. Addressed by the natural key
+/// `(provider_id, upstream_id)` — the row does not exist yet.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -181,14 +221,38 @@ pub(super) struct CreateModelRequest {
 
     /// Serving state.
     pub is_enabled: bool,
+
+    /// Thinking-level override; `null` keeps the discovered value, an array replaces the
+    /// declaration wholesale — the empty array is the positive declaration of no levels (README
+    /// §3).
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<string> | null")
+    )]
+    pub thinking_levels_override: Nullable<Vec<String>>,
+
+    /// Maximum-input-tokens override; `null` keeps the discovered value.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "number | null")
+    )]
+    pub max_input_tokens_override: Nullable<i64>,
+
+    /// Maximum-output-tokens override; `null` keeps the discovered value.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "number | null")
+    )]
+    pub max_output_tokens_override: Nullable<i64>,
 }
 
-/// Strictly parsed `models:update` request (README §7.1): the complete desired state of the row's
-/// two writable columns, every field required (README §7.0 rule 3). `id_override` is the
-/// required-nullable mirror column (rule 2). Addressed by the row identifier `model_id`, like
-/// `api-keys:update`. The request cannot state `discovery_state`: this route writes only
-/// `id_override` and `is_enabled`, so it can never restore a vanished row — recovery is an
-/// upstream reappearance or a `models:create` claim.
+/// Strictly parsed `models:update` request (README §7.1): the complete state of the row's five
+/// writable columns, every field required (README §7.0 rule 3). `id_override` and the three
+/// capability overrides are the required-nullable mirror columns (rule 2). Addressed by the row
+/// identifier `model_id`, like `api-keys:update`. The request cannot state `discovery_state` or
+/// a capability base column: this route writes only `id_override`, `is_enabled`, and the three
+/// capability overrides, so it can never restore a vanished row — recovery is an upstream
+/// reappearance or a `models:create` claim.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -205,6 +269,29 @@ pub(super) struct UpdateModelRequest {
 
     /// Serving state.
     pub is_enabled: bool,
+
+    /// Thinking-level override; `null` keeps the discovered value, an array replaces the
+    /// declaration wholesale — the empty array is the positive declaration of no levels (README
+    /// §3).
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<string> | null")
+    )]
+    pub thinking_levels_override: Nullable<Vec<String>>,
+
+    /// Maximum-input-tokens override; `null` keeps the discovered value.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "number | null")
+    )]
+    pub max_input_tokens_override: Nullable<i64>,
+
+    /// Maximum-output-tokens override; `null` keeps the discovered value.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "number | null")
+    )]
+    pub max_output_tokens_override: Nullable<i64>,
 }
 
 /// Strictly parsed `models:delete` request (README §7.1): addressed by the row identifier.
@@ -287,19 +374,24 @@ pub(super) async fn delete(
     Ok(Json(EmptyResponse {}))
 }
 
-/// Applies the management surface's discovery guard to a raw upstream identifier list: duplicates
+/// Applies the management surface's discovery guard to a raw upstream model list: duplicates
 /// keep their first occurrence, and an empty set — an upstream anomaly — is refused with the 502
 /// upstream-error category before it can reach the storage layer, where an empty set would mark
 /// the provider's whole model list vanished (README §7.1).
-fn unique_upstream_ids(upstream_ids: Vec<String>) -> Result<Vec<String>, Error> {
-    let mut unique: Vec<String> = Vec::with_capacity(upstream_ids.len());
+fn unique_discovered_models(
+    discovered: Vec<DiscoveredModel>,
+) -> Result<Vec<DiscoveredModel>, Error> {
+    let mut unique: Vec<DiscoveredModel> = Vec::with_capacity(discovered.len());
 
-    for upstream_id in upstream_ids {
-        if unique.iter().any(|existing| existing == &upstream_id) {
+    for model in discovered {
+        if unique
+            .iter()
+            .any(|existing| existing.upstream_id == model.upstream_id)
+        {
             continue;
         }
 
-        unique.push(upstream_id);
+        unique.push(model);
     }
 
     if unique.is_empty() {
@@ -307,6 +399,69 @@ fn unique_upstream_ids(upstream_ids: Vec<String>) -> Result<Vec<String>, Error> 
     }
 
     Ok(unique)
+}
+
+/// The parsed, validated form of one request's three capability overrides (README §7.1): level
+/// values validated against the closed vocabulary and canonicalized — deduplicated,
+/// vocabulary-ordered, the empty set preserved as the positive declaration of no levels — and
+/// token caps checked positive.
+#[derive(Debug)]
+struct CapabilityOverrides {
+    /// Validated, canonicalized thinking-level override; `None` keeps the discovered value.
+    thinking_levels: Option<Vec<IrReasoningLevel>>,
+
+    /// Validated maximum-input-tokens override.
+    max_input_tokens: Option<i64>,
+
+    /// Validated maximum-output-tokens override.
+    max_output_tokens: Option<i64>,
+}
+
+/// Validates one request's three capability overrides: every level string parses against the
+/// closed vocabulary (README §6.4), the set canonicalizes (deduplicated, vocabulary-ordered),
+/// and every present token cap is positive.
+///
+/// # Errors
+///
+/// Returns [`Error::UnknownReasoningLevel`] naming the field for a foreign level string and
+/// [`Error::NonPositiveTokenCap`] for a non-positive cap.
+fn parse_capability_overrides(
+    thinking_levels: Nullable<Vec<String>>,
+    max_input_tokens: Nullable<i64>,
+    max_output_tokens: Nullable<i64>,
+) -> Result<CapabilityOverrides, Error> {
+    let thinking_levels = thinking_levels
+        .0
+        .map(|levels| {
+            levels
+                .into_iter()
+                .map(|level| {
+                    IrReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| {
+                        Error::UnknownReasoningLevel {
+                            param: "thinking_levels_override",
+                            value: level,
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(IrReasoningLevel::canonicalize_levels)
+        })
+        .transpose()?;
+
+    for (param, cap) in [
+        ("max_input_tokens_override", max_input_tokens.0),
+        ("max_output_tokens_override", max_output_tokens.0),
+    ] {
+        if cap.is_some_and(|value| value <= 0) {
+            return Err(Error::NonPositiveTokenCap { param });
+        }
+    }
+
+    Ok(CapabilityOverrides {
+        thinking_levels,
+        max_input_tokens: max_input_tokens.0,
+        max_output_tokens: max_output_tokens.0,
+    })
 }
 
 /// Refreshes one provider's model rows from upstream: mark, flip, and insert (README §7.1),
@@ -331,7 +486,7 @@ async fn handle_discover(
         })?;
 
     // The discovery engine refreshes the access token itself when a known expiry requires it.
-    let unique_ids = unique_upstream_ids(
+    let unique_models = unique_discovered_models(
         discovery::discover_upstream_models(database, control_plane, &provider).await?,
     )?;
 
@@ -339,10 +494,10 @@ async fn handle_discover(
     // row is written: the composed public ID would carry the same characters, and the schema
     // would reject the write as a constraint violation — a storage conflict instead of the
     // upstream failure it is (README §7.1).
-    for upstream_id in &unique_ids {
-        if super::validate_routing_token("upstream_id", upstream_id).is_err() {
+    for model in &unique_models {
+        if super::validate_routing_token("upstream_id", &model.upstream_id).is_err() {
             return Err(Error::UpstreamReportedInvalidModelId {
-                upstream_id: upstream_id.clone(),
+                upstream_id: model.upstream_id.clone(),
             });
         }
     }
@@ -351,7 +506,7 @@ async fn handle_discover(
     // from the provider's current prefix and checked for collisions atomically with the write
     // (README §7.1).
     let entries =
-        storage::models::apply_discovered_models(database, request.provider_id, &unique_ids)
+        storage::models::apply_discovered_models(database, request.provider_id, &unique_models)
             .await?;
 
     info!(
@@ -376,6 +531,12 @@ async fn handle_create(
 ) -> Result<ModelEntry, Error> {
     validate_model_identifiers(&request.upstream_id, &request.id_override)?;
 
+    let overrides = parse_capability_overrides(
+        request.thinking_levels_override,
+        request.max_input_tokens_override,
+        request.max_output_tokens_override,
+    )?;
+
     // The checked insert re-reads the provider row inside its transaction, so the composed
     // public ID uses the provider's current prefix and the collision check applies atomically
     // with the write (README §7.1).
@@ -386,6 +547,9 @@ async fn handle_create(
             upstream_id: &request.upstream_id,
             id_override: request.id_override.0.as_deref(),
             is_enabled: request.is_enabled,
+            thinking_levels_override: overrides.thinking_levels.as_deref(),
+            max_input_tokens_override: overrides.max_input_tokens,
+            max_output_tokens_override: overrides.max_output_tokens,
         },
     )
     .await?;
@@ -411,6 +575,12 @@ async fn handle_update(
         super::validate_routing_token("id_override", id_override)?;
     }
 
+    let overrides = parse_capability_overrides(
+        request.thinking_levels_override,
+        request.max_input_tokens_override,
+        request.max_output_tokens_override,
+    )?;
+
     // The checked update re-reads the row and its provider inside its transaction, so the
     // recomposed public ID uses the provider's current prefix and the collision check applies
     // atomically with the write (README §7.1).
@@ -420,6 +590,9 @@ async fn handle_update(
             model_id: request.model_id,
             id_override: request.id_override.0.as_deref(),
             is_enabled: request.is_enabled,
+            thinking_levels_override: overrides.thinking_levels.as_deref(),
+            max_input_tokens_override: overrides.max_input_tokens,
+            max_output_tokens_override: overrides.max_output_tokens,
         },
     )
     .await?;
@@ -454,10 +627,21 @@ fn validate_model_identifiers(
 mod tests {
     use super::{CreateModelRequest, DeleteModelRequest, ModelResponse, UpdateModelRequest};
     use crate::{
+        ir::IrReasoningLevel,
         management_api::v0::Nullable,
-        provider::{DiscoveryState, Model},
+        provider::{DiscoveredModel, DiscoveryState, Model},
         storage::models::ModelEntry,
     };
+
+    /// One discovered fixture carrying no capability facts.
+    fn discovered(upstream_id: &str) -> DiscoveredModel {
+        DiscoveredModel {
+            upstream_id: upstream_id.to_string(),
+            thinking_levels: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        }
+    }
 
     /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing
     /// string under `public_id`, and the row's own inputs `is_enabled` and `discovery_state` — and,
@@ -481,6 +665,12 @@ mod tests {
                 id_override: None,
                 is_enabled,
                 discovery_state,
+                thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
+                max_input_tokens: Some(200_000),
+                max_output_tokens: None,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: Some(64_000),
             },
         };
 
@@ -502,6 +692,12 @@ mod tests {
                 "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "discovered",
+                "thinking_levels": ["low", "high"],
+                "max_input_tokens": 200000,
+                "max_output_tokens": null,
+                "thinking_levels_override": null,
+                "max_input_tokens_override": null,
+                "max_output_tokens_override": 64000,
             })
         );
 
@@ -523,13 +719,20 @@ mod tests {
                 "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "vanished",
+                "thinking_levels": ["low", "high"],
+                "max_input_tokens": 200000,
+                "max_output_tokens": null,
+                "thinking_levels_override": null,
+                "max_input_tokens_override": null,
+                "max_output_tokens_override": 64000,
             })
         );
     }
 
     /// Verifies the `models:update` request (README §7.0 rules 2-3, §7.1): addressed by `model_id`,
-    /// both fields required, `id_override` nullable with the omitted-key tolerance, an unknown
-    /// field rejected — and no `discovery_state` or thinking-level field accepted.
+    /// every field required, `id_override` and the three capability overrides nullable with the
+    /// omitted-key tolerance, an unknown field rejected — and no `discovery_state` or capability
+    /// base column accepted.
     ///
     /// # Panics
     ///
@@ -540,16 +743,25 @@ mod tests {
             clippy::unwrap_used,
             reason = "the documented payload is constructed to parse"
         )]
-        let parsed: UpdateModelRequest =
-            serde_json::from_str(r#"{"model_id":7,"id_override":null,"is_enabled":true}"#).unwrap();
+        let parsed: UpdateModelRequest = serde_json::from_str(
+            r#"{"model_id":7,"id_override":null,"is_enabled":true,
+                "thinking_levels_override":[],"max_input_tokens_override":null,
+                "max_output_tokens_override":8192}"#,
+        )
+        .unwrap();
 
         assert_eq!(parsed.model_id, 7);
         assert_eq!(parsed.id_override, Nullable(None));
         assert!(parsed.is_enabled);
+        assert_eq!(parsed.thinking_levels_override, Nullable(Some(Vec::new())));
+        assert_eq!(parsed.max_input_tokens_override, Nullable(None));
+        assert_eq!(parsed.max_output_tokens_override, Nullable(Some(8192)));
 
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"id_override":null,"is_enabled":true,"bogus":1}"#
+                r#"{"model_id":7,"id_override":null,"is_enabled":true,
+                    "thinking_levels_override":null,"max_input_tokens_override":null,
+                    "max_output_tokens_override":null,"bogus":1}"#
             )
             .is_err()
         );
@@ -557,6 +769,16 @@ mod tests {
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
                 r#"{"model_id":7,"id_override":null,"is_enabled":true,"discovery_state":"manual"}"#
+            )
+            .is_err()
+        );
+
+        // A capability base column is not the request's to state (README §3).
+        assert!(
+            serde_json::from_str::<UpdateModelRequest>(
+                r#"{"model_id":7,"id_override":null,"is_enabled":true,
+                    "thinking_levels_override":null,"max_input_tokens_override":null,
+                    "max_output_tokens_override":null,"thinking_levels":["low"]}"#
             )
             .is_err()
         );
@@ -576,7 +798,9 @@ mod tests {
             reason = "the documented payload is constructed to parse"
         )]
         let parsed: CreateModelRequest = serde_json::from_str(
-            r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":"custom","is_enabled":false}"#,
+            r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":"custom","is_enabled":false,
+                "thinking_levels_override":["high","low"],"max_input_tokens_override":null,
+                "max_output_tokens_override":4096}"#,
         )
         .unwrap();
 
@@ -584,7 +808,23 @@ mod tests {
         assert_eq!(parsed.upstream_id, "gpt-4o");
         assert_eq!(parsed.id_override, Nullable(Some("custom".to_string())));
         assert!(!parsed.is_enabled);
+        assert_eq!(
+            parsed.thinking_levels_override,
+            Nullable(Some(vec!["high".to_string(), "low".to_string()]))
+        );
+        assert_eq!(parsed.max_input_tokens_override, Nullable(None));
+        assert_eq!(parsed.max_output_tokens_override, Nullable(Some(4096)));
 
+        assert!(
+            serde_json::from_str::<CreateModelRequest>(
+                r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,"is_enabled":true,
+                    "thinking_levels_override":null,"max_input_tokens_override":null,
+                    "max_output_tokens_override":null}"#
+            )
+            .is_ok()
+        );
+
+        // An omitted capability override reads as `null` — the required-nullable tolerance.
         assert!(
             serde_json::from_str::<CreateModelRequest>(
                 r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,"is_enabled":true}"#
@@ -595,9 +835,86 @@ mod tests {
         assert!(
             serde_json::from_str::<CreateModelRequest>(
                 r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,
-                    "is_enabled":true,"thinking_levels_override":null}"#
+                    "is_enabled":true,"discovery_state":"manual"}"#
             )
             .is_err()
+        );
+    }
+
+    /// Verifies the capability-override validation (README §7.1): a foreign level string is
+    /// rejected naming the field, the empty array is the legal positive declaration of no
+    /// levels, a duplicate set canonicalizes into vocabulary order, and a non-positive token cap
+    /// is rejected naming the field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the validation diverges from its contract.
+    #[test]
+    fn validates_capability_overrides() {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented payload is constructed to parse"
+        )]
+        let parsed = super::parse_capability_overrides(
+            Nullable(Some(vec!["high".to_string(), "low".to_string()])),
+            Nullable(Some(200_000)),
+            Nullable(None),
+        )
+        .unwrap();
+
+        use crate::ir::IrReasoningLevel;
+        assert_eq!(
+            parsed.thinking_levels,
+            Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High])
+        );
+        assert_eq!(parsed.max_input_tokens, Some(200_000));
+        assert_eq!(parsed.max_output_tokens, None);
+
+        #[expect(clippy::unwrap_used, reason = "the empty set is constructed to parse")]
+        let empty = super::parse_capability_overrides(
+            Nullable(Some(Vec::new())),
+            Nullable(None),
+            Nullable(None),
+        )
+        .unwrap();
+
+        assert_eq!(empty.thinking_levels, Some(Vec::new()));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the foreign level is constructed to be rejected"
+        )]
+        let foreign = super::parse_capability_overrides(
+            Nullable(Some(vec!["ultra".to_string()])),
+            Nullable(None),
+            Nullable(None),
+        )
+        .expect_err("a foreign level must be rejected");
+
+        let names_the_field = matches!(
+            foreign,
+            super::Error::UnknownReasoningLevel {
+                param: "thinking_levels_override",
+                ..
+            }
+        );
+
+        assert!(names_the_field, "the rejection names the field");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the non-positive cap is constructed to be rejected"
+        )]
+        let non_positive =
+            super::parse_capability_overrides(Nullable(None), Nullable(Some(0)), Nullable(None))
+                .expect_err("a non-positive cap must be rejected");
+
+        assert!(
+            matches!(
+                non_positive,
+                super::Error::NonPositiveTokenCap { param } if param == "max_input_tokens_override"
+            ),
+            "the rejection names the field"
         );
     }
 
@@ -625,17 +942,26 @@ mod tests {
         );
 
         #[expect(clippy::unwrap_used, reason = "duplicates are constructed to dedupe")]
-        let unique =
-            super::unique_upstream_ids(vec!["a".to_string(), "b".to_string(), "a".to_string()])
-                .unwrap();
+        let unique = super::unique_discovered_models(vec![
+            discovered("a"),
+            discovered("b"),
+            discovered("a"),
+        ])
+        .unwrap();
 
-        assert_eq!(unique, ["a", "b"]);
+        assert_eq!(
+            unique
+                .into_iter()
+                .map(|model| model.upstream_id)
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
 
         #[expect(
             clippy::expect_used,
             reason = "the empty set is constructed to be refused"
         )]
-        let empty = super::unique_upstream_ids(Vec::new())
+        let empty = super::unique_discovered_models(Vec::new())
             .expect_err("an empty upstream set must be refused");
 
         assert!(matches!(empty, super::Error::UpstreamReportedNoModels));

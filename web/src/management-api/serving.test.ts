@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { indexRowsById } from "/src/row-index";
 import {
+    capabilitySource,
+    effectiveMaxInputTokens,
+    effectiveMaxOutputTokens,
+    effectiveThinkingLevels,
     isModelEffectivelyServing,
     modelCountsByProvider,
     servingModelCountsByProvider,
@@ -34,6 +38,12 @@ function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
         id_override: null,
         is_enabled: true,
         discovery_state: "discovered",
+        thinking_levels: null,
+        max_input_tokens: null,
+        max_output_tokens: null,
+        thinking_levels_override: null,
+        max_input_tokens_override: null,
+        max_output_tokens_override: null,
         ...overrides,
     };
 }
@@ -163,5 +173,56 @@ describe("servingModelCountsByProvider", () => {
         );
 
         expect(counts.size).toBe(0);
+    });
+});
+
+describe("effective capability declarations", () => {
+    it("reads the discovered set while no override stands", () => {
+        const row = model({
+            thinking_levels: [
+                "low",
+                "high",
+            ],
+            max_input_tokens: 200_000,
+            max_output_tokens: 32_768,
+        });
+
+        expect(effectiveThinkingLevels(row)).toEqual([
+            "low",
+            "high",
+        ]);
+        expect(effectiveMaxInputTokens(row)).toBe(200_000);
+        expect(effectiveMaxOutputTokens(row)).toBe(32_768);
+        expect(capabilitySource(row.thinking_levels_override, row.thinking_levels)).toBe(
+            "discovered",
+        );
+    });
+
+    it("prefers the override wholesale, including the empty no-levels set", () => {
+        const row = model({
+            thinking_levels: [
+                "low",
+                "high",
+            ],
+            max_input_tokens: 200_000,
+            thinking_levels_override: [],
+            max_input_tokens_override: 100_000,
+        });
+
+        expect(effectiveThinkingLevels(row)).toEqual([]);
+        expect(effectiveMaxInputTokens(row)).toBe(100_000);
+        expect(effectiveMaxOutputTokens(row)).toBe(null);
+        expect(capabilitySource(row.thinking_levels_override, row.thinking_levels)).toBe(
+            "override",
+        );
+    });
+
+    it("states unknown while neither the base nor the override is known", () => {
+        const row = model();
+
+        expect(effectiveThinkingLevels(row)).toBe(null);
+        expect(effectiveMaxInputTokens(row)).toBe(null);
+        expect(effectiveMaxOutputTokens(row)).toBe(null);
+        expect(capabilitySource(row.thinking_levels_override, row.thinking_levels)).toBe("unknown");
     });
 });

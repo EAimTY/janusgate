@@ -72,6 +72,7 @@ components:
   card: "surface, 1px rule border, 16px radius, no shadow"
   field: "canvas ground, strong-rule border, accent focus, 8px radius"
   switch: "pill track with sliding knob, role=switch, on/off text beside it"
+  check-pill: "a checkbox in a pill frame for a closed-set pick, accent edge and soft tint while checked"
   stat-link: "a figure card whose whole surface is an anchor, chevron at its right edge"
   bar-chart: "accent bars on the card ground, one 1px rule as the axis, no gridlines, no legend, a text name per bar"
 ---
@@ -117,8 +118,8 @@ kept nowhere and referenced by nothing.
 - Motion is CSS only and means state: switch flips, notices land, screens
   settle once. Everything parks under `prefers-reduced-motion`.
 - Plain English copy. Domain words are provider, model, public ID, upstream
-  ID, prefix, enabled, serving, discover, reconnect, override — nothing else
-  needs a glossary.
+  ID, prefix, enabled, serving, discover, reconnect, override, reasoning
+  level, capability, declaration — nothing else needs a glossary.
 
 ## Colors
 
@@ -249,7 +250,8 @@ conveys state — a flip, a landing, a settling — and nothing else.
 Controls name their action; errors name the problem and the recovery; the
 gateway's message is always kept verbatim as the detail. The fixed
 vocabulary: provider, model, public ID, upstream ID, prefix, enabled,
-serving, discover, reconnect, override. Setup copy assumes a
+serving, discover, reconnect, override, reasoning level, capability,
+declaration. Setup copy assumes a
 stranger who read only the READMEs; in-app copy assumes an operator mid-task.
 
 ## What this world refuses

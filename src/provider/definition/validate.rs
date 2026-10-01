@@ -8,7 +8,7 @@
 
 use super::{
     credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce, TokenRefresh},
-    discovery::{DiscoveryExtract, Pagination},
+    discovery::{CapabilityExtraction, DiscoveryExtract, Pagination, ThinkingLevelsExtraction},
     provisioning::{ProvisionExtraction, ProvisioningStep},
     template::{
         ControlBody, ControlMethod, ControlRequest, ExtractionShape, ParamRow, ResponseDescriptor,
@@ -711,6 +711,7 @@ impl DefinitionPayload {
                 array_at,
                 id_field,
                 strip_prefix,
+                capabilities,
             } => {
                 validate_path(array_at, "discovery array path")?;
 
@@ -726,6 +727,10 @@ impl DefinitionPayload {
                     return Err(ValidationError::new(
                         "discovery identifier prefix must not be empty when present",
                     ));
+                }
+
+                if let Some(capabilities) = capabilities {
+                    validate_capability_extraction(capabilities)?;
                 }
             }
 
@@ -804,6 +809,57 @@ fn validate_path(path: &ResponsePath, what: &str) -> Result<(), ValidationError>
                 "{what} path carries an empty member"
             )));
         }
+    }
+
+    Ok(())
+}
+
+/// Validates one capability extraction's paths (README §5.5): every declared path
+/// well-formed, and every member-path — the level-naming and flag members — non-empty, so a
+/// conforming descriptor never names the addressed value's root by accident.
+fn validate_capability_extraction(
+    capabilities: &CapabilityExtraction,
+) -> Result<(), ValidationError> {
+    match &capabilities.thinking_levels {
+        Some(ThinkingLevelsExtraction::MemberArray {
+            array_at,
+            level_field,
+        }) => {
+            validate_path(array_at, "discovery thinking-level array")?;
+
+            if level_field.0.is_empty() {
+                return Err(ValidationError::new(
+                    "discovery thinking-level member path must not be empty",
+                ));
+            }
+
+            validate_path(level_field, "discovery thinking-level member path")?;
+        }
+
+        Some(ThinkingLevelsExtraction::FlaggedKeys {
+            object_at,
+            flag_field,
+        }) => {
+            validate_path(object_at, "discovery thinking-level object")?;
+
+            if flag_field.0.is_empty() {
+                return Err(ValidationError::new(
+                    "discovery thinking-level flag path must not be empty",
+                ));
+            }
+
+            validate_path(flag_field, "discovery thinking-level flag path")?;
+        }
+
+        None => {}
+    }
+
+    if let Some(path) = &capabilities.max_input_tokens {
+        validate_path(path, "discovery max-input-tokens")?;
+    }
+
+    if let Some(path) = &capabilities.max_output_tokens {
+        validate_path(path, "discovery max-output-tokens")?;
     }
 
     Ok(())
@@ -4914,5 +4970,119 @@ mod tests {
         let parsed: StringExpr = serde_json::from_value(literal("Bearer ")).unwrap();
 
         assert_eq!(parsed, StringExpr::literal("Bearer "));
+    }
+
+    /// Verifies the capability-extraction validation (README §5.5): a well-formed `member_array`
+    /// and `flagged_keys` pair of descriptors passes, while an empty level member path, an empty
+    /// flag path, and a capability token path carrying an empty member are each rejected naming
+    /// the element — so a conforming descriptor never names the addressed value's root by
+    /// accident.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture unexpectedly fails or succeeds.
+    #[test]
+    fn validates_the_capability_extraction_paths() {
+        /// One array-extraction discovery document over the given capability object.
+        fn discovery_document(capabilities: serde_json::Value) -> serde_json::Value {
+            json!({
+                "request": {
+                    "method": "GET",
+                    "url": [{"type": "base"}, {"type": "literal", "value": "/models"}]
+                },
+                "extract": {
+                    "mode": "array",
+                    "array_at": ["data"],
+                    "id_field": ["id"],
+                    "capabilities": capabilities
+                }
+            })
+        }
+
+        /// One static-key definition payload wrapping a discovery document.
+        ///
+        /// # Panics
+        ///
+        /// Panics when the fixture fails to parse.
+        fn definition(discovery: serde_json::Value, inference_path: &str) -> DefinitionPayload {
+            serde_json::from_value(json!({
+                "format": "openai_chat_completion",
+                "inference": {
+                    "url": literal(inference_path),
+                    "upstream_streaming": "match_client"
+                },
+                "credential": {"type": "api_key"},
+                "discovery": discovery,
+            }))
+            .unwrap()
+        }
+
+        // The two conforming shapes validate cleanly.
+        definition(
+            discovery_document(json!({
+                "thinking_levels": {
+                    "shape": "member_array",
+                    "array_at": ["supported_reasoning_levels"],
+                    "level_field": ["effort"]
+                },
+                "max_input_tokens": ["context_window"],
+                "max_output_tokens": ["max_output_tokens"]
+            })),
+            "/chat/completions",
+        )
+        .validate()
+        .unwrap();
+
+        definition(
+            discovery_document(json!({
+                "thinking_levels": {
+                    "shape": "flagged_keys",
+                    "object_at": ["capabilities", "effort"],
+                    "flag_field": ["supported"]
+                }
+            })),
+            "/chat/completions",
+        )
+        .validate()
+        .unwrap();
+
+        // Each malformed probe rejects, naming the offending element.
+        let probes: [(serde_json::Value, &str); 3] = [
+            (
+                json!({
+                    "thinking_levels": {
+                        "shape": "member_array",
+                        "array_at": ["levels"],
+                        "level_field": []
+                    }
+                }),
+                "thinking-level member path must not be empty",
+            ),
+            (
+                json!({
+                    "thinking_levels": {
+                        "shape": "flagged_keys",
+                        "object_at": ["effort"],
+                        "flag_field": []
+                    }
+                }),
+                "thinking-level flag path must not be empty",
+            ),
+            (
+                json!({"max_input_tokens": [""]}),
+                "discovery max-input-tokens path carries an empty member",
+            ),
+        ];
+
+        for (capabilities, expected) in probes {
+            let parsed = definition(discovery_document(capabilities), "/chat/completions");
+
+            let error = parsed.validate().unwrap_err();
+
+            assert!(
+                error.to_string().contains(expected),
+                "`{error}` does not name `{expected}`"
+            );
+        }
     }
 }

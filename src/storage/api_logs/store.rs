@@ -966,6 +966,9 @@ mod tests {
                 upstream_id: "gpt-4",
                 id_override: None,
                 is_enabled: true,
+                thinking_levels_override: None,
+                max_input_tokens_override: None,
+                max_output_tokens_override: None,
             },
         )
         .await?;

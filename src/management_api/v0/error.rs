@@ -202,6 +202,25 @@ pub(super) enum Error {
         param: &'static str,
     },
 
+    /// A capability-override level value is not a member of the shared reasoning vocabulary
+    /// (README §6.4): the closed set is the declaration's whole value domain, so a foreign string
+    /// cannot become an override (nor, by the same rule, a discovery-extracted declaration).
+    #[error("`{param}` carries the unknown reasoning effort `{value}`")]
+    UnknownReasoningLevel {
+        /// Name of the rejected field.
+        param: &'static str,
+
+        /// The rejected value.
+        value: String,
+    },
+
+    /// A capability-override token cap is not a positive integer.
+    #[error("`{param}` must be a positive integer")]
+    NonPositiveTokenCap {
+        /// Name of the rejected field.
+        param: &'static str,
+    },
+
     /// A static-key provider's base URL is not an `http(s)` URL of printable ASCII without
     /// whitespace (README §7).
     #[error("`base_url` must be an http:// or https:// URL of printable ASCII without whitespace")]
@@ -402,6 +421,8 @@ impl Error {
 
             Self::EmptyIdentifier { .. }
             | Self::InvalidIdentifier { .. }
+            | Self::UnknownReasoningLevel { .. }
+            | Self::NonPositiveTokenCap { .. }
             | Self::InvalidBaseUrl
             | Self::MalformedAuthorizationCode
             | Self::Validation { .. }

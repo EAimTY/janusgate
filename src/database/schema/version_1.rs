@@ -48,12 +48,15 @@
 //! internal objects excluded from the structural schema comparison.
 //!
 //! The JSON columns — `provider_definitions.inference`/`credential`/`provisioning`/`discovery`,
-//! `providers.credentials`, and `ongoing_oauth_flows.slots`/`device_exchange_checkpoint` — carry
-//! only `json_valid` checks: their shapes are descriptor contracts the management write boundary
-//! enforces through Rust's concrete serde types, not column invariants. Text formats are
-//! likewise enforced at the management or upstream-discovery ingestion boundary instead of by
-//! column checks, so routing tokens, secrets, and base URLs validate in one place, before any
-//! database write.
+//! `providers.credentials`, `models.thinking_levels`/`thinking_levels_override`, and
+//! `ongoing_oauth_flows.slots`/`device_exchange_checkpoint` — carry only `json_valid` checks:
+//! their shapes are descriptor contracts the management write boundary enforces through Rust's
+//! concrete serde types, not column invariants. Text formats are likewise enforced at the
+//! management or upstream-discovery ingestion boundary instead of by column checks, so routing
+//! tokens, secrets, and base URLs validate in one place, before any database write. The two
+//! `models` token pairs and their overrides pin positivity alone (`> 0` or `NULL`, the unknown
+//! state — README §3): a non-positive capacity is malformed wherever it enters, and the closed
+//! level vocabulary of `thinking_levels` never reaches SQL at all.
 
 use super::Schema;
 
@@ -116,6 +119,18 @@ CREATE TABLE models (
     ),
     public_id TEXT NOT NULL UNIQUE,
     id_override TEXT NULL,
+    thinking_levels TEXT NULL CHECK (thinking_levels IS NULL OR json_valid(thinking_levels)),
+    max_input_tokens INTEGER NULL CHECK (max_input_tokens IS NULL OR max_input_tokens > 0),
+    max_output_tokens INTEGER NULL CHECK (max_output_tokens IS NULL OR max_output_tokens > 0),
+    thinking_levels_override TEXT NULL CHECK (
+        thinking_levels_override IS NULL OR json_valid(thinking_levels_override)
+    ),
+    max_input_tokens_override INTEGER NULL CHECK (
+        max_input_tokens_override IS NULL OR max_input_tokens_override > 0
+    ),
+    max_output_tokens_override INTEGER NULL CHECK (
+        max_output_tokens_override IS NULL OR max_output_tokens_override > 0
+    ),
     UNIQUE (provider_id, upstream_id)
 ) STRICT;
 
@@ -537,6 +552,90 @@ mod tests {
                 "INSERT INTO providers (name, provider_definition_name, \
                  provider_definition_version, model_prefix, credentials) \
                  VALUES ('p', 'def', 1, 'p-', '{}');",
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Verifies the `models` capability-declaration column domains (README §3): the two level
+    /// columns accept any JSON or `NULL` and reject non-JSON, and every token column accepts a
+    /// positive integer or `NULL` and rejects a non-positive one — the domain the Rust write
+    /// boundary rests on, with the level vocabulary itself enforced above SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a statement fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an out-of-domain write is not rejected as a constraint violation.
+    #[tokio::test]
+    async fn models_enforce_capability_column_domains() -> Result<(), Box<dyn StdError>> {
+        let connection = open_fresh(SCHEMA.schema).await?;
+        insert_probe_definition(&connection, "def").await?;
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO providers (name, provider_definition_name, \
+                 provider_definition_version, model_prefix, credentials) \
+                 VALUES ('p', 'def', 1, 'p-', '{API_KEY_CREDENTIALS}');"
+            ))
+            .await?;
+
+        // The base row every probe mutates: a capability-free manual model, every column `NULL`.
+        connection
+            .execute_batch(
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, 'm', 'manual', 'p-m');",
+            )
+            .await?;
+
+        // Arbitrary JSON — including the empty array, the positive declaration of no levels —
+        // is storable in both level columns: their element vocabulary is the Rust boundary's.
+        connection
+            .execute_batch(
+                "UPDATE models SET thinking_levels = '[]', thinking_levels_override = '[1]' \
+                 WHERE upstream_id = 'm';",
+            )
+            .await?;
+
+        let probes = [
+            (
+                "thinking_levels",
+                "UPDATE models SET thinking_levels = 'not json' WHERE upstream_id = 'm';",
+            ),
+            (
+                "thinking_levels_override",
+                "UPDATE models SET thinking_levels_override = 'not json' WHERE upstream_id = 'm';",
+            ),
+            (
+                "max_input_tokens",
+                "UPDATE models SET max_input_tokens = 0 WHERE upstream_id = 'm';",
+            ),
+            (
+                "max_output_tokens",
+                "UPDATE models SET max_output_tokens = -1 WHERE upstream_id = 'm';",
+            ),
+            (
+                "max_input_tokens_override",
+                "UPDATE models SET max_input_tokens_override = 0 WHERE upstream_id = 'm';",
+            ),
+            (
+                "max_output_tokens_override",
+                "UPDATE models SET max_output_tokens_override = -1 WHERE upstream_id = 'm';",
+            ),
+        ];
+
+        for (column, statement) in probes {
+            let outcome = connection.execute_batch(statement).await;
+            assert_constraint_violation(outcome, column);
+        }
+
+        // A positive token and the return to `NULL` — the unknown state — both write cleanly.
+        connection
+            .execute_batch(
+                "UPDATE models SET max_input_tokens = 256000, max_output_tokens_override = 128000, \
+                 thinking_levels = NULL WHERE upstream_id = 'm';",
             )
             .await?;
 

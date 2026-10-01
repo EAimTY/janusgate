@@ -63,7 +63,10 @@ struct ModelList {
     data: Vec<ModelObject>,
 }
 
-/// One served model in the official OpenAI model shape.
+/// One served model in the official OpenAI model shape, extended with the effective capability
+/// declarations (README §6.5): `max_input_tokens`, `max_output_tokens`, and the gateway-extension
+/// `reasoning_levels` each render only when their effective value is known — an unknown
+/// capability is omitted, never fabricated.
 #[derive(Debug, Serialize)]
 struct ModelObject {
     /// Public routing ID (README §3).
@@ -78,6 +81,35 @@ struct ModelObject {
 
     /// Name of the provider serving the model.
     owned_by: String,
+
+    /// Effective maximum input tokens; omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_input_tokens: Option<i64>,
+
+    /// Effective maximum output tokens; omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<i64>,
+
+    /// Effective reasoning levels in the vocabulary spellings — a gateway extension (README
+    /// §6.5); omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_levels: Option<Vec<&'static str>>,
+}
+
+/// Builds one listing entry from an effectively enabled model: the public routing ID beside
+/// its effective capability declarations, each omitted when unknown (README §6.5).
+fn model_object(entry: crate::storage::models::EnabledModel) -> ModelObject {
+    ModelObject {
+        id: entry.public_id,
+        object: "model",
+        created: 0,
+        owned_by: entry.provider_name,
+        max_input_tokens: entry.max_input_tokens,
+        max_output_tokens: entry.max_output_tokens,
+        reasoning_levels: entry
+            .thinking_levels
+            .map(|levels| levels.iter().map(|level| level.as_str()).collect()),
+    }
 }
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its own 404/405
@@ -149,15 +181,93 @@ async fn responses(
 async fn models(State(context): State<Context>) -> Response {
     serving::model_list_response::<Surface, _, _>(&context.database, |listed| ModelList {
         object: "list",
-        data: listed
-            .into_iter()
-            .map(|(public_id, provider_name)| ModelObject {
-                id: public_id,
-                object: "model",
-                created: 0,
-                owned_by: provider_name,
-            })
-            .collect(),
+        data: listed.into_iter().map(model_object).collect(),
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ModelList, model_object};
+    use crate::{ir::IrReasoningLevel, storage::models::EnabledModel};
+
+    /// One listing-entry fixture: the public/provider identity with every effective capability
+    /// declaration set by the caller.
+    fn entry(
+        public_id: &str,
+        thinking_levels: Option<Vec<IrReasoningLevel>>,
+        max_input_tokens: Option<i64>,
+        max_output_tokens: Option<i64>,
+    ) -> EnabledModel {
+        EnabledModel {
+            public_id: public_id.to_string(),
+            provider_name: "acme".to_string(),
+            thinking_levels,
+            max_input_tokens,
+            max_output_tokens,
+        }
+    }
+
+    /// Pins the model-listing entry shape (README §6.5): the official members stay verbatim
+    /// (`created` fixed `0`, `owned_by` the provider name), and the three capability members —
+    /// `max_input_tokens`, `max_output_tokens`, and the gateway-extension `reasoning_levels` in
+    /// the vocabulary spellings — ride along when known and stay wholly absent when unknown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered shape diverges from the contract.
+    #[test]
+    fn renders_the_model_entry_with_omitted_unknown_capabilities() {
+        #[expect(clippy::expect_used, reason = "the listing body always serializes")]
+        let unknown = serde_json::to_value(ModelList {
+            object: "list",
+            data: vec![model_object(entry("m", None, None, None))],
+        })
+        .expect("the listing serializes");
+
+        assert_eq!(
+            unknown,
+            serde_json::json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "m",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "acme",
+                    }
+                ],
+            })
+        );
+
+        #[expect(clippy::expect_used, reason = "the listing body always serializes")]
+        let known = serde_json::to_value(ModelList {
+            object: "list",
+            data: vec![model_object(entry(
+                "m",
+                Some(vec![IrReasoningLevel::Low, IrReasoningLevel::XHigh]),
+                Some(200_000),
+                Some(32_768),
+            ))],
+        })
+        .expect("the listing serializes");
+
+        assert_eq!(
+            known,
+            serde_json::json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "m",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "acme",
+                        "max_input_tokens": 200000,
+                        "max_output_tokens": 32768,
+                        "reasoning_levels": ["low", "xhigh"],
+                    }
+                ],
+            })
+        );
+    }
 }

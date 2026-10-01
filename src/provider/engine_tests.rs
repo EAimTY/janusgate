@@ -76,7 +76,10 @@ async fn discovery_walks_token_paginated_lists() {
 
     let ids = crate::provider::discovery::run_discovery(&client, &discovery, &env)
         .await
-        .unwrap();
+        .unwrap()
+        .into_iter()
+        .map(|model| model.upstream_id)
+        .collect::<Vec<_>>();
 
     assert_eq!(ids, vec!["model-a", "model-b", "model-c"]);
     mock.shutdown.send(()).ok();
