@@ -1,5 +1,2 @@
 # Generated management API bindings (`npm run generate-bindings`)
 /src/management-api/generated/
-
-# Finish-review evidence: per-round captures of a running dev instance
-/.impeccable/review/
