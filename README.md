@@ -645,3 +645,15 @@ A reload that fails for any reason — an unreadable file, a rejected schema, TL
 cargo build --release
 ./target/release/janusgate -c config.jsonc
 ```
+
+## 9. Development Skills
+
+`skills-lock.json` is the version-controlled registry of third-party project skills. The entire root `.agents/skills/` directory is local-only and ignored, including downloaded skills and any locally authored skills stored there. Restore the registered skills from the repository root:
+
+```bash
+npx skills experimental_install
+```
+
+Restoration installs into `.agents/skills/`; it does not recreate agent-specific copies, links, or hook manifests. Record any additional required setup here rather than committing generated installation copies. The current Impeccable entry records its source and content hash without a Git ref, so restoration can fetch newer upstream content and change the lockfile. Review lockfile changes before committing them. Exact historical restoration requires installing from an immutable Git commit and confirming that the lockfile records that ref; the content hash alone does not pin the source revision.
+
+Every `.impeccable/` directory is local-only and ignored, at the repository root and in nested workspaces. This includes configuration, design sidecars, surface briefs, critique reports, screenshots, caches, and runtime state; these files are not restored by the skill lockfile. Keep durable product and design decisions in the version-controlled `PRODUCT.md` and `DESIGN.md` files.

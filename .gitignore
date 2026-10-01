@@ -13,3 +13,9 @@
 # dev config
 /config.dev.jsonc
 /.env
+
+# Third-party skill installation (keep skills-lock.json tracked)
+/.agents/skills/
+
+# Impeccable
+**/.impeccable/
