@@ -1,0 +1,177 @@
+{
+    "descriptor": {
+        "request": {
+            "method": "POST",
+            "url": [
+                {
+                    "type": "literal",
+                    "value": "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+                }
+            ],
+            "headers": [
+                {
+                    "name": "Authorization",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "Bearer "
+                        },
+                        {
+                            "type": "secret"
+                        }
+                    ]
+                },
+                {
+                    "name": "User-Agent",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/1.18.3 Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36"
+                        }
+                    ]
+                }
+            ],
+            "body": {
+                "kind": "json",
+                "node": {
+                    "type": "object",
+                    "fields": {
+                        "project": {
+                            "type": "string",
+                            "expr": [
+                                {
+                                    "type": "slot",
+                                    "name": "project"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "sources": [
+            {
+                "type": "map",
+                "key": "models",
+                "at": [
+                    "models"
+                ],
+                "is_required": true,
+                "scope": {
+                    "type": "map_key"
+                },
+                "entries": [
+                    {
+                        "key": "usage",
+                        "label": "Model allowance",
+                        "at": [
+                            "quotaInfo"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "unknown"
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "remainingFraction"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "fraction",
+                            "direction": "remaining"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "resetTime"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "rfc3339"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "response": {
+        "models": {
+            "model-a": {
+                "quotaInfo": {
+                    "remainingFraction": 0.5,
+                    "resetTime": "2000-01-01T00:00:00Z"
+                }
+            },
+            "model-b": {},
+            "model-z": {
+                "quotaInfo": {}
+            }
+        }
+    },
+    "expected": [
+        {
+            "key": [
+                "models",
+                "model-a",
+                "usage"
+            ],
+            "label": "Model allowance",
+            "scope": {
+                "type": "named",
+                "name": "model-a"
+            },
+            "window": {
+                "type": "unknown"
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.5
+            },
+            "reset": {
+                "type": "at",
+                "at": 946684800000000
+            }
+        },
+        {
+            "key": [
+                "models",
+                "model-z",
+                "usage"
+            ],
+            "label": "Model allowance",
+            "scope": {
+                "type": "named",
+                "name": "model-z"
+            },
+            "window": {
+                "type": "unknown"
+            },
+            "measurement": {
+                "type": "unknown"
+            },
+            "reset": {
+                "type": "unknown"
+            }
+        }
+    ],
+    "expected_request": {
+        "method": "POST",
+        "url": "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+        "headers": {
+            "authorization": "Bearer current",
+            "content-type": "application/json",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/1.18.3 Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36"
+        },
+        "body": {
+            "project": "stored-project"
+        }
+    }
+}

@@ -38,6 +38,7 @@ mod error;
 mod models;
 mod oauth_flow;
 mod provider_definitions;
+mod provider_quota;
 mod providers;
 mod usage;
 
@@ -53,6 +54,7 @@ use self::{
     provider_definitions::{
         CreateProviderDefinition, ListProviderDefinitions, UpdateProviderDefinition,
     },
+    provider_quota::GetProviderQuota,
     providers::{CreateProvider, DeleteProvider, ListProviders, UpdateProvider},
     usage::{ListUsage, QueryUsage},
 };
@@ -149,6 +151,7 @@ pub(super) fn router() -> Router<Context> {
         CreateProviderDefinition => provider_definitions::create,
         UpdateProviderDefinition => provider_definitions::update,
         ListProviders => providers::list,
+        GetProviderQuota => provider_quota::get,
         CreateProvider => providers::create,
         UpdateProvider => providers::update,
         DeleteProvider => providers::delete,
@@ -512,6 +515,7 @@ mod tests {
                     credential: serde_json::from_str(r#"{"type":"api_key"}"#).unwrap(),
                     provisioning: None,
                     discovery: None,
+                    quota: None,
                     compaction: None,
                 },
                 created_at: 1,

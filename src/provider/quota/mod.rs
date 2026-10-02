@@ -1,0 +1,137 @@
+//! Read-only, provider-independent account quota extraction and execution.
+
+pub(crate) mod extraction;
+mod types;
+
+pub(crate) use extraction::extract;
+pub use types::{QuotaEntry, SafeDuration, SafeTimestamp};
+
+#[cfg(test)]
+mod tests;
+
+use super::{Error as ProviderError, Provider, control, oauth};
+use crate::{database::Database, provider::definition::eval::ValueEnv};
+use reqwest::Client;
+
+/// A completed observation, stamped once before atomic extraction.
+pub(crate) struct Observation {
+    /// UTC microseconds at successful response decoding.
+    pub(crate) observed_at: SafeTimestamp,
+    /// Complete normalized observations.
+    pub(crate) quotas: Vec<QuotaEntry>,
+}
+
+/// Quota execution failures, preserving renewal classification and safe extraction context.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Error {
+    /// The exact current definition carries no quota query.
+    #[error("provider {provider_id} does not declare quota viewing")]
+    NotConfigured {
+        /// Addressed provider identity.
+        provider_id: i64,
+    },
+    /// A renewal or upstream request failed; all foreign body text is removed.
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+    /// Atomic extraction failed without carrying foreign values.
+    #[error(transparent)]
+    Extraction(#[from] extraction::ExtractionError),
+}
+
+/// Fetches one reading with current credentials and the exact definition returned by renewal.
+///
+/// # Panics
+///
+/// Panics if stored request expressions violate the validated stage contract or the system
+/// clock cannot be represented by the frontend's documented timestamp domain.
+pub(crate) async fn query(
+    database: &Database,
+    client: &Client,
+    provider: &Provider,
+) -> Result<Observation, Error> {
+    if provider.definition.payload.quota.is_none() {
+        return Err(Error::NotConfigured {
+            provider_id: provider.id,
+        });
+    }
+    let provider = oauth::ensure_fresh_token(database, client, provider)
+        .await
+        .map_err(redact_renewal)?;
+    let descriptor = provider
+        .definition
+        .payload
+        .quota
+        .as_ref()
+        .ok_or(Error::NotConfigured {
+            provider_id: provider.id,
+        })?;
+    let environment = ValueEnv::for_discovery(
+        provider.credentials.slots(),
+        provider.base_url.as_deref(),
+        provider.credentials.secret(),
+    );
+    #[expect(
+        clippy::expect_used,
+        reason = "stored quota expressions satisfy write-time stage validation"
+    )]
+    let request = control::build_request(client, &descriptor.request, &environment, "quota")
+        .expect("stored quota request must render");
+    #[expect(
+        clippy::expect_used,
+        reason = "first-party stored request configuration must produce a valid HTTP request"
+    )]
+    let request = request.build().expect("stored quota request must build");
+    let response = client.execute(request).await.map_err(|error| {
+        if error.is_timeout() {
+            ProviderError::Timeout {
+                detail: "quota request timed out".into(),
+            }
+        } else {
+            ProviderError::Unavailable {
+                detail: "quota request transport failed".into(),
+            }
+        }
+    })?;
+    if !response.status().is_success() {
+        return Err(ProviderError::Rejected {
+            status: response.status().as_u16(),
+            detail: "quota request rejected".into(),
+        }
+        .into());
+    }
+    let body =
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|_| ProviderError::Unavailable {
+                detail: "quota response could not be read as JSON".into(),
+            })?;
+    #[expect(
+        clippy::expect_used,
+        reason = "the gateway clock must satisfy its timestamp contract"
+    )]
+    let observed_at = SafeTimestamp::try_from(crate::unix_time::unix_now_micros())
+        .expect("observation timestamp is safe");
+    let quotas = extract(&body, descriptor)?;
+    Ok(Observation {
+        observed_at,
+        quotas,
+    })
+}
+
+/// Removes potentially secret foreign error details at the quota boundary, including renewal.
+fn redact_renewal(error: ProviderError) -> ProviderError {
+    match error {
+        ProviderError::Rejected { status, .. } => ProviderError::Rejected {
+            status,
+            detail: "quota credential renewal rejected".into(),
+        },
+        ProviderError::Unavailable { .. } => ProviderError::Unavailable {
+            detail: "quota credential renewal failed".into(),
+        },
+        ProviderError::Timeout { .. } => ProviderError::Timeout {
+            detail: "quota credential renewal timed out".into(),
+        },
+        other => other,
+    }
+}

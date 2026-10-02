@@ -1,5 +1,4 @@
 import { ContractViolationError } from "/src/management-api/errors";
-
 import type {
     CompactionSection,
     CompactionStrategy,
@@ -41,6 +40,7 @@ import type {
     UpstreamStreaming,
     ValueExpr,
 } from "/src/management-api/generated/v0";
+import { parseQuotaDescriptor, validateQuotaRequest } from "/src/management-api/quota";
 
 import {
     expectArray,
@@ -227,6 +227,8 @@ export function hasBaseReference(payload: DefinitionPayload): boolean {
         }
     }
 
+    if (payload.quota != null && requestReferencesBase(payload.quota.request)) return true;
+
     if (payload.compaction !== undefined && payload.compaction !== null) {
         const { mechanisms, count_tokens: countTokens } = payload.compaction;
 
@@ -343,6 +345,7 @@ function expectDefinitionPayload(value: unknown, context: string): DefinitionPay
             "provisioning",
             "discovery",
             "compaction",
+            "quota",
         ],
         context,
     );
@@ -375,6 +378,16 @@ function expectDefinitionPayload(value: unknown, context: string): DefinitionPay
         );
     }
 
+    const quota = Reflect.get(record, "quota");
+    if (isPresentValue(quota)) {
+        payload.quota = parseQuotaDescriptor(quota, `${context}.quota`, expectControlRequest);
+        validateQuotaRequest(
+            payload.quota,
+            payload.credential,
+            payload.provisioning,
+            `${context}.quota.request`,
+        );
+    }
     return payload;
 }
 
@@ -2145,6 +2158,7 @@ function parseDefinitionResponse(value: unknown, context: string): DefinitionRes
             provisioning: Reflect.get(record, "provisioning"),
             discovery: Reflect.get(record, "discovery"),
             compaction: Reflect.get(record, "compaction"),
+            quota: Reflect.get(record, "quota"),
         },
         context,
     );

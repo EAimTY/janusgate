@@ -13,6 +13,8 @@ pub(crate) mod discovery;
 pub(crate) mod eval;
 pub(crate) mod inference;
 pub(crate) mod provisioning;
+pub(crate) mod quota;
+mod quota_validation;
 pub(crate) mod template;
 pub(crate) mod validate;
 
@@ -46,6 +48,10 @@ pub struct DefinitionPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<discovery::Discovery>,
 
+    /// The optional read-only upstream account quota query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<quota::QuotaDescriptor>,
+
     /// The optional remote-compaction section (README §5): strategy, budgets, per-mechanism
     /// declarations, and the operations executing them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,7 +69,7 @@ impl DefinitionPayload {
     /// string leaves, every control request's full expression surface (URL, header-row
     /// values, query-row values, form-field values, and JSON string leaves) across the
     /// credential section's device-authorization, token-exchange, and refresh-grant requests,
-    /// the provisioning steps and their polls, the discovery request, and the compaction
+    /// the provisioning steps and their polls, the discovery and quota requests, and the compaction
     /// section's standalone operation, token-count operation, and Messages overlay headers —
     /// and must be extended alongside any new member of that set: the requirement checks
     /// consult only this predicate, so a missed expression is accepted with no base URL and
@@ -126,6 +132,10 @@ impl DefinitionPayload {
 
         if let Some(discovery) = &self.discovery {
             is_addressed = is_addressed || validate::request_references(&discovery.request, &base);
+        }
+
+        if let Some(quota) = &self.quota {
+            is_addressed = is_addressed || validate::request_references(&quota.request, &base);
         }
 
         // The compaction section: the two full operation surfaces and the Messages header

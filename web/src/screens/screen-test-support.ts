@@ -44,6 +44,7 @@ export function stubManagementApi(overrides: Partial<ManagementApi>): Management
             overrides.createProviderDefinition ?? (() => refusedRoute("createProviderDefinition")),
         updateProviderDefinition:
             overrides.updateProviderDefinition ?? (() => refusedRoute("updateProviderDefinition")),
+        getProviderQuota: overrides.getProviderQuota ?? (() => refusedRoute("getProviderQuota")),
         listProviders: overrides.listProviders ?? (() => refusedRoute("listProviders")),
         createProvider: overrides.createProvider ?? (() => refusedRoute("createProvider")),
         updateProvider: overrides.updateProvider ?? (() => refusedRoute("updateProvider")),

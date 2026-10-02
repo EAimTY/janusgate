@@ -30,6 +30,7 @@
 
 mod api_logs_version_1;
 mod version_1;
+mod version_2;
 
 use log::{debug, info};
 #[cfg(test)]
@@ -67,7 +68,7 @@ struct Schema {
 
 /// Every schema version of the main database, ordered by ascending version starting at 1 with no
 /// gaps.
-const MAIN_SCHEMAS: &[Schema] = &[version_1::SCHEMA];
+const MAIN_SCHEMAS: &[Schema] = &[version_1::SCHEMA, version_2::SCHEMA];
 
 /// Every schema version of an api-log file, ordered by ascending version starting at 1 with no
 /// gaps. Api-log versions are immutable history: a column added later is a new version whose
@@ -636,6 +637,65 @@ mod tests {
         Ok(())
     }
 
+    /// The quota migration preserves immutable definitions and provider foreign keys under
+    /// enforcement, and its complete DDL applies independently to a fresh database.
+    ///
+    /// # Panics
+    ///
+    /// Panics if preserved bindings, null quota, or structural equivalence diverges.
+    ///
+    /// # Errors
+    ///
+    /// Returns database or canonicalization errors.
+    #[tokio::test]
+    async fn quota_migration_preserves_bound_rows_under_foreign_keys()
+    -> Result<(), Box<dyn StdError>> {
+        let connection = open_memory_connection().await;
+        connection.execute_batch(version_1::SCHEMA.schema).await?;
+        connection
+            .execute_batch(
+                r#"
+            PRAGMA foreign_keys = ON;
+            INSERT INTO provider_definitions
+                (name, version, format, inference, credential, created_at)
+                VALUES ('bound', 1, 'openai_response', '{}', '{"type":"api_key"}', 42);
+            INSERT INTO providers
+                (name, provider_definition_name, provider_definition_version, model_prefix,
+                 credentials, is_enabled)
+                VALUES ('provider', 'bound', 1, '', '{"type":"api_key","api_key":"secret"}', 0);
+            BEGIN;
+        "#,
+            )
+            .await?;
+        connection
+            .execute_batch(version_2::SCHEMA.migration)
+            .await?;
+        connection.execute_batch("COMMIT;").await?;
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the seeded provider and definition survive migration"
+        )]
+        let row = connection
+            .query(
+                "SELECT p.provider_definition_version, p.is_enabled, d.created_at, d.quota \
+             FROM providers p JOIN provider_definitions d \
+             ON d.name = p.provider_definition_name AND d.version = p.provider_definition_version",
+                (),
+            )
+            .await?
+            .next()
+            .await?
+            .unwrap();
+        assert_eq!(row.get::<i64>(0)?, 1);
+        assert_eq!(row.get::<i64>(1)?, 0);
+        assert_eq!(row.get::<i64>(2)?, 42);
+        assert_eq!(row.get::<Option<String>>(3)?, None);
+        assert_declared_schema(&connection, &version_2::SCHEMA).await?;
+        let fresh = open_fresh(version_2::SCHEMA.schema).await?;
+        assert_declared_schema(&fresh, &version_2::SCHEMA).await?;
+        Ok(())
+    }
+
     /// Verifies the full startup workflow on a fresh database for each registry: [`migrate`]
     /// brings `user_version` to the registry's latest version, and a second run over the
     /// now-current database is a no-op. The second run exercises the application-id verification
@@ -720,14 +780,15 @@ mod tests {
     /// Verifies the fresh-bootstrap race: a concurrent bootstrap commits version 1 — DDL, the
     /// application-id stamp, and version advance — into the database while
     /// [`bring_up_to_latest`], whose initial version read already returned 0, waits on the write
-    /// lock. The raced bootstrap must join the committed version instead of re-applying the DDL:
+    /// lock. The raced bootstrap must join the committed version before walking to the latest
+    /// version, instead of re-applying the DDL:
     /// two opens bootstrapping one file at once — an api-log write racing an api-log read —
     /// would otherwise both apply the first version, and the duplicate `CREATE TABLE` of the
     /// first table kills the loser.
     ///
     /// # Panics
     ///
-    /// Panics if the workflow fails or the database does not end at version 1.
+    /// Panics if the workflow fails or the database does not end at the registry's latest version.
     #[tokio::test]
     async fn a_bootstrap_racing_a_committed_fresh_bootstrap_joins_its_version()
     -> Result<(), Box<dyn StdError>> {
@@ -753,7 +814,10 @@ mod tests {
             },
         );
 
-        assert_eq!(query_user_version(&raced).await, 1);
+        assert_eq!(
+            query_user_version(&raced).await,
+            last_schema(MAIN_SCHEMAS).version
+        );
 
         Ok(())
     }

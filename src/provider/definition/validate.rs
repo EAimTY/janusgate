@@ -70,6 +70,9 @@ enum Stage {
     /// The upstream model-list discovery.
     Discovery,
 
+    /// The read-only quota query, with current credentials only.
+    Quota,
+
     /// A native compaction operation of the definition's compaction section: the standalone
     /// compact operation and the Messages declarations' overlay headers.
     CompactionOperation,
@@ -84,7 +87,9 @@ impl Stage {
     /// the flow-state kinds are available exactly at the stages that produce or consume them.
     const fn allows(self, kind: ValueKind) -> bool {
         match kind {
-            ValueKind::Literal | ValueKind::ClientId | ValueKind::ClientSecret => true,
+            ValueKind::Literal => true,
+
+            ValueKind::ClientId | ValueKind::ClientSecret => !matches!(self, Self::Quota),
 
             ValueKind::Base => !matches!(self, Self::AuthorizeUrl),
 
@@ -93,6 +98,7 @@ impl Stage {
                 Self::Inference
                     | Self::Provisioning
                     | Self::Discovery
+                    | Self::Quota
                     | Self::CompactionOperation
                     | Self::CompactionCount
             ),
@@ -239,6 +245,10 @@ impl DefinitionPayload {
         self.validate_provisioning(&slots)?;
         self.validate_discovery(&slots)?;
         self.validate_compaction(&slots)?;
+        if let Some(quota) = &self.quota {
+            validate_control_request(&quota.request, Stage::Quota, &slots)?;
+            super::quota_validation::validate(quota)?;
+        }
 
         Ok(())
     }
@@ -1549,6 +1559,7 @@ fn stage_name(stage: Stage) -> &'static str {
         Stage::RefreshGrant => "token refresh",
         Stage::Provisioning => "provisioning",
         Stage::Discovery => "discovery",
+        Stage::Quota => "quota",
         Stage::CompactionOperation => "compaction operation",
         Stage::CompactionCount => "compaction token count",
     }

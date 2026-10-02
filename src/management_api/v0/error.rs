@@ -161,6 +161,17 @@ pub(super) enum Error {
     #[error(transparent)]
     Json(#[from] JsonRejection),
 
+    /// The exact provider definition declares no quota query.
+    #[error("provider {provider_id} does not declare quota viewing")]
+    QuotaNotConfigured {
+        /// Addressed provider identity.
+        provider_id: i64,
+    },
+
+    /// A declared quota mapping failed atomically, retaining no foreign values.
+    #[error(transparent)]
+    QuotaExtraction(#[from] crate::provider::quota::extraction::ExtractionError),
+
     /// The management token is missing or wrong.
     #[error("Missing or invalid management token")]
     Unauthorized,
@@ -431,7 +442,8 @@ impl Error {
 
             Self::MethodNotAllowed { .. } => ErrorCode::MethodNotAllowed,
 
-            Self::EmptyIdentifier { .. }
+            Self::QuotaNotConfigured { .. }
+            | Self::EmptyIdentifier { .. }
             | Self::InvalidIdentifier { .. }
             | Self::UnknownReasoningLevel { .. }
             | Self::NonPositiveTokenCap { .. }
@@ -449,9 +461,9 @@ impl Error {
             | Self::ProviderNameTaken { .. }
             | Self::ApiKeyTaken => ErrorCode::Conflict,
 
-            Self::UpstreamReportedNoModels | Self::UpstreamReportedInvalidModelId { .. } => {
-                ErrorCode::UpstreamError
-            }
+            Self::QuotaExtraction(_)
+            | Self::UpstreamReportedNoModels
+            | Self::UpstreamReportedInvalidModelId { .. } => ErrorCode::UpstreamError,
 
             Self::Provider(error) => match error {
                 ProviderError::NotFound { .. } => ErrorCode::NotFound,
@@ -538,6 +550,19 @@ impl From<Error> for ErrorResponse {
 impl From<ErrorCode> for u16 {
     fn from(code: ErrorCode) -> Self {
         code as Self
+    }
+}
+
+/// Integrates safe quota failures into version zero's single logging/error boundary.
+impl From<crate::provider::quota::Error> for Error {
+    fn from(error: crate::provider::quota::Error) -> Self {
+        match error {
+            crate::provider::quota::Error::NotConfigured { provider_id } => {
+                Self::QuotaNotConfigured { provider_id }
+            }
+            crate::provider::quota::Error::Provider(error) => Self::Provider(error),
+            crate::provider::quota::Error::Extraction(error) => Self::QuotaExtraction(error),
+        }
     }
 }
 

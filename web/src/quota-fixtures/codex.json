@@ -1,0 +1,426 @@
+{
+    "descriptor": {
+        "request": {
+            "method": "GET",
+            "url": [
+                {
+                    "type": "literal",
+                    "value": "https://chatgpt.com/backend-api/wham/usage"
+                }
+            ],
+            "headers": [
+                {
+                    "name": "Authorization",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "Bearer "
+                        },
+                        {
+                            "type": "secret"
+                        }
+                    ]
+                },
+                {
+                    "name": "ChatGPT-Account-Id",
+                    "value": [
+                        {
+                            "type": "slot",
+                            "name": "account_id"
+                        }
+                    ]
+                }
+            ]
+        },
+        "sources": [
+            {
+                "type": "object",
+                "key": "account",
+                "at": [
+                    "rate_limit"
+                ],
+                "is_required": false,
+                "scope": {
+                    "type": "literal",
+                    "value": "Account"
+                },
+                "entries": [
+                    {
+                        "key": "primary",
+                        "label": "Primary window",
+                        "at": [
+                            "primary_window"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration_field",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "limit_window_seconds"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "unit": "seconds"
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "used_percent"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "reset_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "unix_seconds"
+                        }
+                    },
+                    {
+                        "key": "secondary",
+                        "label": "Secondary window",
+                        "at": [
+                            "secondary_window"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration_field",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "limit_window_seconds"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "unit": "seconds"
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "used_percent"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "reset_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "unix_seconds"
+                        }
+                    }
+                ]
+            },
+            {
+                "type": "array",
+                "key": "additional",
+                "at": [
+                    "additional_rate_limits"
+                ],
+                "is_required": false,
+                "identity": [
+                    {
+                        "type": "field",
+                        "field": {
+                            "base": "item",
+                            "path": [
+                                "metered_feature"
+                            ],
+                            "is_required": true
+                        },
+                        "encoding": "string"
+                    }
+                ],
+                "scope": {
+                    "type": "field",
+                    "field": {
+                        "base": "item",
+                        "path": [
+                            "limit_name"
+                        ],
+                        "is_required": false
+                    },
+                    "encoding": "string"
+                },
+                "entries": [
+                    {
+                        "key": "primary",
+                        "label": "Primary window",
+                        "at": [
+                            "rate_limit",
+                            "primary_window"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration_field",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "limit_window_seconds"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "unit": "seconds"
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "used_percent"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "reset_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "unix_seconds"
+                        }
+                    },
+                    {
+                        "key": "secondary",
+                        "label": "Secondary window",
+                        "at": [
+                            "rate_limit",
+                            "secondary_window"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration_field",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "limit_window_seconds"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "unit": "seconds"
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "used_percent"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "reset_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "unix_seconds"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "response": {
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 42.5,
+                "limit_window_seconds": 18000,
+                "reset_at": 2000000000
+            },
+            "secondary_window": {
+                "used_percent": 84,
+                "limit_window_seconds": 604800,
+                "reset_at": 2000000001
+            }
+        },
+        "additional_rate_limits": [
+            {
+                "metered_feature": "codex_other",
+                "limit_name": "Additional",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 125,
+                        "limit_window_seconds": 900,
+                        "reset_at": 2000000002
+                    }
+                }
+            },
+            {
+                "metered_feature": "other_feature",
+                "limit_name": "Additional",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 0,
+                        "limit_window_seconds": 3600,
+                        "reset_at": 2000000003
+                    }
+                }
+            }
+        ],
+        "credits": {
+            "balance": "999"
+        }
+    },
+    "expected": [
+        {
+            "key": [
+                "account",
+                "primary"
+            ],
+            "label": "Primary window",
+            "scope": {
+                "type": "named",
+                "name": "Account"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 18000
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.425
+            },
+            "reset": {
+                "type": "at",
+                "at": 2000000000000000
+            }
+        },
+        {
+            "key": [
+                "account",
+                "secondary"
+            ],
+            "label": "Secondary window",
+            "scope": {
+                "type": "named",
+                "name": "Account"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 604800
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.84
+            },
+            "reset": {
+                "type": "at",
+                "at": 2000000001000000
+            }
+        },
+        {
+            "key": [
+                "additional",
+                "codex_other",
+                "primary"
+            ],
+            "label": "Primary window",
+            "scope": {
+                "type": "named",
+                "name": "Additional"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 900
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 1.25
+            },
+            "reset": {
+                "type": "at",
+                "at": 2000000002000000
+            }
+        },
+        {
+            "key": [
+                "additional",
+                "other_feature",
+                "primary"
+            ],
+            "label": "Primary window",
+            "scope": {
+                "type": "named",
+                "name": "Additional"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 3600
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0
+            },
+            "reset": {
+                "type": "at",
+                "at": 2000000003000000
+            }
+        }
+    ],
+    "expected_request": {
+        "method": "GET",
+        "url": "https://chatgpt.com/backend-api/wham/usage",
+        "headers": {
+            "authorization": "Bearer current",
+            "chatgpt-account-id": "account"
+        },
+        "body": null
+    }
+}

@@ -8,6 +8,7 @@ import type {
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
+import { PROVIDER_PRESETS } from "/src/presets";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
 import {
     bodyText,
@@ -103,6 +104,63 @@ function deferredDiscoveryAnswer(): {
 
 describe("ProviderDetailScreen automatic discovery", () => {
     const disposes = createDisposals();
+
+    it("isolates quota failures while models, editing, and usage stay usable, then retries manually", async () => {
+        const preset = PROVIDER_PRESETS.find((value) => value.id === "codex");
+        if (preset === undefined) throw new Error("fixture preset missing");
+        const getQuota = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("quota read failed"))
+            .mockResolvedValue({
+                observed_at: 1,
+                quotas: [],
+            });
+        const api = stubManagementApi({
+            ...screenApi({
+                providers: [
+                    {
+                        ...provider,
+                        provider_definition_name: "codex",
+                    },
+                ],
+                models: [
+                    discoveredModel,
+                ],
+                onDiscover: vi.fn(),
+            }),
+            listProviderDefinitions: async () => ({
+                provider_definitions: [
+                    {
+                        ...preset.payload,
+                        name: "codex",
+                        version: 1,
+                        created_at: 1,
+                    },
+                ],
+            }),
+            getProviderQuota: getQuota,
+        });
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={api}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+        expect(bodyText()).toContain("quota read failed");
+        expect(bodyText()).toContain("Models · 1");
+        expect(bodyText()).toContain("No requests recorded for this provider yet.");
+        expect(linkTo("/providers/5/edit")).toBeDefined();
+        buttonWithText("Retry quota").click();
+        await settle();
+        expect(bodyText()).toContain("The upstream returned no quota entries.");
+        expect(getQuota).toHaveBeenCalledTimes(2);
+    });
 
     it("starts one discovery on its own when the provider reports no models", async () => {
         const onDiscover = vi.fn();

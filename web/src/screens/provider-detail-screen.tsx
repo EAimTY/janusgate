@@ -31,6 +31,8 @@ import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 import { credentialBadge, OAUTH_NEVER_FRESH_SENTENCE } from "/src/ui/providers-table";
+import { ProviderQuotaCard } from "./provider-quota-card";
+import { createProviderQuotaView } from "./quota-view";
 import { StatedNotice } from "./read-notice";
 import { RowNotFound } from "./row-not-found";
 
@@ -199,6 +201,10 @@ export function ProviderDetailScreen(props: {
     );
 
     const providersById = createMemo(() => indexRowsById(providers()));
+    const quota = createProviderQuotaView({
+        api: () => props.api,
+        provider,
+    });
 
     return (
         <ScreenFrame
@@ -296,6 +302,8 @@ export function ProviderDetailScreen(props: {
                         notice={discoveryNotice}
                         onDiscover={() => void discover(row, models())}
                     />
+
+                    <ProviderQuotaCard view={quota} />
 
                     <EntityUsageCard
                         api={props.api}

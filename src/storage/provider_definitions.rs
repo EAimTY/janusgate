@@ -16,7 +16,7 @@ use std::num::NonZeroI64;
 /// Column order of definition selects, consumed positionally by
 /// [`definition_from_row_offset`].
 pub(crate) const DEFINITION_COLUMNS: &str = "name, version, format, inference, credential, \
-     provisioning, discovery, compaction, created_at";
+     provisioning, discovery, compaction, quota, created_at";
 
 /// A new definition version about to be inserted.
 pub(crate) struct NewDefinition<'a> {
@@ -125,10 +125,10 @@ async fn insert_first(
     database
         .query(
             "INSERT INTO provider_definitions (name, version, format, inference, credential, \
-             provisioning, discovery, compaction, created_at) \
-             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             provisioning, discovery, compaction, quota, created_at) \
+             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
              RETURNING name, version, format, inference, credential, provisioning, discovery, \
-             compaction, created_at",
+             compaction, quota, created_at",
             params![
                 definition.name,
                 definition.payload.format.as_str(),
@@ -137,6 +137,7 @@ async fn insert_first(
                 definition.payload.provisioning.as_ref().map(payload_json),
                 definition.payload.discovery.as_ref().map(payload_json),
                 definition.payload.compaction.as_ref().map(payload_json),
+                definition.payload.quota.as_ref().map(payload_json),
                 definition.created_at,
             ],
         )
@@ -181,8 +182,8 @@ pub(crate) async fn insert_next_in_transaction(
     transaction
         .execute(
             "INSERT INTO provider_definitions (name, version, format, inference, credential, \
-             provisioning, discovery, compaction, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             provisioning, discovery, compaction, quota, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 definition.name,
                 base_version.get() + 1,
@@ -192,6 +193,7 @@ pub(crate) async fn insert_next_in_transaction(
                 definition.payload.provisioning.as_ref().map(payload_json),
                 definition.payload.discovery.as_ref().map(payload_json),
                 definition.payload.compaction.as_ref().map(payload_json),
+                definition.payload.quota.as_ref().map(payload_json),
                 definition.created_at,
             ],
         )
@@ -513,21 +515,28 @@ mod tests {
         }
     }
 
-    /// Verifies the compaction section rides the definition row: an insert carrying one reads
-    /// back identically through the definition select and the provider join, and a payload
-    /// without one reads back as `None`.
+    /// Optional sections survive unrelated edits and joins while old bindings stay immutable.
     ///
     /// # Panics
     ///
     /// Panics if a database operation, fixture validation, or the round-trip assertion fails.
     #[tokio::test]
-    async fn definition_rows_carry_the_compaction_section() -> Result<(), Box<dyn StdError>> {
+    async fn definition_rows_preserve_optional_sections_and_exact_bindings()
+    -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = test_support::create_test_database().await;
 
         let mut payload =
             test_support::static_key_definition_payload(UpstreamFormat::OpenAiResponse);
 
         payload.compaction = Some(compaction_section());
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../web/src/quota-fixtures/kimi-code.json"))?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the checked-in fixture has a descriptor"
+        )]
+        let descriptor = fixture["descriptor"].clone();
+        payload.quota = Some(serde_json::from_value(descriptor)?);
 
         payload.validate().map_err(|error| error.message)?;
 
@@ -553,9 +562,22 @@ mod tests {
             stored_row.payload.compaction.as_ref(),
             Some(&compaction_section())
         );
+        assert_eq!(stored_row.payload.quota, payload.quota);
+        let bound = test_support::insert_provider(
+            &database,
+            stored_row,
+            "bound",
+            "",
+            Some("https://upstream.example"),
+            StoredCredentials::ApiKey {
+                api_key: "secret".into(),
+            },
+        )
+        .await;
 
-        // A successor without the section stores the null column and reads back without one.
-        let successor = test_support::static_key_definition_payload(UpstreamFormat::OpenAiResponse);
+        // Editing compaction alone preserves the independently authored quota recipe.
+        let mut successor = payload.clone();
+        successor.compaction = None;
 
         successor.validate().map_err(|error| error.message)?;
 
@@ -581,6 +603,31 @@ mod tests {
             .expect("the successor row exists");
 
         assert_eq!(second.payload.compaction, None);
+        assert_eq!(second.payload.quota, payload.quota);
+        let still_bound = storage_cr::providers::find_provider_by_id(&database, bound.id)
+            .await?
+            .expect("the bound provider remains");
+        assert_eq!(still_bound.definition.version.get(), 1);
+        assert_eq!(still_bound.definition.payload, payload);
+        let removed = test_support::static_key_definition_payload(UpstreamFormat::OpenAiResponse);
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: "compacted",
+                base_version: Some(second.version),
+                payload: &removed,
+                created_at: 3,
+            },
+        )
+        .await?;
+        let latest = storage_cr::provider_definitions::find_definition(
+            &database,
+            "compacted",
+            std::num::NonZeroI64::new(3).expect("positive version"),
+        )
+        .await?
+        .expect("third version exists");
+        assert_eq!(latest.payload.quota, None);
 
         Ok(())
     }

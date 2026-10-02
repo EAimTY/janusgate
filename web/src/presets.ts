@@ -1,5 +1,6 @@
 import type { DefinitionPayload } from "/src/management-api/definition-payload";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
+import { PRESET_QUOTAS } from "/src/preset-quotas";
 
 /**
  * The preset catalog (gateway README §5.6): hardcoded, versioned definition documents
@@ -650,9 +651,10 @@ const OAUTH_PRESETS: readonly [
         grant: "authorization_code",
         suggestedName: "claude",
         provenance:
-            "anthropics/claude-code research port (hosted paste-back callback, JSON token requests); verify against the live CLI before production use",
+            "anthropics/claude-code research port (hosted paste-back callback, JSON token requests); verify against the live CLI before production use; Quota: official @anthropic-ai/claude-code@2.1.0 cli.js usage reader (OAuth bearer, oauth-2025-04-20 beta, existing user:profile scope; five_hour, seven_day, seven_day_sonnet); quota remains unverified by a live query.",
         verification: "unverified",
         payload: {
+            quota: PRESET_QUOTAS["claude-code"],
             format: "anthropic_messages",
             inference: {
                 url: [
@@ -1017,9 +1019,10 @@ const OAUTH_PRESETS: readonly [
         grant: "device",
         suggestedName: "kimi",
         provenance:
-            "Kimi Code CLI research port (auth.kimi.com device flow, X-Msh-* header set); verify against the live CLI before production use",
+            "Kimi Code CLI research port (auth.kimi.com device flow, X-Msh-* header set); verify against the live CLI before production use; Quota: MoonshotAI/kimi-code at 21406fb4c805cc8c715e6d1f16ad3fb5f25f4fe3, packages/oauth/src/managed-usage.ts (four independent usages, explicit number/string union); quota remains unverified by a live query.",
         verification: "unverified",
         payload: {
+            quota: PRESET_QUOTAS["kimi-code"],
             format: "openai_chat_completion",
             inference: {
                 url: [
@@ -1428,9 +1431,10 @@ const OAUTH_PRESETS: readonly [
         grant: "device",
         suggestedName: "copilot",
         provenance:
-            "github/copilot-cli and VS Code Copilot Chat research port (device flow, copilot_internal/v2/token); verify against the live product before production use",
+            "github/copilot-cli and VS Code Copilot Chat research port (device flow, copilot_internal/v2/token); verify against the live product before production use; Quota: microsoft/vscode at de892dd1f9971e3a7d8c758a8788d86854047605 product.json and microsoft/vscode-copilot-chat at 5863f5a7088958050792b5dccbe8b46c6e13eccc, copilotTokenManager.ts and chatQuotaService.ts (durable github_token, explicit unlimited, percent_remaining, date-only quota_reset_date); quota remains unverified by a live query.",
         verification: "unverified",
         payload: {
+            quota: PRESET_QUOTAS["github-copilot"],
             format: "openai_chat_completion",
             inference: {
                 url: [
@@ -1808,7 +1812,7 @@ const OAUTH_PRESETS: readonly [
         grant: "authorization_code",
         suggestedName: "devin",
         provenance:
-            "Devin OAuth research port (ConnectRPC exchange, api_key/api_server_url fields); the exchange fields and inference protocol carry research-level uncertainty — record a live confirmation before production use",
+            "Devin OAuth research port (ConnectRPC exchange, api_key/api_server_url fields); the exchange fields and inference protocol carry research-level uncertainty — record a live confirmation before production use; quota absent: steipete/CodexBar at 0ac27e8f78801cb893b31e220fce8589241f4c3c, docs/devin.md; the researched app.devin.ai billing quota read requires browser-session auth and an internal organization identity not provided by this preset; public API consumption is ACU accounting and does not establish coding-plan allowance access under these credentials",
         verification: "unverified",
         payload: {
             format: "anthropic_messages",
@@ -1975,9 +1979,10 @@ const OAUTH_PRESETS: readonly [
         grant: "authorization_code",
         suggestedName: "codex",
         provenance:
-            "openai/codex at rev fcf05456bb27e6c3d5677550f54011db6a2a0817 (codex-rs/login; login and inference verified against the live upstream); the compaction declarations are researched from the Codex client and backend behavior at rev 444da310 and remain unverified against a live compact run",
+            "openai/codex at rev fcf05456bb27e6c3d5677550f54011db6a2a0817 (codex-rs/login; login and inference verified against the live upstream); the compaction declarations are researched from the Codex client and backend behavior at rev 444da310 and remain unverified against a live compact run; Quota: openai/codex at 4dd51f4a5f2037f8aa322fe7807315e6530a4ec8, backend-client/src/client.rs and rate_limit_resets_tests.rs (wham usage, main/additional pools); quota remains unverified by a live query.",
         verification: "unverified",
         payload: {
+            quota: PRESET_QUOTAS["codex"],
             format: "openai_response",
             inference: {
                 url: [
@@ -2351,9 +2356,10 @@ const OAUTH_PRESETS: readonly [
         grant: "authorization_code",
         suggestedName: "antigravity",
         provenance:
-            "NoeFabris/opencode-antigravity-auth at rev 16e0056 (src/antigravity/oauth.ts, src/plugin)",
+            "NoeFabris/opencode-antigravity-auth at rev 16e0056 (src/antigravity/oauth.ts, src/plugin); Quota: NoeFabris/opencode-antigravity-auth at 16e0056431d0a1291ee66e5938c732720b13a851, src/plugin/quota.ts and src/constants.ts (production fetchAvailableModels, stored project, quotaInfo per map key); quota remains unverified by a live query.",
         verification: "live",
         payload: {
+            quota: PRESET_QUOTAS["antigravity"],
             format: "gemini_generate_content",
             inference: {
                 url: [

@@ -1,0 +1,199 @@
+{
+    "descriptor": {
+        "request": {
+            "method": "GET",
+            "url": [
+                {
+                    "type": "literal",
+                    "value": "https://api.github.com/copilot_internal/user"
+                }
+            ],
+            "headers": [
+                {
+                    "name": "Authorization",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "token "
+                        },
+                        {
+                            "type": "slot",
+                            "name": "github_token"
+                        }
+                    ]
+                },
+                {
+                    "name": "X-GitHub-Api-Version",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "2025-04-01"
+                        }
+                    ]
+                }
+            ]
+        },
+        "sources": [
+            {
+                "type": "map",
+                "key": "allowances",
+                "at": [
+                    "quota_snapshots"
+                ],
+                "is_required": false,
+                "scope": {
+                    "type": "map_key"
+                },
+                "entries": [
+                    {
+                        "key": "allowance",
+                        "label": "Allowance",
+                        "at": [],
+                        "is_required": true,
+                        "window": {
+                            "type": "unknown"
+                        },
+                        "is_unlimited": {
+                            "base": "entry",
+                            "path": [
+                                "unlimited"
+                            ],
+                            "is_required": true
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "percent_remaining"
+                                    ],
+                                    "is_required": true
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "remaining"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "root",
+                                "path": [
+                                    "quota_reset_date"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "date"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "response": {
+        "quota_snapshots": {
+            "chat": {
+                "quota_id": "chat",
+                "entitlement": 0,
+                "remaining": 0,
+                "unlimited": true,
+                "percent_remaining": 100
+            },
+            "completions": {
+                "quota_id": "completions",
+                "entitlement": 0,
+                "remaining": 0,
+                "unlimited": false,
+                "percent_remaining": 0
+            },
+            "premium_interactions": {
+                "quota_id": "premium_interactions",
+                "entitlement": 100,
+                "remaining": 42.5,
+                "unlimited": false,
+                "percent_remaining": 42.5
+            }
+        },
+        "quota_reset_date": "2030-02-01"
+    },
+    "expected": [
+        {
+            "key": [
+                "allowances",
+                "chat",
+                "allowance"
+            ],
+            "label": "Allowance",
+            "scope": {
+                "type": "named",
+                "name": "chat"
+            },
+            "window": {
+                "type": "unknown"
+            },
+            "measurement": {
+                "type": "unlimited"
+            },
+            "reset": {
+                "type": "date",
+                "date": "2030-02-01"
+            }
+        },
+        {
+            "key": [
+                "allowances",
+                "completions",
+                "allowance"
+            ],
+            "label": "Allowance",
+            "scope": {
+                "type": "named",
+                "name": "completions"
+            },
+            "window": {
+                "type": "unknown"
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 1
+            },
+            "reset": {
+                "type": "date",
+                "date": "2030-02-01"
+            }
+        },
+        {
+            "key": [
+                "allowances",
+                "premium_interactions",
+                "allowance"
+            ],
+            "label": "Allowance",
+            "scope": {
+                "type": "named",
+                "name": "premium_interactions"
+            },
+            "window": {
+                "type": "unknown"
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.575
+            },
+            "reset": {
+                "type": "date",
+                "date": "2030-02-01"
+            }
+        }
+    ],
+    "expected_request": {
+        "method": "GET",
+        "url": "https://api.github.com/copilot_internal/user",
+        "headers": {
+            "authorization": "token durable-github",
+            "x-github-api-version": "2025-04-01"
+        },
+        "body": null
+    }
+}

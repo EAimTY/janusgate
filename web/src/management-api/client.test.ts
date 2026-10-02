@@ -55,6 +55,69 @@ afterEach(() => {
 });
 
 describe("createManagementApi", () => {
+    it("keeps current upstream quota failures inline and ignores aborted late management-auth failures", async () => {
+        const onUnauthorized = vi.fn();
+        const api = createManagementApi(connection, {
+            onUnauthorized,
+        });
+        stubFetch(() =>
+            jsonResponse(502, {
+                errno: 5,
+                message: "quota upstream rejected with HTTP 401",
+            }),
+        );
+        await expect(
+            api.getProviderQuota({
+                provider_id: 1,
+            }),
+        ).rejects.toMatchObject({
+            category: "gateway",
+            httpStatus: 502,
+        });
+        expect(onUnauthorized).not.toHaveBeenCalled();
+        const controller = new AbortController();
+        let answer: (response: Response) => void = () => undefined;
+        stubFetch(
+            () =>
+                new Promise<Response>((resolve) => {
+                    answer = resolve;
+                }),
+        );
+        const pending = api.getProviderQuota(
+            {
+                provider_id: 1,
+            },
+            controller.signal,
+        );
+        controller.abort();
+        answer(
+            new Response(
+                JSON.stringify({
+                    errno: 2,
+                    message: "unauthorized",
+                }),
+                {
+                    status: 401,
+                },
+            ),
+        );
+        await expect(pending).rejects.toMatchObject({
+            name: "AbortError",
+        });
+        expect(onUnauthorized).not.toHaveBeenCalled();
+        stubFetch(() =>
+            jsonResponse(401, {
+                errno: 2,
+                message: "unauthorized",
+            }),
+        );
+        await expect(
+            api.getProviderQuota({
+                provider_id: 1,
+            }),
+        ).rejects.toBeInstanceOf(ManagementApiError);
+        expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    });
     it("POSTs an empty JSON body to the versioned path with the token verbatim", async () => {
         const calls = stubFetch(() =>
             jsonResponse(200, {

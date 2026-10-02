@@ -115,7 +115,7 @@ mod test_support;
 /// [`provider_from_row`].
 const PROVIDER_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.base_url, p.credentials, \
      p.is_enabled, d.name, d.version, d.format, d.inference, d.credential, d.provisioning, \
-     d.discovery, d.compaction, d.created_at";
+     d.discovery, d.compaction, d.quota, d.created_at";
 
 /// The join behind every provider read: the row and the exact definition version it references.
 pub(crate) const PROVIDER_JOINED_FROM: &str = "FROM providers p JOIN provider_definitions d \
@@ -449,7 +449,7 @@ fn support_facts_into_value(facts: Option<&CompactionSupportFacts>) -> Result<Va
 
 /// The column count of [`PROVIDER_COLUMNS`]: a provider-model join appends the model columns
 /// after it.
-pub(crate) const PROVIDER_COLUMN_COUNT: usize = 15;
+pub(crate) const PROVIDER_COLUMN_COUNT: usize = 16;
 
 /// Parses a definition payload JSON column, wrapped exactly once as internal storage drift: the
 /// column was written only through the validated management path, so a payload failing here is
@@ -501,12 +501,16 @@ pub(crate) fn definition_from_row_offset(
                 .get::<Option<String>>(offset + 6)?
                 .map(|json| payload_from_json(Some(json), "discovery"))
                 .transpose()?,
+            quota: row
+                .get::<Option<String>>(offset + 8)?
+                .map(|json| payload_from_json(Some(json), "quota"))
+                .transpose()?,
             compaction: row
                 .get::<Option<String>>(offset + 7)?
                 .map(|json| payload_from_json(Some(json), "compaction"))
                 .transpose()?,
         },
-        created_at: row.get(offset + 8)?,
+        created_at: row.get(offset + 9)?,
     })
 }
 

@@ -1,0 +1,267 @@
+{
+    "descriptor": {
+        "request": {
+            "method": "GET",
+            "url": [
+                {
+                    "type": "literal",
+                    "value": "https://api.anthropic.com/api/oauth/usage"
+                }
+            ],
+            "headers": [
+                {
+                    "name": "Authorization",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "Bearer "
+                        },
+                        {
+                            "type": "secret"
+                        }
+                    ]
+                },
+                {
+                    "name": "anthropic-beta",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "oauth-2025-04-20"
+                        }
+                    ]
+                },
+                {
+                    "name": "User-Agent",
+                    "value": [
+                        {
+                            "type": "literal",
+                            "value": "claude-cli/2.1.0 (external, cli)"
+                        }
+                    ]
+                }
+            ]
+        },
+        "sources": [
+            {
+                "type": "object",
+                "key": "account",
+                "at": [],
+                "is_required": true,
+                "scope": {
+                    "type": "literal",
+                    "value": "Account"
+                },
+                "entries": [
+                    {
+                        "key": "five_hour",
+                        "label": "Five-hour allowance",
+                        "at": [
+                            "five_hour"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration",
+                            "seconds": 18000
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "utilization"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "resets_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "rfc3339"
+                        }
+                    },
+                    {
+                        "key": "seven_day",
+                        "label": "Weekly allowance",
+                        "at": [
+                            "seven_day"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration",
+                            "seconds": 604800
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "utilization"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "resets_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "rfc3339"
+                        }
+                    },
+                    {
+                        "key": "seven_day_sonnet",
+                        "label": "Sonnet weekly allowance",
+                        "at": [
+                            "seven_day_sonnet"
+                        ],
+                        "is_required": false,
+                        "window": {
+                            "type": "duration",
+                            "seconds": 604800
+                        },
+                        "measurement": {
+                            "type": "ratio",
+                            "value": {
+                                "field": {
+                                    "base": "entry",
+                                    "path": [
+                                        "utilization"
+                                    ],
+                                    "is_required": false
+                                },
+                                "encoding": "number"
+                            },
+                            "scale": "percent",
+                            "direction": "used"
+                        },
+                        "reset": {
+                            "type": "field",
+                            "field": {
+                                "base": "entry",
+                                "path": [
+                                    "resets_at"
+                                ],
+                                "is_required": false
+                            },
+                            "encoding": "rfc3339"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "response": {
+        "five_hour": {
+            "utilization": 12.5,
+            "resets_at": "2030-01-01T01:00:00.123456+01:00"
+        },
+        "seven_day": {
+            "utilization": 64.5,
+            "resets_at": "2030-01-07T00:00:00Z"
+        },
+        "seven_day_sonnet": {
+            "utilization": 42.5,
+            "resets_at": null
+        }
+    },
+    "expected": [
+        {
+            "key": [
+                "account",
+                "five_hour"
+            ],
+            "label": "Five-hour allowance",
+            "scope": {
+                "type": "named",
+                "name": "Account"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 18000
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.125
+            },
+            "reset": {
+                "type": "at",
+                "at": 1893456000123456
+            }
+        },
+        {
+            "key": [
+                "account",
+                "seven_day"
+            ],
+            "label": "Weekly allowance",
+            "scope": {
+                "type": "named",
+                "name": "Account"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 604800
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.645
+            },
+            "reset": {
+                "type": "at",
+                "at": 1893974400000000
+            }
+        },
+        {
+            "key": [
+                "account",
+                "seven_day_sonnet"
+            ],
+            "label": "Sonnet weekly allowance",
+            "scope": {
+                "type": "named",
+                "name": "Account"
+            },
+            "window": {
+                "type": "duration",
+                "seconds": 604800
+            },
+            "measurement": {
+                "type": "ratio",
+                "used_fraction": 0.425
+            },
+            "reset": {
+                "type": "unknown"
+            }
+        }
+    ],
+    "expected_request": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/oauth/usage",
+        "headers": {
+            "authorization": "Bearer current",
+            "anthropic-beta": "oauth-2025-04-20",
+            "user-agent": "claude-cli/2.1.0 (external, cli)"
+        },
+        "body": null
+    }
+}

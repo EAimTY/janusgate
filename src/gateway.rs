@@ -1343,6 +1343,7 @@ mod tests {
                     credential: CredentialAcquisition::ApiKey,
                     provisioning: None,
                     discovery: None,
+                    quota: None,
                     compaction: None,
                 },
                 created_at: 0,

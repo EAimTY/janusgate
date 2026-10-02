@@ -2,7 +2,6 @@ import {
     parseDefinitionEnvelope,
     parseListProviderDefinitionsResponse,
 } from "/src/management-api/definition-payload";
-
 import {
     ContractViolationError,
     describeManagementFailure,
@@ -11,7 +10,6 @@ import {
     type ManagementApiErrorDetails,
     type ManagementFailureCategory,
 } from "/src/management-api/errors";
-
 import {
     type ApiKeyEnvelope,
     type CompleteProviderOauthRequest,
@@ -27,6 +25,8 @@ import {
     type DiscoverModelsRequest,
     type DiscoverModelsResponse,
     ErrorCode,
+    type GetProviderQuotaRequest,
+    type GetProviderQuotaResponse,
     type ListApiKeysRequest,
     type ListApiKeysResponse,
     type ListModelsRequest,
@@ -50,6 +50,7 @@ import {
     type UpdateProviderDefinitionRequest,
     type UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
+import { parseGetProviderQuotaResponse } from "/src/management-api/quota";
 import {
     parseApiKeyEnvelope,
     parseCompleteProviderOauthResponse,
@@ -104,6 +105,10 @@ export type ManagementApi = {
         request: UpdateProviderDefinitionRequest,
         signal?: AbortSignal,
     ) => Promise<DefinitionEnvelope>;
+    readonly getProviderQuota: (
+        request: GetProviderQuotaRequest,
+        signal?: AbortSignal,
+    ) => Promise<GetProviderQuotaResponse>;
     readonly listProviders: (signal?: AbortSignal) => Promise<ListProvidersResponse>;
     readonly createProvider: (
         request: CreateProviderRequest,
@@ -293,6 +298,7 @@ export function createManagementApi(
             );
         }
 
+        signal?.throwIfAborted();
         const body = isJsonBody(bodyText);
 
         if (!response.ok) {
@@ -340,6 +346,11 @@ export function createManagementApi(
             decodeResponse(
                 await post("/provider-definitions:update", request, signal),
                 parseDefinitionEnvelope,
+            ),
+        getProviderQuota: async (request, signal) =>
+            decodeResponse(
+                await post("/providers:quota", request, signal),
+                parseGetProviderQuotaResponse,
             ),
         listProviders: async (signal) =>
             decodeResponse(
