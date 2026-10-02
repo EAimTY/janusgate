@@ -1,16 +1,20 @@
 //! Client-request parsing for the Responses codec: the outward `POST /responses` body deserialized
 //! into the IR request.
 
+use super::compaction;
 use crate::{
-    format::{self, ParsedRequest, StringOrArray},
+    compaction::{identity::InstructionRole, sealing},
+    format::{
+        self, CompactionBoundary, CompactionControl, NativeArtifact, ParsedCompaction,
+        ParsedInstructionItem, ParsedRequest, StringOrArray, compaction_control::AutomaticEntry,
+    },
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice,
+        IrRole, IrTool, IrToolChoice, StateItem,
     },
 };
-use serde::{Deserialize, de::IgnoredAny};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 /// Strictly parsed Responses request body.
 #[derive(Debug, Deserialize)]
@@ -49,6 +53,12 @@ struct RequestBody {
     /// Reasoning configuration.
     #[serde(default)]
     reasoning: Option<ReasoningIn>,
+
+    /// Responses automatic compaction controls: the caller's ordered
+    /// `context_management` entries, each validated into
+    /// [`CompactionControl::ResponsesAutomatic`].
+    #[serde(default)]
+    context_management: Option<Vec<ContextManagementEntryIn>>,
 
     /// Whether the client wants a streamed response.
     #[serde(default)]
@@ -113,12 +123,12 @@ struct RequestBody {
 /// Input item, tagged by `type`.
 ///
 /// The shapes are strict: a member outside the item's own shape is rejected. The exception is a
-/// `reasoning` item, whose payload is accepted and ignored in whatever shape it arrives, because it
-/// carries no replayable state — the variant captures every member beside its tag for exactly that
-/// reason.
+/// `reasoning` item, whose payload is accepted in whatever shape it arrives — its replayable
+/// members are typed so a reasoning item carrying `encrypted_content` is preserved verbatim as an
+/// opaque state item, and every member beside the typed ones is ignored.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum ItemIn {
+pub(super) enum ItemIn {
     /// Conversation message.
     Message {
         /// Gateway-rendered item identifier; accepted and ignored, because codex replays parsed
@@ -171,6 +181,16 @@ enum ItemIn {
         thought_signature: Option<String>,
     },
 
+    /// A durable configuration control. The gateway cannot apply arbitrary
+    /// configuration semantics downstream, and discarding a durable control to
+    /// make a different endpoint accept the request is forbidden — so the item
+    /// parses only to an explicit rejection naming it.
+    ConfigurationUpdate {
+        /// The control's payload; parsed only to carry the rejection.
+        #[expect(dead_code, reason = "parsed only to be rejected explicitly")]
+        control: IgnoredAny,
+    },
+
     /// A tool result.
     FunctionCallOutput {
         /// Gateway-rendered item identifier; accepted and ignored (README §6.6).
@@ -190,14 +210,83 @@ enum ItemIn {
         status: Option<IgnoredAny>,
     },
 
-    /// Reasoning items carry no replayable state: the payload is accepted and ignored in whatever
-    /// shape it arrives, so every member beside the tag lands here.
-    Reasoning(BTreeMap<String, IgnoredAny>),
+    /// A replayed reasoning item: its replayable members are typed, and a
+    /// member outside them is ignored (the item is accepted in whatever shape
+    /// it arrives). An item carrying `encrypted_content` becomes an opaque
+    /// state item replayed at its history position.
+    Reasoning(ReasoningItem),
+
+    /// A replayed compaction item: opaque state — a gateway carrier or native
+    /// compaction state, decided by the carrier namespace of its
+    /// `encrypted_content`.
+    #[serde(rename = "compaction", alias = "compaction_summary")]
+    Compaction(CompactionItemIn),
+
+    /// The explicit compaction trigger control item: a request to compact, not
+    /// conversation content. Only the exact `compaction_trigger` spelling is
+    /// accepted.
+    CompactionTrigger {},
+}
+
+/// A replayed reasoning item's typed replayable members.
+///
+/// Deserialization accepts the item in whatever shape it arrives (README §6.6); serialization
+/// re-renders the typed members with their presence preserved — an absent optional member stays
+/// absent — so an item carrying `encrypted_content` replays verbatim as an opaque state item.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct ReasoningItem {
+    /// Gateway- or provider-minted item identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) id: Option<String>,
+
+    /// The reasoning summary parts, of whatever vendor shape.
+    pub(super) summary: Vec<Value>,
+
+    /// The reasoning content parts, of whatever vendor shape, when the item
+    /// carries them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) content: Option<Vec<Value>>,
+
+    /// The opaque encrypted replay payload whose presence makes the item an
+    /// opaque state item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) encrypted_content: Option<String>,
+}
+
+/// A replayed compaction item's members.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CompactionItemIn {
+    /// Gateway- or provider-minted item identifier, replayed verbatim.
+    #[serde(default)]
+    pub(super) id: Option<String>,
+
+    /// The opaque replay state: a namespaced gateway carrier or native
+    /// ciphertext.
+    pub(super) encrypted_content: String,
+    /// Authoring provenance retained across native replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) created_by: Option<String>,
+}
+
+/// One `context_management` entry of the request envelope.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ContextManagementEntryIn {
+    /// Entry kind; only `compaction` is supported, every other kind is
+    /// rejected by the conversion below.
+    #[serde(rename = "type")]
+    pub(super) entry_type: String,
+
+    /// The compaction threshold in input tokens, when the caller stated one.
+    #[serde(default)]
+    pub(super) compact_threshold: Option<u64>,
 }
 
 impl ItemIn {
     /// Wraps one plain-text user turn: the item a bare-string `input` carries.
-    fn user_text(text: String) -> Self {
+    pub(super) fn user_text(text: String) -> Self {
         Self::Message {
             id: None,
             role: "user".to_string(),
@@ -211,7 +300,7 @@ impl ItemIn {
 /// Content part, tagged by `type`; a member outside the part's own shape is rejected.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum PartIn {
+pub(super) enum PartIn {
     /// Text segment on the input side.
     InputText {
         /// The text content.
@@ -255,7 +344,7 @@ enum PartIn {
 /// [`OutputPartIn::Other`], which the conversion rejects the same way.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum OutputPartIn {
+pub(super) enum OutputPartIn {
     /// Text segment.
     InputText {
         /// The text content.
@@ -413,12 +502,247 @@ enum FormatIn {
     },
 }
 
+/// The conversion of one parsed request's input items into IR: the instruction
+/// texts, the conversation messages, the opaque state items with their offsets,
+/// the ordered compaction boundaries, and whether a trigger control was
+/// present.
+pub(super) struct InputConversion {
+    /// System/developer message texts, in encounter order.
+    pub(super) instruction_parts: Vec<String>,
+
+    /// The same items typed for the remote-compaction identity pass: role and
+    /// text per instruction item, in encounter order.
+    pub(super) instruction_items: Vec<ParsedInstructionItem>,
+
+    /// Conversation messages in order.
+    pub(super) messages: Vec<IrMessage>,
+
+    /// Opaque state items recognized in the history, in history order, each at
+    /// its message offset.
+    pub(super) state_items: Vec<StateItem>,
+
+    /// Compaction state markers in history order.
+    pub(super) boundaries: Vec<CompactionBoundary>,
+
+    /// Whether a `compaction_trigger` control item was present.
+    pub(super) has_trigger: bool,
+}
+
+/// Converts parsed input items into IR: messages and instruction parts as the
+/// ordinary path always has, plus the remote-compaction state vocabulary —
+/// reasoning items carrying `encrypted_content` become opaque native state
+/// items, and compaction items split on the carrier namespace into gateway
+/// boundaries and native boundaries, each state item riding both
+/// `state_items` and its boundary at the same message offset.
+///
+/// The explicit trigger control is validated here: a trigger must be the one
+/// and last input item, so any item after a trigger, and any second trigger,
+/// is a 400 (README §6.8).
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] for unknown roles, non-text instruction or tool
+/// content, malformed arguments or image references, and misplaced or repeated
+/// trigger items.
+pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, InvalidRequest> {
+    let mut conversion = InputConversion {
+        instruction_parts: Vec::new(),
+        instruction_items: Vec::new(),
+        messages: Vec::new(),
+        state_items: Vec::new(),
+        boundaries: Vec::new(),
+        has_trigger: false,
+    };
+
+    for item in items {
+        let is_trigger = matches!(item, ItemIn::CompactionTrigger { .. });
+
+        if conversion.has_trigger && !is_trigger {
+            return Err(InvalidRequest::field(
+                "input",
+                "compaction_trigger must be the last input item",
+            ));
+        }
+
+        match item {
+            ItemIn::Message { role, content, .. } => match role.as_str() {
+                "system" | "developer" => {
+                    let text = message_content_text(&content)?;
+
+                    conversion.instruction_items.push(ParsedInstructionItem {
+                        role: if role == "system" {
+                            InstructionRole::System
+                        } else {
+                            InstructionRole::Developer
+                        },
+                        text: text.clone(),
+                    });
+
+                    conversion.instruction_parts.push(text);
+                }
+
+                "user" => conversion.messages.push(IrMessage {
+                    role: IrRole::User,
+                    parts: message_content_parts(&content)?,
+                }),
+
+                "assistant" => conversion.messages.push(IrMessage {
+                    role: IrRole::Assistant,
+                    parts: message_content_parts(&content)?,
+                }),
+
+                other => {
+                    return Err(InvalidRequest::field(
+                        "role",
+                        format!("Unknown input message role `{other}`"),
+                    ));
+                }
+            },
+
+            ItemIn::FunctionCall {
+                call_id,
+                name,
+                arguments,
+                thought_signature,
+                ..
+            } => {
+                format::arguments_as_object(&arguments)?;
+
+                conversion.messages.push(IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                        thought_signature,
+                    }],
+                });
+            }
+
+            ItemIn::FunctionCallOutput {
+                call_id, output, ..
+            } => {
+                conversion.messages.push(IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id,
+                        content: tool_output_text(&output)?,
+                        is_error: false,
+                    }],
+                });
+            }
+
+            ItemIn::Reasoning(reasoning) => {
+                // A reasoning item without encrypted content carries no
+                // replayable state and is dropped, exactly as before the
+                // compaction feature; one with it is opaque native state
+                // replayed verbatim at its position.
+                if reasoning.encrypted_content.is_some() {
+                    conversion.state_items.push(StateItem {
+                        offset: conversion.messages.len(),
+                        item: compaction::reasoning_item_json(&reasoning),
+                        is_gateway: false,
+                    });
+                }
+            }
+
+            ItemIn::Compaction(compaction_item) => {
+                let offset = conversion.messages.len();
+
+                let item = compaction::compaction_item_json(
+                    compaction_item.id,
+                    compaction_item.encrypted_content.clone(),
+                    compaction_item.created_by,
+                );
+
+                if sealing::is_gateway_marker(&compaction_item.encrypted_content) {
+                    conversion.state_items.push(StateItem {
+                        offset,
+                        item,
+                        is_gateway: true,
+                    });
+
+                    conversion.boundaries.push(CompactionBoundary::Gateway {
+                        offset,
+                        carrier: compaction_item.encrypted_content,
+                        visible_content: None,
+                    });
+                } else {
+                    conversion.state_items.push(StateItem {
+                        offset,
+                        item,
+                        is_gateway: false,
+                    });
+
+                    conversion.boundaries.push(CompactionBoundary::Native {
+                        offset,
+                        artifact: NativeArtifact::ResponsesCompactionItem,
+                    });
+                }
+            }
+
+            ItemIn::CompactionTrigger {} => {
+                if conversion.has_trigger {
+                    return Err(InvalidRequest::field(
+                        "input",
+                        "at most one compaction_trigger item is allowed",
+                    ));
+                }
+
+                conversion.has_trigger = true;
+            }
+
+            ItemIn::ConfigurationUpdate { .. } => {
+                return Err(InvalidRequest::field(
+                    "input",
+                    "configuration_update items carry durable configuration controls the \
+                     gateway cannot apply or preserve across compaction; stateless history \
+                     replay of such controls is not supported",
+                ));
+            }
+        }
+    }
+
+    Ok(conversion)
+}
+
+/// Validates the `context_management` entries and maps them into the parsed
+/// automatic control.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `type` for any entry kind other than
+/// `compaction`.
+fn context_management_entries(
+    entries: &[ContextManagementEntryIn],
+) -> Result<Vec<AutomaticEntry>, InvalidRequest> {
+    let mut converted = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        if entry.entry_type != "compaction" {
+            return Err(InvalidRequest::field(
+                "type",
+                format!(
+                    "Unsupported context management entry type `{}`",
+                    entry.entry_type
+                ),
+            ));
+        }
+
+        converted.push(AutomaticEntry {
+            compact_threshold: entry.compact_threshold,
+        });
+    }
+
+    Ok(converted)
+}
+
 /// Parses a Responses request body into IR.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported fields, invalid parameter
-/// ranges, and invalid image references.
+/// ranges, invalid image references, and ambiguous or misplaced compaction controls.
 pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
     let request: RequestBody = format::parse_client_request(body)?;
 
@@ -441,8 +765,10 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     format::validate_sampling_ranges(request.temperature, request.top_p)?;
 
-    let mut instruction_parts: Vec<String> = Vec::new();
-    let mut messages: Vec<IrMessage> = Vec::new();
+    let context_management = match &request.context_management {
+        None => None,
+        Some(entries) => Some(context_management_entries(entries)?),
+    };
 
     let input_items: Vec<ItemIn> = match request.input {
         StringOrArray::Text(text) => vec![ItemIn::user_text(text)],
@@ -450,69 +776,48 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         StringOrArray::Array(items) => items,
     };
 
-    for item in input_items {
-        match item {
-            ItemIn::Message { role, content, .. } => match role.as_str() {
-                "system" | "developer" => {
-                    instruction_parts.push(message_content_text(&content)?);
-                }
-
-                "user" => messages.push(IrMessage {
-                    role: IrRole::User,
-                    parts: message_content_parts(&content)?,
-                }),
-
-                "assistant" => messages.push(IrMessage {
-                    role: IrRole::Assistant,
-                    parts: message_content_parts(&content)?,
-                }),
-
-                other => {
-                    return Err(InvalidRequest::field(
-                        "role",
-                        format!("Unknown input message role `{other}`"),
-                    ));
-                }
+    let mut converted = convert_input(input_items)?;
+    if let Some(instructions) = &request.instructions {
+        converted.instruction_items.insert(
+            0,
+            crate::format::ParsedInstructionItem {
+                role: crate::compaction::identity::InstructionRole::System,
+                text: instructions.clone(),
             },
-
-            ItemIn::FunctionCall {
-                call_id,
-                name,
-                arguments,
-                thought_signature,
-                ..
-            } => {
-                format::arguments_as_object(&arguments)?;
-
-                messages.push(IrMessage {
-                    role: IrRole::Assistant,
-                    parts: vec![IrPart::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                        thought_signature,
-                    }],
-                });
-            }
-
-            ItemIn::FunctionCallOutput {
-                call_id, output, ..
-            } => {
-                messages.push(IrMessage {
-                    role: IrRole::Tool,
-                    parts: vec![IrPart::ToolOutput {
-                        call_id,
-                        content: tool_output_text(&output)?,
-                        is_error: false,
-                    }],
-                });
-            }
-
-            ItemIn::Reasoning(_payload) => {}
-        }
+        );
     }
 
-    let instructions = build_instructions(request.instructions, instruction_parts);
+    // One explicit compaction control per request: a trigger beside the
+    // automatic controls is ambiguous, and ambiguity is rejected instead of
+    // silently interpreted (README §6.8).
+    if converted.has_trigger && context_management.is_some() {
+        return Err(InvalidRequest::request(
+            "compaction_trigger and context_management are ambiguous; state one compaction \
+             control",
+        ));
+    }
+
+    let control = if converted.has_trigger {
+        Some(CompactionControl::ResponsesTrigger)
+    } else if let Some(entries) = context_management {
+        Some(CompactionControl::ResponsesAutomatic { entries })
+    } else {
+        None
+    };
+
+    let compaction =
+        if control.is_none() && converted.boundaries.is_empty() && converted.state_items.is_empty()
+        {
+            None
+        } else {
+            Some(ParsedCompaction {
+                control,
+                boundaries: converted.boundaries,
+                instruction_items: converted.instruction_items,
+            })
+        };
+
+    let instructions = build_instructions(request.instructions, converted.instruction_parts);
 
     let mut tools: Vec<IrTool> = Vec::new();
 
@@ -572,9 +877,10 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     Ok(ParsedRequest {
         ir: IrRequest {
+            state_items: converted.state_items,
             model: request.model,
             instructions,
-            messages,
+            messages: converted.messages,
             tools,
             tool_choice,
             temperature: request.temperature,
@@ -585,11 +891,12 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         },
         is_streaming: request.stream.unwrap_or(false),
         should_include_usage: false,
+        compaction,
     })
 }
 
 /// Combines the `instructions` field with system/developer message texts in encounter order.
-fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<String> {
+pub(super) fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<String> {
     let mut combined = Vec::with_capacity(pushed.len() + 1);
 
     if let Some(direct) = direct {
@@ -727,7 +1034,7 @@ fn tool_output_text(output: &StringOrArray<OutputPartIn>) -> Result<String, Inva
 mod tests {
     use super::parse_request;
     use crate::{
-        format::ParsedRequest,
+        format::{CompactionControl, ParsedRequest},
         ir::{InvalidRequest, IrPart, IrResponseFormat, IrRole},
     };
     use serde_json::Value;
@@ -1222,5 +1529,265 @@ mod tests {
             error.to_string().contains("invalid type"),
             "a non-string effort fails on its type alone: {error}"
         );
+    }
+
+    /// A terminal `compaction_trigger` item parses into the explicit trigger
+    /// control: exactly one trigger, last in the input (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed control diverges from the contract.
+    #[test]
+    fn a_terminal_trigger_parses_into_the_trigger_control() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the trigger request is constructed to parse"
+        )]
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {"type": "compaction_trigger"},
+            ],
+        }))
+        .expect("a terminal trigger parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a trigger request is constructed to carry compaction facts"
+        )]
+        let compaction = parsed
+            .compaction
+            .expect("a trigger request carries compaction facts");
+
+        assert!(matches!(
+            compaction.control,
+            Some(CompactionControl::ResponsesTrigger)
+        ));
+
+        assert!(compaction.boundaries.is_empty());
+
+        // The trigger is a control item, not conversation content: it becomes
+        // no message and no state item.
+        assert_eq!(parsed.ir.messages.len(), 1);
+
+        assert!(parsed.ir.state_items.is_empty());
+    }
+
+    /// A trigger anywhere but the last position is rejected, and so is a
+    /// second trigger: the synthesized compact-only contract accepts one
+    /// terminal trigger and rejects ambiguity instead of silently
+    /// interpreting it (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a misplaced or repeated trigger parses.
+    #[test]
+    fn misplaced_and_repeated_triggers_are_rejected() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the misplaced trigger is constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "compaction_trigger"},
+                {"type": "message", "role": "user", "content": "hi"},
+            ],
+        }))
+        .expect_err("a trigger followed by an item must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("input"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the repeated trigger is constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {"type": "compaction_trigger"},
+                {"type": "compaction_trigger"},
+            ],
+        }))
+        .expect_err("a second trigger must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("input"));
+    }
+
+    /// `context_management` parses into the automatic control with its
+    /// thresholds in order, an entry of any other kind is rejected naming
+    /// `type`, and a trigger beside the automatic controls is rejected as
+    /// ambiguous (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed controls or rejections diverge from the contract.
+    #[test]
+    fn context_management_parses_and_rejects_ambiguity() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the automatic request is constructed to parse"
+        )]
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": "hi",
+            "context_management": [
+                {"type": "compaction"},
+                {"type": "compaction", "compact_threshold": 50_000},
+            ],
+        }))
+        .expect("context_management entries parse");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "an automatic request is constructed to carry compaction facts"
+        )]
+        let compaction = parsed
+            .compaction
+            .expect("an automatic request carries compaction facts");
+
+        #[expect(
+            clippy::panic,
+            reason = "the parsed control is constructed to be the automatic control"
+        )]
+        let Some(CompactionControl::ResponsesAutomatic { entries }) = compaction.control else {
+            panic!("context_management parses into the automatic control");
+        };
+
+        assert_eq!(entries.len(), 2);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the preceding length assertion guarantees two entries"
+        )]
+        {
+            assert_eq!(entries[0].compact_threshold, None);
+
+            assert_eq!(entries[1].compact_threshold, Some(50_000));
+        }
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the foreign entry kind is constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "input": "hi",
+            "context_management": [{"type": "clear_context"}],
+        }))
+        .expect_err("a foreign entry kind must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("type"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the mixed controls are constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {"type": "compaction_trigger"},
+            ],
+            "context_management": [{"type": "compaction"}],
+        }))
+        .expect_err("a trigger beside context_management must be rejected");
+
+        assert!(
+            error.to_string().contains("ambiguous"),
+            "unexpected rejection: {error}"
+        );
+    }
+
+    /// A native compaction item in ordinary history becomes a native boundary
+    /// and an opaque state item without any control — a pure replay request —
+    /// while a request carrying neither state nor controls keeps `compaction`
+    /// `None` (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed compaction facts diverge from the contract.
+    #[test]
+    fn replay_only_history_carries_boundaries_without_a_control() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the replay request is constructed to parse"
+        )]
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "native-state",
+                },
+            ],
+        }))
+        .expect("a replay request with a native compaction item parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a replay request is constructed to carry its boundaries"
+        )]
+        let compaction = parsed
+            .compaction
+            .expect("a replay request carries its boundaries");
+
+        assert!(compaction.control.is_none());
+
+        assert_eq!(compaction.boundaries.len(), 1);
+
+        assert_eq!(parsed.ir.state_items.len(), 1);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the preceding length assertion guarantees one state item"
+        )]
+        {
+            assert_eq!(parsed.ir.state_items[0].is_gateway, false);
+
+            assert_eq!(
+                parsed.ir.state_items[0].item.get("type"),
+                Some(&serde_json::json!("compaction")),
+            );
+        }
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the plain request is constructed to parse"
+        )]
+        let plain = parse(serde_json::json!({
+            "model": "m",
+            "input": "hi",
+        }))
+        .expect("a plain request parses");
+
+        assert!(plain.compaction.is_none());
+    }
+
+    /// A `configuration_update` control item is rejected explicitly, never
+    /// silently discarded into prose or forwarded to another endpoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rejection does not carry the item name.
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "the tested body is constructed to be rejected; the rejection is the assertion"
+    )]
+    fn rejects_a_configuration_update_control_item() {
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "configuration_update", "control": null}
+            ],
+        }))
+        .expect_err("the control item is rejected");
+
+        assert_eq!(error.param.as_deref(), Some("input"));
     }
 }

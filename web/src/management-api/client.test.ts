@@ -248,6 +248,8 @@ describe("createManagementApi", () => {
                         thinking_levels_override: null,
                         max_input_tokens_override: null,
                         max_output_tokens_override: null,
+                        compaction_support: null,
+                        compaction_support_override: null,
                     },
                 });
             }
@@ -289,6 +291,7 @@ describe("createManagementApi", () => {
             thinking_levels_override: null,
             max_input_tokens_override: null,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
         await api.deleteModel({
             model_id: 9,
@@ -335,6 +338,7 @@ describe("createManagementApi", () => {
                 thinking_levels_override: null,
                 max_input_tokens_override: null,
                 max_output_tokens_override: null,
+                compaction_support_override: null,
             },
             {
                 model_id: 9,

@@ -164,3 +164,131 @@ describe("ModelDetailScreen capabilities", () => {
         expect(capabilities.textContent).toContain("Overridden by administrator.");
     });
 });
+
+describe("ModelDetailScreen compaction facts", () => {
+    const disposes = createDisposals();
+
+    const responsesProvider = providerRow({
+        id: 5,
+        base_url: "https://upstream.example.com",
+        format: "openai_response",
+    });
+
+    const messagesProvider = providerRow({
+        id: 5,
+        base_url: "https://upstream.example.com",
+        format: "anthropic_messages",
+    });
+
+    function mount(provider: ProviderResponse, model: ModelResponse): void {
+        disposes.push(
+            render(
+                () => (
+                    <ModelDetailScreen
+                        api={screenApi(provider, model)}
+                        modelId={9}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("states the format's mechanisms with their row provenance", async () => {
+        mount(
+            responsesProvider,
+            modelRow({
+                provider_id: 5,
+                compaction_support: {
+                    responses_standalone_compact: "supported",
+                },
+                compaction_support_override: {
+                    responses_explicit_trigger: "unsupported",
+                },
+            }),
+        );
+        await settle();
+
+        const capabilities = cardWithTitle("Capabilities");
+
+        // The discovered fact carries its layer; the override carries its
+        // own; the mechanism neither states reads as the row-level unknown
+        // that leaves the decision to the definition's declaration.
+        expect(capabilities.textContent).toContain("Standalone compact");
+        expect(capabilities.textContent).toContain("Explicit trigger");
+        expect(capabilities.textContent).toContain("Automatic compaction");
+        expect(capabilities.textContent).toContain("Supported");
+        expect(capabilities.textContent).toContain("Unsupported");
+        expect(capabilities.textContent).toContain("From the latest discovery.");
+        expect(capabilities.textContent).toContain("Overridden by administrator.");
+        expect(capabilities.textContent).toContain(
+            "No fact on this row — the definition's declaration decides.",
+        );
+
+        // A Responses provider never shows the Messages mechanisms: the
+        // definition cannot declare them, so the row's facts for them are
+        // unstatable here.
+        expect(capabilities.textContent).not.toContain("On-demand compaction");
+        expect(capabilities.textContent).not.toContain("Threshold compaction");
+    });
+
+    it("states the Messages mechanisms on an anthropic_messages provider", async () => {
+        mount(
+            messagesProvider,
+            modelRow({
+                provider_id: 5,
+                compaction_support: {
+                    messages_on_demand_compaction: "supported",
+                    messages_threshold_compaction: "supported",
+                },
+            }),
+        );
+        await settle();
+
+        const capabilities = cardWithTitle("Capabilities");
+
+        expect(capabilities.textContent).toContain("On-demand compaction");
+        expect(capabilities.textContent).toContain("Threshold compaction");
+        expect(capabilities.textContent).not.toContain("Standalone compact");
+    });
+
+    it("states a format that cannot carry compaction without a compaction section", async () => {
+        mount(
+            providerRow({
+                id: 5,
+                base_url: "https://upstream.example.com",
+            }),
+            modelRow({
+                provider_id: 5,
+                compaction_support: {
+                    messages_on_demand_compaction: "supported",
+                },
+            }),
+        );
+        await settle();
+
+        expect(cardWithTitle("Capabilities").textContent).not.toContain("Compaction");
+    });
+
+    it("reads an explicit unknown override as the administrator's own no-fact", async () => {
+        mount(
+            messagesProvider,
+            modelRow({
+                provider_id: 5,
+                compaction_support: {
+                    messages_on_demand_compaction: "supported",
+                },
+                compaction_support_override: {
+                    messages_on_demand_compaction: "unknown",
+                },
+            }),
+        );
+        await settle();
+
+        const compaction = cardWithTitle("Capabilities").textContent ?? "";
+
+        expect(compaction).toContain("On-demand compaction");
+        expect(compaction).toContain("Unknown");
+        expect(compaction).toContain("Overridden by administrator.");
+    });
+});

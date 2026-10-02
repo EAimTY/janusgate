@@ -2,12 +2,13 @@
 //!
 //! The shared outward serving pipeline (completion handling, responses, authentication
 //! middleware, fallbacks) lives in [`crate::api::serving`]; this module contributes the OpenAI
-//! surface identity — bearer credentials and the OpenAI error envelope — plus the router, the
-//! two completion endpoints, and the native model-list shape.
+//! surface identity — bearer credentials and the OpenAI error envelope — plus the router, the two
+//! completion endpoints, the standalone compact endpoint, and the native model-list shape.
 
 use crate::{
     accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
+    compaction::support_facts::CompactionSupportFacts,
     context::Context,
     database::Database,
     format::{
@@ -64,9 +65,9 @@ struct ModelList {
 }
 
 /// One served model in the official OpenAI model shape, extended with the effective capability
-/// declarations (README §6.5): `max_input_tokens`, `max_output_tokens`, and the gateway-extension
-/// `reasoning_levels` each render only when their effective value is known — an unknown
-/// capability is omitted, never fabricated.
+/// declarations (README §6.5): `max_input_tokens`, `max_output_tokens`, the gateway-extension
+/// `reasoning_levels`, and the gateway-extension `compaction` facts each render only when their
+/// effective value is known — an unknown capability is omitted, never fabricated.
 #[derive(Debug, Serialize)]
 struct ModelObject {
     /// Public routing ID (README §3).
@@ -94,6 +95,11 @@ struct ModelObject {
     /// §6.5); omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_levels: Option<Vec<&'static str>>,
+
+    /// Effective compaction support facts keyed by the mechanism spellings — a gateway
+    /// extension rendering only the known mechanisms; omitted when no mechanism is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compaction: Option<CompactionSupportFacts>,
 }
 
 /// Builds one listing entry from an effectively enabled model: the public routing ID beside
@@ -109,6 +115,7 @@ fn model_object(entry: crate::storage::models::EnabledModel) -> ModelObject {
         reasoning_levels: entry
             .thinking_levels
             .map(|levels| levels.iter().map(|level| level.as_str()).collect()),
+        compaction: entry.compaction,
     }
 }
 
@@ -120,6 +127,7 @@ pub(super) fn router(database: Database) -> Router<Context> {
         Router::new()
             .route("/chat/completions", post(chat_completions))
             .route("/responses", post(responses))
+            .route("/responses/compact", post(responses_compact))
             .route("/models", get(models)),
     )
 }
@@ -177,6 +185,19 @@ async fn responses(
     )
 }
 
+/// Handles `POST /responses/compact`, the Responses standalone compact
+/// endpoint (README §6.8): its body carries no generation-only controls
+/// and its success body is always a non-streaming `response.compaction`
+/// object, so the handler skips the streaming machinery of `responses`
+/// entirely.
+async fn responses_compact(
+    State(context): State<Context>,
+    api_key: serving::AuthenticatedApiKeyRow,
+    WithRejection(body, _): WithRejection<Bytes, serving::BodyError<Surface>>,
+) -> Response {
+    serving::outcome_response::<Surface>(serving::run_compact(&context, &body, api_key.0).await)
+}
+
 /// Handles `GET /models`.
 async fn models(State(context): State<Context>) -> Response {
     serving::model_list_response::<Surface, _, _>(&context.database, |listed| ModelList {
@@ -189,7 +210,14 @@ async fn models(State(context): State<Context>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{ModelList, model_object};
-    use crate::{ir::IrReasoningLevel, storage::models::EnabledModel};
+    use crate::{
+        compaction::{
+            mechanism::{Mechanism, MechanismSupport},
+            support_facts::CompactionSupportFacts,
+        },
+        ir::IrReasoningLevel,
+        storage::models::EnabledModel,
+    };
 
     /// One listing-entry fixture: the public/provider identity with every effective capability
     /// declaration set by the caller.
@@ -205,13 +233,16 @@ mod tests {
             thinking_levels,
             max_input_tokens,
             max_output_tokens,
+            compaction: None,
         }
     }
 
     /// Pins the model-listing entry shape (README §6.5): the official members stay verbatim
-    /// (`created` fixed `0`, `owned_by` the provider name), and the three capability members —
-    /// `max_input_tokens`, `max_output_tokens`, and the gateway-extension `reasoning_levels` in
-    /// the vocabulary spellings — ride along when known and stay wholly absent when unknown.
+    /// (`created` fixed `0`, `owned_by` the provider name), and the capability members —
+    /// `max_input_tokens`, `max_output_tokens`, the gateway-extension `reasoning_levels` in
+    /// the vocabulary spellings, and the gateway-extension `compaction` facts keyed by the
+    /// mechanism spellings — ride along when known and stay wholly absent when unknown; the
+    /// compaction facts carry only known mechanisms.
     ///
     /// # Panics
     ///
@@ -265,6 +296,53 @@ mod tests {
                         "max_input_tokens": 200000,
                         "max_output_tokens": 32768,
                         "reasoning_levels": ["low", "xhigh"],
+                    }
+                ],
+            })
+        );
+
+        // An entry whose compaction facts are known renders the mechanism-keyed object with
+        // only its known members.
+        #[expect(clippy::expect_used, reason = "the fixture fact pairs are non-empty")]
+        let compaction = CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Supported,
+            ),
+            (
+                Mechanism::ResponsesExplicitTrigger,
+                MechanismSupport::Unsupported,
+            ),
+        ])
+        .expect("fixture fact pairs are non-empty");
+
+        #[expect(clippy::expect_used, reason = "the listing body always serializes")]
+        let compaction_known = serde_json::to_value(ModelList {
+            object: "list",
+            data: vec![model_object({
+                let mut entry = entry("m", None, None, None);
+
+                entry.compaction = Some(compaction);
+
+                entry
+            })],
+        })
+        .expect("the listing serializes");
+
+        assert_eq!(
+            compaction_known,
+            serde_json::json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "m",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "acme",
+                        "compaction": {
+                            "responses_explicit_trigger": "unsupported",
+                            "messages_on_demand_compaction": "supported",
+                        },
                     }
                 ],
             })

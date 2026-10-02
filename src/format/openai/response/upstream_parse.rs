@@ -46,6 +46,43 @@ pub(crate) struct UpstreamParser {
     /// Whether a finish was already emitted; `finish` degrades a stream that ends without one
     /// through [`format::degrade_finish_once`].
     is_finished: bool,
+
+    /// Every compaction item observed verbatim in the upstream's output — a
+    /// streamed `output_item.done` item, a terminal event's output array, or a
+    /// complete JSON body — in observation order. Compaction items are not
+    /// conversation content and map to no IR event; the compaction executor
+    /// integrates them into the outward rendering of the automatic and trigger
+    /// lifecycles, deduplicating by item identity as README §6.8
+    /// requires, since a conformant stream delivers the same item both as a
+    /// done event and inside the terminal array.
+    pub(crate) compaction_output_items: Vec<Value>,
+
+    /// Identities of the compaction items already delivered as events, so a
+    /// conformant stream's terminal-array copies do not double-deliver.
+    delivered_compaction_identities: Vec<String>,
+}
+
+/// Which walk of the upstream output produced a compaction item: a live
+/// streamed completion, or a terminal array/JSON body walk whose copies are
+/// gated on live delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactionItemOrigin {
+    /// A streamed `output_item.done` frame delivered the item.
+    Live,
+
+    /// The terminal event's output array, or a complete JSON body, carried it.
+    Terminal,
+}
+
+/// Computes a compaction item's delivery identity: the producer-minted `id`
+/// when present, otherwise the item's serialized bytes, so a conformant
+/// stream's terminal copy of a live-delivered item is recognized.
+fn compaction_item_identity(item: &Value) -> String {
+    match item.get("id").and_then(Value::as_str) {
+        Some(id) => format!("id:{id}"),
+
+        None => format!("raw:{item}"),
+    }
 }
 
 /// One upstream Responses event: the union of the members the gateway reads across the event
@@ -130,34 +167,39 @@ struct IncompleteDetails {
 
 /// Upstream token accounting in the Responses shape.
 #[derive(Debug, Default, Deserialize)]
-struct UpstreamUsage {
+pub(crate) struct UpstreamUsage {
     /// Tokens consumed by the input.
     #[serde(default)]
-    input_tokens: u64,
+    pub(crate) input_tokens: u64,
 
     /// Tokens produced by the output.
     #[serde(default)]
-    output_tokens: u64,
+    pub(crate) output_tokens: u64,
 
     /// Input token breakdown, absent when the upstream reports totals only.
     #[serde(default)]
-    input_tokens_details: Option<InputTokensDetails>,
+    pub(crate) input_tokens_details: Option<InputTokensDetails>,
 
     /// Output token breakdown, absent when the upstream reports totals only.
     #[serde(default)]
-    output_tokens_details: Option<OutputTokensDetails>,
+    pub(crate) output_tokens_details: Option<OutputTokensDetails>,
+
+    /// Messages the upstream dropped while compacting (xAI extension),
+    /// absent when the upstream does not report it.
+    #[serde(default)]
+    pub(crate) dropped_message_count: Option<u64>,
 }
 
 /// The object the Responses usage wrapper carries as `input_tokens_details`: the shared official
 /// input-side usage detail object [`PromptTokensDetails`] under its product-local name, its
 /// `cached_tokens` and `cache_write_tokens` members spelled identically on both wires (README
 /// §6.2).
-type InputTokensDetails = PromptTokensDetails;
+pub(crate) type InputTokensDetails = PromptTokensDetails;
 
 /// The object the Responses usage wrapper carries as `output_tokens_details`: the shared official
 /// output-side usage detail object [`CompletionTokensDetails`] under its product-local name, its
 /// lone `reasoning_tokens` member spelled identically on both wires (README §6.2).
-type OutputTokensDetails = CompletionTokensDetails;
+pub(crate) type OutputTokensDetails = CompletionTokensDetails;
 
 /// One upstream output item: the union of the fields the gateway reads across the item kinds it
 /// maps to IR events. Items of other kinds carry none of them and are ignored.
@@ -695,9 +737,22 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for malformed JSON and upstream failure events.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        let value = format::parse_frame::<UpstreamEvent>(frame)?;
+        // The frame is parsed once as the raw value — the compaction items are
+        // vendor-shaped fragments recorded verbatim out of it — and once as the
+        // typed event shape the IR translation consumes.
+        let value: Value = serde_json::from_str(&frame.data)
+            .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))?;
 
-        self.ingest_event(value)
+        let event = UpstreamEvent::deserialize(&value)
+            .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))?;
+
+        let mut events = Vec::new();
+
+        self.record_frame_compaction_items(&value, &mut events);
+
+        events.extend(self.ingest_event(event)?);
+
+        Ok(events)
     }
 
     /// Parses a complete upstream non-streaming JSON response.
@@ -716,6 +771,15 @@ impl UpstreamEventParser for UpstreamParser {
         }
 
         let mut events = self.message_start_events(Some(&response));
+
+        // The compaction items ride the event stream at the output head (a
+        // native compaction precedes the answer output it precedes upstream)
+        // and are recorded verbatim for the compaction executor besides.
+        if let Some(output) = value.get("output").and_then(Value::as_array) {
+            for item in output {
+                events.extend(self.record_compaction_item(item, CompactionItemOrigin::Terminal));
+            }
+        }
 
         for (position, item) in response.output.iter().enumerate() {
             self.ingest_output_item(item, OutputItemOrigin::Json(position), &mut events);
@@ -747,6 +811,180 @@ impl UpstreamEventParser for UpstreamParser {
 
     fn finish(&mut self) -> Vec<IrEvent> {
         format::degrade_finish_once(&mut self.is_finished)
+    }
+}
+
+/// The compact endpoint's upstream response body, read out of the complete JSON
+/// document a standalone compact dispatch answers with: the identity and
+/// creation time when the upstream carries them, the complete ordered output
+/// window, and the usage.
+#[derive(Debug, Deserialize)]
+struct CompactedResponseBodyIn {
+    /// Upstream response identifier.
+    #[serde(default)]
+    id: Option<String>,
+
+    /// Unix creation timestamp in seconds.
+    #[serde(default)]
+    created_at: Option<i64>,
+
+    /// The complete ordered output window: retained items plus the single
+    /// compaction item, verbatim.
+    #[serde(default)]
+    output: Vec<Value>,
+
+    /// Token accounting.
+    #[serde(default)]
+    usage: Option<UpstreamUsage>,
+
+    /// Failure the upstream attached to the response; a present, non-null
+    /// member is a failed operation (README §6.7).
+    #[serde(default)]
+    error: Option<UpstreamError>,
+}
+
+/// The parsed native result of a standalone compact dispatch: everything the
+/// outward `response.compaction` body carries through.
+#[derive(Debug)]
+pub(crate) struct CompactedResponseNative {
+    /// Upstream response identifier, when the upstream carried one.
+    pub(crate) id: Option<String>,
+
+    /// The complete ordered output window, verbatim.
+    pub(crate) output: Vec<Value>,
+
+    /// Token accounting, when the upstream reported it.
+    pub(crate) usage: Option<UpstreamUsage>,
+
+    /// Unix creation timestamp in seconds, when the upstream carried one.
+    pub(crate) created_at: Option<i64>,
+}
+
+/// Parses a standalone compact upstream response body.
+///
+/// A top-level non-null `error` member is a failed operation (README §6.7).
+/// The body is usable only when its output is non-empty and carries exactly one
+/// `compaction` item — a native compacted window always contains retained
+/// items or the compaction item, and any other shape cannot stand in for a
+/// compaction result (README §6.8).
+///
+/// # Errors
+///
+/// Returns [`PayloadError`] for a malformed body, an embedded error member, or
+/// an unusable output window.
+pub(crate) fn parse_compact_response(
+    value: Value,
+) -> Result<CompactedResponseNative, PayloadError> {
+    let body = format::parse_body::<CompactedResponseBodyIn>(&value)?;
+
+    if let Some(error) = &body.error {
+        return Err(error.failure());
+    }
+
+    let compaction_count = body
+        .output
+        .iter()
+        .filter(|item| is_compaction_item(item))
+        .count();
+
+    if body.output.is_empty() {
+        return Err(PayloadError::new(
+            "the upstream compacted response carries no output items",
+        ));
+    }
+
+    if compaction_count != 1 {
+        return Err(PayloadError::new(format!(
+            "the upstream compacted response must carry exactly one compaction item; \
+             it carried {compaction_count}"
+        )));
+    }
+
+    Ok(CompactedResponseNative {
+        id: body.id,
+        output: body.output,
+        usage: body.usage,
+        created_at: body.created_at,
+    })
+}
+
+/// Whether one raw output item is a `compaction` item. The probe reads the
+/// item's own type tag only: the rest of the item is vendor-shaped state whose
+/// members the gateway does not define.
+fn is_compaction_item(item: &Value) -> bool {
+    #[derive(Deserialize)]
+    struct TypeProbe {
+        /// Item kind discriminator.
+        #[serde(rename = "type")]
+        item_type: String,
+    }
+
+    TypeProbe::deserialize(item).is_ok_and(|probe| probe.item_type == "compaction")
+}
+
+impl UpstreamParser {
+    /// Records one raw output item verbatim when it is a compaction item,
+    /// yielding its [`IrEvent::CompactionState`] at the arrival position. A
+    /// terminal array's copy of an already live-delivered item is skipped by
+    /// the item's `id` (or its serialized bytes when the producer minted no
+    /// id), so a conformant stream delivers every distinct native compaction
+    /// exactly once.
+    fn record_compaction_item(
+        &mut self,
+        item: &Value,
+        origin: CompactionItemOrigin,
+    ) -> Vec<IrEvent> {
+        if !is_compaction_item(item) {
+            return Vec::new();
+        }
+
+        let identity = compaction_item_identity(item);
+
+        if origin == CompactionItemOrigin::Terminal
+            && self
+                .delivered_compaction_identities
+                .iter()
+                .any(|delivered| *delivered == identity)
+        {
+            return Vec::new();
+        }
+
+        self.compaction_output_items.push(item.clone());
+        self.delivered_compaction_identities.push(identity);
+
+        vec![IrEvent::CompactionState {
+            payload: item.clone(),
+        }]
+    }
+
+    /// Records the compaction items one stream frame carries: a completed item
+    /// event's own item, or a terminal response event's output array. The item
+    /// slots are read off the raw value because the compaction items are
+    /// vendor-shaped fragments preserved verbatim.
+    fn record_frame_compaction_items(&mut self, value: &Value, events: &mut Vec<IrEvent>) {
+        match value.get("type").and_then(Value::as_str) {
+            Some("response.output_item.done") => {
+                if let Some(item) = value.get("item") {
+                    events.extend(self.record_compaction_item(item, CompactionItemOrigin::Live));
+                }
+            }
+
+            Some("response.completed") | Some("response.incomplete") => {
+                if let Some(output) = value
+                    .get("response")
+                    .and_then(|response| response.get("output"))
+                    .and_then(Value::as_array)
+                {
+                    for item in output {
+                        events.extend(
+                            self.record_compaction_item(item, CompactionItemOrigin::Terminal),
+                        );
+                    }
+                }
+            }
+
+            _ => {}
+        }
     }
 }
 
@@ -822,7 +1060,7 @@ fn push_usage_events(response: &ResponseObject, events: &mut Vec<IrEvent>) {
 
 #[cfg(test)]
 mod tests {
-    use super::UpstreamParser;
+    use super::{UpstreamParser, parse_compact_response};
     use crate::{
         format::UpstreamEventParser as _,
         ir::{IrEvent, IrFinishReason, IrUsage},
@@ -1628,5 +1866,226 @@ mod tests {
                 IrEvent::finish(IrFinishReason::ToolCall),
             ],
         );
+    }
+
+    /// A native compacted response parses through completely: identity,
+    /// creation time, the full ordered output, and the usage with its
+    /// `dropped_message_count` (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed result diverges from the upstream body.
+    #[test]
+    fn compact_response_parses_through_with_dropped_message_count() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the compacted body is constructed to parse"
+        )]
+        let native = parse_compact_response(serde_json::json!({
+            "id": "resp_1",
+            "object": "response.compaction",
+            "created_at": 1_000,
+            "output": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "kept"},
+                ]},
+                {"type": "reasoning", "encrypted_content": "cipher"},
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": "state"},
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "total_tokens": 14,
+                "dropped_message_count": 3,
+            },
+        }))
+        .expect("a compacted response parses");
+
+        assert_eq!(native.id.as_deref(), Some("resp_1"));
+
+        assert_eq!(native.created_at, Some(1_000));
+
+        assert_eq!(native.output.len(), 3);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the compacted body is constructed to carry usage"
+        )]
+        let usage = native.usage.expect("the usage parses");
+
+        assert_eq!(usage.input_tokens, 10);
+
+        assert_eq!(usage.output_tokens, 4);
+
+        assert_eq!(usage.dropped_message_count, Some(3));
+    }
+
+    /// An unusable native result is a payload error, not a compaction: an
+    /// empty output, an output without a compaction item, an output with two,
+    /// and a body carrying a non-null top-level `error` member all reject
+    /// (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an unusable body parses as a success.
+    #[test]
+    fn unusable_compact_results_are_rejected() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the empty body is constructed to be rejected"
+        )]
+        let error = parse_compact_response(serde_json::json!({
+            "id": "resp_1",
+            "output": [],
+        }))
+        .expect_err("an empty output must be rejected");
+
+        assert!(error.to_string().contains("no output items"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the compaction-less body is constructed to be rejected"
+        )]
+        let error = parse_compact_response(serde_json::json!({
+            "id": "resp_1",
+            "output": [{"type": "message", "role": "user"}],
+        }))
+        .expect_err("an output without a compaction item must be rejected");
+
+        assert!(error.to_string().contains("exactly one compaction item"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the duplicated body is constructed to be rejected"
+        )]
+        let error = parse_compact_response(serde_json::json!({
+            "id": "resp_1",
+            "output": [
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": "a"},
+                {"type": "compaction", "id": "cmp_2", "encrypted_content": "b"},
+            ],
+        }))
+        .expect_err("a second compaction item must be rejected");
+
+        assert!(error.to_string().contains("exactly one compaction item"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the error body is constructed to be rejected"
+        )]
+        let error = parse_compact_response(serde_json::json!({
+            "id": "resp_1",
+            "output": [{"type": "compaction", "id": "cmp_1", "encrypted_content": "a"}],
+            "error": {"message": "compaction refused"},
+        }))
+        .expect_err("an embedded error member must be rejected");
+
+        assert_eq!(error.to_string(), "compaction refused");
+    }
+
+    /// The ordinary parser records compaction items verbatim from every
+    /// output source — a complete JSON body, a streamed done item, and the
+    /// terminal event's output array — without mapping them to IR events
+    /// (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a recorded item diverges from its upstream value or an item
+    /// leaks into the IR events.
+    #[test]
+    fn compaction_items_are_recorded_verbatim_from_every_source() {
+        let item = serde_json::json!({
+            "type": "compaction",
+            "id": "cmp_1",
+            "encrypted_content": "state",
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed body is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "resp_1",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "role": "assistant", "content": [
+                        {"type": "output_text", "text": "answer"},
+                    ]},
+                    {"type": "compaction", "id": "cmp_1", "encrypted_content": "state"},
+                ],
+            }))
+            .expect("a completed body parses");
+
+        assert_eq!(parser.compaction_output_items, vec![item.clone()]);
+
+        // The compaction item maps to no IR event: only the message text and
+        // the closing events render.
+        assert!(events.contains(&IrEvent::TextDelta("answer".to_string())));
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::TextDelta(_)))
+                .count(),
+            1
+        );
+
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
+        parser
+            .ingest_frame(&SseFrame {
+                data: serde_json::json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": item,
+                })
+                .to_string(),
+                event: None,
+            })
+            .expect("a done frame parses");
+
+        assert_eq!(parser.compaction_output_items.len(), 2);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the preceding length assertion guarantees two recorded items"
+        )]
+        {
+            assert_eq!(
+                parser.compaction_output_items[1]
+                    .get("id")
+                    .and_then(Value::as_str),
+                Some("cmp_1"),
+            );
+        }
+
+        // Non-compaction items never enter the record.
+        #[expect(
+            clippy::expect_used,
+            reason = "the terminal frame is constructed to parse"
+        )]
+        parser
+            .ingest_frame(&completed_frame(serde_json::json!([
+                {"type": "reasoning", "summary": []},
+                {"type": "compaction", "id": "cmp_2", "encrypted_content": "state-2"},
+            ])))
+            .expect("a terminal frame parses");
+
+        assert_eq!(parser.compaction_output_items.len(), 3);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the preceding length assertion guarantees three recorded items"
+        )]
+        {
+            assert_eq!(
+                parser.compaction_output_items[2]
+                    .get("id")
+                    .and_then(Value::as_str),
+                Some("cmp_2"),
+            );
+        }
     }
 }

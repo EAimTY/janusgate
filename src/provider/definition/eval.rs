@@ -238,6 +238,30 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
+    /// Builds the stage environment of one compaction operation dispatch (README §5): the
+    /// stored base URL, the credential secret, the stored slots, the dispatch's request UUID
+    /// (cached across every expression of the dispatch), and the routed model are exactly the
+    /// values the stage's expressions may reference — the same value set an inference dispatch
+    /// carries, without any streaming-specific member. The standalone compact operation and the
+    /// token-count operation evaluate through it.
+    #[must_use]
+    pub(crate) fn for_compaction_operation(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        secret: &'a str,
+        request_uuid: &'a str,
+        model: &'a str,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            secret: Some(secret),
+            request_uuid: Some(request_uuid),
+            model: Some(model),
+            ..Self::stage_absent()
+        }
+    }
+
     /// The stage-carried values every constructor leaves absent, shared by the per-stage
     /// constructors so each lists only the values its stage carries.
     fn stage_absent() -> Self {

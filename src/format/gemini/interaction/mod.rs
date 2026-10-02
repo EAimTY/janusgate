@@ -116,6 +116,17 @@ impl ClientFormat for Format {
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
     }
+
+    fn render_json_response_with_prefix(
+        _public_id: &str,
+        aggregation: &IrAggregation,
+        _prefix: &[serde_json::Value],
+        _iterations: &[serde_json::Value],
+    ) -> Self::JsonResponse {
+        // This surface has no compaction channel; its callers can never
+        // produce a checkpoint prefix, so the ordinary rendering stands.
+        Self::render_json_response(_public_id, aggregation)
+    }
 }
 
 /// SSE event opening an upstream stream, carrying the interaction identity under the official

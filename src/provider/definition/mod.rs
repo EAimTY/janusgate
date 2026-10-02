@@ -7,6 +7,7 @@
 //! extension surface, and the management write boundary validates a payload once, at write time
 //! ([`validate::DefinitionPayload::validate`]).
 
+pub(crate) mod compaction;
 pub(crate) mod credential;
 pub(crate) mod discovery;
 pub(crate) mod eval;
@@ -22,7 +23,8 @@ pub(crate) use validate::ValidationError;
 
 /// The payload of one provider definition version: the data `provider-definitions:create` and
 /// `provider-definitions:update` carry, and what the `format`, `inference`, `credential`,
-/// `provisioning`, and `discovery` columns of the `provider_definitions` table store.
+/// `provisioning`, `discovery`, and `compaction` columns of the `provider_definitions` table
+/// store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -43,6 +45,11 @@ pub struct DefinitionPayload {
     /// The optional upstream model-list discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<discovery::Discovery>,
+
+    /// The optional remote-compaction section (README §5): strategy, budgets, per-mechanism
+    /// declarations, and the operations executing them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<compaction::CompactionSection>,
 }
 
 impl DefinitionPayload {
@@ -53,15 +60,17 @@ impl DefinitionPayload {
     ///
     /// The walk covers every expression member whose evaluation environment carries the base
     /// URL — the inference and streaming URLs, the inference header-row values, the envelope's
-    /// string leaves, and every control request's full expression surface (URL, header-row
+    /// string leaves, every control request's full expression surface (URL, header-row
     /// values, query-row values, form-field values, and JSON string leaves) across the
     /// credential section's device-authorization, token-exchange, and refresh-grant requests,
-    /// the provisioning steps and their polls, and the discovery request — and must be extended
-    /// alongside any new member of that set: the requirement checks consult only this
-    /// predicate, so a missed expression is accepted with no base URL and every later
-    /// evaluation of it fails as stored drift. The authorize URL and its extra parameters are
-    /// excluded: the write-time validation bars the base reference at the authorize-URL stage
-    /// (README §5.1), so those expressions can never evaluate against a base URL.
+    /// the provisioning steps and their polls, the discovery request, and the compaction
+    /// section's standalone operation, token-count operation, and Messages overlay headers —
+    /// and must be extended alongside any new member of that set: the requirement checks
+    /// consult only this predicate, so a missed expression is accepted with no base URL and
+    /// every later evaluation of it fails as stored drift. The authorize URL and its extra
+    /// parameters are excluded: the write-time validation bars the base reference at the
+    /// authorize-URL stage (README §5.1), so those expressions can never evaluate against a
+    /// base URL.
     #[must_use]
     pub(crate) fn references_base(&self) -> bool {
         // The part the walk seeks everywhere below: the stored base-URL reference.
@@ -119,8 +128,75 @@ impl DefinitionPayload {
             is_addressed = is_addressed || validate::request_references(&discovery.request, &base);
         }
 
+        // The compaction section: the two full operation surfaces and the Messages header
+        // overlays, whose expressions evaluate against the same environment as the inference
+        // connection's.
+        if let Some(compaction) = &self.compaction {
+            if let Some(operation) = compaction
+                .mechanisms
+                .responses_standalone_compact
+                .as_ref()
+                .and_then(|declaration| declaration.operation.as_ref())
+            {
+                is_addressed = is_addressed
+                    || operation_references_base(
+                        &operation.url,
+                        &operation.headers,
+                        operation.envelope.as_ref(),
+                        &base,
+                    );
+            }
+
+            for declaration in [
+                compaction
+                    .mechanisms
+                    .messages_on_demand_compaction
+                    .as_ref()
+                    .and_then(|declaration| declaration.overlay_headers.as_deref()),
+                compaction
+                    .mechanisms
+                    .messages_threshold_compaction
+                    .as_ref()
+                    .and_then(|declaration| declaration.overlay_headers.as_deref()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                is_addressed = is_addressed
+                    || declaration
+                        .iter()
+                        .any(|header| validate::references(&header.value, &base));
+            }
+
+            if let Some(count_tokens) = &compaction.count_tokens {
+                is_addressed = is_addressed
+                    || operation_references_base(
+                        &count_tokens.url,
+                        &count_tokens.headers,
+                        count_tokens.envelope.as_ref(),
+                        &base,
+                    );
+            }
+        }
+
         is_addressed
     }
+}
+
+/// Whether one compaction operation's URL, header-row values, and envelope string leaves
+/// reference the sought value part — the same walk the write-time validation performs over the
+/// surface, seeking instead of rejecting.
+fn operation_references_base(
+    url: &template::StringExpr,
+    headers: &[template::ParamRow],
+    envelope: Option<&template::TemplateNode>,
+    sought: &template::ValueExpr,
+) -> bool {
+    validate::references(url, sought)
+        || headers
+            .iter()
+            .any(|header| validate::references(&header.value, sought))
+        || envelope.is_some_and(|envelope| validate::template_node_references(envelope, sought))
 }
 
 /// One immutable provider definition version: the stored `(name, version)` row plus its parsed
@@ -471,6 +547,167 @@ mod tests {
                 "refresh": {"type": "none"},
             },
         })
+    }
+
+    /// Builds one static-key `openai_response` payload wholesale with the given compaction
+    /// section document: every other expression stays literal, so only the carried compaction
+    /// members decide the predicate.
+    fn compaction_payload(compaction: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "format": "openai_response",
+            "inference": {
+                "url": literal("https://upstream.example"),
+                "upstream_streaming": "match_client",
+            },
+            "credential": {"type": "api_key"},
+            "compaction": compaction,
+        })
+    }
+
+    /// Builds one `anthropic_messages` compaction section carrying the given overlay headers
+    /// on both Messages declarations.
+    fn overlay_section(headers: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "mechanisms": {
+                "messages_on_demand_compaction": {
+                    "default": "supported",
+                    "overlay_headers": headers,
+                },
+                "messages_threshold_compaction": {
+                    "default": "supported",
+                    "overlay_headers": headers,
+                },
+            },
+        })
+    }
+
+    /// Verifies the base-reference predicate against every compaction-section expression
+    /// surface — the standalone operation's URL, header rows, and envelope string leaves, the
+    /// token-count operation's surface, and both Messages declarations' overlay-header values —
+    /// directly or inside a `Coalesce`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture payload does not parse or the predicate diverges.
+    #[test]
+    fn detects_the_base_reference_across_the_compaction_surfaces() {
+        let standalone = |operation: serde_json::Value| {
+            compaction_payload(serde_json::json!({
+                "mechanisms": {
+                    "responses_standalone_compact": {
+                        "default": "supported",
+                        "operation": operation,
+                    },
+                },
+            }))
+        };
+
+        let cases = [
+            (
+                "standalone operation URL",
+                standalone(serde_json::json!({ "url": base() })),
+                true,
+            ),
+            (
+                "standalone operation URL inside a coalesce",
+                standalone(serde_json::json!({ "url": coalesced_base() })),
+                true,
+            ),
+            (
+                "standalone operation header value",
+                standalone(serde_json::json!({
+                    "url": literal("https://upstream.example/compact"),
+                    "headers": [{ "name": "X-Endpoint", "value": base() }],
+                })),
+                true,
+            ),
+            (
+                "standalone operation envelope string leaf",
+                standalone(serde_json::json!({
+                    "url": literal("https://upstream.example/compact"),
+                    "envelope": {
+                        "type": "object",
+                        "fields": {
+                            "endpoint": { "type": "string", "expr": base() },
+                        },
+                    },
+                })),
+                true,
+            ),
+            (
+                "every standalone surface literal",
+                standalone(serde_json::json!({
+                    "url": literal("https://upstream.example/compact"),
+                })),
+                false,
+            ),
+            (
+                "token-count operation URL",
+                compaction_payload(serde_json::json!({
+                    "count_tokens": { "url": base() },
+                })),
+                true,
+            ),
+            (
+                "token-count operation header value",
+                compaction_payload(serde_json::json!({
+                    "count_tokens": {
+                        "url": literal("https://upstream.example/count"),
+                        "headers": [{ "name": "X-Endpoint", "value": base() }],
+                    },
+                })),
+                true,
+            ),
+            (
+                "token-count operation envelope string leaf",
+                compaction_payload(serde_json::json!({
+                    "count_tokens": {
+                        "url": literal("https://upstream.example/count"),
+                        "envelope": {
+                            "type": "object",
+                            "fields": {
+                                "endpoint": { "type": "string", "expr": coalesced_base() },
+                            },
+                        },
+                    },
+                })),
+                true,
+            ),
+            (
+                "on-demand overlay header value",
+                compaction_payload(overlay_section(serde_json::json!([
+                    { "name": "X-Endpoint", "value": base() },
+                ]))),
+                true,
+            ),
+            (
+                "threshold overlay header value",
+                compaction_payload(overlay_section(serde_json::json!([
+                    { "name": "X-Endpoint", "value": coalesced_base() },
+                ]))),
+                true,
+            ),
+            (
+                "every overlay header value literal",
+                compaction_payload(overlay_section(serde_json::json!([
+                    { "name": "X-Endpoint", "value": literal("https://upstream.example") },
+                ]))),
+                false,
+            ),
+            (
+                "an empty section",
+                compaction_payload(serde_json::json!({})),
+                false,
+            ),
+        ];
+
+        for (name, payload, is_expected) in cases {
+            assert_eq!(
+                parses(payload).references_base(),
+                is_expected,
+                "case `{name}` diverges"
+            );
+        }
     }
 
     /// Verifies the base-reference predicate against every descriptor member whose evaluation

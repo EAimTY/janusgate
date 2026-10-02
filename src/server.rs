@@ -346,7 +346,6 @@ fn bind_tcp_listener() -> (TcpListener, SocketAddr) {
 mod tests {
     use super::*;
     use crate::{
-        config::ConfigLoader,
         database::Database,
         storage::{
             self,
@@ -540,31 +539,6 @@ mod tests {
         (mock, mode)
     }
 
-    /// Renders the end-to-end configuration, pointed at the temporary database and an ephemeral
-    /// listen port. The `api_logs` section rides exactly when `api_logs_directory` is given: the
-    /// section's presence is the recording switch.
-    fn configuration_body(database_path: &Path, api_logs_directory: Option<&Path>) -> String {
-        let database_path = database_path.to_string_lossy().replace('\\', "/");
-
-        let api_logs = api_logs_directory.map(|directory| {
-            format!(
-                ",\"api_logs\": {{\"path\": \"{}\"}}",
-                directory.to_string_lossy().replace('\\', "/")
-            )
-        });
-
-        let api_logs = api_logs.as_deref().unwrap_or("");
-
-        format!(
-            r#"{{
-                "listen": "127.0.0.1:0",
-                "database": {{"path": "{database_path}"}},
-                "management_api": {{"token": "e2e-token"}},
-                "api": {{}}{api_logs}
-            }}"#
-        )
-    }
-
     /// Sends one completion request to the gateway under the given key.
     ///
     /// # Errors
@@ -740,35 +714,80 @@ mod tests {
     /// Panics when a scenario records the wrong number or shape of rows, or the reload never
     /// applies.
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the scenario is the one configuration-mutating body in the process and the \
+                  lock's whole purpose is to serialize it against every other test's \
+                  configuration usage; no awaited path re-acquires the lock, so the held \
+                  guard cannot deadlock"
+    )]
     async fn records_exactly_one_row_per_dispatch_end_to_end() -> Result<(), Box<dyn StdError>> {
+        // The whole scenario is configuration-sensitive: it installs the shared
+        // test configuration and mutates it with a live reload, so it holds the
+        // process-wide configuration lock throughout, and every other test's
+        // configuration usage waits for it.
+        let _configuration = crate::test_support::configuration_lock();
+
         let directory = std::env::temp_dir().join(format!("janusgate-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory)?;
         let _guard = TempDirGuard(directory.clone());
 
-        let database_path = directory.join("e2e.db");
-        let config_path = directory.join("config.jsonc");
-        let api_logs_directory = directory.join("api-logs");
+        let requested_database_path = directory.join("e2e.db");
+
+        let requested_api_logs_directory = directory.join("api-logs");
 
         let (mock, mock_mode) = spawn_mock_upstream().await;
 
-        std::fs::write(
-            &config_path,
-            configuration_body(&database_path, Some(&api_logs_directory)),
-        )?;
+        // The canonical shared configuration: exactly one test wins the
+        // process-global installation, so this scenario derives every file
+        // location from the INSTALLED configuration's named paths — its own
+        // request is honored only when it won. When the winner installed
+        // recording-off, a live reload brings this scenario's api-logs section
+        // in; the reload step below rewrites the same file the shared watcher
+        // watches.
+        let installed = crate::test_support::install_test_configuration(
+            &requested_database_path,
+            Some(&requested_api_logs_directory),
+        );
 
-        let (loader, watcher) = ConfigLoader::new(config_path.clone())?;
+        let config_path = crate::test_support::test_configuration_file_path().to_path_buf();
+
+        if crate::CONFIG.api_logs.is_none() {
+            std::fs::write(
+                &config_path,
+                crate::test_support::configuration_body(
+                    &installed.database.path,
+                    Some(&requested_api_logs_directory),
+                ),
+            )?;
+
+            for _ in 0..300 {
+                if crate::CONFIG.api_logs.is_some() {
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            assert!(
+                crate::CONFIG.api_logs.is_some(),
+                "the api-logs reload must apply within fifteen seconds"
+            );
+        }
 
         #[expect(
             clippy::expect_used,
-            reason = "the global configuration is initialized exactly once, in this single \
-                      end-to-end test"
+            reason = "the section was just installed or reloaded in"
         )]
-        crate::CONFIG
-            .set(loader)
-            .expect("the global configuration initializes exactly once");
+        let api_logs_directory = crate::CONFIG
+            .api_logs
+            .as_ref()
+            .expect("the api-logs section is present")
+            .path
+            .clone();
 
-        tokio::spawn(watcher);
+        let database_path = installed.database.path.clone();
 
         #[expect(clippy::unwrap_used, reason = "non-zero literal")]
         let max_connections = NonZero::new(4).unwrap();
@@ -825,6 +844,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -851,6 +871,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -889,6 +910,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -1067,7 +1089,10 @@ mod tests {
         // The switch: a live reload removes the `api_logs` section, so the next successful
         // dispatch writes nothing — while both management reads keep serving everything already
         // stored.
-        std::fs::write(&config_path, configuration_body(&database_path, None))?;
+        std::fs::write(
+            &config_path,
+            crate::test_support::configuration_body(&database_path, None),
+        )?;
 
         for _ in 0..300 {
             if crate::CONFIG.api_logs.is_none() {

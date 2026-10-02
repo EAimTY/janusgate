@@ -584,6 +584,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     Ok(ParsedRequest {
         ir: IrRequest {
+            state_items: Vec::new(),
             model: request.model,
             instructions: if instructions_parts.is_empty() {
                 None
@@ -611,6 +612,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             .stream_options
             .as_ref()
             .is_some_and(|options| options.include_usage),
+        compaction: None,
     })
 }
 

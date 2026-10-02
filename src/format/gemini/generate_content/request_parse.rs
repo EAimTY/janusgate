@@ -368,6 +368,7 @@ pub(super) fn parse_request(
 
     Ok(ParsedRequest {
         ir: IrRequest {
+            state_items: Vec::new(),
             model: public_id,
             instructions,
             messages,
@@ -381,6 +382,7 @@ pub(super) fn parse_request(
         },
         is_streaming,
         should_include_usage: false,
+        compaction: None,
     })
 }
 

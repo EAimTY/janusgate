@@ -23,6 +23,7 @@
 
 use self::models::ModelEntry;
 use crate::{
+    compaction::support_facts::CompactionSupportFacts,
     database::{
         Database, Error as DatabaseError, IntoParams, Row, Transaction, TursoError, Value, params,
         params::IntoValue,
@@ -114,7 +115,7 @@ mod test_support;
 /// [`provider_from_row`].
 const PROVIDER_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.base_url, p.credentials, \
      p.is_enabled, d.name, d.version, d.format, d.inference, d.credential, d.provisioning, \
-     d.discovery, d.created_at";
+     d.discovery, d.compaction, d.created_at";
 
 /// The join behind every provider read: the row and the exact definition version it references.
 pub(crate) const PROVIDER_JOINED_FROM: &str = "FROM providers p JOIN provider_definitions d \
@@ -131,26 +132,28 @@ pub(crate) const PROVIDER_JOINED_FROM_MODELS: &str = "FROM models m \
 const MODELS_JOINED_PROVIDERS: &str = "FROM models m JOIN providers p ON p.id = m.provider_id";
 
 /// Column order of model selects: the row identity first, then the upstream identifier, the
-/// routing columns, the discovery state, the three capability base columns, and the three
-/// capability override mirrors. The owning provider is never carried in the row itself — every
-/// read knows it through the query's filter or its join.
+/// routing columns, the discovery state, the three capability base columns, the three
+/// capability override mirrors, and the two compaction support fact columns. The owning
+/// provider is never carried in the row itself — every read knows it through the query's filter
+/// or its join.
 const MODEL_COLUMNS: &str = "id, upstream_id, public_id, id_override, is_enabled, \
      discovery_state, thinking_levels, max_input_tokens, max_output_tokens, \
-     thinking_levels_override, max_input_tokens_override, max_output_tokens_override";
+     thinking_levels_override, max_input_tokens_override, max_output_tokens_override, \
+     compaction_support, compaction_support_override";
 
 /// The model columns as a provider-model join projects them, appended after
 /// [`PROVIDER_COLUMNS`].
 const MODEL_COLUMNS_JOINED: &str = "m.id, m.upstream_id, m.public_id, m.id_override, \
      m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
      m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
-     m.max_output_tokens_override";
+     m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
 
 /// The combined column order of the model-entry join, consumed positionally by
 /// [`model_entry_from_row`]: the provider id and name, then the model columns.
 const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, m.public_id, \
      m.id_override, m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
      m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
-     m.max_output_tokens_override";
+     m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
 
 /// Provider, model, and OAuth state persistence failures.
 ///
@@ -391,9 +394,62 @@ fn levels_into_value(levels: Option<&[IrReasoningLevel]>) -> Result<Value, Turso
         .map_err(|error| TursoError::ToSqlConversionFailure(error.into()))
 }
 
+/// The support-value domain one compaction facts column admits: the discovery-owned base
+/// column stores only known facts — discovery extracts booleans, so an explicit `unknown` in it
+/// is stored drift — while the administrator-owned override column additionally admits the
+/// explicit `unknown` that suppresses the lower layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupportFactDomain {
+    /// Only `supported`/`unsupported` members are legal.
+    Known,
+
+    /// The explicit `unknown` member value is legal too.
+    WithUnknown,
+}
+
+/// Parses one compaction support facts column: [`Ok(None)`] for `NULL` and for the empty
+/// object — both spell the nothing-known state — else the parsed map, rejecting a stored fact
+/// outside the column's domain as storage drift. The closed mechanism and support vocabularies
+/// are the serde types' own, so a foreign spelling fails the parse the same way.
+fn support_facts_from_column(
+    value: Option<String>,
+    column: &str,
+    domain: SupportFactDomain,
+) -> Result<Option<CompactionSupportFacts>, Error> {
+    let Some(json) = value else {
+        return Ok(None);
+    };
+
+    let facts =
+        serde_json::from_str::<CompactionSupportFacts>(&json).map_err(|error| Error::Drift {
+            message: format!("{column} column carries a malformed support map: {error}"),
+        })?;
+
+    if domain == SupportFactDomain::Known && facts.carries_unknown() {
+        return Err(Error::Drift {
+            message: format!("{column} column carries an explicit `unknown` fact"),
+        });
+    }
+
+    Ok(CompactionSupportFacts::from_pairs(facts.iter()))
+}
+
+/// Renders a compaction support facts column value for a statement parameter: [`Value::Null`]
+/// for the nothing-known state, else the map's canonical JSON object text. The caller passes a
+/// map built at a validated boundary, so the rendering re-checks nothing.
+fn support_facts_into_value(facts: Option<&CompactionSupportFacts>) -> Result<Value, TursoError> {
+    let Some(facts) = facts else {
+        return Ok(Value::Null);
+    };
+
+    serde_json::to_string(facts)
+        .map(Value::Text)
+        .map_err(|error| TursoError::ToSqlConversionFailure(error.into()))
+}
+
 /// The column count of [`PROVIDER_COLUMNS`]: a provider-model join appends the model columns
 /// after it.
-pub(crate) const PROVIDER_COLUMN_COUNT: usize = 14;
+pub(crate) const PROVIDER_COLUMN_COUNT: usize = 15;
 
 /// Parses a definition payload JSON column, wrapped exactly once as internal storage drift: the
 /// column was written only through the validated management path, so a payload failing here is
@@ -445,8 +501,12 @@ pub(crate) fn definition_from_row_offset(
                 .get::<Option<String>>(offset + 6)?
                 .map(|json| payload_from_json(Some(json), "discovery"))
                 .transpose()?,
+            compaction: row
+                .get::<Option<String>>(offset + 7)?
+                .map(|json| payload_from_json(Some(json), "compaction"))
+                .transpose()?,
         },
-        created_at: row.get(offset + 7)?,
+        created_at: row.get(offset + 8)?,
     })
 }
 
@@ -502,6 +562,16 @@ fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, Error> {
         )?,
         max_input_tokens_override: row.get(offset + 10)?,
         max_output_tokens_override: row.get(offset + 11)?,
+        compaction_support: support_facts_from_column(
+            row.get(offset + 12)?,
+            "compaction_support",
+            SupportFactDomain::Known,
+        )?,
+        compaction_support_override: support_facts_from_column(
+            row.get(offset + 13)?,
+            "compaction_support_override",
+            SupportFactDomain::WithUnknown,
+        )?,
     })
 }
 
@@ -983,6 +1053,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -1034,6 +1105,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -1052,6 +1124,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await;
@@ -1071,6 +1144,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;

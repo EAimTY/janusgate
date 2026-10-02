@@ -64,6 +64,8 @@ const model: ModelResponse = {
     thinking_levels_override: null,
     max_input_tokens_override: null,
     max_output_tokens_override: null,
+    compaction_support: null,
+    compaction_support_override: null,
 };
 
 describe("toUpdateProviderRequest", () => {
@@ -178,7 +180,7 @@ describe("toUpdateProviderRequest", () => {
 });
 
 describe("toUpdateModelRequest", () => {
-    it("restates the row's five writable columns and addresses it by model_id", () => {
+    it("restates the row's writable columns and addresses it by model_id", () => {
         expect(toUpdateModelRequest(model)).toEqual({
             model_id: 9,
             id_override: null,
@@ -186,6 +188,7 @@ describe("toUpdateModelRequest", () => {
             thinking_levels_override: null,
             max_input_tokens_override: null,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
     });
 
@@ -201,6 +204,7 @@ describe("toUpdateModelRequest", () => {
             thinking_levels_override: null,
             max_input_tokens_override: null,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
     });
 
@@ -233,6 +237,7 @@ describe("toUpdateModelRequest", () => {
             ],
             max_input_tokens_override: 200_000,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
 
         // An explicit `null` clears the override back to the discovered value.
@@ -249,7 +254,47 @@ describe("toUpdateModelRequest", () => {
             thinking_levels_override: null,
             max_input_tokens_override: null,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
+    });
+
+    it("applies the compaction-facts override explicitly, including clearing it", () => {
+        const overridden: ModelResponse = {
+            ...model,
+            compaction_support: {
+                messages_on_demand_compaction: "supported",
+            },
+            compaction_support_override: {
+                messages_on_demand_compaction: "unknown",
+                messages_threshold_compaction: "supported",
+            },
+        };
+
+        // A present map replaces the discovered facts wholesale — the
+        // explicit unknown member included.
+        expect(
+            toUpdateModelRequest(model, {
+                compaction_support_override: {
+                    messages_on_demand_compaction: "unknown",
+                },
+            }).compaction_support_override,
+        ).toEqual({
+            messages_on_demand_compaction: "unknown",
+        });
+
+        // An omitted edit restates the row's standing override.
+        expect(toUpdateModelRequest(overridden).compaction_support_override).toEqual({
+            messages_on_demand_compaction: "unknown",
+            messages_threshold_compaction: "supported",
+        });
+
+        // An explicit `null` clears the override back to the discovered
+        // facts.
+        expect(
+            toUpdateModelRequest(overridden, {
+                compaction_support_override: null,
+            }).compaction_support_override,
+        ).toBe(null);
     });
 
     it("keeps an explicit null as the no-override state", () => {
@@ -269,6 +314,7 @@ describe("toUpdateModelRequest", () => {
             thinking_levels_override: null,
             max_input_tokens_override: null,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
     });
 
@@ -333,6 +379,7 @@ describe("toCreateModelRequest", () => {
             thinking_levels_override: null,
             max_input_tokens_override: null,
             max_output_tokens_override: null,
+            compaction_support_override: null,
         });
     });
 
@@ -346,6 +393,9 @@ describe("toCreateModelRequest", () => {
                 ],
                 max_input_tokens_override: 200_000,
                 max_output_tokens_override: 32_768,
+                compaction_support_override: {
+                    messages_on_demand_compaction: "supported",
+                },
             }),
         ).toEqual({
             provider_id: 4,
@@ -357,6 +407,9 @@ describe("toCreateModelRequest", () => {
             ],
             max_input_tokens_override: 200_000,
             max_output_tokens_override: 32_768,
+            compaction_support_override: {
+                messages_on_demand_compaction: "supported",
+            },
         });
     });
 });

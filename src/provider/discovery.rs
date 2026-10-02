@@ -12,14 +12,18 @@
 
 use super::{Error, Provider, control, oauth};
 use crate::{
+    compaction::{
+        mechanism::{Mechanism, MechanismSupport},
+        support_facts::CompactionSupportFacts,
+    },
     ir::IrReasoningLevel,
     provider::{
         DiscoveredModel,
         definition::{
             discovery as descriptor,
             discovery::{
-                CapabilityExtraction, Discovery, DiscoveryExtract, Pagination,
-                ThinkingLevelsExtraction,
+                CapabilityExtraction, CompactionCapabilityExtraction, Discovery, DiscoveryExtract,
+                Pagination, ThinkingLevelsExtraction,
             },
             eval::ValueEnv,
             template::{ControlRequest, ResponseEncoding, ResponsePath},
@@ -343,6 +347,7 @@ fn extract_models(
                         thinking_levels: capabilities.thinking_levels,
                         max_input_tokens: capabilities.max_input_tokens,
                         max_output_tokens: capabilities.max_output_tokens,
+                        compaction: capabilities.compaction,
                     })
                 })
                 .collect()
@@ -363,13 +368,14 @@ fn extract_models(
                     thinking_levels: None,
                     max_input_tokens: None,
                     max_output_tokens: None,
+                    compaction: None,
                 })
                 .collect())
         }
     }
 }
 
-/// Extracts one entry's three capability facts (README §5.5). A descriptor without a capability
+/// Extracts one entry's capability facts (README §5.5). A descriptor without a capability
 /// extraction — or an entry whose configured path is absent or `null` — yields the unknown
 /// state (`None`); a present value of the wrong shape fails the refresh; a level string outside
 /// the closed vocabulary is silently skipped (the declared set is the vocabulary-restricted
@@ -378,8 +384,8 @@ fn extract_models(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] as the upstream-error category when a present value has the wrong shape or
-/// a token cap is not a positive integer.
+/// Returns [`Error`] as the upstream-error category when a present value has the wrong shape, a
+/// compaction flag is not a boolean, or a token cap is not a positive integer.
 fn extract_capabilities(
     entry: &Json,
     capabilities: Option<&CapabilityExtraction>,
@@ -489,14 +495,17 @@ fn extract_capabilities(
     let max_input_tokens = extract_token_cap(entry, &capabilities.max_input_tokens)?;
     let max_output_tokens = extract_token_cap(entry, &capabilities.max_output_tokens)?;
 
+    let compaction = extract_compaction_facts(entry, capabilities.compaction.as_ref())?;
+
     Ok(EntryCapabilities {
         thinking_levels,
         max_input_tokens,
         max_output_tokens,
+        compaction,
     })
 }
 
-/// One entry's three extracted capability facts (README §5.5), the pre-insertion shape of the
+/// One entry's extracted capability facts (README §5.5), the pre-insertion shape of the
 /// capability columns: every fact `None` — *unknown* — until a configured extraction reads it
 /// off the entry.
 struct EntryCapabilities {
@@ -508,6 +517,10 @@ struct EntryCapabilities {
 
     /// Extracted maximum output tokens; `None` when unknown.
     max_output_tokens: Option<i64>,
+
+    /// Extracted compaction support facts — only known members; `None` when the entry carries
+    /// none.
+    compaction: Option<CompactionSupportFacts>,
 }
 
 impl EntryCapabilities {
@@ -518,6 +531,7 @@ impl EntryCapabilities {
             thinking_levels: None,
             max_input_tokens: None,
             max_output_tokens: None,
+            compaction: None,
         }
     }
 }
@@ -553,6 +567,79 @@ fn extract_token_cap(entry: &Json, path: &Option<ResponsePath>) -> Result<Option
     Ok(Some(cap))
 }
 
+/// Extracts one entry's compaction support facts (README §5.5): each configured mechanism reads
+/// one boolean flag out of the object its `object_at` path names — `true` extracts the
+/// mechanism's `supported` fact, `false` its `unsupported` fact, and an absent-or-null object or
+/// flag leaves the mechanism unknown. A present object or flag of the wrong shape — a
+/// non-object where an object is addressed, a non-boolean where a flag is addressed — fails the
+/// refresh as a malformed upstream fact, like every other present-wrong-shape capability value.
+///
+/// # Errors
+///
+/// Returns [`Error`] as the upstream-error category for a malformed compaction object or flag.
+fn extract_compaction_facts(
+    entry: &Json,
+    compaction: Option<&CompactionCapabilityExtraction>,
+) -> Result<Option<CompactionSupportFacts>, Error> {
+    let Some(compaction) = compaction else {
+        return Ok(None);
+    };
+
+    let mut pairs = Vec::new();
+
+    for (mechanism, extraction) in [
+        (
+            Mechanism::MessagesOnDemandCompaction,
+            compaction.messages_on_demand.as_ref(),
+        ),
+        (
+            Mechanism::MessagesThresholdCompaction,
+            compaction.messages_threshold.as_ref(),
+        ),
+    ] {
+        let Some(extraction) = extraction else {
+            continue;
+        };
+
+        // An absent path is the unknown state; an explicit null object reads the same way, so
+        // an upstream that nulls a capability slot for a model extracts nothing for it.
+        let Some(object) = extraction.object_at.resolve(entry) else {
+            continue;
+        };
+
+        if object.is_null() {
+            continue;
+        }
+
+        if object.as_object().is_none() {
+            return Err(Error::Unavailable {
+                detail: "model discovery entry carries a malformed compaction object".to_string(),
+            });
+        }
+
+        match extraction.flag_field.resolve(object) {
+            None | Some(Json::Null) => continue,
+
+            Some(Json::Bool(flag)) => pairs.push((
+                mechanism,
+                if *flag {
+                    MechanismSupport::Supported
+                } else {
+                    MechanismSupport::Unsupported
+                },
+            )),
+
+            Some(_) => {
+                return Err(Error::Unavailable {
+                    detail: "model discovery entry carries a malformed compaction flag".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(CompactionSupportFacts::from_pairs(pairs))
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -566,6 +653,10 @@ mod tests {
 
     use super::{Error, run_discovery};
     use crate::{
+        compaction::{
+            mechanism::{Mechanism, MechanismSupport},
+            support_facts::CompactionSupportFacts,
+        },
         ir::IrReasoningLevel,
         provider::definition::{discovery::Discovery, eval::ValueEnv},
         test_support::MockUpstream,
@@ -1022,10 +1113,103 @@ mod tests {
         mock.shutdown.send(()).ok();
     }
 
+    /// Verifies the compaction-flag extraction (README §5.5): a `true` flag extracts the
+    /// mechanism's `supported` fact and a `false` flag its `unsupported` fact, while an absent
+    /// or `null` object, an absent or `null` flag, and an unconfigured mechanism all leave the
+    /// model's compaction facts at `None` — the nothing-known state.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse or the extraction diverges from the expectation.
+    #[tokio::test]
+    async fn extracts_compaction_facts_in_the_anthropic_shape() {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "items": [
+                    {
+                        "slug": "claude-opus",
+                        "capabilities": {
+                            "compaction": {"supported": true},
+                            "context_management": {
+                                "compact_20260112": {"supported": false}
+                            }
+                        }
+                    },
+                    {
+                        "slug": "null-slots",
+                        "capabilities": {
+                            "compaction": null,
+                            "context_management": {"compact_20260112": null}
+                        }
+                    },
+                    {"slug": "absent"}
+                ]
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let models = run_discovery(
+            &crate::http_client::control_plane(),
+            &capability_discovery(
+                r#"{"compaction": {
+                        "messages_on_demand": {
+                            "object_at": ["capabilities", "compaction"],
+                            "flag_field": ["supported"]
+                        },
+                        "messages_threshold": {
+                            "object_at": ["capabilities", "context_management", "compact_20260112"],
+                            "flag_field": ["supported"]
+                        }
+                    }}"#,
+            ),
+            &discovery_env(&mock.base()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(models.len(), 3);
+
+        #[expect(clippy::expect_used, reason = "the fixture lists the model first")]
+        let first = models.first().expect("the first model is listed");
+
+        assert_eq!(first.upstream_id, "claude-opus");
+        assert_eq!(
+            first.compaction,
+            CompactionSupportFacts::from_pairs([
+                (
+                    Mechanism::MessagesOnDemandCompaction,
+                    MechanismSupport::Supported
+                ),
+                (
+                    Mechanism::MessagesThresholdCompaction,
+                    MechanismSupport::Unsupported,
+                ),
+            ]),
+        );
+
+        // Explicit `null` slots read as the absent member: unknown, not unsupported.
+        #[expect(clippy::expect_used, reason = "the fixture lists the model second")]
+        let second = models.get(1).expect("the second model is listed");
+
+        assert_eq!(second.upstream_id, "null-slots");
+        assert_eq!(second.compaction, None);
+
+        // An entry carrying none of the configured paths stays wholly unknown.
+        #[expect(clippy::expect_used, reason = "the fixture lists the model third")]
+        let third = models.get(2).expect("the third model is listed");
+
+        assert_eq!(third.upstream_id, "absent");
+        assert_eq!(third.compaction, None);
+
+        mock.shutdown.send(()).ok();
+    }
+
     /// Verifies the capability strictness (README §5.5): a present value of the wrong shape — a
     /// level element without its string member, a flag member carrying no boolean at the
-    /// configured flag path, a non-integer token cap, a non-positive token cap — fails the
-    /// refresh as an upstream error before any storage write.
+    /// configured flag path, a compaction object that is not an object, a compaction flag that
+    /// is not a boolean, a non-integer token cap, a non-positive token cap — fails the refresh
+    /// as an upstream error before any storage write.
     ///
     /// # Panics
     ///
@@ -1035,7 +1219,7 @@ mod tests {
         let client = crate::http_client::control_plane();
 
         // (capabilities descriptor object, one-entry payload)
-        let cases: [(Json, Json); 4] = [
+        let cases: [(Json, Json); 6] = [
             (
                 json!({
                     "thinking_levels": {
@@ -1077,6 +1261,28 @@ mod tests {
                     "max_input_tokens": ["context_window"]
                 }),
                 json!({"slug": "m", "effort": {}, "context_window": 0}),
+            ),
+            (
+                json!({
+                    "compaction": {
+                        "messages_on_demand": {
+                            "object_at": ["capabilities", "compaction"],
+                            "flag_field": ["supported"]
+                        }
+                    }
+                }),
+                json!({"slug": "m", "capabilities": {"compaction": "yes"}}),
+            ),
+            (
+                json!({
+                    "compaction": {
+                        "messages_on_demand": {
+                            "object_at": ["capabilities", "compaction"],
+                            "flag_field": ["supported"]
+                        }
+                    }
+                }),
+                json!({"slug": "m", "capabilities": {"compaction": {"supported": "yes"}}}),
             ),
         ];
 

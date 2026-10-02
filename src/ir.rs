@@ -3,6 +3,7 @@
 //! Client requests parse into an [`IrRequest`]; every upstream response — streamed or buffered —
 //! parses into a sequence of [`IrEvent`] values; every client response renders from IR.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Error as JsonError, Value};
 
 /// A client request failed validation: the request is malformed, carries an unsupported value, or
@@ -50,7 +51,8 @@ impl InvalidRequest {
 /// gateway. Upstream renderers write the enum verbatim into the target's own level parameter.
 /// There is no cross-vocabulary mapping, and there never will be — a value the target does not
 /// support is rejected by the upstream and mirrored to the client per the existing error policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum IrReasoningLevel {
     /// No reasoning; renders as the native off spelling per format (README §6.4).
     None,
@@ -223,7 +225,8 @@ impl IrReasoningBlock {
 }
 
 /// Reason a completion finished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum IrFinishReason {
     /// The model completed its output.
     Stop,
@@ -239,7 +242,8 @@ pub(crate) enum IrFinishReason {
 }
 
 /// Role of a conversation participant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum IrRole {
     /// The human side of the conversation.
     User,
@@ -252,7 +256,7 @@ pub(crate) enum IrRole {
 }
 
 /// Image content accepted from clients and rendered to upstreams.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum IrImage {
     /// Base64-encoded inline image data with its MIME type.
     Inline {
@@ -316,7 +320,8 @@ impl IrImage {
 }
 
 /// One typed segment of a message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum IrPart {
     /// Plain text content.
     Text {
@@ -374,7 +379,7 @@ pub(crate) enum IrPart {
 }
 
 /// One conversation message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct IrMessage {
     /// Participating role.
     pub(crate) role: IrRole,
@@ -384,7 +389,7 @@ pub(crate) struct IrMessage {
 }
 
 /// A function tool advertised to the model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct IrTool {
     /// Function name the model calls.
     pub(crate) name: String,
@@ -397,7 +402,8 @@ pub(crate) struct IrTool {
 }
 
 /// Restriction on which tool the model may call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum IrToolChoice {
     /// The model decides freely.
     Auto,
@@ -416,7 +422,8 @@ pub(crate) enum IrToolChoice {
 }
 
 /// Response format restriction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum IrResponseFormat {
     /// Free-form text (the implicit default).
     Text,
@@ -432,6 +439,30 @@ pub(crate) enum IrResponseFormat {
         /// JSON Schema of the response.
         schema: Value,
     },
+}
+
+/// A vendor-shaped state item riding the request: opaque native compaction
+/// state or a gateway carrier recognized in the inbound history, preserved at
+/// its history position.
+///
+/// The Responses upstream render splices items into its input at their
+/// offsets; every other upstream render rejects their presence, because opaque
+/// native state another protocol cannot consume is never silently discarded.
+/// Gateway carriers (`is_gateway`) never reach an upstream at all: they are
+/// decoded and removed before rendering, and their presence here after
+/// preparation is an internal invariant violation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StateItem {
+    /// Number of IR messages rendered before this item in the upstream
+    /// request.
+    pub(crate) offset: usize,
+
+    /// The vendor-shaped item, verbatim.
+    pub(crate) item: Value,
+
+    /// Whether the item is a recognized gateway carrier rather than native
+    /// state.
+    pub(crate) is_gateway: bool,
 }
 
 /// A fully format-independent completion request.
@@ -469,6 +500,10 @@ pub(crate) struct IrRequest {
     /// parameter. `None` means the client omitted the field, and then no upstream parameter is
     /// rendered.
     pub(crate) reasoning_effort: Option<IrReasoningLevel>,
+
+    /// Opaque state items recognized in the history, each preserved at its
+    /// position (see [`StateItem`]). Empty for requests carrying none.
+    pub(crate) state_items: Vec<StateItem>,
 }
 
 /// One event of a completion, in upstream-agnostic form.
@@ -553,6 +588,24 @@ pub(crate) enum IrEvent {
         prompt_block_reason: Option<String>,
     },
 
+    /// A native compaction state item observed in the upstream output, verbatim:
+    /// a Responses `compaction` output item or an Anthropic compaction content
+    /// block. Parsers emit it at the item's arrival position so the outward
+    /// render preserves every distinct native compaction and its position;
+    /// renderers emit it in the client's protocol shape. Never emitted for
+    /// gateway carriers, which are decoded before any upstream dispatch.
+    CompactionState {
+        /// The vendor-shaped item or block, verbatim.
+        payload: Value,
+    },
+
+    /// Native compaction lifecycle metadata, independent of ordinary generation usage.
+    CompactionMetadata {
+        /// Whether the upstream paused after compaction.
+        is_paused: bool,
+        /// Vendor iteration reports, preserved verbatim.
+        iterations: Vec<Value>,
+    },
     /// Token accounting.
     Usage(IrUsage),
 
@@ -598,6 +651,27 @@ pub(crate) struct IrUsage {
     pub(crate) reasoning_tokens: Option<u64>,
 }
 
+impl IrUsage {
+    /// Sums two observations field by field, saturating rather than
+    /// overflowing; a breakdown column sums when either observation reported
+    /// it, so a reported breakdown is never lost to an unreporting sibling.
+    #[must_use]
+    pub(crate) fn saturating_sum(self, other: Self) -> Self {
+        let sum_option = |left: Option<u64>, right: Option<u64>| match (left, right) {
+            (Some(left), Some(right)) => Some(left.saturating_add(right)),
+            (left, right) => left.or(right),
+        };
+
+        Self {
+            input_tokens: self.input_tokens.saturating_add(other.input_tokens),
+            output_tokens: self.output_tokens.saturating_add(other.output_tokens),
+            cached_tokens: sum_option(self.cached_tokens, other.cached_tokens),
+            cache_write_tokens: sum_option(self.cache_write_tokens, other.cache_write_tokens),
+            reasoning_tokens: sum_option(self.reasoning_tokens, other.reasoning_tokens),
+        }
+    }
+}
+
 /// One completed tool call produced by aggregation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IrAggregatedToolCall {
@@ -639,6 +713,17 @@ pub(crate) struct IrAggregation {
 
     /// Token accounting, when reported.
     pub(crate) usage: Option<IrUsage>,
+
+    /// Whether native compaction paused the response.
+    pub(crate) is_compaction_paused: bool,
+    /// Native sampling iteration reports, authoritative for billed usage.
+    pub(crate) compaction_iterations: Vec<Value>,
+    /// Native compaction state items in arrival order (see
+    /// [`IrEvent::CompactionState`]). The aggregated renderers emit them ahead
+    /// of the derived output items — a native compaction precedes the answer
+    /// output it precedes upstream, and the arrival order of the state items
+    /// themselves is preserved.
+    pub(crate) compaction_states: Vec<Value>,
 }
 
 /// Folds IR events into an [`IrAggregation`].
@@ -773,6 +858,17 @@ impl Aggregator {
                 self.aggregation.prompt_block_reason = prompt_block_reason.clone();
             }
 
+            IrEvent::CompactionState { payload } => {
+                self.aggregation.compaction_states.push(payload.clone());
+            }
+
+            IrEvent::CompactionMetadata {
+                is_paused,
+                iterations,
+            } => {
+                self.aggregation.is_compaction_paused = *is_paused;
+                self.aggregation.compaction_iterations = iterations.clone();
+            }
             IrEvent::Usage(usage) => self.aggregation.usage = Some(*usage),
         }
     }

@@ -17,7 +17,7 @@ mod mock_upstream;
 mod oauth_fixtures;
 
 pub(crate) use self::{
-    mock_upstream::{MockAction, MockUpstream},
+    mock_upstream::{MockAction, MockUpstream, RecordedHttpRequest, RecordedHttpRequests},
     oauth_fixtures::{
         FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthDeviceAuthorizationFixture,
         OAuthGrantFixture, OAuthRefreshFixture, OAuthResponseField, OAuthTarget,
@@ -51,6 +51,218 @@ impl Drop for TempDirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// The sealing key material of the shared test configuration: one valid 32-byte
+/// key in standard base64, installed under the key id `test-primary`. Every test
+/// configuration installer carries it, so whichever test wins the process-global
+/// installation leaves the compaction sealing keys readable for the rest.
+pub(crate) const FIXTURE_SEALING_KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+
+/// The second sealing key material of the shared test configuration, installed
+/// under the key id `test-spare`: rotation and removed-key scenarios unseal
+/// carriers sealed under [`FIXTURE_SEALING_KEY`] against the resolving set that
+/// still knows both, and prove the failure when it no longer does.
+pub(crate) const FIXTURE_SEALING_KEY_ROTATED: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=";
+
+/// Installs the process-global configuration for the tests that read
+/// [`crate::CONFIG`] — exactly one installation wins per process, so an
+/// installer that arrives after another verifies the installed configuration
+/// carries the compaction sealing keys every installer includes, and fails
+/// loudly otherwise: a configuration installed without them cannot serve the
+/// compaction tests, and the interference is the failure report.
+///
+/// # Panics
+///
+/// # Panics
+///
+/// Panics if the loader rejects its file, or when a configuration is already
+/// installed without the compaction sealing keys.
+pub(crate) fn set_global_configuration(loader: crate::config::ConfigLoader) {
+    if crate::CONFIG.set(loader).is_err() {
+        assert!(
+            crate::CONFIG.compaction.is_some(),
+            "the global test configuration is already installed without compaction sealing \
+             keys; every test configuration installer must carry them"
+        );
+    }
+}
+
+/// The process-global test configuration: every test family that reads
+/// [`crate::CONFIG`] installs the same canonical configuration — request
+/// accounting on, the shared compaction sealing keys present — so exactly one
+/// installation wins per process and every family observes a configuration it
+/// can serve from, whatever the execution order.
+///
+/// The mutex serializing every configuration-sensitive region of the test
+/// process: installation, sealing round-trips against the live configuration,
+/// and the end-to-end scenario whose live reload mutates the installed
+/// configuration. A caller holds the guard across its whole configuration
+/// usage, so the reload scenario can never interleave with another test's
+/// reads.
+///
+/// # Panics
+///
+/// Panics if the lock is poisoned — a prior holder panicked while holding it,
+/// which is that test's own failure report.
+pub(crate) fn configuration_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "a mutex poisoned by a panicking test is that test's failure report"
+    )]
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap()
+}
+
+/// Installs the shared test configuration over the canonical per-process fixture
+/// paths — the configuration directory's own `db.sqlite` and `api-logs` — for
+/// the callers that need [`crate::CONFIG`] installed but carry no path facts of
+/// their own: exactly one installation wins per process, and every consumer
+/// derives its file locations from [`install_test_configuration`]'s return
+/// value. Returns the installed configuration.
+///
+/// # Panics
+///
+/// Panics as [`install_test_configuration`] documents.
+pub(crate) fn install_global_configuration() -> &'static crate::config::schema::Config {
+    let directory = configuration_directory();
+
+    std::fs::create_dir_all(&directory)
+        .unwrap_or_else(|error| panic!("the fixture configuration directory is writable: {error}"));
+
+    let api_logs_directory = directory.join("api-logs");
+
+    let database_path = directory.join("db.sqlite");
+
+    install_test_configuration(&database_path, Some(&api_logs_directory))
+}
+
+/// The fixed per-process directory the shared test configuration lives in.
+fn configuration_directory() -> PathBuf {
+    std::env::temp_dir().join(format!("janusgate-test-config-{}", std::process::id()))
+}
+
+/// The configuration file path of the installed shared test configuration: the
+/// file a live-reload scenario rewrites. Deterministic, so the winning
+/// [`install_test_configuration`] call and every later rewrite address the same
+/// file.
+pub(crate) fn test_configuration_file_path() -> &'static std::path::Path {
+    static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    PATH.get_or_init(|| configuration_directory().join("config.jsonc"))
+        .as_path()
+}
+
+/// Installs the shared process-global test configuration built over the given
+/// database path and api-log directory — the same configuration body the
+/// end-to-end scenario drives ([`configuration_body`]) — and returns the
+/// installed configuration.
+///
+/// Exactly one installation wins per process: the winner installs the file
+/// naming *its* paths, starts the reload watcher, and returns the fresh
+/// configuration; every later caller — whatever paths it passed — receives the
+/// already-installed configuration, whose named paths are the ones every
+/// consumer must use. Callers therefore derive every file location from the
+/// returned value, never from their own arguments. The `api_logs` section rides
+/// only when `api_logs_directory` is given: the section's presence is the
+/// recording switch.
+///
+/// # Panics
+///
+/// Panics as [`set_global_configuration`] documents, or when the configuration
+/// file cannot be written or loaded — a broken fixture environment is the
+/// failure report.
+pub(crate) fn install_test_configuration(
+    database_path: &std::path::Path,
+    api_logs_directory: Option<&std::path::Path>,
+) -> &'static crate::config::schema::Config {
+    let directory = configuration_directory();
+
+    std::fs::create_dir_all(&directory)
+        .unwrap_or_else(|error| panic!("the fixture configuration directory is writable: {error}"));
+
+    let config_path = test_configuration_file_path();
+
+    if let Some(config) = crate::CONFIG.get() {
+        let config: &'static crate::config::schema::Config = config;
+
+        return config;
+    }
+
+    std::fs::write(
+        config_path,
+        configuration_body(database_path, api_logs_directory),
+    )
+    .unwrap_or_else(|error| panic!("the fixture configuration file writes: {error}"));
+
+    let (loader, watcher) = crate::config::ConfigLoader::new(config_path.to_path_buf())
+        .unwrap_or_else(|error| panic!("the fixture configuration loads: {error}"));
+
+    set_global_configuration(loader);
+
+    // The reload watcher needs a runtime of its own: the installing test
+    // may be a synchronous unit test with none.
+    std::thread::spawn(move || {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "a broken watcher runtime is the fixture failure report"
+        )]
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(watcher);
+    });
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the set above installed the loader, so the static reads back"
+    )]
+    let config: &'static crate::config::schema::Config = crate::CONFIG
+        .get()
+        .expect("the configuration was just installed");
+
+    config
+}
+
+/// The canonical shared test configuration document over the given database
+/// path: an ephemeral listen port, the management token the end-to-end
+/// scenarios authenticate with, request accounting pointed at
+/// `api_logs_directory` when given — the section's presence is the recording
+/// switch — and the two shared compaction sealing keys.
+pub(crate) fn configuration_body(
+    database_path: &std::path::Path,
+    api_logs_directory: Option<&std::path::Path>,
+) -> String {
+    let database_path = database_path.to_string_lossy().replace('\\', "/");
+
+    let api_logs = api_logs_directory.map(|directory| {
+        format!(
+            ",\n                \"api_logs\": {{\"path\": \"{}\"}}",
+            directory.to_string_lossy().replace('\\', "/")
+        )
+    });
+
+    let api_logs = api_logs.as_deref().unwrap_or("");
+
+    format!(
+        r#"{{
+                "listen": "127.0.0.1:0",
+                "database": {{"path": "{database_path}"}},
+                "management_api": {{"token": "e2e-token"}},
+                "api": {{}}{api_logs},
+                "compaction": {{"keys": [
+                    {{"id": "test-primary", "key": "{primary}"}},
+                    {{"id": "test-spare", "key": "{spare}"}}
+                ]}}
+            }}"#,
+        primary = FIXTURE_SEALING_KEY,
+        spare = FIXTURE_SEALING_KEY_ROTATED,
+    )
 }
 
 /// Reads the JSON value at a pointer path of a rendered body.
@@ -338,7 +550,7 @@ pub(crate) async fn insert_flow_fixture(
 ///
 /// Panics if the payload does not validate or the insert fails — neither can occur for the fixed
 /// fixture payloads.
-async fn insert_definition(
+pub(crate) async fn insert_definition(
     database: &Database,
     name: &str,
     payload: DefinitionPayload,

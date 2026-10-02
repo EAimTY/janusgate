@@ -102,6 +102,8 @@ const model = {
     thinking_levels_override: null,
     max_input_tokens_override: null,
     max_output_tokens_override: null,
+    compaction_support: null,
+    compaction_support_override: null,
 };
 
 const apiLog = {
@@ -290,6 +292,80 @@ describe("response validation", () => {
                 max_output_tokens_override: 65_536,
             },
         ]);
+    });
+
+    it("parses the compaction fact columns, key and value domains closed", () => {
+        const row = {
+            ...model,
+            compaction_support: {
+                messages_on_demand_compaction: "supported",
+                messages_threshold_compaction: "unsupported",
+            },
+            compaction_support_override: {
+                messages_on_demand_compaction: "unknown",
+            },
+        };
+
+        const response = parseListModelsResponse({
+            models: [
+                row,
+            ],
+        });
+
+        expect(response.models).toEqual([
+            row,
+        ]);
+    });
+
+    it("rejects a compaction fact keyed by a foreign mechanism", () => {
+        expect(() =>
+            parseListModelsResponse({
+                models: [
+                    {
+                        ...model,
+                        compaction_support: {
+                            context_management: "supported",
+                        },
+                    },
+                ],
+            }),
+        ).toThrow(
+            /response\.models\[0\]\.compaction_support\.context_management is not a compaction mechanism/,
+        );
+    });
+
+    it("rejects an explicit unknown in the discovered facts, which store known facts only", () => {
+        expect(() =>
+            parseListModelsResponse({
+                models: [
+                    {
+                        ...model,
+                        compaction_support: {
+                            messages_on_demand_compaction: "unknown",
+                        },
+                    },
+                ],
+            }),
+        ).toThrow(
+            /response\.models\[0\]\.compaction_support\.messages_on_demand_compaction is not a mechanism support state/,
+        );
+    });
+
+    it("rejects a support value outside the closed set in the override", () => {
+        expect(() =>
+            parseListModelsResponse({
+                models: [
+                    {
+                        ...model,
+                        compaction_support_override: {
+                            messages_threshold_compaction: "maybe",
+                        },
+                    },
+                ],
+            }),
+        ).toThrow(
+            /response\.models\[0\]\.compaction_support_override\.messages_threshold_compaction is not a mechanism support state/,
+        );
     });
 
     it("rejects a thinking level outside the closed vocabulary", () => {

@@ -7,6 +7,7 @@ import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import {
     bodyText,
     buttonWithText,
+    chooseSelect,
     createDisposals,
     goneFailure,
     labeledCheckbox,
@@ -85,6 +86,7 @@ function screenApi(holder: {
                     thinking_levels_override: request.thinking_levels_override,
                     max_input_tokens_override: request.max_input_tokens_override,
                     max_output_tokens_override: request.max_output_tokens_override,
+                    compaction_support_override: request.compaction_support_override,
                     public_id:
                         override ??
                         `${owner === undefined ? "" : owner.model_prefix}${row.upstream_id}`,
@@ -364,6 +366,93 @@ describe("ModelEditScreen refresh against an open form", () => {
         ]);
         expect(document.body.textContent).toContain("Model saved.");
         expect(document.body.textContent).not.toContain("Unsaved changes");
+    });
+
+    it("saves the compaction-facts override wholesale, the unstated mechanisms left out", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        switchWithLabel("Override compaction facts").click();
+        await settle();
+        chooseSelect("Standalone compact", "supported");
+        await settle();
+        chooseSelect("Explicit trigger", "unknown");
+        await settle();
+        expect(document.body.textContent).toContain("Unsaved changes");
+
+        buttonWithText("Save changes").click();
+        await settle();
+
+        // The override map replaces the discovered facts wholesale: the two
+        // stated mechanisms ride their chosen states, and the three left at
+        // Unset are absent from the write — discovery and the definition's
+        // declaration keep deciding for them.
+        expect(holder.models).toEqual([
+            {
+                ...model,
+                compaction_support_override: {
+                    responses_standalone_compact: "supported",
+                    responses_explicit_trigger: "unknown",
+                },
+            },
+        ]);
+        expect(document.body.textContent).toContain("Model saved.");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+    });
+
+    it("clears the compaction-facts override back to discovery when the switch goes off", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                modelRow({
+                    id: 11,
+                    provider_id: 3,
+                    provider: "alpha",
+                    upstream_id: "gpt-x",
+                    public_id: "alpha-gpt-x",
+                    compaction_support_override: {
+                        messages_on_demand_compaction: "supported",
+                    },
+                }),
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        // The standing override opens the switch on; turning it off is the
+        // clear, and the save restates the whole form.
+        expect(switchWithLabel("Override compaction facts").getAttribute("aria-checked")).toBe(
+            "true",
+        );
+        switchWithLabel("Override compaction facts").click();
+        await settle();
+
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(holder.models).toEqual([
+            {
+                ...modelRow({
+                    id: 11,
+                    provider_id: 3,
+                    provider: "alpha",
+                    upstream_id: "gpt-x",
+                    public_id: "alpha-gpt-x",
+                }),
+                compaction_support_override: null,
+            },
+        ]);
+        expect(document.body.textContent).toContain("Model saved.");
     });
 
     it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {

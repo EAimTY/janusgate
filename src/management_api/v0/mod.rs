@@ -512,6 +512,7 @@ mod tests {
                     credential: serde_json::from_str(r#"{"type":"api_key"}"#).unwrap(),
                     provisioning: None,
                     discovery: None,
+                    compaction: None,
                 },
                 created_at: 1,
             },

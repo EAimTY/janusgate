@@ -74,6 +74,7 @@ CREATE TABLE api_logs (
         endpoint_type IN (
             'openai_chat_completions',
             'openai_responses',
+            'openai_responses_compact',
             'gemini_generate_content',
             'gemini_interactions',
             'anthropic_messages'
@@ -129,7 +130,7 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the `api_logs.endpoint_type` closed domain: an endpoint outside the five outward
+    /// Verifies the `api_logs.endpoint_type` closed domain: an endpoint outside the six outward
     /// completion endpoints is rejected at write time by the schema `CHECK`. First-party write
     /// paths only ever insert parsed endpoint types, so the probe uses a raw statement.
     ///
@@ -154,10 +155,11 @@ mod tests {
 
         assert_constraint_violation(outcome, "endpoint_type");
 
-        // The five legal endpoint values all write cleanly.
+        // The six legal endpoint values all write cleanly.
         for (index, endpoint) in [
             "openai_chat_completions",
             "openai_responses",
+            "openai_responses_compact",
             "gemini_generate_content",
             "gemini_interactions",
             "anthropic_messages",

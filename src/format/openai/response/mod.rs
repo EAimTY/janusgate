@@ -1,21 +1,33 @@
 //! OpenAI Responses protocol codec, the Responses family of the OpenAI protocol under
 //! [`crate::format::openai`].
 //!
-//! Serves the outward `POST /responses` endpoint and speaks the `openai_response` upstream protocol
-//! (including the Codex backend).
+//! Serves the outward `POST /responses` and `POST /responses/compact` endpoints and speaks the
+//! `openai_response` upstream protocol (including the Codex backend). The compact endpoint's
+//! payloads, state-item builders, and trigger lifecycle renderer live in [`compaction`].
 
-use self::client_render::{ResponseObject, SseRenderer};
+use self::client_render::ResponseObject;
+pub(crate) use self::client_render::SseRenderer;
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
 };
 
 mod client_render;
+mod compaction;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
-pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request_body};
+pub(crate) use self::{
+    compaction::{
+        compaction_item_json, parse_compact_request, render_compacted_response,
+        render_gateway_compacted_response, render_trigger_stream_frames,
+    },
+    upstream_parse::{
+        CompactedResponseNative, UpstreamParser, UpstreamUsage, parse_compact_response,
+    },
+    upstream_render::{render_compact_request_body, render_request_body_with_extensions},
+};
 
 /// Marker of the outward Responses client format.
 #[derive(Debug)]
@@ -37,5 +49,18 @@ impl ClientFormat for Format {
 
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
+    }
+
+    fn render_json_response_with_prefix(
+        public_id: &str,
+        aggregation: &IrAggregation,
+        prefix: &[serde_json::Value],
+        _iterations: &[serde_json::Value],
+    ) -> Self::JsonResponse {
+        client_render::render_json_response_with_prefix_items(
+            public_id,
+            aggregation,
+            prefix.to_vec(),
+        )
     }
 }

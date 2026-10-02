@@ -90,14 +90,14 @@ pub(in crate::format::openai) fn render_tool_choice<'a, NamedToolChoice>(
 /// plus `cache_write_tokens`, an official member some upstreams omit; every member is optional and
 /// the parsing codec reads each member the upstream carries.
 #[derive(Debug, Default, Deserialize)]
-pub(in crate::format::openai) struct PromptTokensDetails {
+pub(crate) struct PromptTokensDetails {
     /// Input tokens served from the upstream prompt cache.
     #[serde(default)]
-    cached_tokens: Option<u64>,
+    pub(crate) cached_tokens: Option<u64>,
 
     /// Input tokens written to the upstream prompt cache; an official member some upstreams omit.
     #[serde(default)]
-    cache_write_tokens: Option<u64>,
+    pub(crate) cache_write_tokens: Option<u64>,
 }
 
 /// The official output-side usage detail object both OpenAI products speak (README §6.2): Chat
@@ -105,8 +105,8 @@ pub(in crate::format::openai) struct PromptTokensDetails {
 /// Its official member set is `reasoning_tokens`, the output tokens spent on model reasoning, and
 /// every member is optional.
 #[derive(Debug, Default, Deserialize)]
-pub(in crate::format::openai) struct CompletionTokensDetails {
+pub(crate) struct CompletionTokensDetails {
     /// Output tokens spent on model reasoning.
     #[serde(default)]
-    reasoning_tokens: Option<u64>,
+    pub(crate) reasoning_tokens: Option<u64>,
 }

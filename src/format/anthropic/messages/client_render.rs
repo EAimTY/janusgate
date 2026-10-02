@@ -13,7 +13,7 @@ use crate::{
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The aggregated, non-streaming Messages response body.
@@ -48,7 +48,9 @@ pub(crate) struct MessagesResponse {
 }
 
 /// Token accounting in the native Messages shape: totals always, cache columns when reported, and
-/// the output reasoning breakdown when the upstream reported it.
+/// the output reasoning breakdown when the upstream reported it. A compaction lifecycle
+/// additionally renders the raw vendor iteration entries under `usage.iterations`; ordinary
+/// responses render none.
 #[derive(Debug, Serialize)]
 struct ResponseUsage {
     /// Tokens consumed by the input.
@@ -69,6 +71,12 @@ struct ResponseUsage {
     /// reasoning column, omitted when absent (README §5.8).
     #[serde(skip_serializing_if = "Option::is_none")]
     output_tokens_details: Option<OutputTokensDetails>,
+
+    /// Raw vendor iteration entries of a compaction lifecycle, one per sampling iteration the
+    /// compaction performed; omitted on every ordinary response, whose usage carries no
+    /// iterations.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    iterations: Vec<Value>,
 }
 
 /// The native output token breakdown.
@@ -90,6 +98,7 @@ impl ResponseUsage {
             output_tokens_details: usage
                 .reasoning_tokens
                 .map(|thinking_tokens| OutputTokensDetails { thinking_tokens }),
+            iterations: Vec::new(),
         }
     }
 
@@ -101,6 +110,7 @@ impl ResponseUsage {
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
             output_tokens_details: None,
+            iterations: Vec::new(),
         }
     }
 
@@ -114,13 +124,112 @@ impl ResponseUsage {
             cache_creation_input_tokens: usage.cache_write_tokens,
             cache_read_input_tokens: usage.cached_tokens,
             output_tokens_details: None,
+            iterations: Vec::new(),
         }
     }
 }
 
+/// Usage facts of a compaction-only response: the raw vendor iteration entries rendered under
+/// `usage.iterations`, and the top-level columns the protocol renders beside them — zero for a
+/// compact-only reply, whose compaction iterations are the billed work.
+#[derive(Debug, Clone)]
+pub(crate) struct CompactionOnlyUsage {
+    /// Raw vendor iteration entries to render under `usage.iterations`, verbatim.
+    pub(crate) iterations: Vec<Value>,
+
+    /// Top-level input tokens; zero for a compact-only reply per the protocol.
+    pub(crate) input_tokens: u64,
+
+    /// Top-level output tokens; zero for a compact-only reply per the protocol.
+    pub(crate) output_tokens: u64,
+
+    /// Input tokens written to the upstream prompt cache, when reported.
+    pub(crate) cache_write_tokens: Option<u64>,
+
+    /// Input tokens served from the upstream prompt cache, when reported.
+    pub(crate) cached_tokens: Option<u64>,
+}
+
+/// Builds the vendor-shaped `usage.iterations` entry of the message stage —
+/// the ordinary generation iteration whose usage is the top-level view — so a
+/// compact-and-continue lifecycle's rendered array stays authoritative for the
+/// billed totals (README §6.8).
+///
+/// # Panics
+///
+/// Panics if the entry fails to serialize, which cannot occur for the
+/// first-party iteration shape.
+pub(super) fn message_iteration_entry(usage: IrUsage) -> Value {
+    #[derive(Debug, Serialize)]
+    #[serde(tag = "type", rename = "message")]
+    struct MessageIterationOut {
+        /// Tokens consumed by the iteration input.
+        input_tokens: u64,
+
+        /// Tokens produced by the iteration output.
+        output_tokens: u64,
+
+        /// Input tokens written to the upstream prompt cache, when reported.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_creation_input_tokens: Option<u64>,
+
+        /// Input tokens served from the upstream prompt cache, when reported.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_read_input_tokens: Option<u64>,
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "a first-party rendered iteration serializes totally"
+    )]
+    serde_json::to_value(&MessageIterationOut {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_creation_input_tokens: usage.cache_write_tokens,
+        cache_read_input_tokens: usage.cached_tokens,
+    })
+    .expect("a message iteration serializes")
+}
+
+/// Renders a compaction-only Messages response: the content carries exactly the given
+/// `compaction` block, the stop reason is `"compaction"`, and the usage renders the given
+/// top-level columns — zero for a compact-only reply per the protocol — with the compaction
+/// iteration entries under `usage.iterations`. The compaction executor calls this for a
+/// compact-only lifecycle's aggregated body.
+pub(crate) fn render_compaction_only_response(
+    public_id: &str,
+    block: Value,
+    usage: &CompactionOnlyUsage,
+) -> MessagesResponse {
+    MessagesResponse {
+        id: format!("msg_{}", ids::new_uuid()),
+        kind: "message",
+        role: "assistant",
+        content: vec![OutBlock::Verbatim(block)],
+        model: public_id.to_string(),
+        stop_reason: "compaction",
+        stop_sequence: None,
+        usage: ResponseUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_creation_input_tokens: usage.cache_write_tokens,
+            cache_read_input_tokens: usage.cached_tokens,
+            output_tokens_details: None,
+            iterations: usage.iterations.clone(),
+        },
+    }
+}
+
 /// Renders an aggregated completion as a non-streaming Messages response.
+/// Upstream-observed native compaction state blocks ride the content head, in
+/// their arrival order, ahead of the derived blocks — a native compaction
+/// precedes the answer output it precedes upstream.
 pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> MessagesResponse {
     let mut content: Vec<OutBlock> = Vec::new();
+
+    for block in &aggregation.compaction_states {
+        content.push(OutBlock::Verbatim(block.clone()));
+    }
 
     for block in &aggregation.reasoning_blocks {
         if is_anthropic_block(&block.opaque) {
@@ -156,17 +265,65 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
         role: "assistant",
         content,
         model: model.to_string(),
-        stop_reason: aggregation
-            .finish
-            .map(finish_reason_to_stop)
-            .unwrap_or("end_turn"),
+        stop_reason: if aggregation.is_compaction_paused {
+            "compaction"
+        } else {
+            aggregation
+                .finish
+                .map(finish_reason_to_stop)
+                .unwrap_or("end_turn")
+        },
         stop_sequence: None,
-        usage: aggregation
-            .usage
-            .map(ResponseUsage::render)
-            .unwrap_or_else(|| ResponseUsage::render(IrUsage::default())),
+        usage: {
+            let mut usage = aggregation
+                .usage
+                .map(ResponseUsage::render)
+                .unwrap_or_else(ResponseUsage::zero);
+            usage.iterations = aggregation.compaction_iterations.clone();
+            usage
+        },
     }
 }
+/// Renders an aggregated completion whose content opens with the compaction
+/// checkpoint blocks, in order, ahead of the derived blocks, and whose usage
+/// carries the compaction lifecycle's vendor iteration entries — the
+/// threshold-continue lifecycle's aggregated body.
+pub(super) fn render_json_response_with_prefix_blocks(
+    model: &str,
+    aggregation: &IrAggregation,
+    blocks: &[Value],
+    iterations: &[Value],
+) -> MessagesResponse {
+    let mut response = render_json_response(model, aggregation);
+    if blocks.is_empty() && iterations.is_empty() {
+        return response;
+    }
+
+    let mut content: Vec<OutBlock> = blocks
+        .iter()
+        .map(|block| OutBlock::Verbatim(block.clone()))
+        .collect();
+
+    content.append(&mut response.content);
+
+    response.content = content;
+
+    // A prefixed body is a compact-and-continue lifecycle: the compaction
+    // iterations ride beside the message stage's own entry, whose usage is the
+    // aggregated observation (README §6.8).
+    let mut iterations = iterations.to_vec();
+
+    if !aggregation.compaction_iterations.is_empty() {
+        iterations.extend(aggregation.compaction_iterations.clone());
+    } else if let Some(usage) = aggregation.usage {
+        iterations.push(message_iteration_entry(usage));
+    }
+
+    response.usage.iterations = iterations;
+
+    response
+}
+
 /// Renders the canonical reason as an Anthropic `stop_reason` string.
 pub(super) fn finish_reason_to_stop(reason: IrFinishReason) -> &'static str {
     match reason {
@@ -177,9 +334,49 @@ pub(super) fn finish_reason_to_stop(reason: IrFinishReason) -> &'static str {
     }
 }
 
+/// Typed probe of a vendor compaction block's string content, deciding whether the block's
+/// prefix rendering adds a `compaction_delta`: a block whose `content` is a string carries one,
+/// a null-content no-op block carries none.
+#[derive(Debug, Deserialize)]
+struct CompactionContentProbe {
+    /// The block's string content, when it carries one.
+    #[serde(default)]
+    content: Option<String>,
+}
+
+/// Reads the string content of a vendor compaction block: [`None`] when the block carries no
+/// string `content` member — a null-content no-op, or a shape without the member at all.
+fn compaction_block_content(block: &Value) -> Option<String> {
+    CompactionContentProbe::deserialize(block)
+        .ok()
+        .and_then(|probe| probe.content)
+}
+
+/// Keeps all native block metadata while moving the readable summary into the threshold delta.
+///
+/// # Panics
+///
+/// Panics if a concrete vendor fragment cannot serialize.
+fn threshold_block_start(block: &Value) -> Value {
+    #[derive(Serialize)]
+    struct ThresholdStart<'a> {
+        /// Foreign metadata including signatures and tool changes.
+        #[serde(flatten)]
+        original: &'a Value,
+        /// Threshold summaries are delivered by the subsequent delta.
+        content: Option<&'static str>,
+    }
+    #[expect(clippy::expect_used, reason = "a concrete vendor fragment serializes")]
+    serde_json::to_value(ThresholdStart {
+        original: block,
+        content: None,
+    })
+    .expect("the block start serializes")
+}
+
 /// Streaming client response renderer producing Messages SSE frames.
 #[derive(Debug)]
-pub(super) struct SseRenderer {
+pub(crate) struct SseRenderer {
     /// Gateway-issued message identifier.
     id: String,
 
@@ -201,12 +398,39 @@ pub(super) struct SseRenderer {
     /// report when that event is exactly the report (README §6.2).
     is_start_buffered: bool,
 
+    /// Compaction blocks rendered as the stream's leading prefix, whole block per
+    /// `content_block_start`, one full-summary `compaction_delta` per block with string
+    /// content, then `content_block_stop` — before any ordinary block. Drained right after the
+    /// `message_start` head resolves.
+    pending_prefix: Vec<Value>,
+
+    /// Whether summary content belongs in a threshold compaction delta.
+    is_threshold_compaction: bool,
+
+    /// Native cumulative iteration reports, separate from gateway prefix iterations.
+    native_iterations: Vec<Value>,
+
+    /// Stop reason forced onto the terminal `message_delta`, set for a compaction lifecycle
+    /// whose outcome is the compaction stop (`"compaction"`); the finish-derived reason stands
+    /// when absent.
+    forced_stop_reason: Option<String>,
+
     /// Tool calls buffered from deltas, emitted whole on their done event so the `tool_use`
     /// start event carries its authoritative identity.
     tool_buffers: Vec<ToolBuffer>,
 
     /// Latest token accounting observed; rendered in the terminal delta.
     usage: Option<IrUsage>,
+
+    /// The vendor-shaped iteration entries of a compaction lifecycle, rendered
+    /// under the terminal delta's `usage.iterations` (README §6.8).
+    compaction_iterations: Vec<Value>,
+
+    /// Whether the renderer carries a compaction lifecycle — a prefix, a
+    /// forced stop, or carried iteration entries — whose terminal delta closes
+    /// the rendered iterations with the message stage's entry. Ordinary
+    /// streams render no iterations at all.
+    is_compaction_lifecycle: bool,
 
     /// Finish reason reported before [`IrEvent::Done`].
     finish: Option<IrFinishReason>,
@@ -333,6 +557,21 @@ struct ContentBlockStartPayload {
     content_block: StartBlockOut,
 }
 
+/// The `content_block_start` event payload carrying a whole vendor block verbatim — the
+/// compaction prefix's start frame, whose block shape is the vendor's to define.
+#[derive(Debug, Serialize)]
+struct VerbatimBlockStartPayload {
+    /// Always `content_block_start`.
+    #[serde(rename = "type")]
+    kind: &'static str,
+
+    /// Stream content index of the block.
+    index: usize,
+
+    /// The whole vendor block, verbatim.
+    content_block: Value,
+}
+
 /// One streamed content delta.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -364,6 +603,14 @@ enum DeltaOut {
         /// JSON bytes.
         partial_json: String,
     },
+
+    /// The complete compaction summary in one full-content delta: a compaction block never
+    /// streams ordinary text deltas, so its single delta carries the whole readable content.
+    #[serde(rename = "compaction_delta")]
+    Compaction {
+        /// The complete summary content.
+        content: String,
+    },
 }
 
 /// The `content_block_delta` event payload.
@@ -394,8 +641,8 @@ struct ContentBlockStopPayload {
 /// Stop-reason head of an outbound `message_delta` event.
 #[derive(Debug, Serialize)]
 struct MessageDelta {
-    /// Canonical stop reason.
-    stop_reason: &'static str,
+    /// Canonical stop reason, or the forced compaction stop reason of a compaction lifecycle.
+    stop_reason: String,
 
     /// Never stopped on: always null.
     stop_sequence: Option<String>,
@@ -436,7 +683,7 @@ struct StreamErrorPayload {
 
 impl SseRenderer {
     /// Creates a renderer for one streamed completion.
-    pub(super) fn new(model: String) -> Self {
+    pub(crate) fn new(model: String) -> Self {
         Self {
             id: format!("msg_{}", ids::new_uuid()),
             model,
@@ -444,10 +691,53 @@ impl SseRenderer {
             open_block: None,
             is_started: false,
             is_start_buffered: false,
+            pending_prefix: Vec::new(),
+            is_threshold_compaction: false,
+            native_iterations: Vec::new(),
+            forced_stop_reason: None,
             tool_buffers: Vec::new(),
             usage: None,
+            compaction_iterations: Vec::new(),
+            is_compaction_lifecycle: false,
             finish: None,
         }
+    }
+
+    /// Carries the lifecycle's vendor-shaped iteration entries into the
+    /// terminal `message_delta`'s `usage.iterations` (README §6.8) and
+    /// marks the stream a compaction lifecycle.
+    #[must_use]
+    pub(crate) fn with_usage_iterations(mut self, iterations: Vec<Value>) -> Self {
+        self.is_compaction_lifecycle = self.is_compaction_lifecycle || !iterations.is_empty();
+        self.compaction_iterations = iterations;
+
+        self
+    }
+
+    /// Creates a renderer for one streamed compaction lifecycle: `blocks` render as the
+    /// stream's leading compaction prefix — whole block per `content_block_start`, one
+    /// full-summary `compaction_delta` per block carrying string content, then
+    /// `content_block_stop`, indices `0..n` ahead of every ordinary block — and
+    /// `forced_stop_reason`, when set, replaces the terminal `message_delta`'s finish-derived
+    /// stop reason (the `"compaction"` pause/compact-only outcome).
+    pub(crate) fn with_compaction_prefix(
+        model: String,
+        blocks: Vec<Value>,
+        forced_stop_reason: Option<String>,
+    ) -> Self {
+        Self {
+            pending_prefix: blocks,
+            forced_stop_reason,
+            is_compaction_lifecycle: true,
+            is_threshold_compaction: true,
+            ..Self::new(model)
+        }
+    }
+
+    /// Selects threshold delta framing or on-demand complete-block framing.
+    pub(crate) const fn with_threshold_compaction(mut self, is_threshold_compaction: bool) -> Self {
+        self.is_threshold_compaction = is_threshold_compaction;
+        self
     }
 
     /// Formats one SSE frame with its event name and typed payload.
@@ -456,6 +746,71 @@ impl SseRenderer {
         T: Serialize + ?Sized,
     {
         sse::format_frame(Some(event), &crate::format::render_json(payload))
+    }
+
+    /// Drains the compaction prefix, rendering each pending block at the next stream content
+    /// index: the whole block rides `content_block_start` verbatim, a block carrying string
+    /// content adds one full-content `compaction_delta`, and every block closes with
+    /// `content_block_stop`. Ordinary blocks continue after the prefix indices.
+    fn drain_compaction_prefix(&mut self) -> Vec<String> {
+        let blocks = std::mem::take(&mut self.pending_prefix);
+
+        let mut frames = Vec::new();
+
+        for block in &blocks {
+            let index = self.next_index;
+
+            self.next_index += 1;
+
+            frames.push(Self::frame(
+                "content_block_start",
+                &VerbatimBlockStartPayload {
+                    kind: "content_block_start",
+                    index,
+                    content_block: if self.is_threshold_compaction
+                        && compaction_block_content(block).is_some()
+                    {
+                        threshold_block_start(block)
+                    } else {
+                        block.clone()
+                    },
+                },
+            ));
+
+            // A block without string content — the native null-content no-op — carries no
+            // delta: its start already delivered the whole block.
+            if self.is_threshold_compaction
+                && let Some(content) = compaction_block_content(block)
+            {
+                frames.push(Self::frame(
+                    "content_block_delta",
+                    &ContentBlockDeltaPayload {
+                        kind: "content_block_delta",
+                        index,
+                        delta: DeltaOut::Compaction { content },
+                    },
+                ));
+            }
+
+            frames.push(Self::frame(
+                "content_block_stop",
+                &ContentBlockStopPayload {
+                    kind: "content_block_stop",
+                    index,
+                },
+            ));
+        }
+
+        frames
+    }
+
+    /// Renders one upstream-observed native compaction state block: identical
+    /// shape to the compaction prefix (start, optional full-content
+    /// `compaction_delta`, stop) at the next stream content index.
+    fn render_compaction_state_block(&mut self, payload: &Value) -> Vec<String> {
+        self.pending_prefix.push(payload.clone());
+
+        self.drain_compaction_prefix()
     }
 
     /// Closes the currently open block, if any.
@@ -582,20 +937,44 @@ impl SseRenderer {
 
     /// Emits the terminal `message_delta` frame carrying the stop reason and the final usage.
     /// Rendered at [`IrEvent::Done`], not at [`IrEvent::Finish`]: cross-format upstreams
-    /// deliver usage after the finish reason, so only Done-time usage is final.
+    /// deliver usage after the finish reason, so only Done-time usage is final. A compaction
+    /// lifecycle's forced stop reason replaces the finish-derived one, and its iteration
+    /// entries ride the usage.
     fn message_delta_frame(&self, reason: IrFinishReason) -> String {
+        let stop_reason = self
+            .forced_stop_reason
+            .clone()
+            .unwrap_or_else(|| finish_reason_to_stop(reason).to_string());
+
+        let mut usage = self
+            .usage
+            .map(ResponseUsage::render)
+            .unwrap_or_else(|| ResponseUsage::render(IrUsage::default()));
+
+        usage.iterations = self.compaction_iterations.clone();
+        usage.iterations.extend(self.native_iterations.clone());
+
+        // A streamed compact-and-continue lifecycle reports the message
+        // stage's usage at its terminal: its entry closes the rendered
+        // iterations (README §6.8). A compact-only lifecycle reports no
+        // usage observation, and an ordinary stream is no lifecycle at all —
+        // neither fabricates an entry.
+        if self.is_compaction_lifecycle
+            && self.native_iterations.is_empty()
+            && let Some(observed) = self.usage
+        {
+            usage.iterations.push(message_iteration_entry(observed));
+        }
+
         Self::frame(
             "message_delta",
             &MessageDeltaPayload {
                 kind: "message_delta",
                 delta: MessageDelta {
-                    stop_reason: finish_reason_to_stop(reason),
+                    stop_reason,
                     stop_sequence: None,
                 },
-                usage: self
-                    .usage
-                    .map(ResponseUsage::render)
-                    .unwrap_or_else(|| ResponseUsage::render(IrUsage::default())),
+                usage,
             },
         )
     }
@@ -620,6 +999,10 @@ impl ClientSseRenderer for SseRenderer {
             };
 
             frames.push(self.message_start_frame(usage));
+
+            // The compaction prefix rides immediately after the head, ahead of every ordinary
+            // block the resolving event opens.
+            frames.extend(self.drain_compaction_prefix());
         }
 
         frames.extend(match event {
@@ -633,6 +1016,8 @@ impl ClientSseRenderer for SseRenderer {
 
                 Vec::new()
             }
+
+            IrEvent::CompactionState { payload } => self.render_compaction_state_block(payload),
 
             IrEvent::TextDelta(delta) => {
                 let mut frames = self.ensure_text_block();
@@ -831,6 +1216,16 @@ impl ClientSseRenderer for SseRenderer {
                 self.close_open_block()
             }
 
+            IrEvent::CompactionMetadata {
+                is_paused,
+                iterations,
+            } => {
+                if *is_paused {
+                    self.forced_stop_reason = Some(String::from("compaction"));
+                }
+                self.native_iterations = iterations.clone();
+                Vec::new()
+            }
             IrEvent::Usage(usage) => {
                 self.usage = Some(*usage);
 
@@ -865,13 +1260,14 @@ impl ClientSseRenderer for SseRenderer {
     /// that fails between the start and its first resolving event still opens natively; the
     /// two frames ride one body write, which SSE clients split on the blank-line delimiter.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        let head = if self.is_start_buffered {
+        let mut head = String::new();
+
+        if self.is_start_buffered {
             self.is_start_buffered = false;
 
-            self.message_start_frame(ResponseUsage::zero())
-        } else {
-            String::new()
-        };
+            head.push_str(&self.message_start_frame(ResponseUsage::zero()));
+            head.extend(self.drain_compaction_prefix());
+        }
 
         head + &Self::frame(
             "error",
@@ -1017,6 +1413,9 @@ mod tests {
                 cache_write_tokens: None,
                 reasoning_tokens: Some(3),
             }),
+            compaction_states: Vec::new(),
+            is_compaction_paused: false,
+            compaction_iterations: Vec::new(),
         };
 
         let body = aggregated_body_json(&render_json_response("claude-test", &aggregation));
@@ -1381,5 +1780,201 @@ mod tests {
 
         assert!(repeated.starts_with("event: error\n"));
         assert!(!repeated.contains("message_start"));
+    }
+
+    /// Renders a compaction-only response: the content carries exactly the given compaction
+    /// block, the stop reason is `"compaction"`, and the usage renders the given top-level
+    /// columns — zero for a compact-only reply — with the raw vendor iteration entries under
+    /// `usage.iterations`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body diverges from the compaction-only shape.
+    #[test]
+    fn renders_the_compaction_only_response() {
+        let block = json!({
+            "type": "compaction",
+            "content": "the summary",
+            "signature": "janusgate.compaction.v1.primary.aGVsbG8=",
+        });
+
+        let usage = CompactionOnlyUsage {
+            iterations: vec![json!({
+                "type": "compaction",
+                "input_tokens": 180_000,
+                "output_tokens": 3_500,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            })],
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_write_tokens: None,
+            cached_tokens: None,
+        };
+
+        let body = aggregated_body_json(&render_compaction_only_response(
+            "claude-test",
+            block.clone(),
+            &usage,
+        ));
+
+        assert_eq!(at(&body, "/type"), &json!("message"));
+        assert_eq!(at(&body, "/role"), &json!("assistant"));
+        assert_eq!(at(&body, "/model"), &json!("claude-test"));
+        assert_eq!(at(&body, "/stop_reason"), &json!("compaction"));
+        assert_eq!(at(&body, "/content"), &json!([block]));
+        assert_eq!(
+            at(&body, "/usage"),
+            &json!({
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "iterations": [{
+                    "type": "compaction",
+                    "input_tokens": 180_000,
+                    "output_tokens": 3_500,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                }],
+            })
+        );
+    }
+
+    /// Streams a compaction lifecycle through the prefix renderer: the compaction block renders
+    /// whole at index 0 — start, one full-content `compaction_delta`, stop — ahead of the
+    /// ordinary blocks that continue at the next indices, and the terminal delta carries the
+    /// forced stop reason.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered frame sequence diverges from the compaction stream shape.
+    #[test]
+    fn streams_the_compaction_prefix_with_a_forced_stop_reason() {
+        let block = json!({
+            "type": "compaction",
+            "content": "full summary",
+            "signature": "sig",
+        });
+
+        let mut renderer = SseRenderer::with_compaction_prefix(
+            "claude-test".to_string(),
+            vec![block.clone()],
+            Some("compaction".to_string()),
+        );
+
+        // The head waits one event; the first delta resolves it with the prefix beside it.
+        assert!(
+            renderer
+                .render(&IrEvent::MessageStart {
+                    id: "up".to_string(),
+                    model: "up-model".to_string(),
+                })
+                .is_empty()
+        );
+
+        let text = renderer.render(&IrEvent::TextDelta("hi".to_string()));
+
+        assert_eq!(
+            kinds(&text),
+            [
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+            ],
+        );
+
+        let frame_payloads = payloads(&text);
+
+        // The prefix start carries native metadata and null content; one full-content
+        // `compaction_delta`, and closes before the ordinary text block opens at index 1.
+        assert_eq!(at(payload_at(&frame_payloads, 1), "/index"), &json!(0));
+        assert_eq!(
+            at(payload_at(&frame_payloads, 1), "/content_block"),
+            &json!({"type":"compaction","content":null,"signature":"sig"})
+        );
+        assert_eq!(
+            at(payload_at(&frame_payloads, 2), "/delta"),
+            &json!({"type": "compaction_delta", "content": "full summary"}),
+        );
+        assert_eq!(at(payload_at(&frame_payloads, 3), "/index"), &json!(0));
+        assert_eq!(at(payload_at(&frame_payloads, 4), "/index"), &json!(1));
+        assert_eq!(
+            at(payload_at(&frame_payloads, 4), "/content_block"),
+            &json!({"type": "text", "text": ""}),
+        );
+
+        let terminal = {
+            renderer.render(&IrEvent::finish(IrFinishReason::Stop));
+            renderer.render(&IrEvent::Usage(IrUsage {
+                input_tokens: 3,
+                output_tokens: 6,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            }));
+            renderer.render(&IrEvent::Done)
+        };
+
+        assert_eq!(kinds(&terminal), ["message_delta", "message_stop"]);
+
+        let terminal_payloads = payloads(&terminal);
+
+        assert_eq!(
+            at(payload_at(&terminal_payloads, 0), "/delta"),
+            &json!({"stop_reason": "compaction", "stop_sequence": Value::Null}),
+        );
+    }
+
+    /// Streams the compaction prefix without a forced stop reason: the finish-derived reason
+    /// stands in the terminal delta, and a null-content prefix block renders no delta of its
+    /// own — its start frame already delivered the whole block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the finish-derived contract.
+    #[test]
+    fn streams_the_prefix_without_a_forced_stop_reason() {
+        let block = json!({"type": "compaction"});
+
+        let mut renderer =
+            SseRenderer::with_compaction_prefix("claude-test".to_string(), vec![block], None);
+
+        assert!(
+            renderer
+                .render(&IrEvent::MessageStart {
+                    id: "up".to_string(),
+                    model: "up-model".to_string(),
+                })
+                .is_empty()
+        );
+
+        let frames = renderer.render(&IrEvent::finish(IrFinishReason::Stop));
+
+        // The finish resolves the buffered head: start, the prefix block with no delta (the
+        // null-content block carries no string content), stop, and the block's stop.
+        assert_eq!(
+            kinds(&frames),
+            ["message_start", "content_block_start", "content_block_stop",],
+        );
+
+        let frame_payloads = payloads(&frames);
+
+        assert_eq!(
+            at(payload_at(&frame_payloads, 1), "/content_block"),
+            &json!({"type": "compaction"}),
+        );
+
+        let terminal = renderer.render(&IrEvent::Done);
+
+        assert_eq!(kinds(&terminal), ["message_delta", "message_stop"]);
+
+        let terminal_payloads = payloads(&terminal);
+
+        assert_eq!(
+            at(payload_at(&terminal_payloads, 0), "/delta"),
+            &json!({"stop_reason": "end_turn", "stop_sequence": Value::Null}),
+        );
     }
 }

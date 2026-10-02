@@ -15,8 +15,8 @@ use std::num::NonZeroI64;
 
 /// Column order of definition selects, consumed positionally by
 /// [`definition_from_row_offset`].
-pub(crate) const DEFINITION_COLUMNS: &str =
-    "name, version, format, inference, credential, provisioning, discovery, created_at";
+pub(crate) const DEFINITION_COLUMNS: &str = "name, version, format, inference, credential, \
+     provisioning, discovery, compaction, created_at";
 
 /// A new definition version about to be inserted.
 pub(crate) struct NewDefinition<'a> {
@@ -125,9 +125,10 @@ async fn insert_first(
     database
         .query(
             "INSERT INTO provider_definitions (name, version, format, inference, credential, \
-             provisioning, discovery, created_at) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             provisioning, discovery, compaction, created_at) \
+             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
              RETURNING name, version, format, inference, credential, provisioning, discovery, \
-             created_at",
+             compaction, created_at",
             params![
                 definition.name,
                 definition.payload.format.as_str(),
@@ -135,6 +136,7 @@ async fn insert_first(
                 payload_json(&definition.payload.credential),
                 definition.payload.provisioning.as_ref().map(payload_json),
                 definition.payload.discovery.as_ref().map(payload_json),
+                definition.payload.compaction.as_ref().map(payload_json),
                 definition.created_at,
             ],
         )
@@ -179,7 +181,8 @@ pub(crate) async fn insert_next_in_transaction(
     transaction
         .execute(
             "INSERT INTO provider_definitions (name, version, format, inference, credential, \
-             provisioning, discovery, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             provisioning, discovery, compaction, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 definition.name,
                 base_version.get() + 1,
@@ -188,6 +191,7 @@ pub(crate) async fn insert_next_in_transaction(
                 payload_json(&definition.payload.credential),
                 definition.payload.provisioning.as_ref().map(payload_json),
                 definition.payload.discovery.as_ref().map(payload_json),
+                definition.payload.compaction.as_ref().map(payload_json),
                 definition.created_at,
             ],
         )
@@ -293,9 +297,19 @@ mod tests {
     )]
 
     use crate::{
+        compaction::mechanism::MechanismSupport,
         format::UpstreamFormat,
         provider::{
-            CredentialKind, StoredCredentials, definition::credential::CredentialAcquisition,
+            CredentialKind, StoredCredentials,
+            definition::{
+                compaction::{
+                    CompactionSection, CompactionStrategy, MechanismDeclarations,
+                    StandaloneCompactDeclaration, StandaloneCompactOperation,
+                    UnsupportedClassifier,
+                },
+                credential::CredentialAcquisition,
+                template::StringExpr,
+            },
         },
         storage as storage_cr,
         test_support::{
@@ -447,5 +461,127 @@ mod tests {
             error.message.contains("at least one step") || error.message.contains("reprovision"),
             "{error}"
         );
+    }
+
+    /// Builds the compaction section the round-trip fixture carries: a supported standalone
+    /// operation with a response unwrap and a classifier, a declared unknown trigger, and the
+    /// export policy set — the conforming shape for the fixture's `openai_response` format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a budget literal is zero, which no fixture literal is.
+    fn compaction_section() -> CompactionSection {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the fixture summary budget is a positive literal"
+        )]
+        let summary_budget = std::num::NonZeroU64::new(2048).unwrap();
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the fixture retention budget is a positive literal"
+        )]
+        let retention_budget = std::num::NonZeroU64::new(4096).unwrap();
+
+        CompactionSection {
+            strategy: CompactionStrategy::GatewaySummary,
+            summary_budget,
+            retention_budget,
+            can_export_native_summary: true,
+            mechanisms: MechanismDeclarations {
+                responses_standalone_compact: Some(StandaloneCompactDeclaration {
+                    default: MechanismSupport::Supported,
+                    operation: Some(StandaloneCompactOperation {
+                        url: StringExpr::literal("https://upstream.example/responses/compact"),
+                        headers: Vec::new(),
+                        envelope: None,
+                        response_unwrap: Some("result".to_string()),
+                        unsupported: Some(UnsupportedClassifier {
+                            statuses: vec![404],
+                            codes: vec!["model_compaction_unsupported".to_string()],
+                            parameters: Vec::new(),
+                        }),
+                    }),
+                    unsupported: None,
+                }),
+                responses_explicit_trigger: None,
+                responses_automatic_compaction: None,
+                messages_on_demand_compaction: None,
+                messages_threshold_compaction: None,
+            },
+            count_tokens: None,
+        }
+    }
+
+    /// Verifies the compaction section rides the definition row: an insert carrying one reads
+    /// back identically through the definition select and the provider join, and a payload
+    /// without one reads back as `None`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a database operation, fixture validation, or the round-trip assertion fails.
+    #[tokio::test]
+    async fn definition_rows_carry_the_compaction_section() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let mut payload =
+            test_support::static_key_definition_payload(UpstreamFormat::OpenAiResponse);
+
+        payload.compaction = Some(compaction_section());
+
+        payload.validate().map_err(|error| error.message)?;
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: "compacted",
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await?;
+
+        // The definition select decodes the section.
+        let reloaded = storage_cr::provider_definitions::list_definitions(&database).await?;
+
+        let stored_row = reloaded
+            .first()
+            .expect("the inserted definition row exists");
+
+        assert_eq!(
+            stored_row.payload.compaction.as_ref(),
+            Some(&compaction_section())
+        );
+
+        // A successor without the section stores the null column and reads back without one.
+        let successor = test_support::static_key_definition_payload(UpstreamFormat::OpenAiResponse);
+
+        successor.validate().map_err(|error| error.message)?;
+
+        #[expect(clippy::unwrap_used, reason = "a positive literal version")]
+        let base_version = std::num::NonZeroI64::new(1).unwrap();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: "compacted",
+                base_version: Some(base_version),
+                payload: &successor,
+                created_at: 2,
+            },
+        )
+        .await?;
+
+        let rows = storage_cr::provider_definitions::list_definitions(&database).await?;
+
+        let second = rows
+            .iter()
+            .find(|definition| definition.version.get() == 2)
+            .expect("the successor row exists");
+
+        assert_eq!(second.payload.compaction, None);
+
+        Ok(())
     }
 }

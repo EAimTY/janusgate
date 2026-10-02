@@ -68,4 +68,10 @@ pub(crate) enum Error {
         /// The TLS library failure.
         source: RustlsError,
     },
+
+    /// The `compaction` section's sealing keys are invalid: an empty set, a repeated or
+    /// separator-carrying key identifier, or key material that does not decode to exactly 32
+    /// bytes.
+    #[error(transparent)]
+    InvalidCompactionKeys(#[from] crate::compaction::sealing::KeyError),
 }

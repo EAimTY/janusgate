@@ -1,8 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { isModelEffectivelyServing } from "/src/management-api/serving";
-import { DISCOVERY_STATE } from "/src/management-api/vocabulary";
+import { effectiveCompactionFacts, isModelEffectivelyServing } from "/src/management-api/serving";
+import {
+    COMPACTION_MECHANISM,
+    type CompactionMechanism,
+    DISCOVERY_STATE,
+} from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
@@ -86,6 +90,51 @@ export function modelDiscoveryBadge(model: ModelResponse): BadgeMark {
 }
 
 /**
+ * The badges' short mechanism names, one per compaction mechanism — the
+ * tight row spelling beside the vocabulary's long form the model page uses.
+ * The record is exhaustive, so a mechanism added to the vocabulary fails to
+ * compile until a short name stands here.
+ */
+const COMPACTION_BADGE_NAMES: Record<CompactionMechanism, string> = {
+    responses_standalone_compact: "compact",
+    responses_explicit_trigger: "trigger",
+    responses_automatic_compaction: "auto",
+    messages_on_demand_compaction: "on-demand",
+    messages_threshold_compaction: "threshold",
+};
+
+/**
+ * One row's compaction badges, one per mechanism the row itself states a
+ * fact for — the administrator's override or the latest discovery knowledge
+ * (the row's two resolution layers, derived client-side under rule 7). A
+ * mechanism both layers leave unstated is omitted: its verdict is the
+ * definition's declaration, which the row never carries, so naming it here
+ * would claim a fact nobody stated. A stated supported fact reads the
+ * mechanism's name; a stated unsupported fact reads "no" over it.
+ */
+export function modelCompactionBadges(model: ModelResponse): ReadonlyArray<BadgeMark> {
+    const facts = effectiveCompactionFacts(model);
+
+    return COMPACTION_MECHANISM.options.flatMap(({ value }) => {
+        const { support } = facts[value];
+
+        if (support === "unknown") {
+            return [];
+        }
+
+        return [
+            {
+                tone: support === "supported" ? "ok" : "muted",
+                label:
+                    support === "supported"
+                        ? COMPACTION_BADGE_NAMES[value]
+                        : `no ${COMPACTION_BADGE_NAMES[value]}`,
+            },
+        ];
+    });
+}
+
+/**
  * One model's row: its public ID, where it comes from, and its two facts —
  * serving state and discovery state. The row is one link to the model's own
  * page, where the settings behind those facts are changed.
@@ -98,6 +147,8 @@ function ModelRow(props: {
     const serving = (): BadgeMark => modelServingBadge(props.model, props.provider);
 
     const discovery = (): BadgeMark => modelDiscoveryBadge(props.model);
+
+    const compaction = (): ReadonlyArray<BadgeMark> => modelCompactionBadges(props.model);
 
     // The provider's name prefixes the upstream id wherever the row's own
     // provider column is not shown; a hand-set override appends its notice.
@@ -130,6 +181,14 @@ function ModelRow(props: {
                             tone={discovery().tone}
                             label={discovery().label}
                         />
+                        <For each={compaction()}>
+                            {(badge) => (
+                                <Badge
+                                    tone={badge.tone}
+                                    label={badge.label}
+                                />
+                            )}
+                        </For>
                     </>
                 }
             />

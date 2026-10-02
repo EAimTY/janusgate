@@ -348,6 +348,11 @@ impl ClientSseRenderer for SseRenderer {
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String> {
         match event {
+            // Native compaction state is unrepresentable on this surface and
+            // unreachable in practice: a caller that cannot express compaction
+            // controls can never trigger a native compaction upstream.
+            IrEvent::CompactionState { .. } => Vec::new(),
+
             IrEvent::MessageStart { .. } => {
                 if self.is_role_sent {
                     Vec::new()
@@ -542,6 +547,7 @@ impl ClientSseRenderer for SseRenderer {
                 )]
             }
 
+            IrEvent::CompactionMetadata { .. } => Vec::new(),
             IrEvent::Usage(usage) => {
                 // Gemini upstreams attach cumulative usage to every stream chunk; the latest
                 // observation wins and renders once, terminally.

@@ -13,6 +13,7 @@ import {
     type ListModelsResponse,
     type ListProvidersResponse,
     type ListUsageResponse,
+    type MechanismSupport,
     type ModelEnvelope,
     type ModelResponse,
     type ProviderEnvelope,
@@ -26,8 +27,10 @@ import {
 import {
     API_LOG_ENDPOINT_TYPE,
     API_LOG_OUTCOME,
+    COMPACTION_MECHANISM,
     CREDENTIAL_KIND,
     DISCOVERY_STATE,
+    MECHANISM_SUPPORT,
     REASONING_LEVEL,
     UPSTREAM_FORMAT,
 } from "/src/management-api/vocabulary";
@@ -358,6 +361,82 @@ function expectNullableReasoningLevels(value: unknown, context: string): Array<s
 }
 
 /**
+ * One nullable compaction-facts map: `null` is nothing known, an object
+ * narrows each key against the closed mechanism vocabulary and each value
+ * against the support states the column carries — the discovered base
+ * stores known facts only, so `"unknown"` is foreign there, while the
+ * administrator's override states it explicitly. A foreign mechanism or
+ * support value is a contract violation, since both gateway write paths
+ * store closed vocabulary members only.
+ */
+function expectNullableCompactionFacts<TSupport extends MechanismSupport>(
+    value: unknown,
+    context: string,
+    supports: ReadonlyArray<TSupport>,
+): {
+    [mechanism: string]: TSupport;
+} | null {
+    if (value === null) {
+        return null;
+    }
+
+    const record = expectRecord(value, context);
+    const facts: {
+        [mechanism: string]: TSupport;
+    } = {};
+
+    for (const key of Object.keys(record)) {
+        const mechanismContext = `${context}.${key}`;
+        const mechanism = COMPACTION_MECHANISM.find(key);
+
+        if (mechanism === null) {
+            throw new ContractViolationError(
+                `${mechanismContext} is not a compaction mechanism: ${key}`,
+            );
+        }
+
+        const support = supports.find(
+            (candidate) => candidate === MECHANISM_SUPPORT.find(Reflect.get(record, key)),
+        );
+
+        if (support === undefined) {
+            throw new ContractViolationError(
+                `${mechanismContext} is not a mechanism support state: ${String(
+                    Reflect.get(record, key),
+                )}`,
+            );
+        }
+
+        facts[mechanism] = support;
+    }
+
+    return facts;
+}
+
+/** One model row's discovered compaction facts: known facts only, never `"unknown"`. */
+function expectDiscoveredCompactionFacts(
+    value: unknown,
+    context: string,
+): ModelResponse["compaction_support"] {
+    return expectNullableCompactionFacts(value, context, [
+        "supported",
+        "unsupported",
+    ]);
+}
+
+/** One model row's compaction-facts override: the explicit `"unknown"` included. */
+function expectCompactionOverrideFacts(
+    value: unknown,
+    context: string,
+): ModelResponse["compaction_support_override"] {
+    return expectNullableCompactionFacts(value, context, [
+        "supported",
+        "unsupported",
+        "unknown",
+    ]);
+}
+
+/**
  * One model row: its never-recycled row identifier, its routing string, its
  * own inputs — the nullable mirror column, the serving switch, the
  * discovery state — and its six capability columns: the three
@@ -405,6 +484,14 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
         max_output_tokens_override: expectNullableInteger(
             Reflect.get(record, "max_output_tokens_override"),
             `${context}.max_output_tokens_override`,
+        ),
+        compaction_support: expectDiscoveredCompactionFacts(
+            Reflect.get(record, "compaction_support"),
+            `${context}.compaction_support`,
+        ),
+        compaction_support_override: expectCompactionOverrideFacts(
+            Reflect.get(record, "compaction_support_override"),
+            `${context}.compaction_support_override`,
         ),
     };
 }

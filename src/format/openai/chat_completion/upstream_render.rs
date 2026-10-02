@@ -6,7 +6,7 @@
 
 use crate::{
     format::openai::{ToolChoice, render_tool_choice},
-    ir::{IrPart, IrRequest, IrResponseFormat, IrRole},
+    ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrRole},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -225,7 +225,19 @@ struct JsonSchema<'a> {
 /// Renders the upstream Chat Completions payload: the body only — the URL, the headers, and the
 /// streaming decision belong to the provider definition (README §5.2).
 #[must_use]
-pub(crate) fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
+pub(crate) fn render_request_body(
+    ir: &IrRequest,
+    is_streaming: bool,
+) -> Result<RequestBody<'_>, InvalidRequest> {
+    // The Chat Completions protocol has no compaction state channel: opaque
+    // native state another surface produced is never silently discarded, so
+    // its presence fails the render (the caller's replay is producer-bound).
+    if !ir.state_items.is_empty() {
+        return Err(InvalidRequest::request(
+            "the request carries compaction state the Chat Completions upstream cannot replay",
+        ));
+    }
+
     let mut messages: Vec<Message<'_>> = Vec::new();
 
     if let Some(instructions) = &ir.instructions {
@@ -356,7 +368,7 @@ pub(crate) fn render_request_body(ir: &IrRequest, is_streaming: bool) -> Request
                 },
             });
 
-    RequestBody {
+    Ok(RequestBody {
         model: &ir.model,
         messages,
         stream: is_streaming,
@@ -370,7 +382,7 @@ pub(crate) fn render_request_body(ir: &IrRequest, is_streaming: bool) -> Request
         max_completion_tokens: ir.max_output_tokens,
         response_format,
         reasoning_effort: ir.reasoning_effort.as_ref().map(|level| level.as_str()),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -386,6 +398,7 @@ mod tests {
     /// Panics if the rendered body fails to serialize.
     fn render_body(reasoning_effort: Option<IrReasoningLevel>) -> Value {
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             reasoning_effort,
             ..IrRequest::default()
@@ -395,7 +408,8 @@ mod tests {
             clippy::expect_used,
             reason = "the rendered payload is under test; a failing render is the failure"
         )]
-        serde_json::to_value(render_request_body(&ir, false)).expect("the body serializes")
+        serde_json::to_value(render_request_body(&ir, false).expect("the fixture renders"))
+            .expect("the body serializes")
     }
 
     /// Verifies the Chat Completions effort slot of the closed-vocabulary contract (README §6.4):
@@ -439,6 +453,7 @@ mod tests {
             ),
         ] {
             let ir = IrRequest {
+                state_items: Vec::new(),
                 tool_choice: Some(choice),
                 ..IrRequest::default()
             };
@@ -448,7 +463,8 @@ mod tests {
                 reason = "the rendered payload is under test; a failing render is the failure"
             )]
             let body =
-                serde_json::to_value(render_request_body(&ir, false)).expect("the body serializes");
+                serde_json::to_value(render_request_body(&ir, false).expect("the fixture renders"))
+                    .expect("the body serializes");
 
             assert_eq!(body.get("tool_choice"), Some(&rendered));
         }

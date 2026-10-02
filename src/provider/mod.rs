@@ -5,7 +5,14 @@
 //! holding every database statement — including the providers' own rows — lives beside this
 //! module in [`crate::storage`].
 
-use crate::{ir::IrReasoningLevel, storage::Error as StorageError};
+use crate::{
+    compaction::{
+        mechanism::{Mechanism, MechanismSupport},
+        support_facts::{CompactionSupportFacts, resolve_mechanism},
+    },
+    ir::IrReasoningLevel,
+    storage::Error as StorageError,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -359,6 +366,16 @@ pub(crate) struct Model {
     /// Administrator's replacement declaration for the maximum output tokens; `None` keeps the
     /// discovered value.
     pub(crate) max_output_tokens_override: Option<i64>,
+
+    /// Discovered compaction support facts — the per-mechanism known facts of the latest
+    /// refresh, canonicalized and stored as one JSON object. `None` is *unknown* (nothing
+    /// extracted, or no extraction configured), never "none". Discovery-owned: every refresh
+    /// rewrites it wholesale for a listed row.
+    pub(crate) compaction_support: Option<CompactionSupportFacts>,
+
+    /// Administrator's replacement compaction facts; `None` keeps the discovered facts. A
+    /// present member's explicit `unknown` suppresses the lower layers for that mechanism.
+    pub(crate) compaction_support_override: Option<CompactionSupportFacts>,
 }
 
 /// One upstream-discovered model with its extracted capability facts (README §5.5): every
@@ -378,6 +395,10 @@ pub(crate) struct DiscoveredModel {
 
     /// Extracted maximum output tokens; `None` when unknown.
     pub(crate) max_output_tokens: Option<i64>,
+
+    /// Extracted compaction support facts — only known members (`supported`/`unsupported`),
+    /// `None` when the entry carries none.
+    pub(crate) compaction: Option<CompactionSupportFacts>,
 }
 
 /// A provider row joined with the model row a public ID resolved to.
@@ -436,4 +457,73 @@ impl Model {
     pub(crate) fn effective_max_output_tokens(&self) -> Option<i64> {
         self.max_output_tokens_override.or(self.max_output_tokens)
     }
+
+    /// The model's effective compaction support facts under the given definition compaction
+    /// section: one `(mechanism, support)` pair per mechanism whose effective support resolves
+    /// to a known state — the administrator override, then the discovery-owned fact, then the
+    /// section's declared default, else unknown. Unknown members are omitted: a mechanism with
+    /// nothing known renders nothing, and an explicit `unknown` override suppresses a lower
+    /// supported fact into exactly that nothing. A declaration, never an enforcement: dispatch
+    /// resolves eligibility itself.
+    pub(crate) fn effective_mechanism_support(
+        &self,
+        section: Option<&definition::compaction::CompactionSection>,
+    ) -> impl Iterator<Item = (Mechanism, MechanismSupport)> {
+        let base = self.compaction_support.as_ref();
+        let model_override = self.compaction_support_override.as_ref();
+
+        Mechanism::ALL.into_iter().filter_map(move |mechanism| {
+            let support = resolve_mechanism(
+                definition_default(section, mechanism),
+                base,
+                model_override,
+                mechanism,
+            );
+
+            (support != MechanismSupport::Unknown).then_some((mechanism, support))
+        })
+    }
+}
+
+/// The compaction section's declared default support of one mechanism: the declaration's
+/// `default` when the mechanism is declared, else the unknown state — an absent declaration is
+/// no declaration at all.
+fn definition_default(
+    section: Option<&definition::compaction::CompactionSection>,
+    mechanism: Mechanism,
+) -> MechanismSupport {
+    let Some(section) = section else {
+        return MechanismSupport::Unknown;
+    };
+
+    let declarations = &section.mechanisms;
+
+    let declared = match mechanism {
+        Mechanism::ResponsesStandaloneCompact => declarations
+            .responses_standalone_compact
+            .as_ref()
+            .map(|declaration| declaration.default),
+
+        Mechanism::ResponsesExplicitTrigger => declarations
+            .responses_explicit_trigger
+            .as_ref()
+            .map(|declaration| declaration.default),
+
+        Mechanism::ResponsesAutomaticCompaction => declarations
+            .responses_automatic_compaction
+            .as_ref()
+            .map(|declaration| declaration.default),
+
+        Mechanism::MessagesOnDemandCompaction => declarations
+            .messages_on_demand_compaction
+            .as_ref()
+            .map(|declaration| declaration.default),
+
+        Mechanism::MessagesThresholdCompaction => declarations
+            .messages_threshold_compaction
+            .as_ref()
+            .map(|declaration| declaration.default),
+    };
+
+    declared.unwrap_or(MechanismSupport::Unknown)
 }

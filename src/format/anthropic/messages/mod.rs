@@ -12,7 +12,8 @@
 //! upstream request and the client response speak the same block shapes, and the parsers rebuild
 //! the same blocks as opaque replay payloads.
 
-use self::client_render::{MessagesResponse, SseRenderer};
+use self::client_render::MessagesResponse;
+pub(crate) use self::client_render::SseRenderer;
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
@@ -21,11 +22,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod client_render;
+mod compaction;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
-pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request_body};
+pub(crate) use self::{
+    client_render::{CompactionOnlyUsage, render_compaction_only_response},
+    compaction::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block, overlay_header_rows},
+    upstream_parse::UpstreamParser,
+    upstream_render::{
+        render_count_tokens_request, render_on_demand_body, render_request_body,
+        render_threshold_body,
+    },
+};
 
 /// Marker of the inbound Anthropic Messages client format.
 #[derive(Debug)]
@@ -34,8 +44,8 @@ pub(crate) struct Format;
 impl ClientFormat for Format {
     type JsonResponse = MessagesResponse;
 
-    fn parse_request(body: &[u8], _route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
-        request_parse::parse_inbound_request(body)
+    fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
+        request_parse::parse_inbound_request(body, &route.anthropic_betas)
     }
 
     fn sse_renderer(
@@ -47,6 +57,20 @@ impl ClientFormat for Format {
 
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
+    }
+
+    fn render_json_response_with_prefix(
+        public_id: &str,
+        aggregation: &IrAggregation,
+        prefix: &[serde_json::Value],
+        iterations: &[serde_json::Value],
+    ) -> Self::JsonResponse {
+        client_render::render_json_response_with_prefix_blocks(
+            public_id,
+            aggregation,
+            prefix,
+            iterations,
+        )
     }
 }
 

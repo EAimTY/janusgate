@@ -2,6 +2,10 @@
 
 use super::{EmptyResponse, Error, Nullable, route};
 use crate::{
+    compaction::{
+        mechanism::{Mechanism, MechanismSupport},
+        support_facts::CompactionSupportFacts,
+    },
     context::Context,
     ir::IrReasoningLevel,
     provider::{DiscoveredModel, DiscoveryState, discovery},
@@ -15,6 +19,7 @@ use axum_extra::extract::WithRejection;
 use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 route! {
     pub(super) ListModels: {
@@ -114,6 +119,23 @@ pub(super) struct ModelResponse {
 
     /// Administrator's maximum-output-tokens override; `null` keeps the discovered value.
     pub max_output_tokens_override: Option<i64>,
+
+    /// Discovered compaction support facts — the per-mechanism known facts of the latest
+    /// refresh, keyed by the closed mechanism spellings; `null` is unknown (README §3).
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "{ [key: string]: \"supported\" | \"unsupported\" } | null")
+    )]
+    pub compaction_support: Option<CompactionSupportFacts>,
+
+    /// Administrator's compaction facts override; `null` keeps the discovered facts (rule 2).
+    /// An explicit `"unknown"` member is legal here and suppresses the lower layers for that
+    /// mechanism.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
+    )]
+    pub compaction_support_override: Option<CompactionSupportFacts>,
 }
 
 impl ModelResponse {
@@ -146,6 +168,8 @@ impl ModelResponse {
             }),
             max_input_tokens_override: model.max_input_tokens_override,
             max_output_tokens_override: model.max_output_tokens_override,
+            compaction_support: model.compaction_support.clone(),
+            compaction_support_override: model.compaction_support_override.clone(),
         }
     }
 }
@@ -197,7 +221,7 @@ pub(super) struct DiscoverModelsRequest {
 }
 
 /// Strictly parsed `models:create` request (README §7.1): the complete desired initial state of
-/// one manually added row, every field required (README §7.0 rule 3). `id_override` and the three
+/// one manually added row, every field required (README §7.0 rule 3). `id_override` and the
 /// capability overrides are the required-nullable mirror columns (rule 2) — `null` means no
 /// override, exactly like the storage columns. Addressed by the natural key
 /// `(provider_id, upstream_id)` — the row does not exist yet.
@@ -244,13 +268,22 @@ pub(super) struct CreateModelRequest {
         ts(type = "number | null")
     )]
     pub max_output_tokens_override: Nullable<i64>,
+
+    /// Compaction support facts override; `null` keeps the discovered facts, an object replaces
+    /// them wholesale — the mechanism spellings are the closed keys, `"unknown"` is a legal
+    /// explicit member value, and the base facts are never the request's to state (README §3).
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
+    )]
+    pub compaction_support_override: Nullable<BTreeMap<String, String>>,
 }
 
-/// Strictly parsed `models:update` request (README §7.1): the complete state of the row's five
-/// writable columns, every field required (README §7.0 rule 3). `id_override` and the three
-/// capability overrides are the required-nullable mirror columns (rule 2). Addressed by the row
-/// identifier `model_id`, like `api-keys:update`. The request cannot state `discovery_state` or
-/// a capability base column: this route writes only `id_override`, `is_enabled`, and the three
+/// Strictly parsed `models:update` request (README §7.1): the complete state of the row's
+/// writable columns, every field required (README §7.0 rule 3). `id_override` and the capability
+/// overrides are the required-nullable mirror columns (rule 2). Addressed by the row identifier
+/// `model_id`, like `api-keys:update`. The request cannot state `discovery_state` or a
+/// capability base column: this route writes only `id_override`, `is_enabled`, and the
 /// capability overrides, so it can never restore a vanished row — recovery is an upstream
 /// reappearance or a `models:create` claim.
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,6 +325,14 @@ pub(super) struct UpdateModelRequest {
         ts(type = "number | null")
     )]
     pub max_output_tokens_override: Nullable<i64>,
+
+    /// Compaction support facts override; `null` keeps the discovered facts, an object replaces
+    /// them wholesale.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
+    )]
+    pub compaction_support_override: Nullable<BTreeMap<String, String>>,
 }
 
 /// Strictly parsed `models:delete` request (README §7.1): addressed by the row identifier.
@@ -401,10 +442,12 @@ fn unique_discovered_models(
     Ok(unique)
 }
 
-/// The parsed, validated form of one request's three capability overrides (README §7.1): level
+/// The parsed, validated form of one request's capability overrides (README §7.1): level
 /// values validated against the closed vocabulary and canonicalized — deduplicated,
-/// vocabulary-ordered, the empty set preserved as the positive declaration of no levels — and
-/// token caps checked positive.
+/// vocabulary-ordered, the empty set preserved as the positive declaration of no levels — token
+/// caps checked positive, and the compaction facts map's mechanism and support spellings
+/// validated against their closed vocabularies, the map canonicalized into the mechanism
+/// order.
 #[derive(Debug)]
 struct CapabilityOverrides {
     /// Validated, canonicalized thinking-level override; `None` keeps the discovered value.
@@ -415,20 +458,29 @@ struct CapabilityOverrides {
 
     /// Validated maximum-output-tokens override.
     max_output_tokens: Option<i64>,
+
+    /// Validated, canonicalized compaction support facts override; `None` keeps the discovered
+    /// facts.
+    compaction_support: Option<CompactionSupportFacts>,
 }
 
-/// Validates one request's three capability overrides: every level string parses against the
-/// closed vocabulary (README §6.4), the set canonicalizes (deduplicated, vocabulary-ordered),
-/// and every present token cap is positive.
+/// Validates one request's capability overrides: every level string parses against the closed
+/// vocabulary (README §6.4), the set canonicalizes (deduplicated, vocabulary-ordered), every
+/// present token cap is positive, and every compaction-facts key and value parses against the
+/// closed mechanism and support vocabularies — the map then canonicalizes into the mechanism
+/// order, an empty object normalizing to the no-override `None`.
 ///
 /// # Errors
 ///
-/// Returns [`Error::UnknownReasoningLevel`] naming the field for a foreign level string and
-/// [`Error::NonPositiveTokenCap`] for a non-positive cap.
+/// Returns [`Error::UnknownReasoningLevel`] naming the field for a foreign level string,
+/// [`Error::NonPositiveTokenCap`] for a non-positive cap, and
+/// [`Error::UnknownCompactionSupport`] naming the field for a foreign mechanism or support
+/// spelling.
 fn parse_capability_overrides(
     thinking_levels: Nullable<Vec<String>>,
     max_input_tokens: Nullable<i64>,
     max_output_tokens: Nullable<i64>,
+    compaction_support: Nullable<BTreeMap<String, String>>,
 ) -> Result<CapabilityOverrides, Error> {
     let thinking_levels = thinking_levels
         .0
@@ -457,10 +509,37 @@ fn parse_capability_overrides(
         }
     }
 
+    let compaction_support = compaction_support
+        .0
+        .map(|map| {
+            map.into_iter()
+                .map(|(mechanism, support)| {
+                    let mechanism = Mechanism::from_str(&mechanism).ok_or_else(|| {
+                        Error::UnknownCompactionSupport {
+                            param: "compaction_support_override",
+                            value: mechanism,
+                        }
+                    })?;
+
+                    let support = MechanismSupport::from_str(&support).ok_or_else(|| {
+                        Error::UnknownCompactionSupport {
+                            param: "compaction_support_override",
+                            value: support,
+                        }
+                    })?;
+
+                    Ok((mechanism, support))
+                })
+                .collect::<Result<BTreeMap<_, _>, Error>>()
+        })
+        .transpose()?
+        .and_then(|facts| CompactionSupportFacts::from_pairs(facts));
+
     Ok(CapabilityOverrides {
         thinking_levels,
         max_input_tokens: max_input_tokens.0,
         max_output_tokens: max_output_tokens.0,
+        compaction_support,
     })
 }
 
@@ -535,6 +614,7 @@ async fn handle_create(
         request.thinking_levels_override,
         request.max_input_tokens_override,
         request.max_output_tokens_override,
+        request.compaction_support_override,
     )?;
 
     // The checked insert re-reads the provider row inside its transaction, so the composed
@@ -550,6 +630,7 @@ async fn handle_create(
             thinking_levels_override: overrides.thinking_levels.as_deref(),
             max_input_tokens_override: overrides.max_input_tokens,
             max_output_tokens_override: overrides.max_output_tokens,
+            compaction_support_override: overrides.compaction_support.as_ref(),
         },
     )
     .await?;
@@ -579,6 +660,7 @@ async fn handle_update(
         request.thinking_levels_override,
         request.max_input_tokens_override,
         request.max_output_tokens_override,
+        request.compaction_support_override,
     )?;
 
     // The checked update re-reads the row and its provider inside its transaction, so the
@@ -593,6 +675,7 @@ async fn handle_update(
             thinking_levels_override: overrides.thinking_levels.as_deref(),
             max_input_tokens_override: overrides.max_input_tokens,
             max_output_tokens_override: overrides.max_output_tokens,
+            compaction_support_override: overrides.compaction_support.as_ref(),
         },
     )
     .await?;
@@ -625,7 +708,10 @@ fn validate_model_identifiers(
 
 #[cfg(test)]
 mod tests {
-    use super::{CreateModelRequest, DeleteModelRequest, ModelResponse, UpdateModelRequest};
+    use super::{
+        BTreeMap, CompactionSupportFacts, CreateModelRequest, DeleteModelRequest, Mechanism,
+        MechanismSupport, ModelResponse, UpdateModelRequest,
+    };
     use crate::{
         ir::IrReasoningLevel,
         management_api::v0::Nullable,
@@ -640,38 +726,62 @@ mod tests {
             thinking_levels: None,
             max_input_tokens: None,
             max_output_tokens: None,
+            compaction: None,
         }
     }
 
     /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing
-    /// string under `public_id`, and the row's own inputs `is_enabled` and `discovery_state` — and,
-    /// positively, that no thinking-level field and no derived effective verdict rides along: the
-    /// row carries its inputs and the caller derives the three-input status (README §7.0 rule 7).
-    /// The `vanished` row is pinned beside `is_enabled: true`, so the derivation has everything it
-    /// needs right in the row.
+    /// string under `public_id`, and the row's own inputs `is_enabled` and `discovery_state` —
+    /// and, positively, that no thinking-level field and no derived effective verdict rides
+    /// along: the row carries its inputs and the caller derives the three-input status (README
+    /// §7.0 rule 7). The compaction facts render the stored maps verbatim, the base keyed by the
+    /// mechanism spellings, the override admitting the explicit `unknown`. The `vanished` row is
+    /// pinned beside `is_enabled: true`, so the derivation has everything it needs right in the
+    /// row.
     ///
     /// # Panics
     ///
     /// Panics if the rendered row diverges from the documented shape.
     #[test]
     fn renders_the_documented_model_row() {
-        let entry = |discovery_state, is_enabled| ModelEntry {
-            provider_id: 7,
-            provider_name: "acme".to_string(),
-            model: Model {
-                id: 42,
-                upstream_id: "gpt-4".to_string(),
-                public_id: "acme-gpt-4".to_string(),
-                id_override: None,
-                is_enabled,
-                discovery_state,
-                thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
-                max_input_tokens: Some(200_000),
-                max_output_tokens: None,
-                thinking_levels_override: None,
-                max_input_tokens_override: None,
-                max_output_tokens_override: Some(64_000),
-            },
+        let entry = |discovery_state, is_enabled| {
+            #[expect(clippy::expect_used, reason = "the fixture fact pairs are non-empty")]
+            let compaction_support = CompactionSupportFacts::from_pairs([(
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Supported,
+            )])
+            .expect("fixture fact pairs are non-empty");
+
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture override pairs are non-empty"
+            )]
+            let compaction_support_override = CompactionSupportFacts::from_pairs([(
+                Mechanism::MessagesThresholdCompaction,
+                MechanismSupport::Unknown,
+            )])
+            .expect("fixture override pairs are non-empty");
+
+            ModelEntry {
+                provider_id: 7,
+                provider_name: "acme".to_string(),
+                model: Model {
+                    id: 42,
+                    upstream_id: "gpt-4".to_string(),
+                    public_id: "acme-gpt-4".to_string(),
+                    id_override: None,
+                    is_enabled,
+                    discovery_state,
+                    thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
+                    max_input_tokens: Some(200_000),
+                    max_output_tokens: None,
+                    thinking_levels_override: None,
+                    max_input_tokens_override: None,
+                    max_output_tokens_override: Some(64_000),
+                    compaction_support: Some(compaction_support),
+                    compaction_support_override: Some(compaction_support_override),
+                },
+            }
         };
 
         #[expect(clippy::expect_used, reason = "the row body always serializes")]
@@ -698,6 +808,8 @@ mod tests {
                 "thinking_levels_override": null,
                 "max_input_tokens_override": null,
                 "max_output_tokens_override": 64000,
+                "compaction_support": {"messages_on_demand_compaction": "supported"},
+                "compaction_support_override": {"messages_threshold_compaction": "unknown"},
             })
         );
 
@@ -725,12 +837,14 @@ mod tests {
                 "thinking_levels_override": null,
                 "max_input_tokens_override": null,
                 "max_output_tokens_override": 64000,
+                "compaction_support": {"messages_on_demand_compaction": "supported"},
+                "compaction_support_override": {"messages_threshold_compaction": "unknown"},
             })
         );
     }
 
     /// Verifies the `models:update` request (README §7.0 rules 2-3, §7.1): addressed by `model_id`,
-    /// every field required, `id_override` and the three capability overrides nullable with the
+    /// every field required, `id_override` and the capability overrides nullable with the
     /// omitted-key tolerance, an unknown field rejected — and no `discovery_state` or capability
     /// base column accepted.
     ///
@@ -746,7 +860,8 @@ mod tests {
         let parsed: UpdateModelRequest = serde_json::from_str(
             r#"{"model_id":7,"id_override":null,"is_enabled":true,
                 "thinking_levels_override":[],"max_input_tokens_override":null,
-                "max_output_tokens_override":8192}"#,
+                "max_output_tokens_override":8192,
+                "compaction_support_override":{"messages_on_demand_compaction":"unknown"}}"#,
         )
         .unwrap();
 
@@ -756,6 +871,17 @@ mod tests {
         assert_eq!(parsed.thinking_levels_override, Nullable(Some(Vec::new())));
         assert_eq!(parsed.max_input_tokens_override, Nullable(None));
         assert_eq!(parsed.max_output_tokens_override, Nullable(Some(8192)));
+        assert_eq!(
+            parsed.compaction_support_override,
+            Nullable(Some(
+                [(
+                    "messages_on_demand_compaction".to_string(),
+                    "unknown".to_string()
+                ),]
+                .into_iter()
+                .collect(),
+            )),
+        );
 
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
@@ -773,12 +899,14 @@ mod tests {
             .is_err()
         );
 
-        // A capability base column is not the request's to state (README §3).
+        // A capability base column is not the request's to state (README §3) — the compaction
+        // base facts included.
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
                 r#"{"model_id":7,"id_override":null,"is_enabled":true,
                     "thinking_levels_override":null,"max_input_tokens_override":null,
-                    "max_output_tokens_override":null,"thinking_levels":["low"]}"#
+                    "max_output_tokens_override":null,
+                    "compaction_support":{"messages_on_demand_compaction":"supported"}}"#
             )
             .is_err()
         );
@@ -800,7 +928,8 @@ mod tests {
         let parsed: CreateModelRequest = serde_json::from_str(
             r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":"custom","is_enabled":false,
                 "thinking_levels_override":["high","low"],"max_input_tokens_override":null,
-                "max_output_tokens_override":4096}"#,
+                "max_output_tokens_override":4096,
+                "compaction_support_override":{"messages_threshold_compaction":"supported"}}"#,
         )
         .unwrap();
 
@@ -814,6 +943,17 @@ mod tests {
         );
         assert_eq!(parsed.max_input_tokens_override, Nullable(None));
         assert_eq!(parsed.max_output_tokens_override, Nullable(Some(4096)));
+        assert_eq!(
+            parsed.compaction_support_override,
+            Nullable(Some(
+                [(
+                    "messages_threshold_compaction".to_string(),
+                    "supported".to_string()
+                )]
+                .into_iter()
+                .collect(),
+            )),
+        );
 
         assert!(
             serde_json::from_str::<CreateModelRequest>(
@@ -843,8 +983,10 @@ mod tests {
 
     /// Verifies the capability-override validation (README §7.1): a foreign level string is
     /// rejected naming the field, the empty array is the legal positive declaration of no
-    /// levels, a duplicate set canonicalizes into vocabulary order, and a non-positive token cap
-    /// is rejected naming the field.
+    /// levels, a duplicate set canonicalizes into vocabulary order, a non-positive token cap
+    /// is rejected naming the field — and the compaction facts map validates its closed
+    /// mechanism and support vocabularies, canonicalizes into the mechanism order, admits the
+    /// explicit `"unknown"`, and normalizes an empty object to the no-override `None`.
     ///
     /// # Panics
     ///
@@ -859,6 +1001,7 @@ mod tests {
             Nullable(Some(vec!["high".to_string(), "low".to_string()])),
             Nullable(Some(200_000)),
             Nullable(None),
+            Nullable(None),
         )
         .unwrap();
 
@@ -869,10 +1012,12 @@ mod tests {
         );
         assert_eq!(parsed.max_input_tokens, Some(200_000));
         assert_eq!(parsed.max_output_tokens, None);
+        assert_eq!(parsed.compaction_support, None);
 
         #[expect(clippy::unwrap_used, reason = "the empty set is constructed to parse")]
         let empty = super::parse_capability_overrides(
             Nullable(Some(Vec::new())),
+            Nullable(None),
             Nullable(None),
             Nullable(None),
         )
@@ -880,12 +1025,66 @@ mod tests {
 
         assert_eq!(empty.thinking_levels, Some(Vec::new()));
 
+        // The compaction facts map canonicalizes into the mechanism order regardless of the
+        // document's key order, and the explicit `"unknown"` value parses.
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented compaction map is constructed to parse"
+        )]
+        let compaction = super::parse_capability_overrides(
+            Nullable(None),
+            Nullable(None),
+            Nullable(None),
+            Nullable(Some(
+                [
+                    (
+                        "messages_threshold_compaction".to_string(),
+                        "supported".to_string(),
+                    ),
+                    (
+                        "responses_explicit_trigger".to_string(),
+                        "unknown".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            compaction.compaction_support,
+            CompactionSupportFacts::from_pairs([
+                (
+                    Mechanism::ResponsesExplicitTrigger,
+                    MechanismSupport::Unknown,
+                ),
+                (
+                    Mechanism::MessagesThresholdCompaction,
+                    MechanismSupport::Supported,
+                ),
+            ]),
+        );
+
+        // The empty map is the no-override `None`.
+        #[expect(clippy::unwrap_used, reason = "the empty map is constructed to parse")]
+        let empty_map = super::parse_capability_overrides(
+            Nullable(None),
+            Nullable(None),
+            Nullable(None),
+            Nullable(Some(BTreeMap::new())),
+        )
+        .unwrap();
+
+        assert_eq!(empty_map.compaction_support, None);
+
         #[expect(
             clippy::expect_used,
             reason = "the foreign level is constructed to be rejected"
         )]
         let foreign = super::parse_capability_overrides(
             Nullable(Some(vec!["ultra".to_string()])),
+            Nullable(None),
             Nullable(None),
             Nullable(None),
         )
@@ -905,9 +1104,13 @@ mod tests {
             clippy::expect_used,
             reason = "the non-positive cap is constructed to be rejected"
         )]
-        let non_positive =
-            super::parse_capability_overrides(Nullable(None), Nullable(Some(0)), Nullable(None))
-                .expect_err("a non-positive cap must be rejected");
+        let non_positive = super::parse_capability_overrides(
+            Nullable(None),
+            Nullable(Some(0)),
+            Nullable(None),
+            Nullable(None),
+        )
+        .expect_err("a non-positive cap must be rejected");
 
         assert!(
             matches!(
@@ -916,6 +1119,40 @@ mod tests {
             ),
             "the rejection names the field"
         );
+
+        // A foreign mechanism spelling and a foreign support value are each rejected naming the
+        // field.
+        for value in [
+            ("bogus_mechanism", "supported"),
+            ("messages_on_demand_compaction", "partially"),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the foreign spelling is constructed to be rejected"
+            )]
+            let rejected = super::parse_capability_overrides(
+                Nullable(None),
+                Nullable(None),
+                Nullable(None),
+                Nullable(Some(
+                    [(value.0.to_string(), value.1.to_string())]
+                        .into_iter()
+                        .collect(),
+                )),
+            )
+            .expect_err("a foreign compaction spelling must be rejected");
+
+            assert!(
+                matches!(
+                    rejected,
+                    super::Error::UnknownCompactionSupport {
+                        param: "compaction_support_override",
+                        ..
+                    }
+                ),
+                "the rejection names the field: {rejected}"
+            );
+        }
     }
 
     /// Verifies the `models:delete` request is the row-addressed single-field payload (README

@@ -74,6 +74,7 @@ describe("preset catalog", () => {
             "kimi-code",
             "github-copilot",
             "devin",
+            "xai",
         ]) {
             expect(ids).toContain(id);
         }
@@ -100,18 +101,23 @@ describe("preset catalog", () => {
 
     it("marks the researched-but-unconfirmed products unverified and the rest live", () => {
         for (const id of [
-            "codex",
             "antigravity",
             "generic-openai-chat-completions",
         ]) {
             expect(findPreset(id).verification).toBe("live");
         }
 
+        // Codex rides the unverified list since its compaction section:
+        // the login and inference shape was live-verified, but a preset
+        // carrying compaction declarations is not live-verified until an
+        // authenticated compact-and-continuation run passes (README §5.6).
         for (const id of [
+            "codex",
             "claude-code",
             "kimi-code",
             "github-copilot",
             "devin",
+            "xai",
             "zen-openai-chat-completions",
         ]) {
             expect(findPreset(id).verification).toBe("unverified");
@@ -185,13 +191,15 @@ describe("derived base-URL neediness", () => {
     }
 
     it("answers each preset's neediness from its payload's own URL expressions", () => {
-        // The generic static-key presets address any compatible endpoint
-        // through the base, and GitHub Copilot's and Devin's inference and
-        // discovery URLs reference it too — their exchanges and provisioning
-        // re-mint the base afterwards, but the gateway still rejects a
-        // creation or flow start naming such a definition without a base
-        // URL, so neediness follows the expressions, not the renewal story.
-        // The remaining presets pin their endpoints.
+        // The generic static-key presets and xAI address any compatible
+        // endpoint through the base — the xAI compact operation rides the
+        // base the same way its inference does — and GitHub Copilot's and
+        // Devin's inference and discovery URLs reference it too — their
+        // exchanges and provisioning re-mint the base afterwards, but the
+        // gateway still rejects a creation or flow start naming such a
+        // definition without a base URL, so neediness follows the
+        // expressions, not the renewal story. The remaining presets pin
+        // their endpoints.
         for (const id of [
             "generic-openai-responses",
             "generic-openai-chat-completions",
@@ -200,6 +208,7 @@ describe("derived base-URL neediness", () => {
             "generic-anthropic-messages",
             "github-copilot",
             "devin",
+            "xai",
         ]) {
             expect(hasBaseReference(findPreset(id).payload), id).toBe(true);
         }
@@ -218,7 +227,7 @@ describe("derived base-URL neediness", () => {
         }
     });
 
-    it("counts only the URL-bearing members the gateway's requirement reads", () => {
+    it("counts every expression surface whose evaluation environment carries the base", () => {
         // An inference URL referencing the base — directly or through the
         // coalesce, the one compound part — addresses the instance.
         expect(
@@ -254,8 +263,9 @@ describe("derived base-URL neediness", () => {
         ).toBe(true);
 
         // The authorize URL is the one excluded member — its stage bars the
-        // base reference at write time (gateway README §5.1) — and headers,
-        // query rows, and body leaves never evaluate against the base.
+        // base reference at write time (gateway README §5.1) — so a base
+        // planted there never counts, while an inference header row's value
+        // is evaluated against the base like any other expression surface.
         expect(
             hasBaseReference({
                 ...claude.payload,
@@ -289,7 +299,7 @@ describe("derived base-URL neediness", () => {
                     ],
                 },
             }),
-        ).toBe(false);
+        ).toBe(true);
     });
 
     it("answers true for a base reference planted in each URL-bearing member the walk reads", () => {
@@ -743,5 +753,270 @@ describe("opencode zen presets", () => {
                 ],
             });
         }
+    });
+});
+
+describe("preset compaction sections", () => {
+    /** The mechanisms object of one preset's compaction section. */
+    function mechanismsOf(entry: ProviderPreset): Record<string, Record<string, unknown>> {
+        const compaction = payloadOf(entry)["compaction"] as Record<string, unknown> | undefined;
+
+        if (compaction === undefined) {
+            throw new Error(`preset ${entry.id} carries no compaction section`);
+        }
+
+        return compaction["mechanisms"] as Record<string, Record<string, unknown>>;
+    }
+
+    it("leaves the generic presets unextended — no evidence of compaction support", () => {
+        for (const candidate of PROVIDER_PRESETS.filter((entry) =>
+            entry.id.startsWith("generic-"),
+        )) {
+            expect(payloadOf(candidate)["compaction"], candidate.id).toBeUndefined();
+        }
+    });
+
+    it("declares the xAI standalone compact against the base and both other mechanisms unsupported", () => {
+        const xai = findPreset("xai");
+        const mechanisms = mechanismsOf(xai);
+
+        // The standalone declaration carries its operation, and the
+        // operation addresses the instance base exactly like the inference
+        // does — never a string-appended variant of it.
+        expect(mechanisms["responses_standalone_compact"]).toMatchObject({
+            default: "supported",
+            operation: {
+                url: [
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/responses/compact",
+                    },
+                ],
+            },
+        });
+
+        // A standalone compact endpoint is not a trigger or an automatic
+        // compaction: both stay positively unsupported, never unknown.
+        expect(mechanisms["responses_explicit_trigger"]).toEqual({
+            default: "unsupported",
+        });
+        expect(mechanisms["responses_automatic_compaction"]).toEqual({
+            default: "unsupported",
+        });
+
+        // The facts are researched, not live-run.
+        expect(xai.verification).toBe("unverified");
+    });
+
+    it("declares the two Claude betas as the separate facts they are", () => {
+        const claude = findPreset("claude-code");
+        const mechanisms = mechanismsOf(claude);
+
+        const overlayValue = (mechanism: string): string | undefined => {
+            const declaration = mechanisms[mechanism];
+            const headers = declaration?.["overlay_headers"] as
+                | Array<{
+                      name: string;
+                      value: unknown;
+                  }>
+                | undefined;
+            const row = headers?.find((candidate) => candidate.name === "anthropic-beta");
+
+            return row === undefined ? undefined : JSON.stringify(row.value);
+        };
+
+        expect(mechanisms["messages_on_demand_compaction"]).toMatchObject({
+            default: "supported",
+        });
+        expect(overlayValue("messages_on_demand_compaction") ?? "").toContain("compact-2026-09-04");
+
+        expect(mechanisms["messages_threshold_compaction"]).toMatchObject({
+            default: "supported",
+        });
+        expect(overlayValue("messages_threshold_compaction") ?? "").toContain("compact-2026-01-12");
+
+        // The research status is unchanged: the betas are two different
+        // facts, and neither has run live from this codebase.
+        expect(claude.verification).toBe("unverified");
+    });
+
+    it("declares the Codex trigger and automatic mechanisms the backend accepts", () => {
+        const codex = findPreset("codex");
+        const mechanisms = mechanismsOf(codex);
+
+        expect(mechanisms["responses_explicit_trigger"]).toMatchObject({
+            default: "supported",
+        });
+        expect(mechanisms["responses_automatic_compaction"]).toMatchObject({
+            default: "supported",
+        });
+
+        // The login and inference shape was live-verified, but a preset
+        // carrying compaction declarations is not live-verified until an
+        // authenticated compact-and-continuation run passes.
+        expect(codex.verification).toBe("unverified");
+    });
+
+    it("counts a base reference planted in each compaction surface the walk reads", () => {
+        // Every catalog preset that carries a compaction section pins its
+        // endpoints, so a broken arm would stay green behind the verdicts
+        // above. Each arm here plants the base itself and must answer true
+        // on its own.
+        const plantedUrl = (): [
+            {
+                type: "base";
+            },
+        ] => [
+            {
+                type: "base",
+            },
+        ];
+
+        /** The declared compaction section of a preset known to carry one. */
+        function compactionOf(
+            entry: ProviderPreset,
+        ): NonNullable<ProviderPreset["payload"]["compaction"]> {
+            const section = entry.payload.compaction;
+
+            if (section === undefined || section === null) {
+                throw new Error(`preset ${entry.id} carries no compaction section`);
+            }
+
+            return section;
+        }
+
+        const xai = findPreset("xai");
+        const xaiStandalone = compactionOf(xai).mechanisms.responses_standalone_compact;
+
+        if (xaiStandalone === undefined || xaiStandalone === null) {
+            throw new Error("the xai preset declares the standalone compact");
+        }
+
+        const xaiOperation = xaiStandalone.operation ?? {
+            url: [
+                {
+                    type: "literal" as const,
+                    value: "https://api.x.ai/v1/responses/compact",
+                },
+            ],
+        };
+
+        // The standalone operation's URL, header rows, and envelope string
+        // leaves all evaluate against the base.
+        expect(
+            hasBaseReference({
+                ...xai.payload,
+                compaction: {
+                    ...compactionOf(xai),
+                    mechanisms: {
+                        ...compactionOf(xai).mechanisms,
+                        responses_standalone_compact: {
+                            ...xaiStandalone,
+                            operation: {
+                                ...xaiOperation,
+                                url: plantedUrl(),
+                            },
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        expect(
+            hasBaseReference({
+                ...xai.payload,
+                compaction: {
+                    ...compactionOf(xai),
+                    mechanisms: {
+                        ...compactionOf(xai).mechanisms,
+                        responses_standalone_compact: {
+                            ...xaiStandalone,
+                            operation: {
+                                ...xaiOperation,
+                                headers: [
+                                    {
+                                        name: "X-Endpoint",
+                                        value: plantedUrl(),
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        expect(
+            hasBaseReference({
+                ...xai.payload,
+                compaction: {
+                    ...compactionOf(xai),
+                    mechanisms: {
+                        ...compactionOf(xai).mechanisms,
+                        responses_standalone_compact: {
+                            ...xaiStandalone,
+                            operation: {
+                                ...xaiOperation,
+                                envelope: {
+                                    type: "object",
+                                    fields: {
+                                        wrapped: {
+                                            type: "string",
+                                            expr: plantedUrl(),
+                                        },
+                                        body: {
+                                            type: "body",
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        // The Messages overlay headers evaluate against the base too.
+        const claude = findPreset("claude-code");
+        const claudeOnDemand = compactionOf(claude).mechanisms.messages_on_demand_compaction ?? {
+            default: "supported" as const,
+        };
+
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                compaction: {
+                    ...compactionOf(claude),
+                    mechanisms: {
+                        ...compactionOf(claude).mechanisms,
+                        messages_on_demand_compaction: {
+                            ...claudeOnDemand,
+                            overlay_headers: [
+                                {
+                                    name: "X-Endpoint",
+                                    value: plantedUrl(),
+                                },
+                            ],
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        // The token-count operation's URL addresses the instance as well.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                compaction: {
+                    ...compactionOf(claude),
+                    count_tokens: {
+                        url: plantedUrl(),
+                    },
+                },
+            }),
+        ).toBe(true);
     });
 });

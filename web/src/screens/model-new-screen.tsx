@@ -18,8 +18,11 @@ import {
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
+    CompactionSupportOverrideFields,
+    compactionOverrideSelection,
     composedPublicId,
     ModelIdOverrideFields,
+    normalizedCompactionOverride,
     normalizedPublicIdOverride,
     normalizedThinkingLevelsOverride,
     normalizedTokenCapOverride,
@@ -155,6 +158,10 @@ function ModelCreateForm(props: {
     const [maxInputText, setMaxInputText] = createSignal("");
     const [hasMaxOutputOverride, setHasMaxOutputOverride] = createSignal(false);
     const [maxOutputText, setMaxOutputText] = createSignal("");
+    const [hasCompactionOverride, setHasCompactionOverride] = createSignal(false);
+    const [selectedCompaction, setSelectedCompaction] = createSignal(
+        compactionOverrideSelection(null),
+    );
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const selectedProvider = createMemo(
@@ -230,6 +237,10 @@ function ModelCreateForm(props: {
                             max_output_tokens_override: normalizedTokenCapOverride(
                                 hasMaxOutputOverride(),
                                 maxOutputText(),
+                            ),
+                            compaction_support_override: normalizedCompactionOverride(
+                                hasCompactionOverride(),
+                                selectedCompaction(),
                             ),
                         }),
                     ),
@@ -357,6 +368,15 @@ function ModelCreateForm(props: {
                             onValueInput={setMaxOutputText}
                             discovered={null}
                             valueError={maxOutputError()}
+                            isDisabled={create.isCreating()}
+                        />
+
+                        <CompactionSupportOverrideFields
+                            hasOverride={hasCompactionOverride()}
+                            onHasOverrideToggle={setHasCompactionOverride}
+                            selected={selectedCompaction()}
+                            onSelectedChange={setSelectedCompaction}
+                            discovered={null}
                             isDisabled={create.isCreating()}
                         />
 

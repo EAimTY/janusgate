@@ -30,7 +30,7 @@ mod cors;
 mod defaults;
 mod deserializers;
 mod error;
-mod schema;
+pub(crate) mod schema;
 mod tls;
 
 pub(crate) use self::error::Error;
@@ -210,6 +210,11 @@ fn read_inputs(path: &Path) -> Result<AppliedConfig, Error> {
             path: path.to_path_buf(),
             source,
         })?;
+
+    // The compaction sealing keys are validated as part of the load, so an
+    // invalid key set fails the load exactly like an unparsable schema — a
+    // startup failure, or a reload that keeps the previous generation.
+    crate::compaction::sealing::validate_key_configuration(&schema)?;
 
     let tls_server_config = self::tls::resolve(&schema)?;
 

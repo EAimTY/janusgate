@@ -22,9 +22,13 @@ import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
+    CompactionSupportOverrideFields,
+    compactionOverrideSelection,
     composedPublicId,
+    isSameCompactionOverride,
     isSameLevelSet,
     ModelIdOverrideFields,
+    normalizedCompactionOverride,
     normalizedPublicIdOverride,
     normalizedThinkingLevelsOverride,
     normalizedTokenCapOverride,
@@ -188,6 +192,12 @@ function ModelSettingsForm(props: {
     const [maxOutputText, setMaxOutputText] = createSignal(
         props.initialModel.max_output_tokens_override?.toString() ?? "",
     );
+    const [hasCompactionOverride, setHasCompactionOverride] = createSignal(
+        props.initialModel.compaction_support_override !== null,
+    );
+    const [selectedCompaction, setSelectedCompaction] = createSignal(
+        compactionOverrideSelection(props.initialModel.compaction_support_override),
+    );
 
     // Both derivations run through the shared toggle-aware helpers, so the
     // off-hint always names the ID the write produces — even with stale text
@@ -226,12 +236,16 @@ function ModelSettingsForm(props: {
     const normalizedMaxOutput = (): number | null =>
         normalizedTokenCapOverride(hasMaxOutputOverride(), maxOutputText());
 
+    const normalizedCompaction = (): ModelResponse["compaction_support_override"] =>
+        normalizedCompactionOverride(hasCompactionOverride(), selectedCompaction());
+
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled ||
         normalizedOverride() !== current().id_override ||
         !isSameLevelSet(normalizedLevels(), current().thinking_levels_override) ||
         normalizedMaxInput() !== current().max_input_tokens_override ||
-        normalizedMaxOutput() !== current().max_output_tokens_override;
+        normalizedMaxOutput() !== current().max_output_tokens_override ||
+        !isSameCompactionOverride(normalizedCompaction(), current().compaction_support_override);
 
     const canSave = (): boolean =>
         isDirty() &&
@@ -249,6 +263,8 @@ function ModelSettingsForm(props: {
         setMaxInputText(current().max_input_tokens_override?.toString() ?? "");
         setHasMaxOutputOverride(current().max_output_tokens_override !== null);
         setMaxOutputText(current().max_output_tokens_override?.toString() ?? "");
+        setHasCompactionOverride(current().compaction_support_override !== null);
+        setSelectedCompaction(compactionOverrideSelection(current().compaction_support_override));
         // Reverting resolves a held row onto the gateway's current version.
         props.read.reload();
     };
@@ -266,6 +282,7 @@ function ModelSettingsForm(props: {
                     thinking_levels_override: normalizedLevels(),
                     max_input_tokens_override: normalizedMaxInput(),
                     max_output_tokens_override: normalizedMaxOutput(),
+                    compaction_support_override: normalizedCompaction(),
                 }),
             ),
         onSucceeded: (envelope) => {
@@ -283,6 +300,8 @@ function ModelSettingsForm(props: {
             setMaxInputText(saved.max_input_tokens_override?.toString() ?? "");
             setHasMaxOutputOverride(saved.max_output_tokens_override !== null);
             setMaxOutputText(saved.max_output_tokens_override?.toString() ?? "");
+            setHasCompactionOverride(saved.compaction_support_override !== null);
+            setSelectedCompaction(compactionOverrideSelection(saved.compaction_support_override));
 
             // The routing line speaks only where clients calling the composed
             // ID actually reach the gateway. A vanished row stays suspended
@@ -366,6 +385,15 @@ function ModelSettingsForm(props: {
                     onValueInput={setMaxOutputText}
                     discovered={current().max_output_tokens}
                     valueError={maxOutputError()}
+                    isDisabled={form.isSaving()}
+                />
+
+                <CompactionSupportOverrideFields
+                    hasOverride={hasCompactionOverride()}
+                    onHasOverrideToggle={setHasCompactionOverride}
+                    selected={selectedCompaction()}
+                    onSelectedChange={setSelectedCompaction}
+                    discovered={current().compaction_support}
                     isDisabled={form.isSaving()}
                 />
 

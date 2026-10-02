@@ -8,13 +8,17 @@
 
 use super::{TypedBlock, block_opaque};
 use crate::{
-    format::{ParsedRequest, RoleRun, StringOrArray},
+    compaction::{identity::InstructionRole, sealing::CARRIER_NAMESPACE},
+    format::{
+        BoundaryPlacement, CompactionBoundary, CompactionControl, NativeArtifact, ParsedCompaction,
+        ParsedInstructionItem, ParsedRequest, RoleRun, StringOrArray, compaction_control,
+    },
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice,
+        IrRole, IrTool, IrToolChoice, StateItem,
     },
 };
-use serde::{Deserialize, de::IgnoredAny};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
 
 /// Strictly parsed `POST /messages` request body: unknown members are 400s, known semantic
@@ -82,6 +86,14 @@ struct InboundRequest {
     /// contract.
     #[serde(default)]
     output_config: Option<InboundOutputConfig>,
+
+    /// On-demand compaction control, the official envelope's `compaction` member.
+    #[serde(default)]
+    compaction: Option<InboundCompaction>,
+
+    /// Threshold compaction control, the official envelope's `context_management` member.
+    #[serde(default)]
+    context_management: Option<InboundContextManagement>,
 
     /// Summary control, accepted and ignored: summaries never enter the IR.
     #[serde(default)]
@@ -241,6 +253,34 @@ enum InboundAssistantBlock {
     RedactedThinking {
         /// Redacted payload, replayed verbatim on same-family upstreams.
         data: Value,
+    },
+
+    /// Compaction state block: a native block replayed from a compaction turn, or a gateway
+    /// carrier recognizable by its namespaced `signature`. The block carries compaction state,
+    /// never an IR part; the conversion records it beside the message loop.
+    Compaction {
+        /// The readable summary content; absent is the native null-content no-op block, which
+        /// retains its no-op meaning and cannot authorize discarding history.
+        #[serde(default)]
+        content: Option<String>,
+
+        /// The vendor signature, or the namespaced gateway carrier the gateway rendered.
+        #[serde(default)]
+        signature: Option<String>,
+
+        /// Opaque vendor ciphertext, when the block carries one.
+        #[serde(default)]
+        encrypted_content: Option<String>,
+
+        /// Tool-advertisement changes the compaction applied, when the block carries any.
+        #[serde(default)]
+        tool_changes: Option<Vec<Value>>,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 
     /// Document segment, known-but-unsupported: the conversion rejects it, and any member
@@ -448,20 +488,379 @@ struct InboundOutputFormat {
     schema: Option<Value>,
 }
 
-/// Parses a `POST /messages` request body into IR.
+/// The on-demand compaction beta: required on a request carrying the on-demand control or a
+/// leading native compaction block.
+const ON_DEMAND_BETA: &str = "compact-2026-09-04";
+
+/// The threshold compaction beta: required on a request carrying the threshold control or a
+/// historical native compaction block.
+const THRESHOLD_BETA: &str = "compact-2026-01-12";
+
+/// Maximum character length of custom compaction instructions; a longer value is a 400 naming
+/// `instructions`.
+const MAX_COMPACTION_INSTRUCTIONS_CHARS: usize = 16_384;
+
+/// Minimum input-token threshold of a `compact_20260112` trigger; a smaller value is a 400
+/// naming `trigger`, never a clamp.
+const MIN_TRIGGER_TOKENS: u64 = 50_000;
+
+/// The on-demand compaction control — the official request envelope's `compaction` member.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InboundCompaction {
+    /// Control discriminator: `"summarize"` is the only supported operation; any other value is
+    /// a 400 naming `type`.
+    #[serde(rename = "type")]
+    kind: String,
+
+    /// Custom summarization instructions replacing the summarizer's default prompt.
+    #[serde(default)]
+    instructions: Option<String>,
+}
+
+/// The threshold compaction control — the official request envelope's `context_management`
+/// member.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InboundContextManagement {
+    /// The requested context edits, in order.
+    edits: Vec<InboundContextEdit>,
+}
+
+/// One context-management edit. `compact_20260112` is the only supported edit; every other
+/// discriminator — the `clear_tool_uses_20250919` and `clear_thinking_20251015` edits included —
+/// parses into [`InboundContextEdit::Unsupported`] and is rejected naming `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum InboundContextEdit {
+    /// Threshold compaction edit.
+    #[serde(rename = "compact_20260112")]
+    Compact {
+        /// Input-token trigger; absent or null keeps the protocol's 150,000-token default,
+        /// recorded as [`None`](Option).
+        #[serde(default)]
+        trigger: Option<InboundTrigger>,
+
+        /// Whether the caller requested pausing after the compaction instead of continuing
+        /// generation; absent keeps the protocol default `false`.
+        #[serde(default)]
+        pause_after_compaction: Option<bool>,
+
+        /// Custom summarization instructions; null and whitespace-only mean none.
+        #[serde(default)]
+        instructions: Option<String>,
+    },
+
+    /// Any other edit discriminator, rejected naming `type` at the conversion.
+    #[serde(other)]
+    Unsupported,
+}
+
+/// The input-token trigger of a `compact_20260112` edit.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InboundTrigger {
+    /// Trigger discriminator: `"input_tokens"` is the only supported trigger; any other value is
+    /// a 400 naming `trigger.type`.
+    #[serde(rename = "type")]
+    kind: String,
+
+    /// The threshold in input tokens; below the documented minimum is a 400, never a clamp.
+    value: u64,
+}
+
+/// The vendor-shaped compaction block preserved verbatim into a state item: the same members
+/// with the same presence, no absent member rendered as null.
+#[derive(Debug, Serialize)]
+struct CompactionBlockState<'a> {
+    /// Always `compaction`.
+    #[serde(rename = "type")]
+    kind: &'static str,
+
+    /// The readable summary content, when the block carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a String>,
+
+    /// The signature, when the block carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<&'a String>,
+
+    /// The opaque ciphertext, when the block carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encrypted_content: Option<&'a String>,
+
+    /// The tool changes, when the block carries any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_changes: Option<&'a Vec<Value>>,
+}
+
+/// Compaction facts collected while converting the inbound history: the ordered boundaries and
+/// the verbatim state items beside them, plus the compaction block count for the one-block rule.
+#[derive(Debug, Default)]
+struct CollectedCompaction {
+    /// Compaction state markers in history order.
+    boundaries: Vec<CompactionBoundary>,
+
+    /// Verbatim state items at their offsets.
+    state_items: Vec<StateItem>,
+
+    /// Number of compaction blocks seen so far.
+    block_count: usize,
+}
+
+impl CollectedCompaction {
+    /// Records one compaction content block at its history position: a namespaced signature
+    /// marks a gateway carrier, every other signature — an absent one included — a native block
+    /// whose replay placement follows its position (first content block of the first message is
+    /// leading, a block anywhere else is historical).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidRequest`] naming `content` when the block is the second compaction block
+    /// of the request: the protocol allows exactly one per request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the first-party state block fails to serialize, which cannot occur.
+    fn record_block(
+        &mut self,
+        content: &Option<String>,
+        signature: &Option<String>,
+        encrypted_content: &Option<String>,
+        tool_changes: &Option<Vec<Value>>,
+        is_leading: bool,
+        offset: usize,
+    ) -> Result<(), InvalidRequest> {
+        self.block_count += 1;
+
+        if self.block_count > 1 {
+            return Err(InvalidRequest::field(
+                "content",
+                "at most one compaction block is allowed per request",
+            ));
+        }
+
+        let state = CompactionBlockState {
+            kind: "compaction",
+            content: content.as_ref(),
+            signature: signature.as_ref(),
+            encrypted_content: encrypted_content.as_ref(),
+            tool_changes: tool_changes.as_ref(),
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the state block is a first-party type whose serialization is total"
+        )]
+        let item = serde_json::to_value(&state).expect("first-party wire types serialize");
+
+        match signature {
+            Some(carrier) if carrier.starts_with(CARRIER_NAMESPACE) => {
+                self.boundaries.push(CompactionBoundary::Gateway {
+                    offset,
+                    carrier: carrier.clone(),
+                    visible_content: content.clone(),
+                });
+
+                self.state_items.push(StateItem {
+                    offset,
+                    item,
+                    is_gateway: true,
+                });
+            }
+
+            _ => {
+                self.boundaries.push(CompactionBoundary::Native {
+                    offset,
+                    artifact: NativeArtifact::MessagesCompactionBlock {
+                        is_null_no_op: content.is_none(),
+                        placement: if is_leading {
+                            BoundaryPlacement::Leading
+                        } else {
+                            BoundaryPlacement::Historical
+                        },
+                    },
+                });
+
+                self.state_items.push(StateItem {
+                    offset,
+                    item,
+                    is_gateway: false,
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Normalizes custom compaction instructions: null and whitespace-only mean none, and an
+/// instruction longer than the documented maximum is a 400 naming `instructions`.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] when the instructions exceed
+/// [`MAX_COMPACTION_INSTRUCTIONS_CHARS`].
+fn normalize_instructions(instructions: Option<&str>) -> Result<Option<String>, InvalidRequest> {
+    let Some(instructions) = instructions else {
+        return Ok(None);
+    };
+
+    if instructions.chars().count() > MAX_COMPACTION_INSTRUCTIONS_CHARS {
+        return Err(InvalidRequest::field(
+            "instructions",
+            format!(
+                "compaction instructions must not exceed \
+                 {MAX_COMPACTION_INSTRUCTIONS_CHARS} characters"
+            ),
+        ));
+    }
+
+    Ok((!instructions.trim().is_empty()).then(|| instructions.to_string()))
+}
+
+/// Validates one inbound beta requirement: the caller's `anthropic-beta` entries must carry the
+/// named beta exactly as spelled.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `anthropic-beta` when the entries carry no such beta.
+fn require_beta(betas: &[String], beta: &str) -> Result<(), InvalidRequest> {
+    if betas.iter().any(|candidate| candidate == beta) {
+        return Ok(());
+    }
+
+    Err(InvalidRequest::field(
+        "anthropic-beta",
+        format!("The anthropic-beta header must carry `{beta}` for this compaction request"),
+    ))
+}
+
+/// Parses the two compaction controls of the inbound envelope into their typed forms: the
+/// on-demand `compaction` member and the threshold `context_management` member, validating each
+/// control's own contract (type discriminators, trigger minimum, instruction bounds).
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] for an unsupported compaction type (naming `type`), an
+/// unsupported trigger type (naming `trigger.type`), a sub-minimum trigger (naming `trigger`),
+/// an unsupported edit type (naming `type`), and out-of-range instructions (naming
+/// `instructions`).
+fn parse_compaction_controls(
+    request: &InboundRequest,
+) -> Result<Option<CompactionControl>, InvalidRequest> {
+    let on_demand = match &request.compaction {
+        None => None,
+
+        Some(compaction) => {
+            if compaction.kind != "summarize" {
+                return Err(InvalidRequest::field(
+                    "type",
+                    format!(
+                        "Unsupported compaction type `{}`; only `summarize` is supported",
+                        compaction.kind
+                    ),
+                ));
+            }
+
+            Some(CompactionControl::MessagesOnDemand {
+                instructions: normalize_instructions(compaction.instructions.as_deref())?,
+            })
+        }
+    };
+
+    let threshold = match &request.context_management {
+        None => None,
+
+        Some(management) => {
+            let mut edits = Vec::with_capacity(management.edits.len());
+
+            for edit in &management.edits {
+                match edit {
+                    InboundContextEdit::Compact {
+                        trigger,
+                        pause_after_compaction,
+                        instructions,
+                    } => {
+                        if let Some(trigger) = trigger {
+                            if trigger.kind != "input_tokens" {
+                                return Err(InvalidRequest::field(
+                                    "trigger.type",
+                                    format!(
+                                        "Unsupported compaction trigger type `{}`; only \
+                                         `input_tokens` is supported",
+                                        trigger.kind
+                                    ),
+                                ));
+                            }
+
+                            if trigger.value < MIN_TRIGGER_TOKENS {
+                                return Err(InvalidRequest::field(
+                                    "trigger",
+                                    format!(
+                                        "compaction trigger threshold must be at least \
+                                         {MIN_TRIGGER_TOKENS} input tokens"
+                                    ),
+                                ));
+                            }
+                        }
+
+                        edits.push(compaction_control::ThresholdEdit {
+                            trigger: trigger.as_ref().map(|trigger| trigger.value),
+                            pause_after_compaction: pause_after_compaction.unwrap_or(false),
+                            instructions: normalize_instructions(instructions.as_deref())?,
+                        });
+                    }
+
+                    InboundContextEdit::Unsupported => {
+                        return Err(InvalidRequest::field(
+                            "type",
+                            "Unsupported context_management edit type; only `compact_20260112` \
+                             is supported (`clear_tool_uses_20250919` and \
+                             `clear_thinking_20251015` are not supported)",
+                        ));
+                    }
+                }
+            }
+
+            Some(CompactionControl::MessagesThreshold { edits })
+        }
+    };
+
+    // The two controls are mutually exclusive on the native contract (README §6.8).
+    if on_demand.is_some() && threshold.is_some() {
+        return Err(InvalidRequest::field(
+            "compaction",
+            "compaction and context_management are mutually exclusive",
+        ));
+    }
+
+    Ok(on_demand.or(threshold))
+}
+
+/// Parses a `POST /messages` request body into IR. `betas` carries the caller's `anthropic-beta`
+/// entries (README §6.5 route context), validated against the inbound beta requirements of the
+/// compaction controls and compaction blocks the request carries.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] for malformed JSON and for malformed, unknown, or unsupported
-/// members and values.
-pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
+/// members and values, and for a compaction control or compaction block whose required
+/// `anthropic-beta` entry is missing.
+pub(super) fn parse_inbound_request(
+    body: &[u8],
+    betas: &[String],
+) -> Result<ParsedRequest, InvalidRequest> {
     let request: InboundRequest = crate::format::parse_client_request(body)?;
 
     if request.messages.is_empty() {
-        return Err(InvalidRequest::field(
-            "messages",
-            "messages must contain at least one message",
-        ));
+        let message = if request.compaction.is_some() {
+            "compaction requires a non-empty message history: nothing to summarize"
+        } else {
+            "messages must contain at least one message"
+        };
+
+        return Err(InvalidRequest::field("messages", message));
     }
 
     // Known-but-unsupported sampling control: the IR carries no top-k slot, so present is a
@@ -486,10 +885,17 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
         ));
     }
 
-    let instructions = match &request.system {
-        None => None,
+    let compaction_control = parse_compaction_controls(&request)?;
 
-        Some(StringOrArray::Text(system)) => Some(system.clone()),
+    let instruction_items = match &request.system {
+        None => Vec::new(),
+
+        Some(StringOrArray::Text(system)) => {
+            vec![ParsedInstructionItem {
+                role: InstructionRole::System,
+                text: system.clone(),
+            }]
+        }
 
         Some(StringOrArray::Array(blocks)) => {
             for block in blocks {
@@ -501,9 +907,22 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
                 }
             }
 
-            let combined = blocks
+            blocks
                 .iter()
-                .map(|block| block.text.as_str())
+                .map(|block| ParsedInstructionItem {
+                    role: InstructionRole::System,
+                    text: block.text.clone(),
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let instructions = match &request.system {
+        None => None,
+        Some(_) => {
+            let combined = instruction_items
+                .iter()
+                .map(|item| item.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
 
@@ -512,8 +931,9 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
     };
 
     let mut messages: Vec<IrMessage> = Vec::new();
+    let mut compaction_state = CollectedCompaction::default();
 
-    for message in &request.messages {
+    for (message_index, message) in request.messages.iter().enumerate() {
         match message {
             InboundMessage::User { content } => {
                 // A user turn may mix text/images with tool results; the IR separates the sides,
@@ -548,19 +968,41 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
             }
 
             InboundMessage::Assistant { content } => {
-                let parts = match content {
-                    StringOrArray::Text(text) => vec![IrPart::Text { text: text.clone() }],
+                // A compaction block carries compaction state, never an IR part: the conversion
+                // records it beside the loop, at the offset of the IR messages converted before
+                // the turn holding it, and places it leading exactly at the first content block
+                // of the first message.
+                let mut parts = Vec::new();
+
+                match content {
+                    StringOrArray::Text(text) => parts.push(IrPart::Text { text: text.clone() }),
 
                     StringOrArray::Array(blocks) => {
-                        let mut converted = Vec::with_capacity(blocks.len());
+                        for (block_index, block) in blocks.iter().enumerate() {
+                            if let InboundAssistantBlock::Compaction {
+                                content,
+                                signature,
+                                encrypted_content,
+                                tool_changes,
+                                ..
+                            } = block
+                            {
+                                compaction_state.record_block(
+                                    content,
+                                    signature,
+                                    encrypted_content,
+                                    tool_changes,
+                                    message_index == 0 && block_index == 0,
+                                    messages.len(),
+                                )?;
 
-                        for block in blocks {
-                            converted.push(assistant_block_to_part(block)?);
+                                continue;
+                            }
+
+                            parts.push(assistant_block_to_part(block)?);
                         }
-
-                        converted
                     }
-                };
+                }
 
                 messages.push(IrMessage {
                     role: IrRole::Assistant,
@@ -629,6 +1071,19 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
             })
         }
     };
+
+    // Forced tool use contradicts the on-demand contract (README §6.8).
+    if compaction_control.is_some()
+        && matches!(
+            tool_choice,
+            Some(IrToolChoice::Required) | Some(IrToolChoice::Function { .. })
+        )
+    {
+        return Err(InvalidRequest::field(
+            "tool_choice",
+            "compaction does not support forced tool use (`any` or `tool`)",
+        ));
+    }
 
     // The legacy numeric budget mechanism survives parsing only on the variant where the
     // official member exists: a 400 naming the field, like Gemini `thinkingBudget` (README §6.6).
@@ -708,8 +1163,110 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
         ));
     }
 
+    // A structured-output format contradicts the on-demand contract (README §6.8).
+    if compaction_control.is_some() && response_format.is_some() {
+        return Err(InvalidRequest::field(
+            "format",
+            "compaction does not support output_config.format",
+        ));
+    }
+
+    // A threshold edit cannot run on a request carrying a native compaction block; a gateway
+    // carrier block is not native state and does not trigger the rule.
+    if matches!(
+        compaction_control,
+        Some(CompactionControl::MessagesThreshold { .. })
+    ) && compaction_state
+        .boundaries
+        .iter()
+        .any(|boundary| matches!(boundary, CompactionBoundary::Native { .. }))
+    {
+        return Err(InvalidRequest::field(
+            "context_management",
+            "compact_20260112 cannot run on a request carrying a native compaction block",
+        ));
+    }
+
+    // The inbound beta requirements, validated independently from any outbound requirement: the
+    // on-demand beta covers the on-demand control and a leading native block, the threshold beta
+    // the threshold control and a historical native block. Gateway carrier blocks follow their
+    // source mechanism's contract at preparation, not here.
+    let is_leading_block = |boundary: &CompactionBoundary| {
+        matches!(
+            boundary,
+            CompactionBoundary::Native {
+                artifact: NativeArtifact::MessagesCompactionBlock {
+                    placement: BoundaryPlacement::Leading,
+                    ..
+                },
+                ..
+            }
+        )
+    };
+
+    // On-demand compaction never fabricates a tool result: a request whose
+    // final assistant turn ends in an unresolved tool call is rejected instead
+    // of summarized (the API's own contract). A tool result after the call
+    // resolves it, and a final user message is otherwise valid history.
+    if matches!(
+        compaction_control,
+        Some(CompactionControl::MessagesOnDemand { .. })
+    ) && let Some(last_assistant) = messages
+        .iter()
+        .rfind(|message| message.role == IrRole::Assistant)
+        && let Some(IrPart::ToolCall { call_id, .. }) = last_assistant.parts.last()
+        && !messages.iter().any(|message| {
+            message.role == IrRole::Tool
+                && message.parts.iter().any(|part| {
+                    matches!(part, IrPart::ToolOutput { call_id: answered, .. } if answered == call_id)
+                })
+        })
+    {
+        return Err(InvalidRequest::field(
+            "messages",
+            "on-demand compaction cannot summarize a request whose final tool call has no result",
+        ));
+    }
+
+    if matches!(
+        compaction_control,
+        Some(CompactionControl::MessagesOnDemand { .. })
+    ) || compaction_state.boundaries.iter().any(is_leading_block)
+    {
+        require_beta(betas, ON_DEMAND_BETA)?;
+    }
+
+    if matches!(
+        compaction_control,
+        Some(CompactionControl::MessagesThreshold { .. })
+    ) || compaction_state.boundaries.iter().any(|boundary| {
+        matches!(
+            boundary,
+            CompactionBoundary::Native {
+                artifact: NativeArtifact::MessagesCompactionBlock {
+                    placement: BoundaryPlacement::Historical,
+                    ..
+                },
+                ..
+            }
+        )
+    }) {
+        require_beta(betas, THRESHOLD_BETA)?;
+    }
+
+    let compaction = if compaction_control.is_some() || !compaction_state.boundaries.is_empty() {
+        Some(ParsedCompaction {
+            control: compaction_control,
+            boundaries: compaction_state.boundaries,
+            instruction_items,
+        })
+    } else {
+        None
+    };
+
     Ok(ParsedRequest {
         ir: IrRequest {
+            state_items: compaction_state.state_items,
             model: request.model,
             instructions,
             messages,
@@ -724,6 +1281,7 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
         is_streaming: request.stream.unwrap_or(false),
         // Usage rides every Anthropic response unconditionally; no opt-in chunk exists.
         should_include_usage: false,
+        compaction,
     })
 }
 
@@ -797,6 +1355,11 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
 ///
 /// Returns [`InvalidRequest`] for `document` blocks and for tool arguments that do not encode a
 /// JSON object.
+///
+/// # Panics
+///
+/// Panics on a compaction block, which the message loop never converts: it records the block
+/// beside the history conversion instead.
 fn assistant_block_to_part(block: &InboundAssistantBlock) -> Result<IrPart, InvalidRequest> {
     match block {
         InboundAssistantBlock::Text { text, .. } => Ok(IrPart::Text { text: text.clone() }),
@@ -853,6 +1416,15 @@ fn assistant_block_to_part(block: &InboundAssistantBlock) -> Result<IrPart, Inva
             "content",
             "document blocks are not supported",
         )),
+
+        #[expect(
+            clippy::unreachable,
+            reason = "the message loop records compaction blocks before this conversion and \
+                      never converts one"
+        )]
+        InboundAssistantBlock::Compaction { .. } => {
+            unreachable!("compaction blocks are recorded by the message loop, never converted")
+        }
     }
 }
 
@@ -943,8 +1515,8 @@ mod tests {
             clippy::expect_used,
             reason = "the fixture body is constructed to parse"
         )]
-        let parsed =
-            parse_inbound_request(body.to_string().as_bytes()).expect("every content shape parses");
+        let parsed = parse_inbound_request(body.to_string().as_bytes(), &[])
+            .expect("every content shape parses");
 
         assert!(parsed.is_streaming);
         assert_eq!(parsed.ir.model, "claude-test");
@@ -1068,7 +1640,7 @@ mod tests {
             clippy::expect_used,
             reason = "the between-empty parts form is constructed to parse"
         )]
-        let parsed = parse_inbound_request(between_empty.to_string().as_bytes())
+        let parsed = parse_inbound_request(between_empty.to_string().as_bytes(), &[])
             .expect("tool_result content parts must parse");
 
         #[expect(clippy::expect_used, reason = "the body parses to one message")]
@@ -1102,7 +1674,7 @@ mod tests {
             clippy::expect_used,
             reason = "the leading-empty parts form is constructed to parse"
         )]
-        let parsed = parse_inbound_request(leading_empty.to_string().as_bytes())
+        let parsed = parse_inbound_request(leading_empty.to_string().as_bytes(), &[])
             .expect("tool_result content parts must parse");
 
         #[expect(clippy::expect_used, reason = "the body parses to one message")]
@@ -1199,14 +1771,14 @@ mod tests {
         });
 
         #[expect(clippy::expect_used, reason = "the plain body is constructed to parse")]
-        let plain =
-            parse_inbound_request(plain.to_string().as_bytes()).expect("the plain body parses");
+        let plain = parse_inbound_request(plain.to_string().as_bytes(), &[])
+            .expect("the plain body parses");
 
         #[expect(
             clippy::expect_used,
             reason = "the decorated body is constructed to parse"
         )]
-        let decorated = parse_inbound_request(decorated.to_string().as_bytes())
+        let decorated = parse_inbound_request(decorated.to_string().as_bytes(), &[])
             .expect("the decorated body parses");
 
         // The decoration carries no semantics, so both parses land on the same IR, byte for
@@ -1290,14 +1862,14 @@ mod tests {
         });
 
         #[expect(clippy::expect_used, reason = "the plain body is constructed to parse")]
-        let plain =
-            parse_inbound_request(plain.to_string().as_bytes()).expect("the plain body parses");
+        let plain = parse_inbound_request(plain.to_string().as_bytes(), &[])
+            .expect("the plain body parses");
 
         #[expect(
             clippy::expect_used,
             reason = "the decorated body is constructed to parse"
         )]
-        let decorated = parse_inbound_request(decorated.to_string().as_bytes())
+        let decorated = parse_inbound_request(decorated.to_string().as_bytes(), &[])
             .expect("the decorated body parses");
 
         // The citations carry no semantics, so both parses land on the same IR, byte for
@@ -1386,7 +1958,7 @@ mod tests {
                 clippy::expect_used,
                 reason = "each output_config shape is constructed to parse"
             )]
-            let parsed = parse_inbound_request(body.to_string().as_bytes())
+            let parsed = parse_inbound_request(body.to_string().as_bytes(), &[])
                 .expect("the output_config shape parses");
 
             assert_eq!(parsed.ir.response_format, expected_format);
@@ -1408,7 +1980,7 @@ mod tests {
                 clippy::expect_used,
                 reason = "each malformed format is constructed to be rejected"
             )]
-            let error = parse_inbound_request(body.to_string().as_bytes())
+            let error = parse_inbound_request(body.to_string().as_bytes(), &[])
                 .expect_err("the malformed format must be rejected");
 
             assert_eq!(error.param.as_deref(), Some("format"));
@@ -1524,7 +2096,7 @@ mod tests {
                 clippy::expect_used,
                 reason = "each control is constructed to be rejected"
             )]
-            let error = parse_inbound_request(body.to_string().as_bytes())
+            let error = parse_inbound_request(body.to_string().as_bytes(), &[])
                 .expect_err("the unsupported control must be rejected");
 
             assert_eq!(error.param.as_deref(), param, "wrong param for {error}");
@@ -1553,7 +2125,7 @@ mod tests {
                 clippy::expect_used,
                 reason = "each known-unsupported control is constructed to be rejected"
             )]
-            let error = parse_inbound_request(body.to_string().as_bytes())
+            let error = parse_inbound_request(body.to_string().as_bytes(), &[])
                 .expect_err("the known-unsupported control must be rejected");
 
             assert_eq!(error.to_string(), message);
@@ -1601,7 +2173,7 @@ mod tests {
                 clippy::expect_used,
                 reason = "each thinking disposition is constructed to parse"
             )]
-            let parsed = parse_inbound_request(body.to_string().as_bytes())
+            let parsed = parse_inbound_request(body.to_string().as_bytes(), &[])
                 .expect("the thinking disposition parses");
 
             assert_eq!(parsed.ir.reasoning_effort, expected);
@@ -1616,9 +2188,886 @@ mod tests {
             clippy::expect_used,
             reason = "the unknown effort is constructed to be rejected"
         )]
-        let error = parse_inbound_request(body.to_string().as_bytes())
+        let error = parse_inbound_request(body.to_string().as_bytes(), &[])
             .expect_err("an unknown effort must be rejected");
 
         assert_eq!(error.param.as_deref(), Some("output_config"));
+    }
+
+    /// Parses one inbound body with the given `anthropic-beta` entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the body is not a JSON object fixture, which cannot occur.
+    fn parse_with_betas(body: Value, betas: &[&str]) -> Result<ParsedRequest, InvalidRequest> {
+        let betas: Vec<String> = betas.iter().map(|beta| beta.to_string()).collect();
+
+        parse_inbound_request(body.to_string().as_bytes(), &betas)
+    }
+
+    /// Builds the minimal valid compaction request body: one user turn plus the given
+    /// extra members.
+    fn compaction_body(extra: Value) -> Value {
+        let mut body = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "summarize this"}],
+        });
+
+        set_member(&mut body, "compaction", extra);
+
+        body
+    }
+
+    /// The parsed compaction control of one request.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the request carries no compaction facts: the absence is the failure.
+    fn compaction_of(parsed: &ParsedRequest) -> &CompactionControl {
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture carries compaction facts; their absence is the failure"
+        )]
+        parsed
+            .compaction
+            .as_ref()
+            .and_then(|compaction| compaction.control.as_ref())
+            .expect("the fixture carries a compaction control")
+    }
+
+    /// Reads the only boundary of one parsed request.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the request does not carry exactly one boundary: the count is the failure.
+    fn only_boundary(parsed: &ParsedRequest) -> &CompactionBoundary {
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is constructed to parse; a missing value is the failure"
+        )]
+        let compaction = parsed
+            .compaction
+            .as_ref()
+            .expect("the fixture carries compaction facts");
+
+        assert_eq!(compaction.boundaries.len(), 1);
+
+        #[expect(clippy::expect_used, reason = "exactly one boundary was just asserted")]
+        compaction.boundaries.first().expect("exactly one boundary")
+    }
+
+    /// Reads the only state item of one parsed request.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the request does not carry exactly one state item: the count is the failure.
+    fn only_state_item(parsed: &ParsedRequest) -> &StateItem {
+        assert_eq!(parsed.ir.state_items.len(), 1);
+
+        #[expect(clippy::expect_used, reason = "exactly one item was just asserted")]
+        parsed
+            .ir
+            .state_items
+            .first()
+            .expect("exactly one state item")
+    }
+
+    /// Reports a boundary that should have been a gateway carrier.
+    ///
+    /// # Panics
+    ///
+    /// Always panics: the caller reached a native boundary where the gateway carrier shape was
+    /// required, which is the failure under test.
+    #[expect(clippy::panic, reason = "a wrong boundary shape is the failure report")]
+    fn panic_boundary(boundary: &CompactionBoundary) -> ! {
+        panic!("a namespaced signature must recognize a gateway carrier, got {boundary:?}")
+    }
+
+    /// The on-demand control parses with its documented instruction semantics: absent and
+    /// whitespace-only instructions mean none, a verbatim non-blank value is kept, an
+    /// instruction beyond the documented maximum is a 400 naming `instructions`, and a
+    /// non-`summarize` type is a 400 naming `type`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any parse diverges from the documented control contract.
+    #[test]
+    fn parses_the_on_demand_control() {
+        for (instructions, expected) in [
+            (None, None),
+            (Some("   "), None),
+            (
+                Some("focus on decisions"),
+                Some("focus on decisions".to_string()),
+            ),
+        ] {
+            let extra = match instructions {
+                None => json!({"type": "summarize"}),
+                Some(value) => json!({"type": "summarize", "instructions": value}),
+            };
+
+            #[expect(
+                clippy::expect_used,
+                reason = "each instruction shape is constructed to parse"
+            )]
+            let parsed = parse_with_betas(compaction_body(extra), &[super::ON_DEMAND_BETA])
+                .expect("the on-demand body parses");
+
+            assert_eq!(
+                compaction_of(&parsed),
+                &CompactionControl::MessagesOnDemand {
+                    instructions: expected,
+                }
+            );
+        }
+
+        // An instruction beyond the maximum is a 400 naming `instructions`.
+        let long = "x".repeat(super::MAX_COMPACTION_INSTRUCTIONS_CHARS + 1);
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(
+            compaction_body(json!({"type": "summarize", "instructions": long})),
+            &[super::ON_DEMAND_BETA],
+        )
+        .expect_err("the over-long instructions must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("instructions"));
+
+        // Exactly the maximum parses.
+        let exactly = "x".repeat(super::MAX_COMPACTION_INSTRUCTIONS_CHARS);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the boundary-length instructions are constructed to parse"
+        )]
+        let parsed = parse_with_betas(
+            compaction_body(json!({"type": "summarize", "instructions": exactly})),
+            &[super::ON_DEMAND_BETA],
+        )
+        .expect("the boundary-length instructions parse");
+
+        assert!(matches!(
+            compaction_of(&parsed),
+            CompactionControl::MessagesOnDemand {
+                instructions: Some(_)
+            }
+        ));
+
+        // A non-`summarize` type is a 400 naming `type`.
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(
+            compaction_body(json!({"type": "rewrite"})),
+            &[super::ON_DEMAND_BETA],
+        )
+        .expect_err("a non-summarize type must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("type"));
+    }
+
+    /// An unresolved final tool call rejects on-demand compaction: the gateway
+    /// never fabricates a tool result to make the history summarizable. A
+    /// resolved pair (tool call, then its result) stays valid.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails — the assertion is the failure report.
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "fixtures serialize and parse values constructed to succeed; the rejection is \
+                  the assertion"
+    )]
+    fn rejects_an_unresolved_final_tool_call_for_on_demand() {
+        let mut unresolved = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "user", "content": "search"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}}
+                ]},
+                {"role": "user", "content": "summarize this too"},
+            ],
+        });
+
+        set_member(&mut unresolved, "compaction", json!({"type": "summarize"}));
+
+        let error = parse_inbound_request(
+            serde_json::to_vec(&unresolved)
+                .expect("the fixture serializes")
+                .as_slice(),
+            &[],
+        )
+        .expect_err("the unresolved final tool call is rejected");
+
+        assert_eq!(error.param.as_deref(), Some("messages"));
+
+        // A resolved tool exchange before the pending user turn is valid.
+        let mut resolved = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "user", "content": "search"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "result"}
+                ]},
+                {"role": "user", "content": "summarize this too"},
+            ],
+        });
+
+        set_member(&mut resolved, "compaction", json!({"type": "summarize"}));
+
+        let parsed = parse_inbound_request(
+            serde_json::to_vec(&resolved)
+                .expect("the fixture serializes")
+                .as_slice(),
+            &[super::ON_DEMAND_BETA.to_string()],
+        )
+        .expect("the resolved history summarizes");
+
+        assert!(matches!(
+            compaction_of(&parsed),
+            CompactionControl::MessagesOnDemand { .. }
+        ));
+    }
+    /// The threshold control parses its edits in order with the documented defaults — absent
+    /// trigger keeps the protocol default (recorded as `None`), `pause_after_compaction`
+    /// defaults to `false` — while a sub-minimum trigger (naming `trigger`), a non-
+    /// `input_tokens` trigger type (naming `trigger.type`), and an unsupported edit type
+    /// including the `clear_tool_uses_20250919`/`clear_thinking_20251015` spellings (naming
+    /// `type`) are 400s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any parse diverges from the documented control contract.
+    #[test]
+    fn parses_the_threshold_control() {
+        let threshold_body = |edits: Value| {
+            let mut body = json!({
+                "model": "m",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            });
+
+            set_member(&mut body, "context_management", json!({"edits": edits}));
+
+            body
+        };
+
+        // Defaults: no trigger member keeps the protocol default, recorded as `None`; the
+        // pause flag defaults to `false`.
+        #[expect(
+            clippy::expect_used,
+            reason = "the default edit shape is constructed to parse"
+        )]
+        let parsed = parse_with_betas(
+            threshold_body(json!([{"type": "compact_20260112"}])),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect("the default edit parses");
+
+        assert_eq!(
+            compaction_of(&parsed),
+            &CompactionControl::MessagesThreshold {
+                edits: vec![compaction_control::ThresholdEdit {
+                    trigger: None,
+                    pause_after_compaction: false,
+                    instructions: None,
+                }],
+            }
+        );
+
+        // A stated trigger, pause flag, and whitespace-only instructions parse through.
+        #[expect(
+            clippy::expect_used,
+            reason = "the stated edit shape is constructed to parse"
+        )]
+        let parsed = parse_with_betas(
+            threshold_body(json!([{
+                "type": "compact_20260112",
+                "trigger": {"type": "input_tokens", "value": 150_000},
+                "pause_after_compaction": true,
+                "instructions": "   ",
+            }])),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect("the stated edit parses");
+
+        assert_eq!(
+            compaction_of(&parsed),
+            &CompactionControl::MessagesThreshold {
+                edits: vec![compaction_control::ThresholdEdit {
+                    trigger: Some(150_000),
+                    pause_after_compaction: true,
+                    instructions: None,
+                }],
+            }
+        );
+
+        // The minimum trigger value parses; one below it is a 400 naming `trigger`, never
+        // clamped.
+        #[expect(
+            clippy::expect_used,
+            reason = "the minimum trigger is constructed to parse"
+        )]
+        let parsed = parse_with_betas(
+            threshold_body(json!([{
+                "type": "compact_20260112",
+                "trigger": {"type": "input_tokens", "value": 50_000},
+            }])),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect("the minimum trigger parses");
+
+        assert_eq!(
+            compaction_of(&parsed),
+            &CompactionControl::MessagesThreshold {
+                edits: vec![compaction_control::ThresholdEdit {
+                    trigger: Some(50_000),
+                    pause_after_compaction: false,
+                    instructions: None,
+                }],
+            }
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(
+            threshold_body(json!([{
+                "type": "compact_20260112",
+                "trigger": {"type": "input_tokens", "value": 49_999},
+            }])),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect_err("the sub-minimum trigger must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("trigger"));
+
+        // A non-`input_tokens` trigger type is a 400 naming `trigger.type`.
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(
+            threshold_body(json!([{
+                "type": "compact_20260112",
+                "trigger": {"type": "output_tokens", "value": 150_000},
+            }])),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect_err("the foreign trigger type must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("trigger.type"));
+
+        // Unsupported edit types — the clear edits included — are 400s naming `type`.
+        for kind in [
+            "clear_tool_uses_20250919",
+            "clear_thinking_20251015",
+            "compact_99999999",
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+            )]
+            let error = parse_with_betas(
+                threshold_body(json!([{"type": kind}])),
+                &[super::THRESHOLD_BETA],
+            )
+            .expect_err("an unsupported edit type must be rejected");
+
+            assert_eq!(
+                error.param.as_deref(),
+                Some("type"),
+                "wrong param for {kind}"
+            );
+        }
+    }
+
+    /// The invalid-combination rules are 400s naming their fields: the two controls together
+    /// (naming `compaction`), the on-demand control with `output_config.format` (naming
+    /// `format`), with forced tool use (naming `tool_choice`), or with an empty message list
+    /// (naming `messages`), and a threshold edit beside a native compaction block (naming
+    /// `context_management`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any combination fails to reject or rejects under another name.
+    #[test]
+    fn rejects_the_invalid_combinations() {
+        let base = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+
+        let with_compaction = |mut body: Value| {
+            set_member(&mut body, "compaction", json!({"type": "summarize"}));
+
+            body
+        };
+
+        let mut both = base.clone();
+
+        set_member(&mut both, "compaction", json!({"type": "summarize"}));
+        set_member(
+            &mut both,
+            "context_management",
+            json!({"edits": [{"type": "compact_20260112"}]}),
+        );
+
+        let cases = vec![
+            // Both controls together.
+            (both, Some("compaction"), super::ON_DEMAND_BETA),
+            // A structured-output format beside the on-demand control.
+            (
+                with_compaction(json!({
+                    "model": "m",
+                    "max_tokens": 16,
+                    "output_config": {
+                        "format": {"type": "json_schema", "schema": {"type": "object"}}
+                    },
+                    "messages": [{"role": "user", "content": "hi"}],
+                })),
+                Some("format"),
+                super::ON_DEMAND_BETA,
+            ),
+            // Forced tool use beside the on-demand control.
+            (
+                with_compaction(json!({
+                    "model": "m",
+                    "max_tokens": 16,
+                    "tools": [{"name": "ping", "input_schema": {"type": "object"}}],
+                    "tool_choice": {"type": "any"},
+                    "messages": [{"role": "user", "content": "hi"}],
+                })),
+                Some("tool_choice"),
+                super::ON_DEMAND_BETA,
+            ),
+            (
+                with_compaction(json!({
+                    "model": "m",
+                    "max_tokens": 16,
+                    "tools": [{"name": "ping", "input_schema": {"type": "object"}}],
+                    "tool_choice": {"type": "tool", "name": "ping"},
+                    "messages": [{"role": "user", "content": "hi"}],
+                })),
+                Some("tool_choice"),
+                super::ON_DEMAND_BETA,
+            ),
+            // An empty message list has nothing to summarize.
+            (
+                with_compaction(json!({"model": "m", "max_tokens": 16, "messages": []})),
+                Some("messages"),
+                super::ON_DEMAND_BETA,
+            ),
+        ];
+
+        for (body, param, beta) in cases {
+            #[expect(
+                clippy::expect_used,
+                reason = "each combination is constructed to be rejected"
+            )]
+            let error = parse_with_betas(body, &[beta])
+                .expect_err("the invalid combination must be rejected");
+
+            assert_eq!(error.param.as_deref(), param, "wrong param for {error}");
+        }
+
+        // The empty-history rejection names the summarization wording.
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(
+            with_compaction(json!({"model": "m", "max_tokens": 16, "messages": []})),
+            &[super::ON_DEMAND_BETA],
+        )
+        .expect_err("the empty history must be rejected");
+
+        assert!(error.to_string().contains("nothing to summarize"));
+
+        // Unforced tool choices beside the on-demand control stay valid.
+        for choice in ["auto", "none"] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the unforced choice is constructed to parse"
+            )]
+            let parsed = parse_with_betas(
+                with_compaction(json!({
+                    "model": "m",
+                    "max_tokens": 16,
+                    "tools": [{"name": "ping", "input_schema": {"type": "object"}}],
+                    "tool_choice": {"type": choice},
+                    "messages": [{"role": "user", "content": "hi"}],
+                })),
+                &[super::ON_DEMAND_BETA],
+            )
+            .expect("an unforced tool choice parses beside the control");
+
+            assert!(parsed.compaction.is_some());
+        }
+
+        // A threshold edit beside a native compaction block is a 400 naming
+        // `context_management`; a gateway carrier block is not native and does not trigger
+        // the rule.
+        let threshold_with_block = |signature: &str| {
+            let body = json!({
+                "model": "m",
+                "max_tokens": 16,
+                "context_management": {"edits": [{"type": "compact_20260112"}]},
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": [
+                        {"type": "text", "text": "worked"},
+                        {"type": "compaction", "content": "summary", "signature": signature},
+                    ]},
+                ],
+            });
+
+            body
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(
+            threshold_with_block("native-signature"),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect_err("a threshold edit beside a native block must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("context_management"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the gateway-carrier shape is constructed to parse"
+        )]
+        let parsed = parse_with_betas(
+            threshold_with_block("janusgate.compaction.v1.primary.aGVsbG8"),
+            &[super::THRESHOLD_BETA],
+        )
+        .expect("a threshold edit beside a gateway carrier parses");
+
+        assert!(parsed.compaction.is_some());
+    }
+
+    /// Compaction content blocks convert into the boundary/state-item pair by the signature
+    /// namespace: a namespaced signature marks a gateway carrier (visible content beside the
+    /// raw block), any other signature — absent included — a native block whose placement is
+    /// leading exactly at the first content block of the first message and historical anywhere
+    /// else, whose offset counts the IR messages converted before it, and whose null content
+    /// marks the no-op. A second compaction block is a 400 naming `content`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any recognition diverges from the documented contract.
+    #[test]
+    fn recognizes_gateway_and_native_compaction_blocks() {
+        let gateway_signature = "janusgate.compaction.v1.primary.aGVsbG8=";
+
+        // Gateway carrier: boundary beside a gateway state item carrying the raw block.
+        let body = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "compaction", "content": "readable summary",
+                     "signature": gateway_signature},
+                ]},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the gateway block shape is constructed to parse"
+        )]
+        let parsed = parse_with_betas(body, &[]).expect("the gateway block parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is constructed to parse; a missing value is the failure"
+        )]
+        let compaction = parsed
+            .compaction
+            .as_ref()
+            .expect("the gateway block produces compaction facts");
+
+        assert!(compaction.control.is_none());
+
+        let boundary = only_boundary(&parsed);
+
+        let CompactionBoundary::Gateway {
+            offset,
+            carrier,
+            visible_content,
+        } = boundary
+        else {
+            panic_boundary(boundary);
+        };
+
+        assert_eq!(*offset, 0);
+        assert_eq!(carrier, gateway_signature);
+        assert_eq!(visible_content.as_deref(), Some("readable summary"));
+
+        let state_item = only_state_item(&parsed);
+
+        assert!(state_item.is_gateway);
+        assert_eq!(state_item.offset, 0);
+        assert_eq!(
+            state_item.item,
+            json!({
+                "type": "compaction",
+                "content": "readable summary",
+                "signature": gateway_signature,
+            })
+        );
+
+        // A leading native block: first content block of the first message, null content
+        // marking the no-op, absent members never fabricated in the state item.
+        let body = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "compaction"},
+                ]},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the null block shape is constructed to parse"
+        )]
+        let parsed =
+            parse_with_betas(body, &[super::ON_DEMAND_BETA]).expect("the null no-op block parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is constructed to parse; a missing value is the failure"
+        )]
+        let compaction = parsed
+            .compaction
+            .as_ref()
+            .expect("the null block produces compaction facts");
+
+        assert_eq!(
+            compaction.boundaries,
+            vec![CompactionBoundary::Native {
+                offset: 0,
+                artifact: NativeArtifact::MessagesCompactionBlock {
+                    is_null_no_op: true,
+                    placement: BoundaryPlacement::Leading,
+                },
+            }]
+        );
+        let state_item = only_state_item(&parsed);
+
+        assert!(!state_item.is_gateway);
+        assert_eq!(state_item.item, json!({"type": "compaction"}));
+
+        // A historical native block sits mid-turn in a later message; its offset counts the
+        // IR messages converted before the turn holding it.
+        let body = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "one"},
+                    {"type": "text", "text": "two"},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "worked"},
+                    {"type": "compaction", "content": "summary", "signature": "native-sig"},
+                ]},
+                {"role": "user", "content": "next"},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the historical block shape is constructed to parse"
+        )]
+        let parsed =
+            parse_with_betas(body, &[super::THRESHOLD_BETA]).expect("the historical block parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is constructed to parse; a missing value is the failure"
+        )]
+        let compaction = parsed
+            .compaction
+            .as_ref()
+            .expect("the historical block produces compaction facts");
+
+        // The user turn's two texts merge into one IR message, so the offset is 1.
+        assert_eq!(
+            compaction.boundaries,
+            vec![CompactionBoundary::Native {
+                offset: 1,
+                artifact: NativeArtifact::MessagesCompactionBlock {
+                    is_null_no_op: false,
+                    placement: BoundaryPlacement::Historical,
+                },
+            }]
+        );
+
+        // A second compaction block is a 400 naming `content`.
+        let body = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "compaction", "content": "first", "signature": "sig"},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "compaction", "content": "second", "signature": "sig"},
+                ]},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rejected body is constructed to fail; an Ok is the failure under test"
+        )]
+        let error = parse_with_betas(body, &[super::ON_DEMAND_BETA])
+            .expect_err("a second compaction block must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("content"));
+    }
+
+    /// The inbound beta requirements: the on-demand beta covers the on-demand control and a
+    /// leading native block, the threshold beta the threshold control and a historical native
+    /// block; the exact beta spelling must appear among the caller's `anthropic-beta` entries
+    /// and unrelated entries are tolerated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any beta requirement fails to enforce or rejects a satisfied one.
+    #[test]
+    fn validates_the_inbound_beta_requirements() {
+        let on_demand_body = || compaction_body(json!({"type": "summarize"}));
+
+        let leading_block_body = || {
+            json!({
+                "model": "m",
+                "max_tokens": 16,
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "compaction", "content": "summary", "signature": "sig"},
+                    ]},
+                ],
+            })
+        };
+
+        let threshold_body = || {
+            let mut body = json!({
+                "model": "m",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            });
+
+            set_member(
+                &mut body,
+                "context_management",
+                json!({"edits": [{"type": "compact_20260112"}]}),
+            );
+
+            body
+        };
+
+        let historical_block_body = || {
+            json!({
+                "model": "m",
+                "max_tokens": 16,
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": [
+                        {"type": "compaction", "content": "summary", "signature": "sig"},
+                    ]},
+                ],
+            })
+        };
+
+        // Missing betas are 400s naming the header.
+        for body in [
+            on_demand_body(),
+            leading_block_body(),
+            threshold_body(),
+            historical_block_body(),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "each missing-beta body is constructed to be rejected"
+            )]
+            let error = parse_with_betas(body, &[]).expect_err("the missing beta must be rejected");
+
+            assert_eq!(error.param.as_deref(), Some("anthropic-beta"));
+            assert!(error.to_string().contains("anthropic-beta"));
+        }
+
+        // Unrelated entries do not satisfy either requirement.
+        for body in [on_demand_body(), threshold_body()] {
+            #[expect(
+                clippy::expect_used,
+                reason = "each unrelated-beta body is constructed to be rejected"
+            )]
+            let error = parse_with_betas(body, &["interleaved-thinking-2025-05-14"])
+                .expect_err("an unrelated beta must not satisfy the requirement");
+
+            assert_eq!(error.param.as_deref(), Some("anthropic-beta"));
+        }
+
+        // The exact spellings satisfy their requirements, beside unrelated entries.
+        #[expect(
+            clippy::expect_used,
+            reason = "the satisfied on-demand body is constructed to parse"
+        )]
+        let parsed = parse_with_betas(
+            on_demand_body(),
+            &["interleaved-thinking-2025-05-14", super::ON_DEMAND_BETA],
+        )
+        .expect("the on-demand beta satisfies the requirement");
+
+        assert!(parsed.compaction.is_some());
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the satisfied leading-block body is constructed to parse"
+        )]
+        let parsed = parse_with_betas(leading_block_body(), &[super::ON_DEMAND_BETA])
+            .expect("the on-demand beta satisfies the leading block");
+
+        assert!(parsed.compaction.is_some());
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the satisfied threshold body is constructed to parse"
+        )]
+        let parsed = parse_with_betas(threshold_body(), &[super::THRESHOLD_BETA])
+            .expect("the threshold beta satisfies the threshold control");
+
+        assert!(parsed.compaction.is_some());
+
+        // A historical block requires the threshold beta, not the on-demand one.
+        #[expect(
+            clippy::expect_used,
+            reason = "the historical body is constructed to be rejected under the wrong beta"
+        )]
+        let error = parse_with_betas(historical_block_body(), &[super::ON_DEMAND_BETA])
+            .expect_err("the on-demand beta must not satisfy the threshold requirement");
+
+        assert_eq!(error.param.as_deref(), Some("anthropic-beta"));
     }
 }

@@ -28,6 +28,15 @@ pub(crate) fn render_request_body(
     upstream_id: &str,
     is_streaming: bool,
 ) -> Result<RequestBody, InvalidRequest> {
+    // The Interactions protocol has no compaction state channel: opaque
+    // native state another surface produced is never silently discarded, so
+    // its presence fails the render (the caller's replay is producer-bound).
+    if !ir.state_items.is_empty() {
+        return Err(InvalidRequest::request(
+            "the request carries compaction state the Interactions upstream cannot replay",
+        ));
+    }
+
     let body = RequestBody {
         model: upstream_id.to_string(),
         system_instruction: ir.instructions.clone(),
@@ -409,6 +418,7 @@ mod tests {
     #[test]
     fn renders_the_request_envelope() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "upstream-model".to_string(),
             ..IrRequest::default()
         };
@@ -442,6 +452,7 @@ mod tests {
 
         for (level, thinking_level) in IrReasoningLevel::VOCABULARY {
             let ir = IrRequest {
+                state_items: Vec::new(),
                 model: "m".to_string(),
                 reasoning_effort: Some(level),
                 ..IrRequest::default()
@@ -464,6 +475,7 @@ mod tests {
         }
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             ..IrRequest::default()
         };
@@ -501,6 +513,7 @@ mod tests {
             ),
         ] {
             let ir = IrRequest {
+                state_items: Vec::new(),
                 model: "m".to_string(),
                 tool_choice: Some(choice),
                 ..IrRequest::default()
@@ -516,6 +529,7 @@ mod tests {
         }
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             ..IrRequest::default()
         };
@@ -537,6 +551,7 @@ mod tests {
     #[test]
     fn drops_sampling_values_without_an_official_slot() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             temperature: Some(0.5),
             top_p: Some(0.9),
@@ -567,6 +582,7 @@ mod tests {
     #[test]
     fn renders_response_format() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             response_format: Some(IrResponseFormat::JsonSchema {
                 name: "answer".to_string(),
@@ -587,6 +603,7 @@ mod tests {
         );
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             response_format: Some(IrResponseFormat::Json),
             ..IrRequest::default()
@@ -603,6 +620,7 @@ mod tests {
         );
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             response_format: Some(IrResponseFormat::Text),
             ..IrRequest::default()
@@ -636,6 +654,7 @@ mod tests {
         });
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             instructions: Some("be terse".to_string()),
             messages: vec![
@@ -791,6 +810,7 @@ mod tests {
         });
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             messages: vec![IrMessage {
                 role: IrRole::Assistant,
@@ -835,6 +855,7 @@ mod tests {
         use crate::ir::{IrMessage, IrRole};
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             messages: vec![IrMessage {
                 role: IrRole::Tool,

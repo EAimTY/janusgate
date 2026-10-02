@@ -4,6 +4,7 @@ import type {
     ApiLogEndpointType,
     ApiLogOutcome,
     DiscoveryState,
+    MechanismSupport,
     ProviderResponse,
     UpstreamFormat,
     UsageGroupBy,
@@ -144,6 +145,53 @@ export const UPSTREAM_FORMAT = defineVocabulary<UpstreamFormat>(
     "an upstream format",
 );
 
+/**
+ * The remote-compaction mechanisms as the gateway declares them (README §5):
+ * the closed set of mechanism spellings the model rows' compaction facts and
+ * the definition payloads' declarations are keyed by. The generated bindings
+ * render the fact columns as index-signature maps, not as this union — the
+ * maps' key domain is still this set, so the vocabulary below narrows every
+ * key explicitly.
+ */
+export type CompactionMechanism =
+    | "responses_standalone_compact"
+    | "responses_explicit_trigger"
+    | "responses_automatic_compaction"
+    | "messages_on_demand_compaction"
+    | "messages_threshold_compaction";
+
+/**
+ * The remote-compaction mechanisms as one vocabulary. The labels record's
+ * type is exhaustive, so a mechanism added to the gateway's enum fails to
+ * compile until it is listed here.
+ */
+export const COMPACTION_MECHANISM = defineVocabulary<CompactionMechanism>(
+    {
+        responses_standalone_compact: "Standalone compact",
+        responses_explicit_trigger: "Explicit trigger",
+        responses_automatic_compaction: "Automatic compaction",
+        messages_on_demand_compaction: "On-demand compaction",
+        messages_threshold_compaction: "Threshold compaction",
+    },
+    "a compaction mechanism",
+);
+
+/**
+ * A mechanism's support state as one vocabulary, over the generated union
+ * itself: the states a model row's compaction facts and an administrator's
+ * override carry. Unknown is a positive state meaning "no fact" — the
+ * gateway preserves it distinctly from unsupported, and so does every
+ * presentation here.
+ */
+export const MECHANISM_SUPPORT = defineVocabulary<MechanismSupport>(
+    {
+        supported: "Supported",
+        unsupported: "Unsupported",
+        unknown: "Unknown",
+    },
+    "a mechanism support state",
+);
+
 /** The OAuth member of the provider row union — the only kind carrying an expiry. */
 export type OauthProviderRow = Extract<
     ProviderResponse,
@@ -214,6 +262,7 @@ export const API_LOG_ENDPOINT_TYPE = defineVocabulary<ApiLogEndpointType>(
     {
         openai_chat_completions: "Chat Completions",
         openai_responses: "Responses",
+        openai_responses_compact: "Responses compact",
         gemini_generate_content: "Gemini GenerateContent",
         gemini_interactions: "Gemini Interactions",
         anthropic_messages: "Anthropic Messages",

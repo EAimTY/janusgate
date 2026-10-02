@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import type { BadgeTone } from "/src/ui/feedback";
-import { modelServingBadge } from "/src/ui/models-table";
+import { modelCompactionBadges, modelServingBadge } from "/src/ui/models-table";
 
 const enabledProvider: ProviderResponse = {
     type: "api_key",
@@ -36,6 +36,8 @@ function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
         thinking_levels_override: null,
         max_input_tokens_override: null,
         max_output_tokens_override: null,
+        compaction_support: null,
+        compaction_support_override: null,
         ...overrides,
     };
 }
@@ -165,5 +167,57 @@ describe("modelServingBadge", () => {
                 label: rung.label,
             });
         }
+    });
+});
+
+describe("modelCompactionBadges", () => {
+    it("omits every mechanism a row with no facts carries", () => {
+        expect(modelCompactionBadges(model())).toEqual([]);
+    });
+
+    it("states each discovered fact, positive and negative, per mechanism", () => {
+        expect(
+            modelCompactionBadges(
+                model({
+                    compaction_support: {
+                        messages_on_demand_compaction: "supported",
+                        messages_threshold_compaction: "unsupported",
+                    },
+                }),
+            ),
+        ).toEqual([
+            {
+                tone: "ok",
+                label: "on-demand",
+            },
+            {
+                tone: "muted",
+                label: "no threshold",
+            },
+        ]);
+    });
+
+    it("reads the override over the discovered facts, per mechanism", () => {
+        expect(
+            modelCompactionBadges(
+                model({
+                    compaction_support: {
+                        messages_on_demand_compaction: "supported",
+                    },
+                    compaction_support_override: {
+                        // The explicit unknown is a positive "no fact": the
+                        // badge omits the mechanism rather than claiming a
+                        // direction nobody stated.
+                        messages_on_demand_compaction: "unknown",
+                        responses_standalone_compact: "supported",
+                    },
+                }),
+            ),
+        ).toEqual([
+            {
+                tone: "ok",
+                label: "compact",
+            },
+        ]);
     });
 });

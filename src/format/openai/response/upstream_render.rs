@@ -9,7 +9,7 @@ use crate::{
         RenderOption,
         openai::{ToolChoice, render_tool_choice},
     },
-    ir::{IrPart, IrRequest, IrResponseFormat, IrRole},
+    ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrRole, StateItem},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -61,12 +61,33 @@ pub(crate) struct RequestBody<'a> {
     /// Reasoning configuration, omitted when the request has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Reasoning<'a>>,
+
+    /// Vendor-shaped automatic-compaction controls passed through to a native
+    /// automatic upstream, supplied by the compaction executor; omitted unless
+    /// one dispatch carries them. The entries are third-party wire fragments
+    /// whose shapes the upstream defines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<&'a [Value]>,
 }
 
 /// One conversation item of the upstream request.
 #[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(untagged)]
 enum InputItem<'a> {
+    /// A typed conversation item.
+    Typed(TypedInputItem<'a>),
+
+    /// A verbatim vendor-shaped state item — native compaction or encrypted
+    /// reasoning state — replayed at its history position. Its shape is the
+    /// vendor's, not the gateway's, so the item rides as the raw value it was
+    /// parsed from.
+    State(Value),
+}
+
+/// The typed conversation items of the upstream request.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TypedInputItem<'a> {
     /// A user or assistant message.
     Message {
         /// Participating role.
@@ -204,25 +225,108 @@ struct Reasoning<'a> {
 ///
 /// The `omit_max_output_tokens` render option drops the client-requested cap: the upstream
 /// rejects the parameter as unsupported, and the model's own output bound applies instead.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] when a gateway carrier is present among the
+/// state items — such an item must be decoded and removed during compaction
+/// preparation, so its presence at render time is an invariant violation that
+/// fails fast instead of forwarding gateway state upstream.
 pub(crate) fn render_request_body<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
     render_options: &[RenderOption],
-) -> RequestBody<'a> {
-    let mut body = render_body(ir, is_streaming);
+) -> Result<RequestBody<'a>, InvalidRequest> {
+    render_request_body_with_extensions(ir, is_streaming, render_options, None)
+}
+
+/// Renders the upstream Responses payload with the compaction executor's
+/// extensions: `context_management` carries the vendor-shaped automatic
+/// compaction controls a native automatic upstream receives; every other
+/// dispatch passes [`None`], rendering no such member.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] as [`render_request_body`].
+pub(crate) fn render_request_body_with_extensions<'a>(
+    ir: &'a IrRequest,
+    is_streaming: bool,
+    render_options: &[RenderOption],
+    context_management: Option<&'a [Value]>,
+) -> Result<RequestBody<'a>, InvalidRequest> {
+    let mut body = render_body(ir, is_streaming, context_management)?;
 
     if render_options.contains(&RenderOption::OmitMaxOutputTokens) {
         body.max_output_tokens = None;
     }
 
-    body
+    Ok(body)
 }
 
-/// Renders an IR request into the plain upstream Responses payload.
-fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
-    let mut input: Vec<InputItem<'_>> = Vec::new();
+/// The upstream standalone compact request payload: the model, the spliced
+/// input window, and the instructions — nothing else. The compact body has no
+/// generation-only controls and no `stream` member, so the framing is always
+/// non-streaming regardless of the definition's inference streaming mode
+/// (README §6.8).
+#[derive(Debug, Serialize)]
+pub(crate) struct CompactUpstreamRequest<'a> {
+    /// Upstream model name.
+    model: &'a str,
 
-    for message in &ir.messages {
+    /// Conversation input items in order.
+    input: Vec<InputItem<'a>>,
+
+    /// Concatenated system instructions, omitted when the request has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<&'a str>,
+}
+
+/// Renders the upstream standalone compact payload from a compact request's
+/// IR: the same input splicing as the ordinary render, under the compact
+/// body's narrower shape.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] as [`render_request_body`].
+pub(crate) fn render_compact_request_body(
+    ir: &IrRequest,
+) -> Result<CompactUpstreamRequest<'_>, InvalidRequest> {
+    Ok(CompactUpstreamRequest {
+        model: &ir.model,
+        input: render_input_items(ir)?,
+        instructions: ir.instructions.as_deref(),
+    })
+}
+
+/// Renders the conversation input: the IR messages as typed items, with the
+/// request's opaque state items spliced verbatim at their offsets.
+///
+/// A state item's offset is the number of IR messages rendered before it, so
+/// an item of offset `k` lands after the first `k` messages — items of equal
+/// offset go after those messages, in their own relative order — and items
+/// beyond the last message close the array.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] when a state item is a gateway carrier: such an
+/// item must be decoded and removed during compaction preparation, so its
+/// presence at render time is an invariant violation that fails fast instead
+/// of forwarding gateway state upstream.
+fn render_input_items(ir: &IrRequest) -> Result<Vec<InputItem<'_>>, InvalidRequest> {
+    let mut state_items = ir.state_items.iter();
+
+    let mut next_state = state_items.next();
+
+    let mut input: Vec<InputItem<'_>> =
+        Vec::with_capacity(ir.messages.len() + ir.state_items.len());
+
+    for (messages_rendered, message) in ir.messages.iter().enumerate() {
+        while next_state.is_some_and(|state| state.offset <= messages_rendered) {
+            push_state_item(&mut input, next_state.take())?;
+
+            next_state = state_items.next();
+        }
+
         match message.role {
             IrRole::User => {
                 let content: Vec<MessageContentPart<'_>> = message
@@ -240,20 +344,20 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
                     })
                     .collect();
 
-                input.push(InputItem::Message {
+                input.push(InputItem::Typed(TypedInputItem::Message {
                     role: MessageRole::User,
                     content,
-                });
+                }));
             }
 
             IrRole::Assistant => {
                 for part in &message.parts {
                     match part {
                         IrPart::Text { text } => {
-                            input.push(InputItem::Message {
+                            input.push(InputItem::Typed(TypedInputItem::Message {
                                 role: MessageRole::Assistant,
                                 content: vec![MessageContentPart::OutputText { text }],
-                            });
+                            }));
                         }
 
                         IrPart::ToolCall {
@@ -262,12 +366,12 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
                             arguments,
                             thought_signature,
                         } => {
-                            input.push(InputItem::FunctionCall {
+                            input.push(InputItem::Typed(TypedInputItem::FunctionCall {
                                 call_id,
                                 name,
                                 arguments,
                                 thought_signature: thought_signature.as_deref(),
-                            });
+                            }));
                         }
 
                         _ => {}
@@ -281,15 +385,58 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
                         call_id, content, ..
                     } = part
                     {
-                        input.push(InputItem::FunctionCallOutput {
+                        input.push(InputItem::Typed(TypedInputItem::FunctionCallOutput {
                             call_id,
                             output: content,
-                        });
+                        }));
                     }
                 }
             }
         }
     }
+
+    // Items beyond the last message close the array.
+    while let Some(state) = next_state {
+        push_state_item(&mut input, Some(state))?;
+
+        next_state = state_items.next();
+    }
+
+    Ok(input)
+}
+
+/// Splices one opaque state item into the rendered input, rejecting gateway
+/// carriers as [`render_input_items`] documents.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] for a gateway carrier.
+fn push_state_item<'a>(
+    input: &mut Vec<InputItem<'a>>,
+    state: Option<&'a StateItem>,
+) -> Result<(), InvalidRequest> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+
+    if state.is_gateway {
+        return Err(InvalidRequest::request(
+            "a gateway compaction carrier reached the upstream render without preparation",
+        ));
+    }
+
+    input.push(InputItem::State(state.item.clone()));
+
+    Ok(())
+}
+
+/// Renders an IR request into the plain upstream Responses payload.
+fn render_body<'a>(
+    ir: &'a IrRequest,
+    is_streaming: bool,
+    context_management: Option<&'a [Value]>,
+) -> Result<RequestBody<'a>, InvalidRequest> {
+    let input = render_input_items(ir)?;
 
     let tools = ir
         .tools
@@ -323,7 +470,7 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
             },
         });
 
-    RequestBody {
+    Ok(RequestBody {
         model: &ir.model,
         input,
         stream: is_streaming,
@@ -338,22 +485,31 @@ fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
         reasoning: ir.reasoning_effort.as_ref().map(|level| Reasoning {
             effort: level.as_str(),
         }),
-    }
+        context_management,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::render_request_body;
-    use crate::ir::{IrReasoningLevel, IrRequest, IrToolChoice};
+    use super::{
+        CompactUpstreamRequest, InputItem, TypedInputItem, render_compact_request_body,
+        render_request_body, render_request_body_with_extensions,
+    };
+    use crate::{
+        format::RenderOption,
+        ir::{IrReasoningLevel, IrRequest, IrRole, IrToolChoice, StateItem},
+    };
     use serde_json::{Value, json};
 
     /// Renders one upstream body for the given effort level.
     ///
     /// # Panics
     ///
-    /// Panics if the rendered body fails to serialize.
+    /// Panics if the rendered body fails to serialize or fails to render,
+    /// neither of which can occur for the fixture.
     fn render_body(reasoning_effort: Option<IrReasoningLevel>) -> Value {
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             reasoning_effort,
             ..IrRequest::default()
@@ -365,7 +521,7 @@ mod tests {
             clippy::expect_used,
             reason = "the rendered payload is under test; a failing render is the failure"
         )]
-        serde_json::to_value(body).expect("the body serializes")
+        serde_json::to_value(body.expect("the fixture renders")).expect("the body serializes")
     }
 
     /// Verifies the Responses effort slot of the closed-vocabulary contract (README §6.4): every
@@ -411,6 +567,7 @@ mod tests {
             ),
         ] {
             let ir = IrRequest {
+                state_items: Vec::new(),
                 tool_choice: Some(choice),
                 ..IrRequest::default()
             };
@@ -419,10 +576,295 @@ mod tests {
                 clippy::expect_used,
                 reason = "the rendered payload is under test; a failing render is the failure"
             )]
-            let body = serde_json::to_value(render_request_body(&ir, false, &[]))
-                .expect("the body serializes");
+            let body = serde_json::to_value(
+                render_request_body(&ir, false, &[]).expect("the fixture renders"),
+            )
+            .expect("the body serializes");
 
             assert_eq!(body.get("tool_choice"), Some(&rendered));
         }
+    }
+
+    /// Builds a one-line user message IR with the given state items.
+    fn ir_with_state_items(state_items: Vec<StateItem>) -> IrRequest {
+        IrRequest {
+            state_items,
+            model: "m".to_string(),
+            messages: vec![
+                crate::ir::IrMessage {
+                    role: IrRole::User,
+                    parts: vec![crate::ir::IrPart::Text {
+                        text: "first".to_string(),
+                    }],
+                },
+                crate::ir::IrMessage {
+                    role: IrRole::User,
+                    parts: vec![crate::ir::IrPart::Text {
+                        text: "second".to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        }
+    }
+
+    /// Renders the fixture IR and returns the rendered input array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the render fails or the body fails to serialize.
+    fn rendered_input(ir: &IrRequest) -> Vec<Value> {
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let body =
+            serde_json::to_value(render_request_body(ir, false, &[]).expect("the fixture renders"))
+                .expect("the body serializes");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture body always carries an input array"
+        )]
+        body.get("input")
+            .and_then(Value::as_array)
+            .expect("the body carries an input array")
+            .clone()
+    }
+
+    /// State items splice at their exact offsets: an item of offset `k` lands
+    /// after the first `k` messages, items of equal offset keep their relative
+    /// order, and items beyond the last message close the array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the spliced positions diverge from the offset contract.
+    #[test]
+    fn state_items_splice_at_their_exact_offsets() {
+        let item = |offset: usize, text: &str, is_gateway: bool| StateItem {
+            offset,
+            item: json!({"type": "reasoning", "id": text, "encrypted_content": text}),
+            is_gateway,
+        };
+
+        let ir = ir_with_state_items(vec![
+            item(0, "head", false),
+            item(1, "between", false),
+            item(1, "between-b", false),
+            item(2, "tail", false),
+        ]);
+
+        let input = rendered_input(&ir);
+
+        let positions: Vec<Option<&str>> = input
+            .iter()
+            .map(|item| item.get("id").and_then(Value::as_str))
+            .collect();
+
+        assert_eq!(
+            positions,
+            vec![
+                Some("head"),
+                None, // the first message
+                Some("between"),
+                Some("between-b"),
+                None, // the second message
+                Some("tail"),
+            ],
+        );
+
+        // Every message item is present in order between the state items.
+        let message_texts: Vec<&str> = input
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+            .filter_map(|item| item.pointer("/content/0/text").and_then(Value::as_str))
+            .collect();
+
+        assert_eq!(message_texts, vec!["first", "second"]);
+    }
+
+    /// A gateway carrier among the state items is an invariant violation: the
+    /// render fails instead of forwarding gateway state upstream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the gateway carrier renders.
+    #[test]
+    fn a_gateway_carrier_fails_the_render() {
+        let ir = ir_with_state_items(vec![StateItem {
+            offset: 0,
+            item: json!({"type": "compaction", "encrypted_content": "sealed"}),
+            is_gateway: true,
+        }]);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the gateway carrier is constructed to be rejected"
+        )]
+        let error = render_request_body(&ir, false, &[])
+            .expect_err("a gateway carrier must fail the render");
+
+        assert!(error.to_string().contains("gateway compaction carrier"));
+    }
+
+    /// The compact upstream body carries exactly the compact shape — model,
+    /// spliced input, instructions — with no `stream` and no `store` member,
+    /// whatever the inference streaming mode is (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body diverges from the compact shape.
+    #[test]
+    fn the_compact_body_renders_non_streaming_with_spliced_state() {
+        let ir = ir_with_state_items(vec![StateItem {
+            offset: 1,
+            item: json!({"type": "compaction", "id": "cmp_1", "encrypted_content": "state"}),
+            is_gateway: false,
+        }]);
+
+        let ir = IrRequest {
+            instructions: Some("summarize".to_string()),
+            ..ir
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let body: CompactUpstreamRequest<'_> =
+            render_compact_request_body(&ir).expect("the fixture renders");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let rendered = serde_json::to_value(&body).expect("the body serializes");
+
+        assert_eq!(rendered.get("model"), Some(&json!("m")));
+
+        assert_eq!(rendered.get("instructions"), Some(&json!("summarize")));
+
+        assert!(rendered.get("stream").is_none());
+
+        assert!(rendered.get("store").is_none());
+
+        assert_eq!(
+            rendered.get("input"),
+            Some(&json!([
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "first"},
+                ]},
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": "state"},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "second"},
+                ]},
+            ])),
+        );
+    }
+
+    /// `context_management` renders onto the body only when the executor
+    /// supplied entries, verbatim in declared order; the plain render carries
+    /// no such member.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered bodies diverge from the passthrough contract.
+    #[test]
+    fn context_management_passes_through_only_when_supplied() {
+        let ir = ir_with_state_items(Vec::new());
+
+        let entries = [json!({"type": "compaction", "compact_threshold": 50_000})];
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let extended = serde_json::to_value(
+            render_request_body_with_extensions(&ir, false, &[], Some(&entries))
+                .expect("the fixture renders"),
+        )
+        .expect("the body serializes");
+
+        assert_eq!(
+            extended.get("context_management"),
+            Some(&json!([{"type": "compaction", "compact_threshold": 50_000}])),
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let plain = serde_json::to_value(
+            render_request_body(&ir, false, &[]).expect("the fixture renders"),
+        )
+        .expect("the body serializes");
+
+        assert!(plain.get("context_management").is_none());
+    }
+
+    /// The typed conversation items render in the official shape under the
+    /// untagged wrapper exactly as before the state-item vocabulary existed:
+    /// message, function call, and function call output items are unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered item diverges from its documented shape.
+    #[test]
+    fn typed_items_render_their_official_shapes() {
+        let items = [
+            InputItem::Typed(TypedInputItem::Message {
+                role: super::MessageRole::User,
+                content: vec![super::MessageContentPart::InputText { text: "hi" }],
+            }),
+            InputItem::State(json!({"type": "compaction", "id": "cmp_1"})),
+        ];
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let rendered = serde_json::to_value(&items).expect("the items serialize");
+
+        assert_eq!(
+            rendered,
+            json!([
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "hi"},
+                ]},
+                {"type": "compaction", "id": "cmp_1"},
+            ]),
+        );
+    }
+
+    /// The render option table still applies through the extension entry
+    /// point: `omit_max_output_tokens` drops the cap on a body carrying one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered bodies diverge from the option contract.
+    #[test]
+    fn render_options_apply_through_the_extension_entry_point() {
+        let ir = IrRequest {
+            model: "m".to_string(),
+            max_output_tokens: Some(64),
+            ..IrRequest::default()
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        let omitted = serde_json::to_value(
+            render_request_body_with_extensions(
+                &ir,
+                false,
+                &[RenderOption::OmitMaxOutputTokens],
+                None,
+            )
+            .expect("the fixture renders"),
+        )
+        .expect("the body serializes");
+
+        assert!(omitted.get("max_output_tokens").is_none());
     }
 }

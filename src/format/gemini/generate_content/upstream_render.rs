@@ -318,6 +318,15 @@ struct ThinkingConfig<'a> {
 pub(crate) fn render_generate_content_request(
     ir: &IrRequest,
 ) -> Result<GenerateContentRequest<'_>, InvalidRequest> {
+    // The GenerateContent protocol has no compaction state channel: opaque
+    // native state another surface produced is never silently discarded, so
+    // its presence fails the render (the caller's replay is producer-bound).
+    if !ir.state_items.is_empty() {
+        return Err(InvalidRequest::request(
+            "the request carries compaction state the Gemini upstream cannot replay",
+        ));
+    }
+
     // The Gemini API requires `contents` roles to alternate, so consecutive same-role messages
     // coalesce into one content entry through the shared role-run accumulator; `IrRole::Tool`
     // rides the `user` side, the side tool results belong to.
@@ -554,6 +563,7 @@ mod tests {
 
         for (level, effort) in IrReasoningLevel::VOCABULARY {
             let ir = IrRequest {
+                state_items: Vec::new(),
                 model: "m".to_string(),
                 reasoning_effort: Some(level),
                 ..IrRequest::default()
@@ -572,6 +582,7 @@ mod tests {
         }
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             ..IrRequest::default()
         };
@@ -603,6 +614,7 @@ mod tests {
     #[test]
     fn parallel_tool_results_land_in_one_user_content() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             messages: vec![
                 IrMessage {
                     role: IrRole::User,
@@ -731,6 +743,7 @@ mod tests {
         let call_id = done.expect("the done event carries the upstream call id");
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             messages: vec![
                 IrMessage {
                     role: IrRole::Assistant,
@@ -839,6 +852,7 @@ mod tests {
         assert_eq!(arguments, "{}");
 
         let ir = IrRequest {
+            state_items: Vec::new(),
             messages: vec![
                 IrMessage {
                     role: IrRole::Assistant,
@@ -900,6 +914,7 @@ mod tests {
     #[test]
     fn same_name_calls_pair_distinct_response_ids() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             messages: vec![
                 IrMessage {
                     role: IrRole::Assistant,
@@ -981,6 +996,7 @@ mod tests {
     #[test]
     fn consecutive_user_messages_coalesce_in_part_order() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             messages: vec![
                 IrMessage {
                     role: IrRole::User,
@@ -1111,6 +1127,7 @@ mod tests {
     #[test]
     fn foreign_family_and_unattributed_reasoning_keep_rendering_nothing() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             model: "m".to_string(),
             messages: vec![IrMessage {
                 role: IrRole::Assistant,
@@ -1169,6 +1186,7 @@ mod tests {
     #[test]
     fn alternating_history_renders_the_pinned_wire_shape() {
         let ir = IrRequest {
+            state_items: Vec::new(),
             messages: vec![
                 IrMessage {
                     role: IrRole::User,

@@ -1,6 +1,10 @@
 import { isCredentialExpired, nowMicros } from "/src/format";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { isOAuthProviderRow } from "/src/management-api/vocabulary";
+import type {
+    MechanismSupport,
+    ModelResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
+import { type CompactionMechanism, isOAuthProviderRow } from "/src/management-api/vocabulary";
 
 /**
  * The serving derivations the wire contract leaves to the client: rule 7
@@ -85,6 +89,89 @@ export function effectiveMaxInputTokens(model: ModelResponse): number | null {
 /** One model's effective maximum-output-tokens declaration (gateway README §3). */
 export function effectiveMaxOutputTokens(model: ModelResponse): number | null {
     return model.max_output_tokens_override ?? model.max_output_tokens;
+}
+
+/**
+ * Where one mechanism's effective compaction fact comes from: `"override"`
+ * while the administrator's member stands for it, `"discovered"` while the
+ * latest discovery knowledge stands, `"unknown"` while neither does.
+ */
+export type CompactionFactSource = "override" | "discovered" | "unknown";
+
+/** One mechanism's effective compaction fact beside the layer it came from. */
+export type CompactionFact = {
+    /**
+     * The resolved support state: the override member, else the discovered
+     * fact, else `"unknown"` — the state the gateway's own resolution lands
+     * on when no row fact stands and the definition declares nothing.
+     */
+    readonly support: MechanismSupport;
+    /** The layer the support was read from. */
+    readonly source: CompactionFactSource;
+};
+
+/**
+ * One mechanism's effective compaction fact: the administrator's override
+ * member when one stands — the explicit `"unknown"` override included,
+ * which suppresses the lower layers for that mechanism — else the
+ * discovered fact when known, else `"unknown"`. The definition's
+ * declaration, the resolution's third layer, is definition data the model
+ * row never carries, so the row-level `"unknown"` never claims the
+ * mechanism unsupported: at dispatch the definition's declaration decides.
+ */
+function resolveCompactionFact(
+    model: ModelResponse,
+    mechanism: CompactionMechanism,
+): CompactionFact {
+    const overridden = model.compaction_support_override?.[mechanism];
+
+    if (overridden !== undefined) {
+        return {
+            support: overridden,
+            source: "override",
+        };
+    }
+
+    const discovered = model.compaction_support?.[mechanism];
+
+    if (discovered !== undefined) {
+        return {
+            support: discovered,
+            source: "discovered",
+        };
+    }
+
+    return {
+        support: "unknown",
+        source: "unknown",
+    };
+}
+
+/**
+ * One model's effective compaction facts, per mechanism (gateway README §3,
+ * §5). The record carries every mechanism, so a caller asks for the facts it
+ * presents instead of re-deriving them; a mechanism added to the vocabulary
+ * fails to compile here until the resolution carries it.
+ */
+export function effectiveCompactionFacts(
+    model: ModelResponse,
+): Readonly<Record<CompactionMechanism, CompactionFact>> {
+    return {
+        responses_standalone_compact: resolveCompactionFact(model, "responses_standalone_compact"),
+        responses_explicit_trigger: resolveCompactionFact(model, "responses_explicit_trigger"),
+        responses_automatic_compaction: resolveCompactionFact(
+            model,
+            "responses_automatic_compaction",
+        ),
+        messages_on_demand_compaction: resolveCompactionFact(
+            model,
+            "messages_on_demand_compaction",
+        ),
+        messages_threshold_compaction: resolveCompactionFact(
+            model,
+            "messages_threshold_compaction",
+        ),
+    };
 }
 
 /**

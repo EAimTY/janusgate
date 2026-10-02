@@ -7,13 +7,13 @@ use super::{
     database::Database,
     format::{PayloadError, UpstreamEventParser, UpstreamFormat, anthropic, gemini, openai},
     http_body, ids,
-    ir::{InvalidRequest, IrEvent, IrRequest},
+    ir::{Aggregator, InvalidRequest, IrAggregation, IrEvent, IrRequest},
     provider::{
         Error as ProviderError, ModelRouting, Provider,
         definition::{
             eval::ValueEnv,
             inference::{Inference, UpstreamStreaming},
-            template::TemplateNode,
+            template::{ParamRow, StringExpr, TemplateNode},
         },
         oauth,
     },
@@ -23,6 +23,7 @@ use super::{
         api_logs::{ApiLogDraft, finalize_api_log},
     },
 };
+use crate::compaction::accounting::{CompactionLedger, IterationKind};
 use log::{debug, error};
 use reqwest::{Client, StatusCode};
 use std::pin::Pin;
@@ -154,23 +155,65 @@ pub(crate) async fn resolve_routing(
 /// before `send()` leaves and — should it then fail after dispatch — finalizes the row itself,
 /// leaving an unstamped draft untouched for every pre-dispatch failure (README §3 *ApiLog*).
 ///
+/// `compaction` carries the native compaction passthrough's dispatch
+/// extensions — body controls and header overlay — when the compaction
+/// pipeline routes an ordinary execution through a passthrough upstream.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] — converted from the pipeline's own [`Error`] at the boundary, in one
 /// place per failure — for routing, token, and upstream failures detected before the response
 /// stream starts, and — per the dispatch timing invariant on [`Error`] — for the two
 /// post-dispatch failures it finalizes itself.
+/// The compaction dispatch extensions one ordinary execution may carry: a
+/// native compaction passthrough's body extension and header overlay. `None`
+/// for every request the compaction pipeline routes through the ordinary path
+/// without passthrough controls.
+#[derive(Debug, Default)]
+pub(crate) struct CompactionDispatch {
+    /// The vendor-shaped Responses `context_management` entries riding the
+    /// upstream body verbatim.
+    pub(crate) context_management: Option<Vec<serde_json::Value>>,
+
+    /// The vendor-shaped Messages threshold edits riding the upstream body
+    /// verbatim.
+    pub(crate) threshold_edits: Option<Vec<serde_json::Value>>,
+
+    /// Whether the outer compaction coordinator owns pre-stream failure finalization.
+    pub(crate) should_defer_failure_accounting: bool,
+    /// Header rows overlaying the inference descriptor's own, replacing
+    /// same-named rows — the operation betas a native passthrough requires.
+    pub(crate) overlay_headers: Vec<crate::provider::definition::template::ParamRow>,
+}
+
+/// Executes one completion dispatch against the routed provider and returns the parsed IR event
+/// stream.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] for pre-dispatch failures and — per the dispatch timing invariant — for
+/// the post-dispatch failures it finalizes itself.
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
     mut ir: IrRequest,
     is_client_streaming: bool,
     log: &mut ApiLogDraft,
+    compaction: Option<&CompactionDispatch>,
 ) -> Result<IrEventStream, ApiError> {
     // The client's reasoning effort string needs no interpretation here: it is opaque end to end
     // (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
     // renderers write it verbatim into the upstream's own parameter.
     ir.model = routing.model.upstream_id.clone();
+    // A gateway carrier never reaches dispatch: compaction preparation must decode, verify, and
+    // remove it first, and a damaged marker must never be forwarded upstream. Its presence here is
+    // an internal invariant violation, not client state, so it fails fast (README §6.8).
+    if ir.state_items.iter().any(|item| item.is_gateway) {
+        return Err(ApiError::from(Error::Internal {
+            message: "a gateway compaction carrier reached dispatch without preparation"
+                .to_string(),
+        }));
+    }
 
     // Names the upstream in every error-level record the pump tasks emit. Which single site logs
     // such a record is partitioned by the client's streaming mode (README §8): for a streaming
@@ -207,6 +250,7 @@ pub(crate) async fn execute(
         &routing,
         &ir,
         is_client_streaming,
+        compaction,
     )?;
 
     // The dispatch mark: everything above ran before dispatch (no accounting row exists yet for
@@ -222,7 +266,9 @@ pub(crate) async fn execute(
                 detail: format!("upstream unreachable: {error}"),
             });
 
-            finalize_dispatch_failure(context, log, &error).await;
+            if !compaction.is_some_and(|dispatch| dispatch.should_defer_failure_accounting) {
+                finalize_dispatch_failure(context, log, &error).await;
+            }
 
             return Err(error);
         }
@@ -233,7 +279,9 @@ pub(crate) async fn execute(
     if !status.is_success() {
         let error = ApiError::from(upstream_error_of(response).await);
 
-        finalize_dispatch_failure(context, log, &error).await;
+        if !compaction.is_some_and(|dispatch| dispatch.should_defer_failure_accounting) {
+            finalize_dispatch_failure(context, log, &error).await;
+        }
 
         return Err(error);
     }
@@ -280,11 +328,342 @@ pub(crate) async fn execute(
 /// The upstream streaming mode one dispatch requests: the definition's mode decides — always
 /// streaming upstream (the forced-streaming upstreams, such as Codex), or matching the client's
 /// requested mode. The same decision selects the SSE or JSON response parser.
-fn is_upstream_streaming(inference: &Inference, is_client_streaming: bool) -> bool {
+pub(crate) fn is_upstream_streaming(inference: &Inference, is_client_streaming: bool) -> bool {
     match inference.upstream_streaming {
         UpstreamStreaming::Always => true,
         UpstreamStreaming::MatchClient => is_client_streaming,
     }
+}
+
+/// Executes one internal compaction-path dispatch end to end: the ordinary
+/// inference body rendered from the given IR — whose compaction controls the
+/// executor has already stripped — with non-streaming client framing, pumped to
+/// completion and folded into an aggregation.
+///
+/// One dispatch, one send: pre-dispatch failures (routing drift, token
+/// acquisition, payload rendering, transport, a mirrored non-2xx) leave the
+/// ledger untouched, because pre-dispatch and usage-less failures acquire no
+/// fabricated token counts. A successful completion records the usage the
+/// upstream reported into the ledger under the given iteration kind.
+///
+/// A clean upstream end that carried no real terminal event fails the dispatch:
+/// the degraded-finish rule of the ordinary pipeline never papers over a
+/// missing terminal on the compaction paths, where the result must be complete
+/// before any artifact stands (README §6.8).
+///
+/// Cancellation and deadlines: the dispatch runs inside the handler future, so
+/// a departing client drops it; the data-plane read-idle timeout bounds a
+/// stalled upstream. No fresh deadline is granted per internal call.
+///
+/// The request's accounting draft is stamped the moment the send leaves, so the
+/// outer request's row exists exactly when a dispatch occurred (README §3
+/// *ApiLog*); finalizing the row stays the outer boundary's job.
+///
+/// # Errors
+///
+/// Returns [`Error`] for token, transport, mirrored-upstream, and payload
+/// failures, and for a completed upstream response that never reached a real
+/// terminal finish.
+pub(crate) async fn execute_internal(
+    context: &Context,
+    routing: &ModelRouting,
+    mut ir: IrRequest,
+    ledger: &mut CompactionLedger,
+    kind: IterationKind,
+    log: &mut ApiLogDraft,
+) -> Result<IrAggregation, Error> {
+    ir.model = routing.model.upstream_id.clone();
+
+    // The same fail-fast guard the ordinary dispatch applies: a gateway carrier
+    // must have been decoded and removed during compaction preparation.
+    if ir.state_items.iter().any(|item| item.is_gateway) {
+        return Err(Error::Internal {
+            message: "a gateway compaction carrier reached dispatch without preparation"
+                .to_string(),
+        });
+    }
+
+    let provider =
+        oauth::ensure_fresh_token(&context.database, &context.control_plane, &routing.provider)
+            .await?;
+
+    let request =
+        build_upstream_request(&context.data_plane, &provider, routing, &ir, false, None)?;
+
+    log.stamp();
+
+    let response = match request.send().await {
+        Ok(response) => response,
+
+        Err(send_error) => {
+            return Err(Error::Unavailable {
+                detail: format!("upstream unreachable: {send_error}"),
+            });
+        }
+    };
+
+    if !response.status().is_success() {
+        return Err(upstream_error_of(response).await);
+    }
+
+    let is_streaming = is_upstream_streaming(&provider.definition.payload.inference, false);
+
+    let mut parser = upstream_parser(provider.definition.payload.format);
+
+    let response_unwrap = provider
+        .definition
+        .payload
+        .inference
+        .response_unwrap
+        .clone();
+
+    let (aggregation, is_terminal_real) = pump_internal_response(
+        response,
+        parser.as_mut(),
+        is_streaming,
+        response_unwrap,
+        ledger,
+        kind,
+        log,
+    )
+    .await?;
+    if !is_terminal_real {
+        return Err(Error::Unavailable {
+            detail: "the upstream response ended without a terminal completion".to_string(),
+        });
+    }
+
+    Ok(aggregation)
+}
+
+/// Saves each internal usage observation immediately so failure and cancellation keep billed work.
+fn observe_internal_usage(
+    event: &IrEvent,
+    billed_before: crate::ir::IrUsage,
+    last_usage: &mut Option<crate::ir::IrUsage>,
+    iteration_usage: &mut Option<crate::ir::IrUsage>,
+    log: &mut ApiLogDraft,
+) {
+    match event {
+        IrEvent::Usage(usage) => *last_usage = Some(*usage),
+        IrEvent::CompactionMetadata { iterations, .. } => {
+            *iteration_usage = crate::compaction::accounting::reported_iteration_totals(iterations)
+        }
+        _ => return,
+    }
+    if let Some(usage) = iteration_usage.or(*last_usage) {
+        log.stamp_billed_usage(billed_before.saturating_sum(usage));
+    }
+}
+
+/// Folds one internal upstream response into an aggregation through the given
+/// parser, reporting whether a *real* terminal finish arrived: a finish the
+/// parser emitted from a terminal event or body. The clean-end-of-stream flush's
+/// degraded finish ([`crate::format::degrade_finish_once`]) does not count — the
+/// caller decides what a missing terminal means for its own contract.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] for a transport failure, an oversized frame, a
+/// malformed payload, or a 2xx body that is not valid JSON.
+pub(crate) async fn pump_internal_response<P>(
+    response: reqwest::Response,
+    parser: &mut P,
+    is_upstream_streaming: bool,
+    response_unwrap: Option<String>,
+    ledger: &mut CompactionLedger,
+    kind: IterationKind,
+    log: &mut ApiLogDraft,
+) -> Result<(IrAggregation, bool), Error>
+where
+    P: UpstreamEventParser + ?Sized + Send,
+{
+    let mut aggregator = Aggregator::default();
+    let billed_before = ledger.billed_totals();
+    let mut last_usage = None;
+    let mut iteration_usage = None;
+
+    // Whether a real terminal finish arrived: only finishes the parser emitted
+    // from its frame or body ingestion count; the clean-end flush's degraded
+    // finish is emitted after this flag's last real observation.
+    let mut is_terminal_real = false;
+
+    if is_upstream_streaming {
+        let mut body = response.bytes_stream();
+        let mut sse_parser = SseParser::new();
+
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|error| Error::Unavailable {
+                detail: format!("upstream stream failed: {error}"),
+            })?;
+
+            let frames = sse_parser.ingest(&chunk).map_err(|_| Error::Unavailable {
+                detail: "oversized SSE frame".to_string(),
+            })?;
+
+            for mut frame in frames {
+                unwrap_frame(&mut frame, &response_unwrap);
+
+                for event in parser.ingest_frame(&frame)? {
+                    if matches!(event, IrEvent::Finish { .. }) {
+                        is_terminal_real = true;
+                    }
+
+                    observe_internal_usage(
+                        &event,
+                        billed_before,
+                        &mut last_usage,
+                        &mut iteration_usage,
+                        log,
+                    );
+                    aggregator.ingest(&event);
+                }
+            }
+        }
+
+        // Clean end of stream: the trailing frames flush through the parser,
+        // then the parser's own flush hook runs. Neither may report a real
+        // terminal — a finish here is the degraded one.
+        for frame in sse_parser.finish().map_err(|_| Error::Unavailable {
+            detail: "oversized SSE frame".to_string(),
+        })? {
+            let mut frame = frame;
+
+            unwrap_frame(&mut frame, &response_unwrap);
+
+            for event in parser.ingest_frame(&frame)? {
+                observe_internal_usage(
+                    &event,
+                    billed_before,
+                    &mut last_usage,
+                    &mut iteration_usage,
+                    log,
+                );
+                aggregator.ingest(&event);
+            }
+        }
+
+        for event in parser.finish() {
+            observe_internal_usage(
+                &event,
+                billed_before,
+                &mut last_usage,
+                &mut iteration_usage,
+                log,
+            );
+            aggregator.ingest(&event);
+        }
+    } else {
+        let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
+            detail: format!("upstream read failed: {error}"),
+        })?;
+
+        let mut value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+            Error::Unavailable {
+                detail: format!("malformed upstream response: {error}"),
+            }
+        })?;
+
+        unwrap_response(&mut value, &response_unwrap);
+
+        for event in parser.parse_json_response(value)? {
+            if matches!(event, IrEvent::Finish { .. }) {
+                is_terminal_real = true;
+            }
+
+            observe_internal_usage(
+                &event,
+                billed_before,
+                &mut last_usage,
+                &mut iteration_usage,
+                log,
+            );
+            aggregator.ingest(&event);
+        }
+    }
+
+    ledger.record(kind, iteration_usage.or(last_usage));
+    Ok((aggregator.finish(), is_terminal_real))
+}
+
+/// Builds one internal compaction-path HTTP request from explicit connection
+/// facts: the evaluated URL expression, the evaluated header rows, the JSON
+/// body spliced through the optional envelope, and the fixed `Accept:
+/// application/json` the non-streaming compaction framing carries (the header
+/// rows override it by name, exactly as the inference dispatch's do).
+///
+/// # Errors
+///
+/// Returns [`Error::Internal`] when the connection's expressions reference a
+/// value this dispatch does not carry — stored drift — or when a header row
+/// carries an unrenderable name or value.
+pub(crate) fn build_internal_request(
+    http: &Client,
+    provider: &Provider,
+    routing: &ModelRouting,
+    url: &StringExpr,
+    header_rows: &[ParamRow],
+    envelope: Option<&TemplateNode>,
+    body: &serde_json::Value,
+) -> Result<reqwest::RequestBuilder, Error> {
+    let request_uuid = ids::new_uuid();
+
+    let env = ValueEnv::for_compaction_operation(
+        provider.credentials.slots(),
+        provider.base_url.as_deref(),
+        provider.credentials.secret(),
+        &request_uuid,
+        &routing.model.upstream_id,
+    );
+
+    let url = env
+        .evaluate(url, "compaction operation URL")
+        .map_err(|error| Error::Internal {
+            message: error.to_string(),
+        })?;
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+
+    for row in header_rows {
+        let value = env
+            .evaluate(&row.value, "compaction operation header")
+            .map_err(|error| Error::Internal {
+                message: error.to_string(),
+            })?;
+
+        let name = reqwest::header::HeaderName::from_bytes(row.name.as_bytes()).map_err(|_| {
+            Error::Internal {
+                message: format!(
+                    "the definition carries an invalid header name `{}`",
+                    row.name
+                ),
+            }
+        })?;
+
+        let value =
+            reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::Internal {
+                message: "the definition carries an unrenderable header value".to_string(),
+            })?;
+
+        headers.insert(name, value);
+    }
+
+    let body = match envelope {
+        Some(envelope) => env
+            .render_json(envelope, body, "compaction operation envelope")
+            .map_err(|error| Error::Internal {
+                message: error.to_string(),
+            })?,
+
+        None => body.clone(),
+    };
+
+    Ok(http.post(url).headers(headers).json(&body))
 }
 
 /// Builds the upstream HTTP request for one dispatch, entirely from the provider definition
@@ -303,6 +682,7 @@ fn build_upstream_request(
     routing: &ModelRouting,
     ir: &IrRequest,
     is_client_streaming: bool,
+    compaction: Option<&CompactionDispatch>,
 ) -> Result<reqwest::RequestBuilder, Error> {
     let inference = &provider.definition.payload.inference;
 
@@ -345,7 +725,17 @@ fn build_upstream_request(
         }),
     );
 
-    for row in &inference.headers {
+    // The compaction dispatch's overlay rows replace same-named inference rows
+    // (the operation betas ride the operation definition), then the surviving
+    // inference rows follow in order.
+    let overlay = compaction
+        .map(|dispatch| dispatch.overlay_headers.as_slice())
+        .unwrap_or(&[]);
+
+    let merged_rows =
+        crate::format::anthropic::messages::overlay_header_rows(&inference.headers, overlay);
+
+    for row in &merged_rows {
         let value = env
             .evaluate(&row.value, "inference header")
             .map_err(|error| Error::Internal {
@@ -375,6 +765,7 @@ fn build_upstream_request(
         provider,
         ir,
         is_upstream_streaming,
+        compaction,
     )
 }
 
@@ -392,6 +783,7 @@ fn attach_upstream_body(
     provider: &Provider,
     ir: &IrRequest,
     is_upstream_streaming: bool,
+    compaction: Option<&CompactionDispatch>,
 ) -> Result<reqwest::RequestBuilder, Error> {
     let inference = &provider.definition.payload.inference;
 
@@ -402,18 +794,21 @@ fn attach_upstream_body(
             builder,
             env,
             envelope,
-            &openai::response::render_request_body(
+            &openai::response::render_request_body_with_extensions(
                 ir,
                 is_upstream_streaming,
                 &inference.render_options,
-            ),
+                compaction.and_then(|dispatch| dispatch.context_management.as_deref()),
+            )
+            .map_err(Error::from)?,
         ),
 
         UpstreamFormat::OpenAiChatCompletion => attach_body(
             builder,
             env,
             envelope,
-            &openai::chat_completion::render_request_body(ir, is_upstream_streaming),
+            &openai::chat_completion::render_request_body(ir, is_upstream_streaming)
+                .map_err(Error::from)?,
         ),
 
         UpstreamFormat::GeminiGenerateContent => attach_body(
@@ -431,13 +826,22 @@ fn attach_upstream_body(
                 .map_err(Error::from)?,
         ),
 
-        UpstreamFormat::AnthropicMessages => attach_body(
-            builder,
-            env,
-            envelope,
-            &anthropic::messages::render_request_body(ir, is_upstream_streaming)
-                .map_err(Error::from)?,
-        ),
+        UpstreamFormat::AnthropicMessages => {
+            // A native threshold passthrough renders the vendor-shaped edits
+            // through the threshold body render; every other Messages dispatch
+            // renders the stripped form (the base render carries no compaction
+            // members).
+            let body = match compaction.and_then(|dispatch| dispatch.threshold_edits.as_deref()) {
+                Some(edits) => {
+                    anthropic::messages::render_threshold_body(ir, is_upstream_streaming, edits)
+                }
+
+                None => anthropic::messages::render_request_body(ir, is_upstream_streaming),
+            }
+            .map_err(Error::from)?;
+
+            attach_body(builder, env, envelope, &body)
+        }
     }
 }
 
@@ -762,7 +1166,7 @@ async fn pump_json(
 /// Unwraps one JSON response through the definition's configured envelope member: when
 /// configured and present, the member's value becomes the parser's document. Absent or not
 /// configured, the document is ingested as-is (README §5.2 `response_unwrap`).
-fn unwrap_response(value: &mut serde_json::Value, response_unwrap: &Option<String>) {
+pub(crate) fn unwrap_response(value: &mut serde_json::Value, response_unwrap: &Option<String>) {
     let Some(member) = response_unwrap else {
         return;
     };
@@ -811,7 +1215,7 @@ fn serialize_frame(value: &serde_json::Value) -> String {
 /// ([`http_body::read_error_body`]) and the one excerpt policy ([`http_body::truncate_excerpt`]):
 /// the full body is never buffered, because a hostile upstream must not be able to stream unbounded
 /// bytes into gateway memory just to shape an error message.
-async fn upstream_error_of(response: reqwest::Response) -> Error {
+pub(crate) async fn upstream_error_of(response: reqwest::Response) -> Error {
     let status = response.status();
 
     let body = http_body::read_error_body(response).await;
@@ -884,6 +1288,7 @@ mod tests {
     /// Builds a minimal one-turn chat request the dispatch bodies render from.
     fn fixture_ir() -> IrRequest {
         IrRequest {
+            state_items: Vec::new(),
             model: "upstream-model".to_string(),
             instructions: None,
             messages: vec![IrMessage {
@@ -938,6 +1343,7 @@ mod tests {
                     credential: CredentialAcquisition::ApiKey,
                     provisioning: None,
                     discovery: None,
+                    compaction: None,
                 },
                 created_at: 0,
             },
@@ -970,11 +1376,13 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support: None,
+                compaction_support_override: None,
             },
             is_effectively_enabled: true,
         };
 
-        let request = build_upstream_request(http, provider, &routing, ir, false)
+        let request = build_upstream_request(http, provider, &routing, ir, false, None)
             .expect("the fixture dispatch builds")
             .build()
             .expect("the request builder completes");
@@ -1000,8 +1408,10 @@ mod tests {
         reason = "a first-party rendered body always serializes"
     )]
     fn expected_rendered_body(ir: &IrRequest) -> serde_json::Value {
-        serde_json::to_value(openai::chat_completion::render_request_body(ir, false))
-            .expect("a first-party rendered body serializes")
+        serde_json::to_value(
+            openai::chat_completion::render_request_body(ir, false).expect("the fixture renders"),
+        )
+        .expect("a first-party rendered body serializes")
     }
 
     /// Verifies the no-envelope dispatch: the codec-rendered body rides to reqwest in its typed

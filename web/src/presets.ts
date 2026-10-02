@@ -510,6 +510,131 @@ const STATIC_KEY_PRESETS: readonly [
             },
         },
     },
+    {
+        id: "xai",
+        title: "xAI (Grok) Responses API",
+        description:
+            "The xAI Responses endpoint with a static key: native compaction rides the standalone `/responses/compact` operation, while the explicit trigger and the automatic compaction are declared unsupported — a standalone compact endpoint does not imply native trigger or automatic compaction.",
+        grant: null,
+        suggestedName: "xai",
+        provenance:
+            "xAI Responses API research (docs.x.ai); compaction facts researched 2026-10-01 — verify against a live compact run before relying on them",
+        verification: "unverified",
+        payload: {
+            format: "openai_response",
+            inference: {
+                url: [
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/responses",
+                    },
+                ],
+                headers: [
+                    {
+                        name: "Authorization",
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
+                    },
+                ],
+                upstream_streaming: "match_client",
+            },
+            credential: {
+                type: "api_key",
+            },
+            discovery: {
+                request: {
+                    method: "GET",
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/models",
+                        },
+                    ],
+                    headers: [
+                        {
+                            name: "Authorization",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
+                        },
+                    ],
+                },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
+            },
+            compaction: {
+                strategy: "native_preferred",
+                summary_budget: 4096,
+                retention_budget: 8192,
+                can_export_native_summary: false,
+                mechanisms: {
+                    responses_standalone_compact: {
+                        default: "supported",
+                        operation: {
+                            url: [
+                                {
+                                    type: "base",
+                                },
+                                {
+                                    type: "literal",
+                                    value: "/responses/compact",
+                                },
+                            ],
+                            headers: [
+                                {
+                                    name: "Authorization",
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "Bearer ",
+                                        },
+                                        {
+                                            type: "secret",
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                    responses_explicit_trigger: {
+                        default: "unsupported",
+                    },
+                    responses_automatic_compaction: {
+                        default: "unsupported",
+                    },
+                },
+            },
+        },
+    },
 ];
 
 /** The OAuth presets: the researched products that log in upstream. */
@@ -844,6 +969,42 @@ const OAUTH_PRESETS: readonly [
                     ],
                     request_param: "after_id",
                     max_pages: 10,
+                },
+            },
+            compaction: {
+                strategy: "native_preferred",
+                summary_budget: 4096,
+                retention_budget: 8192,
+                can_export_native_summary: false,
+                mechanisms: {
+                    messages_on_demand_compaction: {
+                        default: "supported",
+                        overlay_headers: [
+                            {
+                                name: "anthropic-beta",
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "compact-2026-09-04",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    messages_threshold_compaction: {
+                        default: "supported",
+                        overlay_headers: [
+                            {
+                                name: "anthropic-beta",
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "compact-2026-01-12",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
                 },
             },
         },
@@ -1810,11 +1971,12 @@ const OAUTH_PRESETS: readonly [
         id: "codex",
         title: "Codex (ChatGPT account)",
         description:
-            "A ChatGPT account over the Codex Responses endpoint. Streaming is forced upstream and responses render with the OpenAI Responses format.",
+            "A ChatGPT account over the Codex Responses endpoint. Streaming is forced upstream and responses render with the OpenAI Responses format. The compaction section declares the explicit trigger and the automatic threshold compaction the Codex backend accepts.",
         grant: "authorization_code",
         suggestedName: "codex",
-        provenance: "openai/codex at rev fcf05456bb27e6c3d5677550f54011db6a2a0817 (codex-rs/login)",
-        verification: "live",
+        provenance:
+            "openai/codex at rev fcf05456bb27e6c3d5677550f54011db6a2a0817 (codex-rs/login; login and inference verified against the live upstream); the compaction declarations are researched from the Codex client and backend behavior at rev 444da310 and remain unverified against a live compact run",
+        verification: "unverified",
         payload: {
             format: "openai_response",
             inference: {
@@ -2163,6 +2325,20 @@ const OAUTH_PRESETS: readonly [
                 },
                 pagination: {
                     type: "none",
+                },
+            },
+            compaction: {
+                strategy: "native_preferred",
+                summary_budget: 4096,
+                retention_budget: 8192,
+                can_export_native_summary: false,
+                mechanisms: {
+                    responses_explicit_trigger: {
+                        default: "supported",
+                    },
+                    responses_automatic_compaction: {
+                        default: "supported",
+                    },
                 },
             },
         },

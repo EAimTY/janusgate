@@ -3,6 +3,7 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { indexRowsById } from "/src/row-index";
 import {
     capabilitySource,
+    effectiveCompactionFacts,
     effectiveMaxInputTokens,
     effectiveMaxOutputTokens,
     effectiveThinkingLevels,
@@ -44,6 +45,8 @@ function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
         thinking_levels_override: null,
         max_input_tokens_override: null,
         max_output_tokens_override: null,
+        compaction_support: null,
+        compaction_support_override: null,
         ...overrides,
     };
 }
@@ -224,5 +227,75 @@ describe("effective capability declarations", () => {
         expect(effectiveMaxInputTokens(row)).toBe(null);
         expect(effectiveMaxOutputTokens(row)).toBe(null);
         expect(capabilitySource(row.thinking_levels_override, row.thinking_levels)).toBe("unknown");
+    });
+});
+
+describe("effectiveCompactionFacts", () => {
+    it("carries every mechanism, all unknown on a row with no facts", () => {
+        const facts = effectiveCompactionFacts(model());
+
+        expect(facts["messages_on_demand_compaction"]).toEqual({
+            support: "unknown",
+            source: "unknown",
+        });
+        expect(facts["responses_standalone_compact"]).toEqual({
+            support: "unknown",
+            source: "unknown",
+        });
+    });
+
+    it("reads the discovered facts while no override stands", () => {
+        const facts = effectiveCompactionFacts(
+            model({
+                compaction_support: {
+                    messages_on_demand_compaction: "supported",
+                },
+            }),
+        );
+
+        expect(facts["messages_on_demand_compaction"]).toEqual({
+            support: "supported",
+            source: "discovered",
+        });
+        // A mechanism the discovery never stated stays unknown — never
+        // inferred from a sibling mechanism's fact.
+        expect(facts["messages_threshold_compaction"]).toEqual({
+            support: "unknown",
+            source: "unknown",
+        });
+    });
+
+    it("prefers the override member per mechanism, including an explicit unknown", () => {
+        const facts = effectiveCompactionFacts(
+            model({
+                compaction_support: {
+                    messages_on_demand_compaction: "supported",
+                    messages_threshold_compaction: "unsupported",
+                },
+                compaction_support_override: {
+                    // The explicit unknown is a positive "no fact": it
+                    // suppresses the discovered fact for this mechanism
+                    // alone, and the sibling mechanism's override stands
+                    // beside it.
+                    messages_on_demand_compaction: "unknown",
+                    messages_threshold_compaction: "supported",
+                },
+            }),
+        );
+
+        expect(facts["messages_on_demand_compaction"]).toEqual({
+            support: "unknown",
+            source: "override",
+        });
+        expect(facts["messages_threshold_compaction"]).toEqual({
+            support: "supported",
+            source: "override",
+        });
+        // A mechanism the override leaves unstated falls through to the
+        // discovered fact, then unknown.
+        expect(facts["responses_standalone_compact"]).toEqual({
+            support: "unknown",
+            source: "unknown",
+        });
     });
 });

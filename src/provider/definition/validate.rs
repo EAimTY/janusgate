@@ -7,6 +7,9 @@
 //! that surfaces anyway is stored drift and fails fast.
 
 use super::{
+    compaction::{
+        CompactionSection, CountTokensOperation, MechanismDeclarations, StandaloneCompactOperation,
+    },
     credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce, TokenRefresh},
     discovery::{CapabilityExtraction, DiscoveryExtract, Pagination, ThinkingLevelsExtraction},
     provisioning::{ProvisionExtraction, ProvisioningStep},
@@ -16,7 +19,10 @@ use super::{
         ValueExpr, ValueKind,
     },
 };
-use crate::format::{RenderOption, UpstreamFormat};
+use crate::{
+    compaction::mechanism::MechanismSupport,
+    format::{RenderOption, UpstreamFormat},
+};
 use std::collections::BTreeSet;
 /// A definition payload rejection: one message naming the offending descriptor element, rendered
 /// verbatim to the management client as an invalid-request rejection.
@@ -63,25 +69,40 @@ enum Stage {
 
     /// The upstream model-list discovery.
     Discovery,
+
+    /// A native compaction operation of the definition's compaction section: the standalone
+    /// compact operation and the Messages declarations' overlay headers.
+    CompactionOperation,
+
+    /// The compaction section's optional native token-count operation.
+    CompactionCount,
 }
 
 impl Stage {
     /// Whether the stage's expressions may carry the value kind; the constant configuration
-    /// kinds — literals and the configured client credentials — are available everywhere, and the
-    /// flow-state kinds are available exactly at the stages that produce or consume them.
+    /// kinds — literals and the configured client credentials — are available everywhere, and
+    /// the flow-state kinds are available exactly at the stages that produce or consume them.
     const fn allows(self, kind: ValueKind) -> bool {
         match kind {
             ValueKind::Literal | ValueKind::ClientId | ValueKind::ClientSecret => true,
 
             ValueKind::Base => !matches!(self, Self::AuthorizeUrl),
 
-            ValueKind::Secret => {
-                matches!(self, Self::Inference | Self::Provisioning | Self::Discovery)
-            }
+            ValueKind::Secret => matches!(
+                self,
+                Self::Inference
+                    | Self::Provisioning
+                    | Self::Discovery
+                    | Self::CompactionOperation
+                    | Self::CompactionCount
+            ),
 
             ValueKind::Slot => !matches!(self, Self::AuthorizeUrl),
 
-            ValueKind::Model | ValueKind::RequestUuid => matches!(self, Self::Inference),
+            ValueKind::Model | ValueKind::RequestUuid => matches!(
+                self,
+                Self::Inference | Self::CompactionOperation | Self::CompactionCount
+            ),
 
             ValueKind::AuthorizationCode | ValueKind::CodeVerifier | ValueKind::RedirectUri => {
                 matches!(self, Self::ExchangeAuthorizationCode)
@@ -217,6 +238,7 @@ impl DefinitionPayload {
         self.validate_credential(&slots)?;
         self.validate_provisioning(&slots)?;
         self.validate_discovery(&slots)?;
+        self.validate_compaction(&slots)?;
 
         Ok(())
     }
@@ -773,6 +795,295 @@ impl DefinitionPayload {
 
         Ok(())
     }
+
+    /// Validates the compaction section: the per-format mechanism gating, the
+    /// supported-requires-operation shape, the classifier rows, and the operation expressions'
+    /// staging.
+    fn validate_compaction(&self, slots: &SlotNamespace) -> Result<(), ValidationError> {
+        let Some(compaction) = &self.compaction else {
+            return Ok(());
+        };
+
+        let CompactionSection { mechanisms, .. } = compaction;
+
+        // The format gating: a Responses mechanism speaks only through an `openai_response`
+        // definition and a Messages mechanism only through an `anthropic_messages` one — a
+        // declaration on the wrong format is an operation the definition can never render
+        // (README §5).
+        for (mechanism, is_declared) in [
+            (
+                "responses_standalone_compact",
+                mechanisms.responses_standalone_compact.is_some(),
+            ),
+            (
+                "responses_explicit_trigger",
+                mechanisms.responses_explicit_trigger.is_some(),
+            ),
+            (
+                "responses_automatic_compaction",
+                mechanisms.responses_automatic_compaction.is_some(),
+            ),
+        ] {
+            if is_declared && self.format != UpstreamFormat::OpenAiResponse {
+                return Err(ValidationError::new(format!(
+                    "the `{mechanism}` compaction declaration requires the `openai_response` \
+                     format, but the definition speaks `{}`",
+                    self.format.as_str()
+                )));
+            }
+        }
+
+        for (mechanism, is_declared) in [
+            (
+                "messages_on_demand_compaction",
+                mechanisms.messages_on_demand_compaction.is_some(),
+            ),
+            (
+                "messages_threshold_compaction",
+                mechanisms.messages_threshold_compaction.is_some(),
+            ),
+        ] {
+            if is_declared && self.format != UpstreamFormat::AnthropicMessages {
+                return Err(ValidationError::new(format!(
+                    "the `{mechanism}` compaction declaration requires the \
+                     `anthropic_messages` format, but the definition speaks `{}`",
+                    self.format.as_str()
+                )));
+            }
+        }
+
+        if compaction.count_tokens.is_some() && self.format != UpstreamFormat::AnthropicMessages {
+            return Err(ValidationError::new(format!(
+                "the `count_tokens` compaction operation requires the `anthropic_messages` \
+                 format, but the definition speaks `{}`",
+                self.format.as_str()
+            )));
+        }
+
+        // A definition cannot advertise native support without configuring how to execute it:
+        // the standalone declaration requires its operation, the Messages declarations their
+        // overlay headers. The operation data is validated whenever present, regardless of the
+        // declared default — an administrator model override can select a mechanism whose
+        // definition default is unknown.
+        let MechanismDeclarations {
+            responses_standalone_compact,
+            responses_explicit_trigger,
+            responses_automatic_compaction,
+            messages_on_demand_compaction,
+            messages_threshold_compaction,
+        } = mechanisms;
+
+        if let Some(standalone) = responses_standalone_compact {
+            if standalone.default == MechanismSupport::Supported && standalone.operation.is_none() {
+                return Err(ValidationError::new(
+                    "the `responses_standalone_compact` compaction declaration declares \
+                     `supported` without an operation; a definition cannot advertise native \
+                     support without configuring how to execute it",
+                ));
+            }
+
+            if let Some(operation) = &standalone.operation {
+                validate_compaction_operation(operation, slots)?;
+            }
+
+            validate_unsupported_classifier(
+                standalone.unsupported.as_ref(),
+                "the `responses_standalone_compact` compaction declaration",
+            )?;
+        }
+
+        if let Some(trigger) = responses_explicit_trigger {
+            validate_unsupported_classifier(
+                trigger.unsupported.as_ref(),
+                "the `responses_explicit_trigger` compaction declaration",
+            )?;
+        }
+
+        if let Some(automatic) = responses_automatic_compaction {
+            validate_unsupported_classifier(
+                automatic.unsupported.as_ref(),
+                "the `responses_automatic_compaction` compaction declaration",
+            )?;
+        }
+
+        if let Some(on_demand) = messages_on_demand_compaction {
+            validate_overlay_headers(
+                on_demand.overlay_headers.as_deref(),
+                on_demand.default,
+                "messages_on_demand_compaction",
+                slots,
+            )?;
+
+            validate_unsupported_classifier(
+                on_demand.unsupported.as_ref(),
+                "the `messages_on_demand_compaction` compaction declaration",
+            )?;
+        }
+
+        if let Some(threshold) = messages_threshold_compaction {
+            validate_overlay_headers(
+                threshold.overlay_headers.as_deref(),
+                threshold.default,
+                "messages_threshold_compaction",
+                slots,
+            )?;
+
+            validate_unsupported_classifier(
+                threshold.unsupported.as_ref(),
+                "the `messages_threshold_compaction` compaction declaration",
+            )?;
+        }
+
+        if let Some(count_tokens) = &compaction.count_tokens {
+            validate_compaction_count(count_tokens, slots)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Validates one standalone compact operation: the stage-available expressions of its URL,
+/// header rows, and envelope, the envelope's exactly-one-`Body` shape, and the response-unwrap
+/// member.
+fn validate_compaction_operation(
+    operation: &StandaloneCompactOperation,
+    slots: &SlotNamespace,
+) -> Result<(), ValidationError> {
+    let what = "standalone compact operation";
+
+    validate_operation_surface(
+        &operation.url,
+        &operation.headers,
+        operation.envelope.as_ref(),
+        operation.response_unwrap.as_deref(),
+        what,
+        Stage::CompactionOperation,
+        slots,
+    )
+}
+
+/// Validates the token-count operation: the stage-available expressions of its URL, header
+/// rows, and envelope, the envelope's exactly-one-`Body` shape, and the response-unwrap
+/// member.
+fn validate_compaction_count(
+    operation: &CountTokensOperation,
+    slots: &SlotNamespace,
+) -> Result<(), ValidationError> {
+    let what = "token-count operation";
+
+    validate_operation_surface(
+        &operation.url,
+        &operation.headers,
+        operation.envelope.as_ref(),
+        operation.response_unwrap.as_deref(),
+        what,
+        Stage::CompactionCount,
+        slots,
+    )
+}
+
+/// Validates one operation-shaped connection surface: the non-empty URL, the header rows'
+/// names and stage-available values, the envelope's exactly-one-`Body` shape, and the
+/// response-unwrap member — the same rules the inference descriptor's surface obeys.
+fn validate_operation_surface(
+    url: &StringExpr,
+    headers: &[ParamRow],
+    envelope: Option<&TemplateNode>,
+    response_unwrap: Option<&str>,
+    what: &str,
+    stage: Stage,
+    slots: &SlotNamespace,
+) -> Result<(), ValidationError> {
+    require_non_empty_expr(url, &format!("{what} URL"))?;
+
+    let mut walk = ExpressionWalk::new(stage, slots);
+
+    walk.string_expr(url, &format!("{what} URL"))?;
+    walk.headers(headers, &format!("{what} header"))?;
+
+    if let Some(envelope) = envelope {
+        let body_count = walk.template_node(envelope, &format!("{what} envelope"))?;
+
+        if body_count != 1 {
+            return Err(ValidationError::new(format!(
+                "{what} envelope carries {body_count} body placeholders; exactly one is required"
+            )));
+        }
+    }
+
+    if let Some(response_unwrap) = response_unwrap
+        && response_unwrap.is_empty()
+    {
+        return Err(ValidationError::new(format!(
+            "{what} response unwrap member must not be empty"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Validates one Messages declaration's overlay headers: present and non-empty when the
+/// declaration declares support, valid header names, stage-available values.
+fn validate_overlay_headers(
+    headers: Option<&[ParamRow]>,
+    default: MechanismSupport,
+    mechanism: &str,
+    slots: &SlotNamespace,
+) -> Result<(), ValidationError> {
+    let requires_headers = default == MechanismSupport::Supported;
+
+    let Some(headers) = headers else {
+        if requires_headers {
+            return Err(ValidationError::new(format!(
+                "the `{mechanism}` compaction declaration declares `supported` without overlay \
+                 headers; a definition cannot advertise native support without configuring how \
+                 to execute it"
+            )));
+        }
+
+        return Ok(());
+    };
+
+    if headers.is_empty() && requires_headers {
+        return Err(ValidationError::new(format!(
+            "the `{mechanism}` compaction declaration declares `supported` without overlay \
+             headers; a definition cannot advertise native support without configuring how to \
+             execute it"
+        )));
+    }
+
+    let mut walk = ExpressionWalk::new(Stage::CompactionOperation, slots);
+
+    walk.headers(headers, "compaction overlay header")
+}
+
+/// Validates one unsupported-response classifier: the code and parameter rows non-empty; the
+/// status rows carry no constraint beyond the type.
+fn validate_unsupported_classifier(
+    classifier: Option<&super::compaction::UnsupportedClassifier>,
+    what: &str,
+) -> Result<(), ValidationError> {
+    let Some(classifier) = classifier else {
+        return Ok(());
+    };
+
+    for code in &classifier.codes {
+        if code.is_empty() {
+            return Err(ValidationError::new(format!(
+                "{what} carries an unsupported classifier with an empty code"
+            )));
+        }
+    }
+
+    for parameter in &classifier.parameters {
+        if parameter.is_empty() {
+            return Err(ValidationError::new(format!(
+                "{what} carries an unsupported classifier with an empty parameter"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Whether any extraction of the provisioning sequence stores into a target of the given kind.
@@ -815,8 +1126,8 @@ fn validate_path(path: &ResponsePath, what: &str) -> Result<(), ValidationError>
 }
 
 /// Validates one capability extraction's paths (README §5.5): every declared path
-/// well-formed, and every member-path — the level-naming and flag members — non-empty, so a
-/// conforming descriptor never names the addressed value's root by accident.
+/// well-formed, and every member-path — the level-naming, flag, and compaction-object paths —
+/// non-empty, so a conforming descriptor never names the addressed value's root by accident.
 fn validate_capability_extraction(
     capabilities: &CapabilityExtraction,
 ) -> Result<(), ValidationError> {
@@ -860,6 +1171,39 @@ fn validate_capability_extraction(
 
     if let Some(path) = &capabilities.max_output_tokens {
         validate_path(path, "discovery max-output-tokens")?;
+    }
+
+    if let Some(compaction) = &capabilities.compaction {
+        for (mechanism, extraction) in [
+            ("messages_on_demand", &compaction.messages_on_demand),
+            ("messages_threshold", &compaction.messages_threshold),
+        ] {
+            let Some(extraction) = extraction else {
+                continue;
+            };
+
+            if extraction.object_at.0.is_empty() {
+                return Err(ValidationError::new(format!(
+                    "discovery `{mechanism}` compaction object path must not be empty"
+                )));
+            }
+
+            validate_path(
+                &extraction.object_at,
+                &format!("discovery `{mechanism}` compaction object"),
+            )?;
+
+            if extraction.flag_field.0.is_empty() {
+                return Err(ValidationError::new(format!(
+                    "discovery `{mechanism}` compaction flag path must not be empty"
+                )));
+            }
+
+            validate_path(
+                &extraction.flag_field,
+                &format!("discovery `{mechanism}` compaction flag"),
+            )?;
+        }
     }
 
     Ok(())
@@ -1205,6 +1549,8 @@ fn stage_name(stage: Stage) -> &'static str {
         Stage::RefreshGrant => "token refresh",
         Stage::Provisioning => "provisioning",
         Stage::Discovery => "discovery",
+        Stage::CompactionOperation => "compaction operation",
+        Stage::CompactionCount => "compaction token count",
     }
 }
 
@@ -4973,10 +5319,11 @@ mod tests {
     }
 
     /// Verifies the capability-extraction validation (README §5.5): a well-formed `member_array`
-    /// and `flagged_keys` pair of descriptors passes, while an empty level member path, an empty
-    /// flag path, and a capability token path carrying an empty member are each rejected naming
-    /// the element — so a conforming descriptor never names the addressed value's root by
-    /// accident.
+    /// and `flagged_keys` pair of descriptors passes — the compaction-flag extraction beside
+    /// them included — while an empty level member path, an empty flag path, a capability token
+    /// path carrying an empty member, and a compaction extraction carrying an empty object or
+    /// flag path are each rejected naming the element — so a conforming descriptor never names
+    /// the addressed value's root by accident.
     ///
     /// # Panics
     ///
@@ -5017,6 +5364,19 @@ mod tests {
             .unwrap()
         }
 
+        /// The compaction-flag extraction document the conforming fixture and the empty-path
+        /// probes share.
+        fn compaction_extraction(
+            object_at: serde_json::Value,
+            flag_field: serde_json::Value,
+        ) -> serde_json::Value {
+            json!({
+                "compaction": {
+                    "messages_on_demand": {"object_at": object_at, "flag_field": flag_field}
+                }
+            })
+        }
+
         // The two conforming shapes validate cleanly.
         definition(
             discovery_document(json!({
@@ -5046,8 +5406,27 @@ mod tests {
         .validate()
         .unwrap();
 
+        // The compaction-flag extraction is format-agnostic: it validates beside the level
+        // extraction on any format, and the empty `unknown` mechanism member parses as absent.
+        definition(
+            discovery_document(compaction_extraction(
+                json!(["capabilities", "compaction"]),
+                json!(["supported"]),
+            )),
+            "/chat/completions",
+        )
+        .validate()
+        .unwrap();
+
+        definition(
+            discovery_document(json!({"compaction": {}})),
+            "/chat/completions",
+        )
+        .validate()
+        .unwrap();
+
         // Each malformed probe rejects, naming the offending element.
-        let probes: [(serde_json::Value, &str); 3] = [
+        let probes: [(serde_json::Value, &str); 5] = [
             (
                 json!({
                     "thinking_levels": {
@@ -5072,6 +5451,14 @@ mod tests {
                 json!({"max_input_tokens": [""]}),
                 "discovery max-input-tokens path carries an empty member",
             ),
+            (
+                compaction_extraction(json!([]), json!(["supported"])),
+                "`messages_on_demand` compaction object path must not be empty",
+            ),
+            (
+                compaction_extraction(json!(["capabilities", "compaction"]), json!([])),
+                "`messages_on_demand` compaction flag path must not be empty",
+            ),
         ];
 
         for (capabilities, expected) in probes {
@@ -5084,5 +5471,499 @@ mod tests {
                 "`{error}` does not name `{expected}`"
             );
         }
+    }
+
+    /// Builds one static-key payload of the given format carrying the given compaction section
+    /// document; every other expression stays literal, so only the compaction section decides
+    /// the outcome.
+    fn compaction_definition(format: &str, compaction: serde_json::Value) -> serde_json::Value {
+        json!({
+            "format": format,
+            "inference": {
+                "url": literal("https://upstream.example/v1/responses"),
+                "upstream_streaming": "match_client",
+            },
+            "credential": {"type": "api_key"},
+            "compaction": compaction,
+        })
+    }
+
+    /// Builds one standalone compact operation with the given mutations applied.
+    fn standalone_operation(mutate: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+        let mut operation = json!({
+            "url": [{"type": "base"}, {"type": "literal", "value": "/responses/compact"}],
+        });
+
+        mutate(&mut operation);
+
+        operation
+    }
+
+    /// The accepted compaction-section shapes (README §5): every mechanism in its format, the
+    /// supported declarations carrying their operation data, the classifiers, and the token
+    /// count all validate, and an empty section defaults cleanly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an accepted fixture fails validation.
+    #[test]
+    fn accepts_the_compaction_section_shapes() {
+        // The empty section: every member defaults, nothing to enforce.
+        mutate_and_validate(compaction_definition("openai_response", json!({})), |_| {}).unwrap();
+
+        // The supported standalone declaration with a full operation and a classifier.
+        mutate_and_validate(
+            compaction_definition(
+                "openai_response",
+                json!({
+                    "mechanisms": {
+                        "responses_standalone_compact": {
+                            "default": "supported",
+                            "operation": standalone_operation(|operation| {
+                                operation["headers"] = json!([
+                                    {"name": "Authorization", "value": [{"type": "secret"}]}
+                                ]);
+                                operation["envelope"] = json!({
+                                    "type": "object",
+                                    "fields": {"body": {"type": "body"}},
+                                });
+                                operation["response_unwrap"] = json!("result");
+                                operation["unsupported"] = json!({
+                                    "statuses": [404], "codes": ["gone"], "parameters": ["model"]
+                                });
+                            }),
+                        },
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap();
+
+        // The trigger and automatic declarations need no operation data.
+        mutate_and_validate(
+            compaction_definition(
+                "openai_response",
+                json!({
+                    "mechanisms": {
+                        "responses_explicit_trigger": {"default": "supported"},
+                        "responses_automatic_compaction": {"default": "unknown"},
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap();
+
+        // The Messages declarations with their overlay headers, plus the token count.
+        mutate_and_validate(
+            compaction_definition(
+                "anthropic_messages",
+                json!({
+                    "mechanisms": {
+                        "messages_on_demand_compaction": {
+                            "default": "supported",
+                            "overlay_headers": [
+                                {
+                                    "name": "anthropic-beta",
+                                    "value": [
+                                        {"type": "literal", "value": "compact-2026-09-04"}
+                                    ]
+                                }
+                            ],
+                        },
+                        "messages_threshold_compaction": {
+                            "default": "supported",
+                            "overlay_headers": [
+                                {
+                                    "name": "anthropic-beta",
+                                    "value": [
+                                        {"type": "literal", "value": "compact-2026-01-12"}
+                                    ]
+                                }
+                            ],
+                        },
+                    },
+                    "count_tokens": {
+                        "url": [
+                            {"type": "base"},
+                            {"type": "literal", "value": "/messages/count_tokens"}
+                        ],
+                        "envelope": {
+                            "type": "object",
+                            "fields": {"body": {"type": "body"}},
+                        },
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap();
+
+        // The operation expressions carry the inference stage's kinds: model, secret, slot,
+        // request UUID, and coalesces over them.
+        mutate_and_validate(
+            compaction_definition(
+                "openai_response",
+                json!({
+                    "mechanisms": {
+                        "responses_standalone_compact": {
+                            "default": "supported",
+                            "operation": standalone_operation(|operation| {
+                                operation["url"] = json!([
+                                    {
+                                        "type": "coalesce",
+                                        "parts": [
+                                            {"type": "model"},
+                                            {"type": "literal", "value": "fallback"}
+                                        ]
+                                    },
+                                    {"type": "literal", "value": "/compact/"},
+                                    {"type": "request_uuid"},
+                                ]);
+                            }),
+                        },
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap();
+    }
+
+    /// The per-format gating: a Responses declaration is legal only on an `openai_response`
+    /// definition, a Messages declaration and the token count only on an `anthropic_messages`
+    /// one, and each rejection names its mechanism.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejected fixture validates or an error fails to name its mechanism.
+    #[test]
+    fn rejects_compaction_declarations_outside_their_format() {
+        let probes = [
+            (
+                "openai_chat_completion",
+                json!({"mechanisms": {"responses_standalone_compact": {"default": "supported"}}}),
+                "responses_standalone_compact",
+            ),
+            (
+                "anthropic_messages",
+                json!({"mechanisms": {"responses_standalone_compact": {
+                    "default": "supported",
+                    "operation": standalone_operation(|_| {}),
+                }}}),
+                "responses_standalone_compact",
+            ),
+            (
+                "anthropic_messages",
+                json!({"mechanisms": {"responses_explicit_trigger": {"default": "unsupported"}}}),
+                "responses_explicit_trigger",
+            ),
+            (
+                "openai_chat_completion",
+                json!({"mechanisms": {"responses_automatic_compaction": {"default": "unknown"}}}),
+                "responses_automatic_compaction",
+            ),
+            (
+                "openai_response",
+                json!({"mechanisms": {"messages_on_demand_compaction": {"default": "supported"}}}),
+                "messages_on_demand_compaction",
+            ),
+            (
+                "openai_chat_completion",
+                json!({"mechanisms": {"messages_threshold_compaction": {"default": "supported"}}}),
+                "messages_threshold_compaction",
+            ),
+            (
+                "openai_response",
+                json!({"count_tokens": {"url": [{"type": "literal", "value": "/count"}]}}),
+                "count_tokens",
+            ),
+        ];
+
+        for (format, compaction, mechanism) in probes {
+            let error =
+                mutate_and_validate(compaction_definition(format, compaction), |_| {}).unwrap_err();
+
+            assert!(
+                error.contains(mechanism) && error.contains("format"),
+                "`{error}` does not reject `{mechanism}` for its format"
+            );
+        }
+    }
+
+    /// The supported-requires-operation shape: a standalone declaration without an operation
+    /// and a Messages declaration without non-empty overlay headers are rejected, while the
+    /// unknown and unsupported declarations carry no operation obligation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejected fixture validates or an accepted one fails.
+    #[test]
+    fn rejects_supported_compaction_declarations_without_operation_data() {
+        let standalone = |declaration: serde_json::Value| {
+            compaction_definition(
+                "openai_response",
+                json!({ "mechanisms": { "responses_standalone_compact": declaration } }),
+            )
+        };
+
+        // Supported without the operation.
+        let error =
+            mutate_and_validate(standalone(json!({"default": "supported"})), |_| {}).unwrap_err();
+
+        assert!(
+            error.contains("responses_standalone_compact") && error.contains("operation"),
+            "{error}"
+        );
+
+        // Unknown and unsupported without the operation are the honest postures.
+        mutate_and_validate(standalone(json!({"default": "unknown"})), |_| {}).unwrap();
+        mutate_and_validate(standalone(json!({"default": "unsupported"})), |_| {}).unwrap();
+
+        let messages = |mechanism: &str, declaration: serde_json::Value| {
+            compaction_definition(
+                "anthropic_messages",
+                json!({ "mechanisms": { mechanism: declaration } }),
+            )
+        };
+
+        for mechanism in [
+            "messages_on_demand_compaction",
+            "messages_threshold_compaction",
+        ] {
+            // Supported without overlay headers, and supported with empty ones.
+            for declaration in [
+                json!({"default": "supported"}),
+                json!({"default": "supported", "overlay_headers": []}),
+            ] {
+                let error =
+                    mutate_and_validate(messages(mechanism, declaration), |_| {}).unwrap_err();
+
+                assert!(
+                    error.contains(mechanism) && error.contains("overlay headers"),
+                    "`{error}` does not name `{mechanism}`"
+                );
+            }
+
+            // Unknown and unsupported without overlay headers are accepted.
+            mutate_and_validate(messages(mechanism, json!({"default": "unknown"})), |_| {})
+                .unwrap();
+            mutate_and_validate(
+                messages(mechanism, json!({"default": "unsupported"})),
+                |_| {},
+            )
+            .unwrap();
+
+            // Supported with a non-empty overlay list is the conforming shape.
+            mutate_and_validate(
+                messages(
+                    mechanism,
+                    json!({
+                        "default": "supported",
+                        "overlay_headers": [
+                            {
+                                "name": "anthropic-beta",
+                                "value": [{"type": "literal", "value": "beta"}]
+                            }
+                        ],
+                    }),
+                ),
+                |_| {},
+            )
+            .unwrap();
+        }
+    }
+
+    /// The unsupported classifier's rows: empty code and parameter entries are rejected, and
+    /// any status value is legal.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejected fixture validates or an error fails to name its row.
+    #[test]
+    fn rejects_malformed_compaction_classifiers() {
+        let with_classifier = |classifier: serde_json::Value| {
+            compaction_definition(
+                "openai_response",
+                json!({
+                    "mechanisms": {
+                        "responses_explicit_trigger": {
+                            "default": "unsupported",
+                            "unsupported": classifier,
+                        },
+                    },
+                }),
+            )
+        };
+
+        let error = mutate_and_validate(with_classifier(json!({"codes": ["valid", ""]})), |_| {})
+            .unwrap_err();
+
+        assert!(error.contains("empty code"), "{error}");
+
+        let error =
+            mutate_and_validate(with_classifier(json!({"parameters": [""]})), |_| {}).unwrap_err();
+
+        assert!(error.contains("empty parameter"), "{error}");
+
+        // Every status value is legal, and the empty classifier never positively classifies.
+        mutate_and_validate(with_classifier(json!({"statuses": [0, 65535]})), |_| {}).unwrap();
+        mutate_and_validate(with_classifier(json!({})), |_| {}).unwrap();
+    }
+
+    /// The operation surfaces obey the inference surface's rules: the envelope's exactly-one
+    /// body, valid header names, the non-empty URL, the non-empty response unwrap, and the
+    /// stage-available value kinds — a flow-state part outside its stage names the compaction
+    /// stage in the rejection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejected fixture validates or an error fails to name its cause.
+    #[test]
+    fn rejects_malformed_compaction_operation_surfaces() {
+        let with_standalone = |operation: serde_json::Value| {
+            compaction_definition(
+                "openai_response",
+                json!({
+                    "mechanisms": {
+                        "responses_standalone_compact": {
+                            "default": "supported",
+                            "operation": operation,
+                        },
+                    },
+                }),
+            )
+        };
+
+        let probes: [(serde_json::Value, &str); 7] = [
+            // Zero body placeholders.
+            (
+                standalone_operation(|operation| {
+                    operation["envelope"] = json!({"type": "object", "fields": {}});
+                }),
+                "0 body placeholders",
+            ),
+            // Two body placeholders.
+            (
+                standalone_operation(|operation| {
+                    operation["envelope"] = json!({
+                        "type": "array",
+                        "items": [{"type": "body"}, {"type": "body"}],
+                    });
+                }),
+                "2 body placeholders",
+            ),
+            // An invalid HTTP header name.
+            (
+                standalone_operation(|operation| {
+                    operation["headers"] = json!([
+                        {"name": "Bad Header", "value": [{"type": "literal", "value": "x"}]}
+                    ]);
+                }),
+                "standalone compact operation header",
+            ),
+            // An empty URL.
+            (
+                standalone_operation(|operation| {
+                    operation["url"] = json!([]);
+                }),
+                "standalone compact operation URL",
+            ),
+            // An empty response unwrap.
+            (
+                standalone_operation(|operation| {
+                    operation["response_unwrap"] = json!("");
+                }),
+                "response unwrap member must not be empty",
+            ),
+            // A flow-state part the compaction stage never carries.
+            (
+                standalone_operation(|operation| {
+                    operation["url"] = json!([{"type": "device_code"}]);
+                }),
+                "compaction operation stage does not carry",
+            ),
+            // An undefined slot reference.
+            (
+                standalone_operation(|operation| {
+                    operation["headers"] = json!([
+                        {"name": "X-Slot", "value": [{"type": "slot", "name": "absent"}]}
+                    ]);
+                }),
+                "references the slot `absent`",
+            ),
+        ];
+
+        for (operation, expected) in probes {
+            let error = mutate_and_validate(with_standalone(operation), |_| {}).unwrap_err();
+
+            assert!(
+                error.contains(expected),
+                "`{error}` does not name `{expected}`"
+            );
+        }
+
+        // The token-count surface obeys the same envelope rule under its own stage name.
+        let error = mutate_and_validate(
+            compaction_definition(
+                "anthropic_messages",
+                json!({
+                    "count_tokens": {
+                        "url": [{"type": "literal", "value": "/count"}],
+                        "envelope": {
+                            "type": "array",
+                            "items": [{"type": "body"}, {"type": "body"}],
+                        },
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("token-count operation") && error.contains("body placeholders"),
+            "{error}"
+        );
+
+        // The token-count stage carries the inference kinds too.
+        mutate_and_validate(
+            compaction_definition(
+                "anthropic_messages",
+                json!({
+                    "count_tokens": {
+                        "url": [{"type": "base"}, {"type": "literal", "value": "/count"}],
+                        "headers": [{"name": "x-api-key", "value": [{"type": "secret"}]}],
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap();
+
+        // The overlay headers obey the header-name rule.
+        let error = mutate_and_validate(
+            compaction_definition(
+                "anthropic_messages",
+                json!({
+                    "mechanisms": {
+                        "messages_on_demand_compaction": {
+                            "default": "supported",
+                            "overlay_headers": [
+                                {
+                                    "name": "anthropic beta",
+                                    "value": [{"type": "literal", "value": "beta"}]
+                                }
+                            ],
+                        },
+                    },
+                }),
+            ),
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert!(error.contains("compaction overlay header"), "{error}");
     }
 }

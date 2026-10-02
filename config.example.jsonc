@@ -84,4 +84,24 @@
         // created, older files are deleted file-and-all. Defaults to 90.
         "retention_days": 90
     }
+
+    // Remote-compaction sealing keys (README §6.8). The presence of this
+    // section is the switch for the gateway's sealed compaction artifacts:
+    // present, gateway summaries and wrapped native windows are sealed under
+    // these keys; absent, any operation that would produce or consume a
+    // sealed carrier fails while native passthrough keeps working. The first
+    // key seals; every configured key unseals by its carrier-carried id, so
+    // keys rotate by appending and removing a key intentionally invalidates
+    // its artifacts. Key changes apply at the next compaction operation — no
+    // restart required. Each id must be non-empty, unique, and free of ".";
+    // each key is standard base64 of exactly 32 bytes
+    // (e.g. `openssl rand -base64 32`).
+    // "compaction": {
+    //     "keys": [
+    //         {
+    //             "id": "primary",
+    //             "key": "CHANGE_ME_STANDARD_BASE64_32_BYTES"
+    //         }
+    //     ]
+    // }
 }

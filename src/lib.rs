@@ -14,6 +14,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 mod accounting;
 mod api;
+mod compaction;
 mod config;
 mod context;
 mod database;

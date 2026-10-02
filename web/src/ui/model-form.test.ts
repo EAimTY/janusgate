@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+    compactionOverrideSelection,
     composedPublicId,
+    isSameCompactionOverride,
     isSameLevelSet,
+    normalizedCompactionOverride,
     normalizedPublicIdOverride,
     normalizedThinkingLevelsOverride,
     normalizedTokenCapOverride,
@@ -135,5 +138,103 @@ describe("tokenCapOverrideError", () => {
                 "Max input tokens override must be a positive integer.",
             );
         }
+    });
+});
+
+describe("compactionOverrideSelection", () => {
+    it("opens a null map entirely unset", () => {
+        expect(compactionOverrideSelection(null)).toEqual({
+            responses_standalone_compact: "unset",
+            responses_explicit_trigger: "unset",
+            responses_automatic_compaction: "unset",
+            messages_on_demand_compaction: "unset",
+            messages_threshold_compaction: "unset",
+        });
+    });
+
+    it("carries a stored map's members and leaves the rest unset", () => {
+        expect(
+            compactionOverrideSelection({
+                messages_on_demand_compaction: "unknown",
+            }),
+        ).toEqual({
+            responses_standalone_compact: "unset",
+            responses_explicit_trigger: "unset",
+            responses_automatic_compaction: "unset",
+            messages_on_demand_compaction: "unknown",
+            messages_threshold_compaction: "unset",
+        });
+    });
+});
+
+describe("normalizedCompactionOverride", () => {
+    it("reads a switched-off override as none, so the discovered facts stand", () => {
+        expect(normalizedCompactionOverride(false, compactionOverrideSelection(null))).toBeNull();
+    });
+
+    it("carries only the stated mechanisms while on, the unset ones left out", () => {
+        const selected = compactionOverrideSelection(null);
+
+        expect(
+            normalizedCompactionOverride(true, {
+                ...selected,
+                responses_standalone_compact: "supported",
+                messages_threshold_compaction: "unknown",
+            }),
+        ).toEqual({
+            responses_standalone_compact: "supported",
+            messages_threshold_compaction: "unknown",
+        });
+    });
+});
+
+describe("isSameCompactionOverride", () => {
+    it("treats null against null as the same undeclared state", () => {
+        expect(isSameCompactionOverride(null, null)).toBe(true);
+    });
+
+    it("treats a standing map against none as changed, whatever it states", () => {
+        expect(isSameCompactionOverride({}, null)).toBe(false);
+        expect(
+            isSameCompactionOverride(null, {
+                messages_on_demand_compaction: "supported",
+            }),
+        ).toBe(false);
+    });
+
+    it("compares the stated members, whatever order the keys were built in", () => {
+        expect(
+            isSameCompactionOverride(
+                {
+                    messages_on_demand_compaction: "supported",
+                    responses_standalone_compact: "unknown",
+                },
+                {
+                    responses_standalone_compact: "unknown",
+                    messages_on_demand_compaction: "supported",
+                },
+            ),
+        ).toBe(true);
+        expect(
+            isSameCompactionOverride(
+                {
+                    messages_on_demand_compaction: "supported",
+                },
+                {
+                    messages_on_demand_compaction: "unknown",
+                },
+            ),
+        ).toBe(false);
+        expect(
+            isSameCompactionOverride(
+                {
+                    messages_on_demand_compaction: "supported",
+                },
+                {
+                    messages_on_demand_compaction: "supported",
+                    responses_standalone_compact: "supported",
+                },
+            ),
+        ).toBe(false);
     });
 });

@@ -20,6 +20,7 @@
 use crate::{
     accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
+    compaction::support_facts::CompactionSupportFacts,
     context::Context,
     format::{RouteContext, gemini::generate_content::Format as InboundFormat},
 };
@@ -51,7 +52,8 @@ struct ModelList {
 
 /// One served model in the native Gemini shape, carrying the official token-limit members
 /// when their effective values are known (README §6.5) — `inputTokenLimit` and
-/// `outputTokenLimit` — and omitting each when unknown, never fabricating a value.
+/// `outputTokenLimit` — and omitting each when unknown, never fabricating a value, with the
+/// gateway-extension `compaction` facts beside them rendering only the known mechanisms.
 #[derive(Debug, Serialize)]
 struct ModelEntry {
     /// Resource name in the official `models/<id>` form.
@@ -66,6 +68,11 @@ struct ModelEntry {
     /// unknown.
     #[serde(rename = "outputTokenLimit", skip_serializing_if = "Option::is_none")]
     output_token_limit: Option<i64>,
+
+    /// Effective compaction support facts keyed by the mechanism spellings — a gateway
+    /// extension; omitted when no mechanism is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compaction: Option<CompactionSupportFacts>,
 }
 
 /// Handles `GET /models`: the native `{"models": [...]}` shape over the same
@@ -79,6 +86,7 @@ async fn models(State(context): State<Context>) -> Response {
                 name: format!("models/{}", model.public_id),
                 input_token_limit: model.max_input_tokens,
                 output_token_limit: model.max_output_tokens,
+                compaction: model.compaction,
             })
             .collect(),
     })
@@ -273,23 +281,38 @@ mod tests {
 
     /// Verifies the native model-listing shape renders `models/<id>` names with no
     /// pagination token, and that the official token-limit members ride along when known and
-    /// stay absent when unknown (README §6.5).
+    /// stay absent when unknown — the gateway-extension `compaction` facts beside them,
+    /// keyed by the mechanism spellings and carrying only known mechanisms (README §6.5).
     ///
     /// # Panics
     ///
     /// Panics if the rendered shape diverges from the native contract.
     #[test]
     fn renders_native_model_listing_shape() {
+        use crate::compaction::{
+            mechanism::{Mechanism, MechanismSupport},
+            support_facts::CompactionSupportFacts as Facts,
+        };
+
+        #[expect(clippy::expect_used, reason = "the fixture fact pairs are non-empty")]
+        let compaction = Facts::from_pairs([(
+            Mechanism::MessagesThresholdCompaction,
+            MechanismSupport::Unsupported,
+        )])
+        .expect("fixture fact pairs are non-empty");
+
         let models = vec![
             ModelEntry {
                 name: "models/b-model".to_string(),
                 input_token_limit: None,
                 output_token_limit: None,
+                compaction: None,
             },
             ModelEntry {
                 name: "models/a-model".to_string(),
                 input_token_limit: Some(1_048_576),
                 output_token_limit: Some(65_535),
+                compaction: Some(compaction),
             },
         ];
 
@@ -305,6 +328,7 @@ mod tests {
                         "name": "models/a-model",
                         "inputTokenLimit": 1048576,
                         "outputTokenLimit": 65535,
+                        "compaction": {"messages_threshold_compaction": "unsupported"},
                     },
                 ],
             })

@@ -14,6 +14,7 @@ use tokio::{
 };
 
 /// The transport action one [`MockUpstream`] connection takes once its request has arrived.
+#[derive(Debug, Clone)]
 pub(crate) enum MockAction {
     /// Writes the complete HTTP response — status line, headers, and body — verbatim, then
     /// closes.
@@ -49,9 +50,59 @@ pub(crate) enum MockAction {
     },
 }
 
+impl MockAction {
+    /// Frames one JSON body as the complete 200 response the framed fixtures carry.
+    #[must_use]
+    pub(crate) fn respond_json(body: String) -> Self {
+        Self::Respond(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+    }
+}
+
 /// The `METHOD /target` lines one [`MockUpstream`] has recorded, one entry per request in
 /// arrival order.
 pub(crate) type RecordedRequests = Arc<Mutex<Vec<String>>>;
+
+/// One recorded request of a body-capturing [`MockUpstream`]: the request line's method and
+/// target, the carried headers in arrival order, and the full `Content-Length` request body.
+#[derive(Debug, Clone)]
+pub(crate) struct RecordedHttpRequest {
+    /// The request method.
+    pub(crate) method: String,
+
+    /// The request target (`/path?query`).
+    pub(crate) target: String,
+
+    /// The carried headers as `(name, value)` pairs in arrival order, names as sent.
+    pub(crate) headers: Vec<(String, String)>,
+
+    /// The full request body the head's `Content-Length` declared.
+    pub(crate) body: String,
+}
+
+impl RecordedHttpRequest {
+    /// The request's `METHOD /target` line — the spelling the line-only recorder carries.
+    #[must_use]
+    pub(crate) fn line(&self) -> String {
+        format!("{} {}", self.method, self.target)
+    }
+
+    /// The first header value whose name matches `name` case-insensitively, or `None`.
+    #[must_use]
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// The full recorded requests of a body-capturing [`MockUpstream`], one entry per request in
+/// arrival order.
+pub(crate) type RecordedHttpRequests = Arc<Mutex<Vec<RecordedHttpRequest>>>;
 
 /// A tiny HTTP/1.1 mock upstream the tests dispatch against: it reads every request head plus
 /// the body the head declares, records the request's `METHOD /target` line, answers from its
@@ -86,7 +137,7 @@ impl MockUpstream {
     /// Panics when the mock cannot bind, accept, or serve its fixture — a
     /// broken mock is the failure report.
     pub(crate) async fn start_raw(responses: Vec<String>) -> Self {
-        Self::start_serving(canned(responses)).await.0
+        Self::start_serving(canned(responses), None).await.0
     }
 
     /// Serves `responses` round-robin, each entry framed as a 200 JSON response, and records
@@ -110,7 +161,59 @@ impl MockUpstream {
             })
             .collect();
 
-        Self::start_serving(canned(framed)).await
+        Self::start_serving(canned(framed), None).await
+    }
+
+    /// Serves `responses` round-robin as complete HTTP responses — status line, headers, and
+    /// body — sent verbatim, one entry per request, and records every request's `METHOD /target`
+    /// line, so a fixture controls the response status itself while the test pins the rendered
+    /// URLs and call order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the mock cannot bind, accept, or serve its fixture — a
+    /// broken mock is the failure report.
+    pub(crate) async fn start_raw_recording(responses: Vec<String>) -> (Self, RecordedRequests) {
+        Self::start_serving(canned(responses), None).await
+    }
+
+    /// Serves one [`MockAction`] per request in order — the last action repeats once the script
+    /// is exhausted — and records every request in full: method, target, headers, and body. This
+    /// is the body-capturing recording mode the acceptance tests pin dispatch counts, call
+    /// order, and request bodies from (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the mock cannot bind, accept, or serve its fixture — a
+    /// broken mock is the failure report.
+    pub(crate) async fn start_scripted_recording_bodies(
+        actions: Vec<MockAction>,
+    ) -> (Self, RecordedHttpRequests) {
+        let actions = Arc::new(Mutex::new(actions));
+
+        let respond = Arc::new(move || {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "a mutex poisoned by a panicking sibling request is the failure report"
+            )]
+            let mut guard = actions.lock().unwrap();
+
+            if guard.len() > 1 {
+                guard.remove(0)
+            } else {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "an empty script is a test bug the panic reports"
+                )]
+                guard[0].clone()
+            }
+        });
+
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+
+        let (mock, _lines) = Self::start_serving(respond, Some(Arc::clone(&recorded))).await;
+
+        (mock, recorded)
     }
 
     /// Serves every request from `respond`, so a test flips the answer between scenarios while
@@ -123,7 +226,7 @@ impl MockUpstream {
     pub(crate) async fn start_responding(
         respond: impl Fn() -> MockAction + Send + Sync + 'static,
     ) -> Self {
-        Self::start_serving(Arc::new(respond)).await.0
+        Self::start_serving(Arc::new(respond), None).await.0
     }
 
     /// The `http://` base URL the mock answers at.
@@ -132,9 +235,9 @@ impl MockUpstream {
     }
 
     /// Binds an ephemeral listener and serves every accepted connection: the request head plus
-    /// its declared body is read, the `METHOD /target` line is recorded, and `respond` picks the
-    /// transport action. The accept loop ends when the shutdown signal fires — on drop or on an
-    /// explicit send.
+    /// its declared body is read, the `METHOD /target` line is recorded — beside the full
+    /// request when `bodies` carries a recorder — and `respond` picks the transport action. The
+    /// accept loop ends when the shutdown signal fires — on drop or on an explicit send.
     ///
     /// # Panics
     ///
@@ -142,6 +245,7 @@ impl MockUpstream {
     /// report.
     async fn start_serving(
         respond: Arc<dyn Fn() -> MockAction + Send + Sync>,
+        bodies: Option<RecordedHttpRequests>,
     ) -> (Self, RecordedRequests) {
         #[expect(
             clippy::unwrap_used,
@@ -170,15 +274,19 @@ impl MockUpstream {
 
                 let respond = Arc::clone(&respond);
                 let seen = Arc::clone(&recorded);
+                let bodies = bodies.clone();
 
                 tokio::spawn(async move {
-                    let Some(request_head) = read_request(&mut socket).await else {
+                    let Some((request_head, request_body)) = read_request(&mut socket).await else {
                         return;
                     };
 
-                    record_request(&request_head, &seen);
+                    let request =
+                        record_request(&request_head, request_body, &seen, bodies.as_ref());
 
                     serve_action(&mut socket, respond()).await;
+
+                    drop(request);
                 });
             }
         });
@@ -219,9 +327,9 @@ fn canned(responses: Vec<String>) -> Arc<dyn Fn() -> MockAction + Send + Sync> {
 }
 
 /// Reads one HTTP/1.1 request head — through its blank line — plus the `Content-Length` body
-/// the head declares, returning the head text; `None` when the client left before a head
-/// arrived. Read failures count as the client's departure.
-async fn read_request(stream: &mut TcpStream) -> Option<String> {
+/// the head declares, returning the head text beside the body text; `None` when the client left
+/// before a head arrived. Read failures count as the client's departure.
+async fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
     let mut collected: Vec<u8> = Vec::new();
 
     let head_end = loop {
@@ -270,27 +378,67 @@ async fn read_request(stream: &mut TcpStream) -> Option<String> {
         body_read += read;
     }
 
-    Some(head)
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "body_read never exceeds the buffer the reads filled"
+    )]
+    let body = String::from_utf8_lossy(&collected[head_end..]).into_owned();
+
+    Some((head, body))
 }
 
-/// Records the request line's `METHOD /target` pair; a head without a well-formed request line
-/// is answered but not recorded.
+/// Records the request line's `METHOD /target` pair, and the full request — method, target,
+/// headers, and body — when a body recorder is present. A head without a well-formed request
+/// line is answered but not recorded. Returns the recorded full entry, so the caller keeps the
+/// request alive until its response has been served.
 ///
 /// # Panics
 ///
-/// Panics if the mutex is poisoned — a prior holder panicked while holding the lock.
-fn record_request(head: &str, seen: &RecordedRequests) {
-    if let Some(request_line) = head.lines().next() {
-        let mut parts = request_line.split_whitespace();
+/// Panics if a mutex is poisoned — a prior holder panicked while holding the lock.
+fn record_request(
+    head: &str,
+    body: String,
+    seen: &RecordedRequests,
+    bodies: Option<&RecordedHttpRequests>,
+) -> Option<RecordedHttpRequest> {
+    let request_line = head.lines().next()?;
 
-        if let (Some(method), Some(target)) = (parts.next(), parts.next()) {
-            #[expect(
-                clippy::unwrap_used,
-                reason = "a mutex poisoned by a panicking sibling request is the failure report"
-            )]
-            seen.lock().unwrap().push(format!("{method} {target}"));
-        }
+    let mut parts = request_line.split_whitespace();
+
+    let (method, target) = parts.next().zip(parts.next())?;
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "a mutex poisoned by a panicking sibling request is the failure report"
+    )]
+    seen.lock().unwrap().push(format!("{method} {target}"));
+
+    let headers = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+
+            Some((name.trim().to_string(), value.trim().to_string()))
+        })
+        .collect();
+
+    let request = RecordedHttpRequest {
+        method: method.to_string(),
+        target: target.to_string(),
+        headers,
+        body,
+    };
+
+    if let Some(bodies) = bodies {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "a mutex poisoned by a panicking sibling request is the failure report"
+        )]
+        bodies.lock().unwrap().push(request.clone());
     }
+
+    Some(request)
 }
 
 /// Carries one connection's [`MockAction`] out against `socket`: write failures — a client that

@@ -632,6 +632,7 @@ pub(super) fn parse_request(
 
     Ok(ParsedRequest {
         ir: IrRequest {
+            state_items: Vec::new(),
             // The model rides the body on this surface: `POST /interactions` has no URL model
             // slot, so the route context carries no public id and the body's member decides.
             model: request.model,
@@ -653,6 +654,7 @@ pub(super) fn parse_request(
             .unwrap_or(request.stream.unwrap_or(false)),
         // Usage is always included on this surface; only Chat Completions exposes the option.
         should_include_usage: false,
+        compaction: None,
     })
 }
 
@@ -1550,6 +1552,7 @@ mod tests {
             &RouteContext {
                 public_id: None,
                 is_streaming: Some(true),
+                ..RouteContext::default()
             },
         )
         .expect("the overridden body must parse");

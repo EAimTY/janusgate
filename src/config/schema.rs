@@ -51,6 +51,38 @@ pub(crate) struct Config {
     /// api-log store is constructed, so adding it applies after restart.
     #[serde(default)]
     pub(crate) api_logs: Option<ApiLogsConfig>,
+
+    /// Remote-compaction sealing keys. The section's presence is the switch for the gateway's
+    /// sealed compaction artifacts: present, gateway summaries and wrapped native windows are
+    /// sealed under the configured keys; absent, any operation that would produce or consume a
+    /// sealed carrier fails while native passthrough keeps working. The first key seals; every
+    /// configured key unseals by its carrier-carried identifier, so keys rotate by appending.
+    /// Removing a key intentionally invalidates its artifacts.
+    #[serde(default)]
+    pub(crate) compaction: Option<CompactionConfig>,
+}
+
+/// Remote-compaction sealing key configuration.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompactionConfig {
+    /// Configured keys in rotation order: the first entry seals, every entry unseals by its
+    /// identifier. At least one key is required; identifiers must be unique, non-empty, and
+    /// free of `.`; each key is standard base64 of exactly 32 bytes. The loader validates the
+    /// whole set at load time.
+    pub(crate) keys: Vec<CompactionKeyConfig>,
+}
+
+/// One configured sealing key.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompactionKeyConfig {
+    /// The key's carrier identifier, ridden in the clear by every carrier it
+    /// sealed.
+    pub(crate) id: String,
+
+    /// The key material: standard base64 of exactly 32 bytes.
+    pub(crate) key: String,
 }
 
 /// Inbound TLS termination schema.

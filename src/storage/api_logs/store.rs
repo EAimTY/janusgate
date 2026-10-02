@@ -969,6 +969,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -982,6 +983,7 @@ mod tests {
                 model_id: model.model.id,
                 endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
                 is_stream: false,
+                billed_usage: None,
             },
             ApiLogOutcome::Completed,
             Some(200),
@@ -1054,6 +1056,7 @@ mod tests {
             model_id: 7,
             endpoint_type: ApiLogEndpointType::OpenaiResponses,
             is_stream: false,
+            billed_usage: None,
         };
 
         // The failure is swallowed: this call returns no Result, and nothing below panics.
@@ -1162,6 +1165,7 @@ mod tests {
                 model_id: 7,
                 endpoint_type: ApiLogEndpointType::OpenaiResponses,
                 is_stream: false,
+                billed_usage: None,
             },
             ApiLogOutcome::Completed,
             Some(200),

@@ -642,7 +642,8 @@ mod tests {
         // member sets — no ordering or enumeration artifact (README §7.3).
         assert!(first.contains(
             "export type ApiLogEndpointType = \"openai_chat_completions\" | \"openai_responses\" | \
-             \"gemini_generate_content\" | \"gemini_interactions\" | \"anthropic_messages\";"
+             \"openai_responses_compact\" | \"gemini_generate_content\" | \
+             \"gemini_interactions\" | \"anthropic_messages\";"
         ));
         assert!(first.contains(
             "export type ApiLogOutcome = \"completed\" | \"client_aborted\" | \

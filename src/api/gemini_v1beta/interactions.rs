@@ -52,6 +52,7 @@ async fn interactions(
             RouteContext {
                 public_id: None,
                 is_streaming: is_alt_sse.then_some(true),
+                ..RouteContext::default()
             },
             serving::OperationKind::Interaction,
             ApiLogEndpointType::GeminiInteractions,

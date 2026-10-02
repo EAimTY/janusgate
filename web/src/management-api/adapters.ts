@@ -51,7 +51,7 @@ export function toUpdateProviderRequest(
 }
 
 /**
- * Optional overrides of the model row's five writable columns (README
+ * Optional overrides of the model row's writable columns (README
  * §4.5). The nullable mirror columns are stated explicitly — `null` is
  * the no-override state — so an override that clears one sends `null`
  * rather than omitting the field. `models:create` applies the overrides
@@ -73,6 +73,13 @@ type ModelOverrides = {
     readonly max_input_tokens_override?: number | null;
     /** The maximum-output-tokens override; `null` keeps the discovered value. */
     readonly max_output_tokens_override?: number | null;
+    /**
+     * The compaction-facts override; `null` keeps the discovered facts, an
+     * object replaces them wholesale — the mechanism spellings are the
+     * closed keys, `"unknown"` is a legal explicit member value, and an
+     * absent member lets the lower layers decide.
+     */
+    readonly compaction_support_override?: ModelResponse["compaction_support_override"];
 };
 
 /**
@@ -100,6 +107,10 @@ export function toUpdateModelRequest(
             edits.max_output_tokens_override === undefined
                 ? model.max_output_tokens_override
                 : edits.max_output_tokens_override,
+        compaction_support_override:
+            edits.compaction_support_override === undefined
+                ? model.compaction_support_override
+                : edits.compaction_support_override,
     };
 }
 
@@ -148,5 +159,6 @@ export function toCreateModelRequest(
         thinking_levels_override: overrides.thinking_levels_override ?? null,
         max_input_tokens_override: overrides.max_input_tokens_override ?? null,
         max_output_tokens_override: overrides.max_output_tokens_override ?? null,
+        compaction_support_override: overrides.compaction_support_override ?? null,
     };
 }

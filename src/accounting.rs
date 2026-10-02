@@ -28,6 +28,10 @@ pub enum ApiLogEndpointType {
     #[serde(rename = "openai_responses")]
     OpenaiResponses,
 
+    /// `POST /api/openai-v1/responses/compact`, the Responses standalone compact endpoint.
+    #[serde(rename = "openai_responses_compact")]
+    OpenaiResponsesCompact,
+
     /// Gemini GenerateContent inbound surface (`POST /api/gemini-v1beta/models/...`).
     #[serde(rename = "gemini_generate_content")]
     GeminiGenerateContent,
@@ -46,9 +50,10 @@ impl ApiLogEndpointType {
     /// words live once each, in the exhaustive [`Self::as_str`] match. A new variant joins
     /// `ALL`; a partial table update is a compile error (the length pin), and the exhaustive
     /// match is what forces the variant's spelling to be stated.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::OpenaiChatCompletions,
         Self::OpenaiResponses,
+        Self::OpenaiResponsesCompact,
         Self::GeminiGenerateContent,
         Self::GeminiInteractions,
         Self::AnthropicMessages,
@@ -61,6 +66,7 @@ impl ApiLogEndpointType {
         match self {
             Self::OpenaiChatCompletions => "openai_chat_completions",
             Self::OpenaiResponses => "openai_responses",
+            Self::OpenaiResponsesCompact => "openai_responses_compact",
             Self::GeminiGenerateContent => "gemini_generate_content",
             Self::GeminiInteractions => "gemini_interactions",
             Self::AnthropicMessages => "anthropic_messages",
@@ -190,5 +196,38 @@ impl UsageGroupBy {
             Self::IsStream => "is_stream",
             Self::HttpStatus => "http_status",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiLogEndpointType;
+
+    /// The stored vocabulary round-trips: every variant's storage spelling parses back to it,
+    /// and a spelling outside the closed set parses to nothing — the drift classification the
+    /// `api_logs.endpoint_type` `CHECK` vocabulary relies on.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a spelling fails to round-trip or a foreign spelling parses.
+    #[test]
+    fn endpoint_type_round_trips_its_whole_vocabulary() {
+        for endpoint_type in ApiLogEndpointType::ALL {
+            #[expect(
+                clippy::expect_used,
+                reason = "a vocabulary spelling is constructed to parse"
+            )]
+            let parsed = ApiLogEndpointType::parse(endpoint_type.as_str())
+                .expect("a vocabulary spelling must parse");
+
+            assert_eq!(parsed, endpoint_type);
+        }
+
+        assert_eq!(
+            ApiLogEndpointType::parse("openai_responses_compact"),
+            Some(ApiLogEndpointType::OpenaiResponsesCompact)
+        );
+
+        assert_eq!(ApiLogEndpointType::parse("grpc"), None);
     }
 }

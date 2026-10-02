@@ -8,9 +8,13 @@
 
 use super::Error;
 use crate::{
+    compaction::support_facts::CompactionSupportFacts,
     database::{Database, Transaction, params},
     ir::IrReasoningLevel,
-    provider::{DiscoveredModel, DiscoveryState, Model, ModelRouting},
+    provider::{
+        DiscoveredModel, DiscoveryState, Model, ModelRouting,
+        definition::compaction::CompactionSection,
+    },
 };
 
 /// One model row with the provider identity needed for listing.
@@ -28,7 +32,7 @@ pub(crate) struct ModelEntry {
 
 /// One `models:create` insertion about to be applied transactionally: the row's natural key plus
 /// its complete desired initial state (README §7.1) — every writable field total, `id_override`
-/// and the three capability overrides mirroring their nullable storage columns as `None` for "no
+/// and the capability overrides mirroring their nullable storage columns as `None` for "no
 /// override". The capability base columns are not the request's to state: a manual row starts
 /// unknown (`NULL`, README §3).
 pub(crate) struct ModelCreate<'a> {
@@ -52,13 +56,18 @@ pub(crate) struct ModelCreate<'a> {
 
     /// Maximum-output-tokens override; `None` keeps the discovered value.
     pub(crate) max_output_tokens_override: Option<i64>,
+
+    /// Compaction support facts override; `None` keeps the (unknown, for a fresh row)
+    /// discovered facts. The map carries only `supported`/`unsupported`/`unknown` members,
+    /// canonicalized at the validated write boundary.
+    pub(crate) compaction_support_override: Option<&'a CompactionSupportFacts>,
 }
 
 /// One `models:update` rewrite about to be applied transactionally: addressed by the row
-/// identifier, carrying the route's five writable columns (README §7.1) — `id_override` and the
-/// three capability overrides mirroring their nullable storage columns as `None` for "no
-/// override". The update never writes `discovery_state` or the capability base columns, so it
-/// cannot restore a vanished row.
+/// identifier, carrying the route's writable columns (README §7.1) — `id_override` and the
+/// capability overrides mirroring their nullable storage columns as `None` for "no override".
+/// The update never writes `discovery_state` or the capability base columns, so it cannot
+/// restore a vanished row.
 pub(crate) struct ModelUpdate<'a> {
     /// Addressed model row identifier.
     pub(crate) model_id: i64,
@@ -77,11 +86,16 @@ pub(crate) struct ModelUpdate<'a> {
 
     /// Maximum-output-tokens override; `None` keeps the discovered value.
     pub(crate) max_output_tokens_override: Option<i64>,
+
+    /// Compaction support facts override; `None` keeps the discovered facts.
+    pub(crate) compaction_support_override: Option<&'a CompactionSupportFacts>,
 }
 
 /// One effectively enabled model with its effective capability declarations — the outward
 /// listings' entry (README §6.5): every value is the effective `override ?? base` composition,
-/// and an unknown (`None`) capability is omitted by every listing rather than fabricated.
+/// and an unknown (`None`) capability is omitted by every listing rather than fabricated. The
+/// compaction facts resolve against the row's definition's declared defaults, carrying only the
+/// mechanisms whose effective support is known.
 #[derive(Debug, Clone)]
 pub(crate) struct EnabledModel {
     /// Public routing ID.
@@ -98,6 +112,10 @@ pub(crate) struct EnabledModel {
 
     /// Effective maximum output tokens; `None` when unknown.
     pub(crate) max_output_tokens: Option<i64>,
+
+    /// Effective compaction support facts, only known mechanisms; `None` when no mechanism is
+    /// known.
+    pub(crate) compaction: Option<CompactionSupportFacts>,
 }
 
 /// Resolves a public model ID to its provider and model row.
@@ -298,7 +316,9 @@ pub(crate) async fn list_model_entries(
 /// (README §3/§6.5): the owning provider is enabled, the model itself is enabled, and the row is
 /// not `vanished`. Each entry's capability values are the effective `override ?? base`
 /// composition — the declaration a listing renders, with `None` (unknown) omitted by the
-/// renderer, never fabricated.
+/// renderer, never fabricated. The compaction facts resolve against the row's own definition
+/// version's compaction section (joined and carried by the query), so a declared mechanism
+/// default renders for every row of that definition.
 ///
 /// # Errors
 ///
@@ -309,10 +329,10 @@ pub(crate) async fn list_enabled_models_with_owner(
     let rows = database
         .query(
             format!(
-                "SELECT m.public_id, p.name, {} {} WHERE p.is_enabled != 0 AND m.is_enabled != 0 \
-                 AND m.discovery_state != ?1 ORDER BY m.public_id",
+                "SELECT m.public_id, p.name, d.compaction, {} {} WHERE p.is_enabled != 0 AND \
+                 m.is_enabled != 0 AND m.discovery_state != ?1 ORDER BY m.public_id",
                 super::MODEL_COLUMNS_JOINED,
-                super::MODELS_JOINED_PROVIDERS
+                super::PROVIDER_JOINED_FROM_MODELS
             ),
             params![DiscoveryState::Vanished],
         )
@@ -320,7 +340,14 @@ pub(crate) async fn list_enabled_models_with_owner(
 
     rows.iter()
         .map(|row| {
-            let model = super::model_from_row_offset(row, 2)?;
+            let model = super::model_from_row_offset(row, 3)?;
+
+            // The definition's compaction section is a nullable descriptor payload written only
+            // through the validated management path, so a payload failing here is drift.
+            let section: Option<CompactionSection> = row
+                .get::<Option<String>>(2)?
+                .map(|json| super::payload_from_json(Some(json), "compaction"))
+                .transpose()?;
 
             Ok(EnabledModel {
                 public_id: row.get(0)?,
@@ -330,6 +357,9 @@ pub(crate) async fn list_enabled_models_with_owner(
                     .map(<[IrReasoningLevel]>::to_vec),
                 max_input_tokens: model.effective_max_input_tokens(),
                 max_output_tokens: model.effective_max_output_tokens(),
+                compaction: CompactionSupportFacts::from_pairs(
+                    model.effective_mechanism_support(section.as_ref()),
+                ),
             })
         })
         .collect()
@@ -346,11 +376,11 @@ pub(crate) async fn list_enabled_models_with_owner(
 ///    are flipped back by the upsert below, so the blanket mark avoids excluding them one by one. A
 ///    `manual` row is never marked.
 /// 3. Upsert each incoming model: an existing row — of any state — has its `discovery_state`
-///    flipped to `discovered` and its three capability base columns rewritten to this refresh's
-///    extracted facts (README §5.5; a listed `manual` row flips and rewrites too), every other
-///    column left untouched; an absent row is inserted fresh: `discovered`, `is_enabled = 1`, no
-///    override, the extracted capability bases (`NULL` when nothing was extracted), `public_id =
-///    model_prefix + upstream_id`.
+///    flipped to `discovered` and its capability base columns rewritten to this refresh's extracted
+///    facts (README §5.5; a listed `manual` row flips and rewrites too), every other column left
+///    untouched; an absent row is inserted fresh: `discovered`, `is_enabled = 1`, no override, the
+///    extracted capability bases (`NULL` when nothing was extracted), `public_id = model_prefix +
+///    upstream_id`.
 /// 4. A freshly composed public ID is collision-checked against every row of the table — `vanished`
 ///    and `manual` holders and `id_override` holders alike reserve their IDs — and a collision
 ///    rejects the whole refresh with 409, writing nothing. Batch-internal pairwise checks are
@@ -358,7 +388,7 @@ pub(crate) async fn list_enabled_models_with_owner(
 ///    composed IDs cannot converge within one batch. `providers:update` keeps its pairwise check.
 ///
 /// The write-permission invariant holds by construction (README §3): for existing rows discovery
-/// writes only `discovery_state` and the three capability base columns — never `is_enabled`,
+/// writes only `discovery_state` and the capability base columns — never `is_enabled`,
 /// `id_override`, `id`, `public_id`, or a capability override — and never deletes a row; the entire
 /// carry-over machinery is gone because untouched rows simply keep their state. The vanished rows'
 /// "service suspended" effect derives from the three-input effective status, not from any switch
@@ -426,17 +456,19 @@ pub(crate) async fn apply_discovered_models(
                 // The row exists: flip its state back to `discovered` and rewrite its capability
                 // base columns to this refresh's facts — `NULL` for a fact this refresh did not
                 // extract, so a stored value is always the latest upstream knowledge, never stale
-                // residue (README §3).
+                // residue (README §3). The overrides are never touched.
                 transaction
                     .execute(
                         "UPDATE models SET discovery_state = ?2, thinking_levels = ?3, \
-                         max_input_tokens = ?4, max_output_tokens = ?5 WHERE id = ?1",
+                         max_input_tokens = ?4, max_output_tokens = ?5, \
+                         compaction_support = ?6 WHERE id = ?1",
                         params![
                             existing.id,
                             DiscoveryState::Discovered,
                             super::levels_into_value(model.thinking_levels.as_deref())?,
                             model.max_input_tokens,
                             model.max_output_tokens,
+                            super::support_facts_into_value(model.compaction.as_ref())?,
                         ],
                     )
                     .await?;
@@ -459,8 +491,9 @@ pub(crate) async fn apply_discovered_models(
             transaction
                 .execute(
                     "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
-                     public_id, id_override, thinking_levels, max_input_tokens, max_output_tokens) \
-                     VALUES (?1, ?2, 1, ?3, ?4, NULL, ?5, ?6, ?7)",
+                     public_id, id_override, thinking_levels, max_input_tokens, \
+                     max_output_tokens, compaction_support) \
+                     VALUES (?1, ?2, 1, ?3, ?4, NULL, ?5, ?6, ?7, ?8)",
                     params![
                         provider.id,
                         model.upstream_id.clone(),
@@ -469,6 +502,7 @@ pub(crate) async fn apply_discovered_models(
                         super::levels_into_value(model.thinking_levels.as_deref())?,
                         model.max_input_tokens,
                         model.max_output_tokens,
+                        super::support_facts_into_value(model.compaction.as_ref())?,
                     ],
                 )
                 .await?;
@@ -557,13 +591,16 @@ pub(crate) async fn insert_model_checked(
                 )
                 .await?;
 
+                // A fresh manual row starts unknown: every capability base column stores `NULL`
+                // (README §3) while the requested overrides apply.
                 transaction
                     .execute(
                         "INSERT INTO models (provider_id, upstream_id, is_enabled, \
                          discovery_state, public_id, id_override, thinking_levels, \
                          max_input_tokens, max_output_tokens, thinking_levels_override, \
-                         max_input_tokens_override, max_output_tokens_override) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8, ?9)",
+                         max_input_tokens_override, max_output_tokens_override, \
+                         compaction_support, compaction_support_override) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8, ?9, NULL, ?10)",
                         params![
                             provider.id,
                             create.upstream_id,
@@ -574,6 +611,7 @@ pub(crate) async fn insert_model_checked(
                             super::levels_into_value(create.thinking_levels_override)?,
                             create.max_input_tokens_override,
                             create.max_output_tokens_override,
+                            super::support_facts_into_value(create.compaction_support_override)?,
                         ],
                     )
                     .await?;
@@ -594,8 +632,9 @@ pub(crate) async fn insert_model_checked(
                     .execute(
                         "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3, \
                          discovery_state = ?4, thinking_levels_override = ?5, \
-                         max_input_tokens_override = ?6, max_output_tokens_override = ?7 \
-                         WHERE id = ?8",
+                         max_input_tokens_override = ?6, max_output_tokens_override = ?7, \
+                         compaction_support_override = ?8 \
+                         WHERE id = ?9",
                         params![
                             create.id_override,
                             i64::from(create.is_enabled),
@@ -604,6 +643,7 @@ pub(crate) async fn insert_model_checked(
                             super::levels_into_value(create.thinking_levels_override)?,
                             create.max_input_tokens_override,
                             create.max_output_tokens_override,
+                            super::support_facts_into_value(create.compaction_support_override)?,
                             existing.id,
                         ],
                     )
@@ -634,12 +674,12 @@ pub(crate) async fn insert_model_checked(
 }
 
 /// Rewrites one model row's administrator-owned columns — `id_override`, `is_enabled`, and the
-/// three capability overrides — and recomputes its public ID inside a single transaction,
-/// returning the updated row with its provider facts.
+/// capability overrides — and recomputes its public ID inside a single transaction, returning
+/// the updated row with its provider facts.
 ///
 /// The row is addressed by its `model_id`; the provider row it joins supplies the prefix, re-read
 /// inside the transaction so the recomposed public ID uses the current prefix even when a
-/// concurrent `providers:update` changed it after the caller's outer read. Only the five
+/// concurrent `providers:update` changed it after the caller's outer read. Only the
 /// administrator-owned columns are written — `discovery_state` and the capability base columns
 /// are never touched, so this route cannot restore a vanished row and cannot smuggle a capability
 /// fact past the ownership boundary (README §7.1). The collision check matches
@@ -683,7 +723,8 @@ pub(crate) async fn update_model_overrides_checked(
             .execute(
                 "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3, \
                  thinking_levels_override = ?4, max_input_tokens_override = ?5, \
-                 max_output_tokens_override = ?6 WHERE id = ?7",
+                 max_output_tokens_override = ?6, compaction_support_override = ?7 \
+                 WHERE id = ?8",
                 params![
                     update.id_override,
                     i64::from(update.is_enabled),
@@ -691,6 +732,7 @@ pub(crate) async fn update_model_overrides_checked(
                     super::levels_into_value(update.thinking_levels_override)?,
                     update.max_input_tokens_override,
                     update.max_output_tokens_override,
+                    super::support_facts_into_value(update.compaction_support_override)?,
                     update.model_id,
                 ],
             )
@@ -744,30 +786,44 @@ pub(super) fn discovered(upstream_id: &str) -> DiscoveredModel {
         thinking_levels: None,
         max_input_tokens: None,
         max_output_tokens: None,
+        compaction: None,
     }
 }
 
-/// One discovered fixture carrying every capability fact: two canonicalized levels and both
-/// token caps.
+/// One discovered fixture carrying every capability fact: two canonicalized levels, both token
+/// caps, and two known compaction facts (on-demand supported, threshold unsupported).
 #[cfg(test)]
 pub(super) fn discovered_with_capabilities(upstream_id: &str) -> DiscoveredModel {
+    use crate::compaction::mechanism::{Mechanism, MechanismSupport};
+
     DiscoveredModel {
         upstream_id: upstream_id.to_string(),
         thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
         max_input_tokens: Some(200_000),
         max_output_tokens: Some(32_768),
+        compaction: CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Supported,
+            ),
+            (
+                Mechanism::MessagesThresholdCompaction,
+                MechanismSupport::Unsupported,
+            ),
+        ]),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DiscoveryState, Error, IrReasoningLevel, ModelCreate, ModelUpdate, apply_discovered_models,
-        delete_model_checked, discovered, discovered_with_capabilities, find_routing,
-        insert_model_checked, list_enabled_models_with_owner, list_model_entries,
+        CompactionSupportFacts, DiscoveryState, Error, IrReasoningLevel, ModelCreate, ModelUpdate,
+        apply_discovered_models, delete_model_checked, discovered, discovered_with_capabilities,
+        find_routing, insert_model_checked, list_enabled_models_with_owner, list_model_entries,
         update_model_overrides_checked,
     };
     use crate::{
+        compaction::mechanism::{Mechanism, MechanismSupport},
         storage::test_support::{entry, insert_test_provider},
         test_support,
     };
@@ -796,6 +852,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -814,6 +871,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await;
@@ -839,6 +897,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await;
@@ -860,6 +919,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await;
@@ -934,6 +994,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -1048,8 +1109,10 @@ mod tests {
     /// capability-less refresh resets the base columns to `NULL` (unknown) instead of leaving
     /// stale facts, while the overrides survive — the two ownership classes never touch each
     /// other's columns; the enabled-model listing renders the effective `override ?? base`
-    /// composition; a manual create stores `NULL` bases; and a claim of a vanished row keeps
-    /// its base columns while applying the requested overrides.
+    /// composition, the compaction facts resolving per mechanism with an explicit `unknown`
+    /// override suppressing a lower known fact into nothing; a manual create stores `NULL`
+    /// bases; and a claim of a vanished row keeps its base columns while applying the requested
+    /// overrides.
     ///
     /// # Panics
     ///
@@ -1059,6 +1122,36 @@ mod tests {
     -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = test_support::create_test_database().await;
         let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+
+        // The discovered compaction facts the fixture carries, and the administrator override
+        // the test writes over them: an explicit `unknown` on the discovered on-demand fact and
+        // a fresh supported fact on a mechanism discovery said nothing about.
+        let discovered_facts = CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Supported,
+            ),
+            (
+                Mechanism::MessagesThresholdCompaction,
+                MechanismSupport::Unsupported,
+            ),
+        ]);
+
+        #[expect(clippy::expect_used, reason = "the fixture fact pairs are non-empty")]
+        let discovered_facts = discovered_facts.expect("fixture fact pairs are non-empty");
+
+        #[expect(clippy::expect_used, reason = "the override fact pairs are non-empty")]
+        let override_facts = CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Unknown,
+            ),
+            (
+                Mechanism::ResponsesExplicitTrigger,
+                MechanismSupport::Supported,
+            ),
+        ])
+        .expect("override fact pairs are non-empty");
 
         // A fresh insert carries the extracted facts; a fact-less entry stays unknown.
         apply_discovered_models(
@@ -1077,7 +1170,10 @@ mod tests {
         );
         assert_eq!(a.model.max_input_tokens, Some(200_000));
         assert_eq!(a.model.max_output_tokens, Some(32_768));
+        assert_eq!(a.model.compaction_support, Some(discovered_facts.clone()));
+        assert_eq!(a.model.compaction_support_override, None);
         assert_eq!(entry(&entries, "b").model.thinking_levels, None);
+        assert_eq!(entry(&entries, "b").model.compaction_support, None);
 
         // An override replaces one field's declaration only; the others keep their bases.
         let a_id = a.model.id;
@@ -1091,12 +1187,16 @@ mod tests {
                 thinking_levels_override: Some(&[IrReasoningLevel::Max]),
                 max_input_tokens_override: None,
                 max_output_tokens_override: Some(999_999),
+                compaction_support_override: Some(&override_facts),
             },
         )
         .await?;
 
         // The listing composes effective values: an overridden field wins, a base field rides
-        // through, an unknown field renders `None` — the value every outward listing omits.
+        // through, an unknown field renders `None` — the value every outward listing omits. The
+        // compaction facts resolve per mechanism, so the explicit `unknown` override suppresses
+        // the discovered on-demand fact into nothing while the override-only trigger fact and
+        // the untouched base threshold fact render.
         let listed = list_enabled_models_with_owner(&database).await?;
 
         #[expect(
@@ -1111,6 +1211,19 @@ mod tests {
         assert_eq!(listed_a.thinking_levels, Some(vec![IrReasoningLevel::Max]));
         assert_eq!(listed_a.max_input_tokens, Some(200_000));
         assert_eq!(listed_a.max_output_tokens, Some(999_999));
+        assert_eq!(
+            listed_a.compaction,
+            CompactionSupportFacts::from_pairs([
+                (
+                    Mechanism::ResponsesExplicitTrigger,
+                    MechanismSupport::Supported,
+                ),
+                (
+                    Mechanism::MessagesThresholdCompaction,
+                    MechanismSupport::Unsupported,
+                ),
+            ]),
+        );
 
         #[expect(
             clippy::expect_used,
@@ -1124,6 +1237,7 @@ mod tests {
         assert_eq!(listed_b.thinking_levels, None);
         assert_eq!(listed_b.max_input_tokens, None);
         assert_eq!(listed_b.max_output_tokens, None);
+        assert_eq!(listed_b.compaction, None);
 
         // A capability-less refresh resets the base columns to unknown; the overrides survive.
         apply_discovered_models(&database, provider_id, &[discovered("a"), discovered("b")])
@@ -1135,15 +1249,47 @@ mod tests {
         assert_eq!(a.model.thinking_levels, None);
         assert_eq!(a.model.max_input_tokens, None);
         assert_eq!(a.model.max_output_tokens, None);
+        assert_eq!(a.model.compaction_support, None);
         assert_eq!(
             a.model.thinking_levels_override,
             Some(vec![IrReasoningLevel::Max])
         );
         assert_eq!(a.model.max_output_tokens_override, Some(999_999));
+        assert_eq!(
+            a.model.compaction_support_override,
+            Some(override_facts.clone())
+        );
+
+        // With the base gone, the listing renders the surviving override facts alone.
+        let listed = list_enabled_models_with_owner(&database).await?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the listing follows it"
+        )]
+        let listed_a = listed
+            .iter()
+            .find(|model| model.public_id == "p1-a")
+            .expect("the row is listed");
+
+        assert_eq!(
+            listed_a.compaction,
+            CompactionSupportFacts::from_pairs([(
+                Mechanism::ResponsesExplicitTrigger,
+                MechanismSupport::Supported,
+            )]),
+        );
 
         // Vanish `a`, then claim it: the claim keeps the base columns (here `NULL`) and applies
         // the requested overrides (README §7.1).
         apply_discovered_models(&database, provider_id, &[discovered("b")]).await?;
+
+        #[expect(clippy::expect_used, reason = "the claim fact pairs are non-empty")]
+        let claim_facts = CompactionSupportFacts::from_pairs([(
+            Mechanism::MessagesThresholdCompaction,
+            MechanismSupport::Supported,
+        )])
+        .expect("claim fact pairs are non-empty");
 
         let claimed = insert_model_checked(
             &database,
@@ -1155,6 +1301,7 @@ mod tests {
                 thinking_levels_override: Some(&[IrReasoningLevel::None]),
                 max_input_tokens_override: Some(1_000_000),
                 max_output_tokens_override: None,
+                compaction_support_override: Some(&claim_facts),
             },
         )
         .await?;
@@ -1167,6 +1314,11 @@ mod tests {
             Some(vec![IrReasoningLevel::None])
         );
         assert_eq!(claimed.model.max_input_tokens_override, Some(1_000_000));
+        assert_eq!(claimed.model.compaction_support, None);
+        assert_eq!(
+            claimed.model.compaction_support_override,
+            Some(claim_facts.clone())
+        );
 
         // A manual create stores `NULL` bases while carrying its overrides.
         let manual = insert_model_checked(
@@ -1179,6 +1331,7 @@ mod tests {
                 thinking_levels_override: None,
                 max_input_tokens_override: Some(8_192),
                 max_output_tokens_override: None,
+                compaction_support_override: None,
             },
         )
         .await?;
@@ -1187,6 +1340,115 @@ mod tests {
         assert_eq!(manual.model.max_input_tokens, None);
         assert_eq!(manual.model.max_output_tokens, None);
         assert_eq!(manual.model.max_input_tokens_override, Some(8_192));
+        assert_eq!(manual.model.compaction_support, None);
+        assert_eq!(manual.model.compaction_support_override, None);
+
+        Ok(())
+    }
+
+    /// Verifies the enabled-model listing's compaction facts resolve against the row's own
+    /// definition's declared mechanism defaults: a model carrying no facts of its own still
+    /// renders the default of a mechanism its definition declares, while an unknown declaration
+    /// renders nothing — and the section-less definition the other fixtures use resolves every
+    /// mechanism to unknown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations, the fixture insert, or assertions fail.
+    #[tokio::test]
+    async fn listing_compaction_facts_resolve_the_definition_defaults()
+    -> Result<(), Box<dyn StdError>> {
+        use crate::{
+            provider::{Provider, StoredCredentials, definition::DefinitionPayload},
+            storage::provider_definitions,
+        };
+
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // An `anthropic_messages` definition declaring on-demand compaction supported and
+        // threshold compaction explicitly unknown.
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture definition document is constructed to parse"
+        )]
+        let payload: DefinitionPayload = serde_json::from_value(serde_json::json!({
+            "format": "anthropic_messages",
+            "inference": {
+                "url": [{"type": "base"}, {"type": "literal", "value": "/v1/messages"}],
+                "upstream_streaming": "match_client"
+            },
+            "credential": {"type": "api_key"},
+            "compaction": {
+                "mechanisms": {
+                    "messages_on_demand_compaction": {
+                        "default": "supported",
+                        "overlay_headers": [
+                            {
+                                "name": "anthropic-beta",
+                                "value": [{"type": "literal", "value": "compact-2026-09-04"}]
+                            }
+                        ]
+                    },
+                    "messages_threshold_compaction": {"default": "unknown"}
+                }
+            }
+        }))
+        .expect("the fixture definition document parses");
+
+        let definition = provider_definitions::insert_definition(
+            &database,
+            provider_definitions::NewDefinition {
+                name: "def-compaction",
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await?;
+
+        let provider: Provider = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "provider-c",
+            "pc-",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "secret".to_string(),
+            },
+        )
+        .await;
+
+        // A fact-less discovered row: its listing renders the declared defaults alone — the
+        // unknown threshold declaration omitted, the supported on-demand one rendered.
+        let rows = apply_discovered_models(&database, provider.id, &[discovered("m")]).await?;
+
+        assert_eq!(rows.len(), 1);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the refresh answered the single row just applied"
+        )]
+        let applied = rows.first().expect("the refresh applied one row");
+
+        assert_eq!(applied.model.compaction_support, None);
+
+        let listed = list_enabled_models_with_owner(&database).await?;
+
+        assert_eq!(listed.len(), 1);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the listing follows it"
+        )]
+        let listed_m = listed.first().expect("the row is listed");
+
+        assert_eq!(
+            listed_m.compaction,
+            CompactionSupportFacts::from_pairs([(
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Supported,
+            )]),
+        );
 
         Ok(())
     }

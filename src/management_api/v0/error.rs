@@ -221,6 +221,18 @@ pub(super) enum Error {
         param: &'static str,
     },
 
+    /// A compaction-facts override key or value is not a member of its closed vocabulary: the
+    /// mechanism spellings and the `supported`/`unsupported`/`unknown` support values are the
+    /// map's whole domain, so a foreign string cannot become an override.
+    #[error("`{param}` carries the unknown compaction mechanism or support spelling `{value}`")]
+    UnknownCompactionSupport {
+        /// Name of the rejected field.
+        param: &'static str,
+
+        /// The rejected value.
+        value: String,
+    },
+
     /// A static-key provider's base URL is not an `http(s)` URL of printable ASCII without
     /// whitespace (README §7).
     #[error("`base_url` must be an http:// or https:// URL of printable ASCII without whitespace")]
@@ -423,6 +435,7 @@ impl Error {
             | Self::InvalidIdentifier { .. }
             | Self::UnknownReasoningLevel { .. }
             | Self::NonPositiveTokenCap { .. }
+            | Self::UnknownCompactionSupport { .. }
             | Self::InvalidBaseUrl
             | Self::MalformedAuthorizationCode
             | Self::Validation { .. }

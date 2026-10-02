@@ -142,7 +142,7 @@ pub(crate) struct PayloadError {
 }
 
 /// A client request parsed into IR with its endpoint options.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedRequest {
     /// Format-independent request.
     pub(crate) ir: IrRequest,
@@ -153,6 +153,174 @@ pub(crate) struct ParsedRequest {
     /// Whether the client asked for a trailing usage-only chunk; only the Chat Completions format
     /// exposes the option, every other format includes usage unconditionally.
     pub(crate) should_include_usage: bool,
+
+    /// Remote-compaction facts recognized in the request: the parsed controls
+    /// and the ordered compaction state found in the history. `None` for the
+    /// surfaces that cannot express compaction (Chat Completions and the two
+    /// Gemini surfaces) and for requests carrying none; the wire codecs own
+    /// its population.
+    pub(crate) compaction: Option<ParsedCompaction>,
+}
+
+/// Remote-compaction facts of one parsed request, shared by the Responses and
+/// Messages surfaces: the caller's compaction control, the ordered compaction
+/// state markers found in the history, and the opaque state items the upstream
+/// render must replay (which also ride [`IrRequest::state_items`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ParsedCompaction {
+    /// The compaction operation the caller explicitly requested; `None` for a
+    /// pure replay request whose history merely carries compaction state.
+    pub(crate) control: Option<CompactionControl>,
+
+    /// Compaction state markers found in the history, in history order. A
+    /// marker is either a recognized gateway carrier (sealed envelope
+    /// candidate) or a native compaction item/block; each carries its IR
+    /// message offset — the number of IR messages parsed before it.
+    pub(crate) boundaries: Vec<CompactionBoundary>,
+
+    /// The request's individual instruction items, in encounter order, before
+    /// concatenation into [`IrRequest::instructions`]. The restoration step
+    /// computes their overlap identities against a checkpoint's covered
+    /// instruction identities, so unmatched current instructions survive
+    /// boundary restoration while covered ones are superseded. Kept here
+    /// because the IR concatenates instructions into one string.
+    pub(crate) instruction_items: Vec<ParsedInstructionItem>,
+}
+
+/// One individual instruction item of a parsed request, before concatenation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ParsedInstructionItem {
+    /// The instruction's role.
+    pub(crate) role: crate::compaction::identity::InstructionRole,
+
+    /// The instruction text.
+    pub(crate) text: String,
+}
+
+/// The compaction operation one request explicitly controls.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CompactionControl {
+    /// The Responses standalone compact endpoint — recorded when the request
+    /// arrived through `/responses/compact`; the route owns this control, the
+    /// body never states it.
+    ResponsesStandalone,
+
+    /// A Responses explicit trigger: a terminal `compaction_trigger` control
+    /// item requesting exactly one completed compaction item.
+    ResponsesTrigger,
+
+    /// Responses automatic threshold compaction: parsed `context_management`
+    /// entries with their thresholds.
+    ResponsesAutomatic {
+        /// The requested entries, in order; each carries its threshold when
+        /// stated.
+        entries: Vec<compaction_control::AutomaticEntry>,
+    },
+
+    /// Messages on-demand compaction (`compaction: {"type": "summarize"}`).
+    MessagesOnDemand {
+        /// Custom summarization instructions replacing the gateway's default
+        /// summarization prompt.
+        instructions: Option<String>,
+    },
+
+    /// Messages threshold compaction through `context_management.edits`.
+    MessagesThreshold {
+        /// The requested `compact_20260112` edits, in order.
+        edits: Vec<compaction_control::ThresholdEdit>,
+    },
+}
+
+/// Parsed control payloads of the compaction controls.
+pub(crate) mod compaction_control {
+    /// One Responses automatic `context_management` entry.
+    #[derive(Debug, Clone, PartialEq)]
+    pub(crate) struct AutomaticEntry {
+        /// The compaction threshold in input tokens, when the client stated
+        /// one; `None` keeps the upstream's own default (native) or the
+        /// gateway's declared-capacity default (emulated).
+        pub(crate) compact_threshold: Option<u64>,
+    }
+
+    /// One Messages `compact_20260112` threshold edit.
+    #[derive(Debug, Clone, PartialEq)]
+    pub(crate) struct ThresholdEdit {
+        /// The input-token trigger value in tokens, when stated; `None` keeps
+        /// the protocol's 150,000-token default.
+        pub(crate) trigger: Option<u64>,
+
+        /// Whether the caller requested pausing after the compaction instead
+        /// of continuing generation.
+        pub(crate) pause_after_compaction: bool,
+
+        /// Custom summarization instructions replacing the gateway's default
+        /// summarization prompt.
+        pub(crate) instructions: Option<String>,
+    }
+}
+
+/// One compaction state marker found in a request's history, ordered by
+/// position.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CompactionBoundary {
+    /// A gateway carrier: a sealed envelope candidate whose raw carrier string
+    /// rides the history in a protocol-specific slot (a Responses item's
+    /// `encrypted_content`, a Messages block's `signature`).
+    Gateway {
+        /// Number of IR messages parsed before the marker.
+        offset: usize,
+
+        /// The raw carrier string, to unseal during preparation.
+        carrier: String,
+
+        /// For a Messages carrier: the visible content the signature binds,
+        /// when the block presented one; the preparation step verifies the
+        /// digest against it.
+        visible_content: Option<String>,
+    },
+
+    /// Native compaction state: a producer-native item or block replayed in
+    /// the history, opaque to the gateway and forwarded to a compatible
+    /// producer unchanged (and never across protocols).
+    Native {
+        /// Number of IR messages parsed before the marker.
+        offset: usize,
+
+        /// The native state's own facts.
+        artifact: NativeArtifact,
+    },
+}
+
+/// Native compaction state recognized in a request's history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeArtifact {
+    /// A Responses `compaction` item: opaque native state whose item bytes
+    /// ride [`crate::ir::IrRequest::state_items`].
+    ResponsesCompactionItem,
+
+    /// An Anthropic compaction block whose bytes ride
+    /// [`crate::ir::IrRequest::state_items`].
+    MessagesCompactionBlock {
+        /// Whether the block is the native null-content no-op: it retains its
+        /// documented no-op meaning and cannot authorize discarding history.
+        is_null_no_op: bool,
+
+        /// The block's replay placement in the source protocol.
+        placement: BoundaryPlacement,
+    },
+}
+
+/// Replay placement of a native compaction block within its source protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryPlacement {
+    /// The block restores with the leading placement (an on-demand block):
+    /// everything before it is summarized history and must not remain.
+    Leading,
+
+    /// The block sits at its covered historical boundary (a threshold block):
+    /// entries before it are the superseded prefix, entries after it the
+    /// fresh suffix.
+    Historical,
 }
 
 /// Route context the router threads into request parsing (README §6.5): the facts the URL path
@@ -171,6 +339,13 @@ pub(crate) struct RouteContext {
     /// Streaming mode from the URL action, when the surface routes it there (`Some`) rather than
     /// the body (`None`).
     pub(crate) is_streaming: Option<bool>,
+
+    /// Inbound beta requirements declared by the caller: the `anthropic-beta` header entries the
+    /// Anthropic Messages surface presents, split on commas, trimmed, empty entries dropped, in
+    /// header order and case as sent. Empty on every other surface. The request parsers validate
+    /// their own inbound beta requirements against this list, independently from any outbound
+    /// beta requirement.
+    pub(crate) anthropic_betas: Vec<String>,
 }
 
 impl RouteContext {
@@ -185,7 +360,16 @@ impl RouteContext {
         Self {
             public_id: Some(public_id),
             is_streaming,
+            anthropic_betas: Vec::new(),
         }
+    }
+
+    /// Context carrying the caller's `anthropic-beta` entries for the surfaces that validate
+    /// inbound beta requirements.
+    pub(crate) fn with_anthropic_betas(mut self, betas: Vec<String>) -> Self {
+        self.anthropic_betas = betas;
+
+        self
     }
 }
 
@@ -409,6 +593,80 @@ pub(crate) trait ClientFormat {
     /// Renders an aggregated completion as a non-streaming response body. `public_id` is the public
     /// routing ID (README §3) the client addressed.
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse;
+
+    /// Renders an aggregated completion whose output opens with compaction
+    /// prefix state — the checkpoint-before-answer ordering of the compaction
+    /// flows — beside the vendor-shaped iteration entries a compaction
+    /// lifecycle renders under its usage. Formats without a compaction channel
+    /// ignore both (their surfaces can never produce them).
+    fn render_json_response_with_prefix(
+        public_id: &str,
+        aggregation: &IrAggregation,
+        prefix: &[serde_json::Value],
+        iterations: &[serde_json::Value],
+    ) -> Self::JsonResponse;
+}
+
+/// Re-renders an aggregated completion as the IR event sequence its live
+/// rendering would have consumed: the synthesis the compaction pipeline uses
+/// to stream a lifecycle the executor validated internally as one complete
+/// artifact (README §6.8 — the live and terminal representations of one
+/// response).
+#[must_use]
+pub(crate) fn aggregation_events(aggregation: &IrAggregation, model: &str) -> Vec<IrEvent> {
+    let mut events = vec![IrEvent::MessageStart {
+        id: crate::ids::new_uuid(),
+        model: model.to_string(),
+    }];
+
+    for payload in &aggregation.compaction_states {
+        events.push(IrEvent::CompactionState {
+            payload: payload.clone(),
+        });
+    }
+
+    for block in &aggregation.reasoning_blocks {
+        events.push(IrEvent::ReasoningDone {
+            text: block.text.clone(),
+            signature: block.signature.clone(),
+            opaque: block.opaque.clone(),
+        });
+    }
+
+    if !aggregation.text.is_empty() {
+        events.push(IrEvent::TextDelta(aggregation.text.clone()));
+    }
+
+    for (index, call) in aggregation.tool_calls.iter().enumerate() {
+        events.push(IrEvent::ToolCallDone {
+            index,
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            thought_signature: call.thought_signature.clone(),
+        });
+    }
+
+    if let Some(finish) = aggregation.finish {
+        events.push(IrEvent::Finish {
+            reason: finish,
+            prompt_block_reason: aggregation.prompt_block_reason.clone(),
+        });
+    }
+
+    if aggregation.is_compaction_paused || !aggregation.compaction_iterations.is_empty() {
+        events.push(IrEvent::CompactionMetadata {
+            is_paused: aggregation.is_compaction_paused,
+            iterations: aggregation.compaction_iterations.clone(),
+        });
+    }
+    if let Some(usage) = aggregation.usage {
+        events.push(IrEvent::Usage(usage));
+    }
+
+    events.push(IrEvent::Done);
+
+    events
 }
 
 /// A wire value that is either a plain string or an array of typed items: the two official shapes

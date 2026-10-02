@@ -570,6 +570,11 @@ impl ClientSseRenderer for SseRenderer {
         match event {
             IrEvent::MessageStart { .. } => self.ensure_created(),
 
+            // Native compaction state is unrepresentable on this surface and
+            // unreachable in practice: a caller that cannot express compaction
+            // controls can never trigger a native compaction upstream.
+            IrEvent::CompactionState { .. } => Vec::new(),
+
             IrEvent::TextDelta(delta) => {
                 let mut frames = self.ensure_created();
                 let index = self.open_output_step(&mut frames);
@@ -822,6 +827,7 @@ impl ClientSseRenderer for SseRenderer {
                 frames
             }
 
+            IrEvent::CompactionMetadata { .. } => Vec::new(),
             IrEvent::Usage(usage) => {
                 // Usage rides the terminal completed frame; the latest observation wins.
                 self.usage = Some(*usage);
@@ -899,6 +905,9 @@ mod tests {
                 cache_write_tokens: None,
                 reasoning_tokens: Some(8),
             }),
+            compaction_states: Vec::new(),
+            is_compaction_paused: false,
+            compaction_iterations: Vec::new(),
         };
 
         let rendered = aggregated_body_json(&render_json_response("public-model", &aggregation));
@@ -997,6 +1006,9 @@ mod tests {
             finish: Some(IrFinishReason::ToolCall),
             prompt_block_reason: None,
             usage: None,
+            compaction_states: Vec::new(),
+            is_compaction_paused: false,
+            compaction_iterations: Vec::new(),
         };
 
         let rendered = aggregated_body_json(&render_json_response("public-model", &aggregation));

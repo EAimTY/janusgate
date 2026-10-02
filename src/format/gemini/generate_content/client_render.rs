@@ -344,6 +344,11 @@ impl ClientSseRenderer for SseRenderer {
         match event {
             IrEvent::MessageStart { .. } => Vec::new(),
 
+            // Native compaction state is unrepresentable on this surface and
+            // unreachable in practice: a caller that cannot express compaction
+            // controls can never trigger a native compaction upstream.
+            IrEvent::CompactionState { .. } => Vec::new(),
+
             IrEvent::TextDelta(delta) => vec![self.parts_frame(vec![PartOut::Text {
                 text: delta.clone(),
                 thought: None,
@@ -420,6 +425,7 @@ impl ClientSseRenderer for SseRenderer {
                 }
             }
 
+            IrEvent::CompactionMetadata { .. } => Vec::new(),
             IrEvent::Usage(usage) => {
                 self.usage = Some(*usage);
 
@@ -485,6 +491,9 @@ mod tests {
                 cache_write_tokens: None,
                 reasoning_tokens: Some(1),
             }),
+            compaction_states: Vec::new(),
+            is_compaction_paused: false,
+            compaction_iterations: Vec::new(),
         };
 
         let value = aggregated_body_json(&render_json_response("m", &aggregation));
@@ -592,6 +601,9 @@ mod tests {
             finish: Some(IrFinishReason::ContentFilter),
             usage: None,
             prompt_block_reason: None,
+            compaction_states: Vec::new(),
+            is_compaction_paused: false,
+            compaction_iterations: Vec::new(),
         };
 
         let value = aggregated_body_json(&render_json_response("m", &aggregation));

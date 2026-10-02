@@ -63,6 +63,45 @@ pub struct CapabilityExtraction {
     /// The maximum-output-tokens member path inside each entry; absent means never extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<ResponsePath>,
+
+    /// The compaction-flag extraction; absent means no compaction fact is ever extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionCapabilityExtraction>,
+}
+
+/// The compaction-flag extraction of a discovery (README §5.5): each configured mechanism
+/// reads one boolean flag out of one addressed object of every entry. A `true` flag extracts
+/// the mechanism's `supported` fact, a `false` flag its `unsupported` fact, and an
+/// absent-or-null object or flag extracts nothing — the mechanism stays unknown. The shape is
+/// format-agnostic: the descriptor names upstream paths, and what a mechanism means upstream
+/// is the descriptor author's business.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct CompactionCapabilityExtraction {
+    /// The Messages on-demand compaction flag (the Anthropic
+    /// `capabilities.compaction.supported` shape); absent means never extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages_on_demand: Option<FlaggedMemberExtraction>,
+
+    /// The Messages threshold compaction flag (the Anthropic
+    /// `capabilities.context_management.compact_20260112.supported` shape); absent means never
+    /// extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages_threshold: Option<FlaggedMemberExtraction>,
+}
+
+/// One boolean flag read out of one addressed object: the object the `object_at` path names
+/// inside an entry, and the boolean its `flag_field` path carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct FlaggedMemberExtraction {
+    /// The closed path of the flagged object inside each entry.
+    pub object_at: ResponsePath,
+
+    /// The closed path of the boolean flag inside the addressed object.
+    pub flag_field: ResponsePath,
 }
 
 /// The two wire shapes a thinking-level set is extracted from (README §5.5).

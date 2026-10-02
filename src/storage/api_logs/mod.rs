@@ -122,6 +122,13 @@ pub(crate) struct ApiLogDraft {
 
     /// Whether the client requested a streamed response.
     pub(crate) is_stream: bool,
+
+    /// The billed usage stamped for the request, when some participating call's
+    /// accounting reaches the row through no single upstream observation — a
+    /// compaction request's ledger totals over its compaction calls. The
+    /// finalization adds these totals to its own usage parameter, which covers
+    /// the boundary's last call alone (README §3 *ApiLog*).
+    pub(crate) billed_usage: Option<IrUsage>,
 }
 
 impl ApiLogDraft {
@@ -131,9 +138,17 @@ impl ApiLogDraft {
     /// With the section absent the draft stays unstamped and no row is ever written for this
     /// request — this one call is the whole switch.
     pub(crate) fn stamp(&mut self) {
-        if crate::CONFIG.api_logs.is_some() {
+        if crate::CONFIG.api_logs.is_some() && self.started_at.is_none() {
             self.started_at = Some(unix_time::unix_now_micros());
         }
+    }
+
+    /// Stamps the billed totals the row must record: the accounting the
+    /// compaction executor computed over the request's compaction calls,
+    /// which no single upstream usage observation carries. The finalization
+    /// adds these totals to its own usage observation.
+    pub(crate) fn stamp_billed_usage(&mut self, usage: IrUsage) {
+        self.billed_usage = Some(usage);
     }
 }
 
@@ -165,6 +180,18 @@ pub(crate) async fn finalize_api_log(
 
     // A wall clock stepped backwards must not produce a negative duration.
     let duration = unix_time::unix_now_micros().saturating_sub(started_at) / 1000;
+
+    // The row's totals are the sum of every accounted source: the compaction
+    // executor's ledger totals over the compaction calls, plus the boundary's
+    // own usage observation over the last call — a compact-and-continue
+    // request's continuation — when it reported one. Either source alone
+    // stands in as the total; `None` usage yields no fabricated counts.
+    let usage = match (draft.billed_usage, usage) {
+        (Some(billed), Some(observed)) => Some(billed.saturating_sum(observed)),
+
+        (billed, observed) => billed.or(observed),
+    };
+
     let (input_tokens, output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens) =
         token_columns(usage);
 

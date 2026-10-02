@@ -1,15 +1,22 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import {
+    type CompactionFact,
     capabilitySource,
+    effectiveCompactionFacts,
     effectiveMaxInputTokens,
     effectiveMaxOutputTokens,
     effectiveThinkingLevels,
 } from "/src/management-api/serving";
-import { DISCOVERY_STATE } from "/src/management-api/vocabulary";
+import {
+    COMPACTION_MECHANISM,
+    type CompactionMechanism,
+    DISCOVERY_STATE,
+    MECHANISM_SUPPORT,
+} from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
     createPinnedRow,
@@ -110,11 +117,20 @@ export function ModelDetailScreen(props: {
  * provenance the listings render from — the administrator's override, the
  * latest discovery knowledge, or unknown, which every listing omits. A
  * declaration, never an enforcement: the upstream stays the sole authority.
+ * The compaction mechanisms the owning provider's format can speak state
+ * their effective facts (`override ?? base`, the row's two layers) the same
+ * way — the definition's declaration, the resolution's third layer, is
+ * definition data the model row never carries.
  */
-function CapabilityFacts(props: { readonly model: ModelResponse }): JSX.Element {
+function CapabilityFacts(props: {
+    readonly model: ModelResponse;
+    readonly provider: ProviderResponse | null;
+}): JSX.Element {
     const levels = (): ReadonlyArray<string> | null => effectiveThinkingLevels(props.model);
     const maxInput = (): number | null => effectiveMaxInputTokens(props.model);
     const maxOutput = (): number | null => effectiveMaxOutputTokens(props.model);
+    const compaction = (): Readonly<Record<CompactionMechanism, CompactionFact>> =>
+        effectiveCompactionFacts(props.model);
 
     const levelsSource = (): string => {
         switch (
@@ -140,6 +156,17 @@ function CapabilityFacts(props: { readonly model: ModelResponse }): JSX.Element 
         }
     };
 
+    const compactionSource = (fact: CompactionFact): string => {
+        switch (fact.source) {
+            case "override":
+                return "Overridden by administrator.";
+            case "discovered":
+                return "From the latest discovery.";
+            case "unknown":
+                return "No fact on this row — the definition's declaration decides.";
+        }
+    };
+
     const levelsDisplay = (): string => {
         const effective = levels();
 
@@ -148,6 +175,32 @@ function CapabilityFacts(props: { readonly model: ModelResponse }): JSX.Element 
         }
 
         return effective.length === 0 ? "No levels" : effective.join(", ");
+    };
+
+    // The mechanisms the owning provider's format can speak: the Responses
+    // pair-and-trio only on an `openai_response` definition, the Messages
+    // pair only on an `anthropic_messages` one — every other format can
+    // carry no compaction declaration at all. Without the provider row at
+    // hand the section stays unstated rather than guessing the format.
+    const compactionMechanisms = (): ReadonlyArray<CompactionMechanism> => {
+        const format = props.provider?.format;
+
+        if (format === "openai_response") {
+            return [
+                "responses_standalone_compact",
+                "responses_explicit_trigger",
+                "responses_automatic_compaction",
+            ];
+        }
+
+        if (format === "anthropic_messages") {
+            return [
+                "messages_on_demand_compaction",
+                "messages_threshold_compaction",
+            ];
+        }
+
+        return [];
     };
 
     return (
@@ -196,6 +249,38 @@ function CapabilityFacts(props: { readonly model: ModelResponse }): JSX.Element 
                     }
                 />
             </FactList>
+            <Show when={compactionMechanisms().length > 0}>
+                <div class="mt-5">
+                    <h3 class="text-[13px] font-medium text-ink">Compaction</h3>
+                    <p class="mt-1 max-w-[70ch] text-[13px] text-ink-faint">
+                        The row's own compaction facts — the override, else the latest discovery.
+                        The definition's declaration decides whatever both leave unstated.
+                    </p>
+                    <FactList>
+                        <For each={compactionMechanisms()}>
+                            {(mechanism) => {
+                                const fact = compaction()[mechanism];
+
+                                return (
+                                    <Fact
+                                        label={COMPACTION_MECHANISM.label(mechanism)}
+                                        value={
+                                            <span>
+                                                <span class="tnum">
+                                                    {MECHANISM_SUPPORT.label(fact.support)}
+                                                </span>
+                                                <span class="block text-[12.5px] text-ink-faint">
+                                                    {compactionSource(fact)}
+                                                </span>
+                                            </span>
+                                        }
+                                    />
+                                );
+                            }}
+                        </For>
+                    </FactList>
+                </div>
+            </Show>
         </Card>
     );
 }
@@ -281,7 +366,10 @@ function ModelFacts(props: {
                 </FactList>
             </Card>
 
-            <CapabilityFacts model={props.model} />
+            <CapabilityFacts
+                model={props.model}
+                provider={props.provider}
+            />
 
             <EntityUsageCard
                 api={props.api}

@@ -47,16 +47,18 @@
 //! introduces — SQLite's `sqlite_sequence` and Turso's `__turso_internal_*` sequence tables — are
 //! internal objects excluded from the structural schema comparison.
 //!
-//! The JSON columns — `provider_definitions.inference`/`credential`/`provisioning`/`discovery`,
-//! `providers.credentials`, `models.thinking_levels`/`thinking_levels_override`, and
-//! `ongoing_oauth_flows.slots`/`device_exchange_checkpoint` — carry only `json_valid` checks:
-//! their shapes are descriptor contracts the management write boundary enforces through Rust's
-//! concrete serde types, not column invariants. Text formats are likewise enforced at the
+//! The JSON columns — `provider_definitions.inference`/`credential`/`provisioning`/`discovery`/
+//! `compaction`, `providers.credentials`, `models.thinking_levels`/`thinking_levels_override`/
+//! `compaction_support`/`compaction_support_override`, and
+//! `ongoing_oauth_flows.slots`/`device_exchange_checkpoint` — carry only `json_valid`
+//! checks: their shapes are descriptor contracts the management write boundary enforces through
+//! Rust's concrete serde types, not column invariants. Text formats are likewise enforced at the
 //! management or upstream-discovery ingestion boundary instead of by column checks, so routing
 //! tokens, secrets, and base URLs validate in one place, before any database write. The two
 //! `models` token pairs and their overrides pin positivity alone (`> 0` or `NULL`, the unknown
 //! state — README §3): a non-positive capacity is malformed wherever it enters, and the closed
-//! level vocabulary of `thinking_levels` never reaches SQL at all.
+//! level vocabulary of `thinking_levels` and the closed mechanism and support vocabularies of
+//! the compaction facts never reach SQL at all.
 
 use super::Schema;
 
@@ -92,6 +94,7 @@ CREATE TABLE provider_definitions (
     credential TEXT NOT NULL CHECK (json_valid(credential)),
     provisioning TEXT NULL CHECK (provisioning IS NULL OR json_valid(provisioning)),
     discovery TEXT NULL CHECK (discovery IS NULL OR json_valid(discovery)),
+    compaction TEXT NULL CHECK (compaction IS NULL OR json_valid(compaction)),
     created_at INTEGER NOT NULL,
     PRIMARY KEY (name, version)
 ) STRICT;
@@ -130,6 +133,12 @@ CREATE TABLE models (
     ),
     max_output_tokens_override INTEGER NULL CHECK (
         max_output_tokens_override IS NULL OR max_output_tokens_override > 0
+    ),
+    compaction_support TEXT NULL CHECK (
+        compaction_support IS NULL OR json_valid(compaction_support)
+    ),
+    compaction_support_override TEXT NULL CHECK (
+        compaction_support_override IS NULL OR json_valid(compaction_support_override)
     ),
     UNIQUE (provider_id, upstream_id)
 ) STRICT;
@@ -436,6 +445,12 @@ mod tests {
                 "INSERT INTO provider_definitions (name, version, format, inference, credential, \
                  created_at) VALUES ('badjson', 1, 'openai_chat_completion', 'not json', '{}', 1);",
             ),
+            (
+                "compaction",
+                "INSERT INTO provider_definitions (name, version, format, inference, credential, \
+                 created_at, compaction) VALUES ('badcompact', 1, 'openai_chat_completion', '{}', \
+                 '{}', 1, 'not json');",
+            ),
         ];
 
         for (column, statement) in probes {
@@ -558,7 +573,7 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the `models` capability-declaration column domains (README §3): the two level
+    /// Verifies the `models` capability-declaration column domains (README §3): the four JSON
     /// columns accept any JSON or `NULL` and reject non-JSON, and every token column accepts a
     /// positive integer or `NULL` and rejects a non-positive one — the domain the Rust write
     /// boundary rests on, with the level vocabulary itself enforced above SQL.
@@ -592,9 +607,13 @@ mod tests {
 
         // Arbitrary JSON — including the empty array, the positive declaration of no levels —
         // is storable in both level columns: their element vocabulary is the Rust boundary's.
+        // The compaction fact columns share the shape-free `json_valid` boundary: the closed
+        // mechanism and support vocabularies are the Rust write boundary's, not SQL's.
         connection
             .execute_batch(
-                "UPDATE models SET thinking_levels = '[]', thinking_levels_override = '[1]' \
+                "UPDATE models SET thinking_levels = '[]', thinking_levels_override = '[1]', \
+                 compaction_support = '{}', compaction_support_override = \
+                 '{\"messages_on_demand_compaction\": \"unknown\"}' \
                  WHERE upstream_id = 'm';",
             )
             .await?;
@@ -607,6 +626,15 @@ mod tests {
             (
                 "thinking_levels_override",
                 "UPDATE models SET thinking_levels_override = 'not json' WHERE upstream_id = 'm';",
+            ),
+            (
+                "compaction_support",
+                "UPDATE models SET compaction_support = 'not json' WHERE upstream_id = 'm';",
+            ),
+            (
+                "compaction_support_override",
+                "UPDATE models SET compaction_support_override = 'not json' \
+                 WHERE upstream_id = 'm';",
             ),
             (
                 "max_input_tokens",

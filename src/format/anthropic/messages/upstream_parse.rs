@@ -5,7 +5,7 @@
 //! members — and parse into the shared IR event stream; mid-stream `error` events abort per the
 //! error-mirroring policy.
 
-use super::{TypedBlock, block_opaque};
+use super::{TypedBlock, block_opaque, compaction::CompactionBlock};
 use crate::{
     format::{PayloadError, UpstreamEventParser, message_start_once},
     ir::{IrEvent, IrFinishReason, IrUsage},
@@ -16,6 +16,12 @@ use serde_json::Value;
 
 /// Parses upstream Anthropic Messages responses — event-name-discriminated SSE streams or a
 /// complete JSON body — into IR events.
+///
+/// Compaction facts ride beside the IR event stream: every `compaction` content block is
+/// recorded verbatim in [`UpstreamParser::compaction_blocks`], a `usage.iterations` array in
+/// [`UpstreamParser::compaction_iterations`], and the `compaction` stop reason in
+/// [`UpstreamParser::compaction_stop`]. State and metadata events carry these facts
+/// through aggregation, client rendering, and accounting.
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
@@ -43,8 +49,27 @@ pub(crate) struct UpstreamParser {
     /// Content blocks opened by `content_block_start`, keyed by stream content index.
     open_blocks: Vec<OpenBlock>,
 
+    /// Incomplete threshold blocks awaiting their full summary delta and stop.
+    pending_compaction_blocks: Vec<(usize, Value)>,
+
     /// Number of tool-call blocks opened so far; assigns the dense IR call index.
     tool_count: usize,
+
+    /// Every `compaction` content block observed, in order: its stream content index (on a
+    /// complete body, its position in the content array) and the block's raw vendor JSON. No IR
+    /// events are emitted for these blocks; the compaction outward render owns their lifecycles.
+    pub(crate) compaction_blocks: Vec<(usize, Value)>,
+
+    /// The last `usage.iterations` array the upstream reported, verbatim: one entry per
+    /// sampling iteration a native compaction performed. Last observation wins, like every
+    /// other usage column; the compaction outward render decides the entries' shape.
+    pub(crate) compaction_iterations: Vec<Value>,
+
+    /// Whether the upstream reported the `compaction` stop reason. The canonical finish
+    /// vocabulary has no compaction member, so the parser emits the ordinary `Stop` finish and
+    /// records the fact beside it; the compaction outward render overrides the stop reason for
+    /// compaction lifecycles.
+    pub(crate) compaction_stop: bool,
 }
 
 /// One upstream content block tracked across its start/delta/stop lifetime.
@@ -118,6 +143,11 @@ struct UpstreamUsage {
     /// rides only the terminal `message_delta` event.
     #[serde(default)]
     output_tokens_details: Option<OutputTokensDetails>,
+
+    /// Raw vendor iteration entries: one entry per sampling iteration a native compaction
+    /// performed, captured verbatim for the compaction outward render.
+    #[serde(default)]
+    iterations: Option<Vec<Value>>,
 }
 
 /// The upstream output token breakdown.
@@ -191,6 +221,11 @@ enum StartBlock {
         name: Option<String>,
     },
 
+    /// A compaction block: recorded verbatim in
+    /// [`UpstreamParser::compaction_blocks`],
+    /// emitted as an IR state event.
+    Compaction(CompactionBlock),
+
     /// Any newer block kind the gateway does not read.
     #[serde(other)]
     Other,
@@ -203,8 +238,10 @@ struct ContentBlockStartEvent {
     #[serde(default)]
     index: u64,
 
-    /// Announced block.
-    content_block: StartBlock,
+    /// The announced block, captured raw: compaction blocks replay verbatim, so the typed view
+    /// parses beside the untouched vendor JSON.
+    #[serde(default)]
+    content_block: Value,
 }
 
 /// One content delta; unknown delta kinds are tolerated and ignored like unknown blocks.
@@ -243,6 +280,12 @@ enum BlockDelta {
         partial_json: Option<String>,
     },
 
+    /// The complete threshold-compaction summary, delivered in one delta.
+    #[serde(rename = "compaction_delta")]
+    Compaction {
+        /// Full readable summary, or a native no-op.
+        content: Option<String>,
+    },
     /// Any newer delta kind the gateway does not read.
     #[serde(other)]
     Other,
@@ -350,6 +393,11 @@ enum ResponseBlock {
         input: Option<Value>,
     },
 
+    /// A compaction block: recorded verbatim in
+    /// [`UpstreamParser::compaction_blocks`],
+    /// emitted as an IR state event.
+    Compaction(CompactionBlock),
+
     /// Any newer block kind the gateway does not read.
     #[serde(other)]
     Other,
@@ -366,9 +414,10 @@ struct ResponseMessage {
     #[serde(default)]
     model: String,
 
-    /// Content blocks in order.
+    /// Content blocks in order, kept raw: compaction blocks replay verbatim, so the typed view
+    /// parses per block beside the untouched vendor JSON.
     #[serde(default)]
-    content: Vec<ResponseBlock>,
+    content: Vec<Value>,
 
     /// Canonical stop reason string, when the turn reported one.
     #[serde(default)]
@@ -420,6 +469,11 @@ impl UpstreamParser {
         {
             self.reasoning_tokens = Some(thinking_tokens);
         }
+
+        // Last observation wins, like every other usage column.
+        if let Some(iterations) = &usage.iterations {
+            self.compaction_iterations = iterations.clone();
+        }
     }
 
     /// Renders one usage report from the stored columns and one output observation, marking a
@@ -439,10 +493,35 @@ impl UpstreamParser {
     }
 
     /// Opens the block announced by a `content_block_start` event.
-    fn ingest_block_start(&mut self, event: ContentBlockStartEvent) -> Vec<IrEvent> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadError`] when the announced block does not parse.
+    fn ingest_block_start(
+        &mut self,
+        event: ContentBlockStartEvent,
+    ) -> Result<Vec<IrEvent>, PayloadError> {
         let content_index = event.index as usize;
 
-        let (kind, tool_ordinal, tool_id, tool_name, redacted_data) = match event.content_block {
+        // The typed view parses beside the raw vendor JSON: a compaction block records verbatim
+        // here and emits a state event; the compaction outward render owns its lifecycle.
+        let block = StartBlock::deserialize(&event.content_block)
+            .map_err(|_error| PayloadError::new("malformed upstream payload in SSE frame"))?;
+
+        if let StartBlock::Compaction(view) = block {
+            if view.content.is_some() {
+                self.compaction_blocks
+                    .push((content_index, event.content_block.clone()));
+                return Ok(vec![IrEvent::CompactionState {
+                    payload: event.content_block,
+                }]);
+            }
+            self.pending_compaction_blocks
+                .push((content_index, event.content_block));
+            return Ok(Vec::new());
+        }
+
+        let (kind, tool_ordinal, tool_id, tool_name, redacted_data) = match block {
             StartBlock::Text => (
                 OpenBlockKind::Text,
                 None,
@@ -481,7 +560,10 @@ impl UpstreamParser {
                 )
             }
 
-            StartBlock::Other => return Vec::new(),
+            // The compaction case returned above; `serde(other)` covers the rest.
+            StartBlock::Compaction(_) | StartBlock::Other => {
+                return Ok(Vec::new());
+            }
         };
 
         let mut events = Vec::new();
@@ -509,11 +591,15 @@ impl UpstreamParser {
             redacted_data,
         });
 
-        events
+        Ok(events)
     }
 
     /// Routes one `content_block_delta` event into IR events through the block tracked for its
     /// index; deltas for untracked indexes are ignored.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a concrete vendor compaction fragment cannot serialize.
     fn ingest_block_delta(&mut self, event: ContentBlockDeltaEvent) -> Vec<IrEvent> {
         let content_index = event.index as usize;
 
@@ -597,6 +683,31 @@ impl UpstreamParser {
                 }]
             }
 
+            BlockDelta::Compaction { content } => {
+                #[derive(serde::Serialize)]
+                struct CompletedBlock {
+                    /// The original vendor fragment, with optional-field presence retained.
+                    #[serde(flatten)]
+                    original: Value,
+                    /// The complete summary replaces the opening null content.
+                    content: Option<String>,
+                }
+                if let Some((_, block)) = self
+                    .pending_compaction_blocks
+                    .iter_mut()
+                    .find(|(index, _)| *index == content_index)
+                {
+                    #[expect(clippy::expect_used, reason = "a concrete vendor fragment serializes")]
+                    {
+                        *block = serde_json::to_value(CompletedBlock {
+                            original: block.clone(),
+                            content,
+                        })
+                        .expect("the completed block serializes");
+                    }
+                }
+                Vec::new()
+            }
             BlockDelta::Other => Vec::new(),
         }
     }
@@ -607,6 +718,15 @@ impl UpstreamParser {
     /// blocks need no closing event.
     fn ingest_block_stop(&mut self, event: ContentBlockStopEvent) -> Vec<IrEvent> {
         let content_index = event.index as usize;
+        if let Some(position) = self
+            .pending_compaction_blocks
+            .iter()
+            .position(|(index, _)| *index == content_index)
+        {
+            let (index, block) = self.pending_compaction_blocks.remove(position);
+            self.compaction_blocks.push((index, block.clone()));
+            return vec![IrEvent::CompactionState { payload: block }];
+        }
 
         let position = self
             .open_blocks
@@ -672,9 +792,22 @@ impl UpstreamParser {
         if let Some(stop_reason) = &event.delta.stop_reason {
             self.is_finished = true;
 
+            // The compaction stop reason is recorded beside the canonical finish: the closed
+            // vocabulary has no compaction member, and the compaction outward render overrides
+            // the stop reason for compaction lifecycles.
+            if stop_reason == "compaction" {
+                self.compaction_stop = true;
+            }
+
             events.push(IrEvent::finish(finish_reason_from_stop(stop_reason)));
         }
 
+        if self.compaction_stop || !self.compaction_iterations.is_empty() {
+            events.push(IrEvent::CompactionMetadata {
+                is_paused: self.compaction_stop,
+                iterations: self.compaction_iterations.clone(),
+            });
+        }
         events
     }
 }
@@ -711,13 +844,19 @@ impl UpstreamEventParser for UpstreamParser {
                     events.push(self.usage_event(0));
                 }
 
+                if !self.compaction_iterations.is_empty() {
+                    events.push(IrEvent::CompactionMetadata {
+                        is_paused: false,
+                        iterations: self.compaction_iterations.clone(),
+                    });
+                }
                 Ok(events)
             }
 
             "content_block_start" => {
                 let event = crate::format::parse_frame::<ContentBlockStartEvent>(frame)?;
 
-                Ok(self.ingest_block_start(event))
+                self.ingest_block_start(event)
             }
 
             "content_block_delta" => {
@@ -774,7 +913,10 @@ impl UpstreamEventParser for UpstreamParser {
 
         let mut tool_ordinal = 0;
 
-        for block in &message.content {
+        for (content_index, raw) in message.content.iter().enumerate() {
+            let block = ResponseBlock::deserialize(raw)
+                .map_err(|_error| PayloadError::new("malformed upstream payload: content block"))?;
+
             match block {
                 ResponseBlock::Text { text } => {
                     if text.as_deref().is_some_and(|text| !text.is_empty()) {
@@ -824,11 +966,28 @@ impl UpstreamEventParser for UpstreamParser {
                     tool_ordinal += 1;
                 }
 
+                // A compaction block records verbatim and rides the event
+                // stream at its content position.
+                ResponseBlock::Compaction(_) => {
+                    self.compaction_blocks.push((content_index, raw.clone()));
+
+                    events.push(IrEvent::CompactionState {
+                        payload: raw.clone(),
+                    });
+                }
+
                 ResponseBlock::Other => {}
             }
         }
 
         self.is_finished = true;
+
+        // The compaction stop reason is recorded beside the canonical finish: the closed
+        // vocabulary has no compaction member, and the compaction outward render overrides the
+        // stop reason for compaction lifecycles.
+        if message.stop_reason.as_deref() == Some("compaction") {
+            self.compaction_stop = true;
+        }
 
         events.push(IrEvent::finish(
             message
@@ -844,6 +1003,12 @@ impl UpstreamEventParser for UpstreamParser {
             events.push(self.usage_event(usage.output_tokens.unwrap_or_default()));
         }
 
+        if self.compaction_stop || !self.compaction_iterations.is_empty() {
+            events.push(IrEvent::CompactionMetadata {
+                is_paused: self.compaction_stop,
+                iterations: self.compaction_iterations.clone(),
+            });
+        }
         Ok(events)
     }
 
@@ -880,6 +1045,11 @@ fn finish_reason_from_stop(stop_reason: &str) -> IrFinishReason {
         "max_tokens" | "model_context_window_exceeded" => IrFinishReason::Length,
         "tool_use" => IrFinishReason::ToolCall,
         "refusal" => IrFinishReason::ContentFilter,
+        // The compaction stop reason keeps the canonical Stop finish here: the closed
+        // vocabulary has no compaction member, the parser records the fact in
+        // `compaction_stop`, and the compaction outward render overrides the stop reason for
+        // compaction lifecycles.
+        "compaction" => IrFinishReason::Stop,
         _ => IrFinishReason::Stop,
     }
 }
@@ -1619,6 +1789,234 @@ mod tests {
                     reasoning_tokens: Some(4),
                 }),
             ],
+        );
+    }
+
+    /// Captures a compaction block of a complete non-streaming message verbatim — beside the
+    /// ordinary blocks' IR events — records the `compaction` stop reason beside its canonical
+    /// `Stop` finish, and captures the raw `usage.iterations` entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the captured facts or the event stream diverge from the documented mapping.
+    #[test]
+    fn captures_the_compaction_facts_of_a_complete_body() {
+        let mut parser = UpstreamParser::new();
+
+        let block = json!({
+            "type": "compaction",
+            "content": "the summary",
+            "signature": "sig",
+            "encrypted_content": "enc",
+            "tool_changes": [{"type": "tool_addition"}],
+            "vendor_extra_member": {"kept": true},
+        });
+
+        let iterations = vec![
+            json!({
+                "type": "compaction",
+                "input_tokens": 180_000,
+                "output_tokens": 3_500,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }),
+            json!({"type": "message", "input_tokens": 23_000, "output_tokens": 1_000}),
+        ];
+
+        let body = json!({
+            "id": "msg_3",
+            "model": "claude-test",
+            "content": [
+                block.clone(),
+                {"type": "text", "text": "answer"},
+            ],
+            "stop_reason": "compaction",
+            "usage": {"input_tokens": 23_000, "output_tokens": 1_000,
+                      "iterations": iterations.clone()},
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture body is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(body)
+            .expect("the complete message parses");
+
+        // The compaction block recorded verbatim, including vendor-owned extra members; the
+        // text block still rode its ordinary IR event.
+        assert_eq!(parser.compaction_blocks, vec![(0, block.clone())]);
+        assert!(parser.compaction_stop);
+        assert_eq!(parser.compaction_iterations, iterations);
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "msg_3".to_string(),
+                    model: "claude-test".to_string(),
+                },
+                IrEvent::CompactionState {
+                    payload: block.clone()
+                },
+                IrEvent::TextDelta("answer".to_string()),
+                IrEvent::finish(IrFinishReason::Stop),
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 23_000,
+                    output_tokens: 1_000,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }),
+                IrEvent::CompactionMetadata {
+                    is_paused: true,
+                    iterations: iterations.clone()
+                },
+            ]
+        );
+
+        // A null-content compaction block captures the same way.
+        let mut parser = UpstreamParser::new();
+
+        let body = json!({
+            "id": "msg_4",
+            "model": "claude-test",
+            "content": [{"type": "compaction"}],
+            "stop_reason": "max_tokens",
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the null-block body is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(body)
+            .expect("the null-block message parses");
+
+        assert_eq!(
+            parser.compaction_blocks,
+            vec![(0, json!({"type": "compaction"}))]
+        );
+        assert!(!parser.compaction_stop);
+        assert!(parser.compaction_iterations.is_empty());
+        assert_eq!(
+            events.first(),
+            Some(&IrEvent::MessageStart {
+                id: "msg_4".to_string(),
+                model: "claude-test".to_string(),
+            })
+        );
+    }
+
+    /// Captures a compaction block announced by a streaming `content_block_start` verbatim —
+    /// emitting a state event — lets ordinary blocks continue after it, and records the
+    /// `compaction` stop reason from the terminal `message_delta`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the captured facts or the event stream diverge from the documented mapping.
+    #[test]
+    fn captures_the_compaction_block_of_a_stream() {
+        let mut parser = UpstreamParser::new();
+
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        let block = json!({
+            "type": "compaction",
+            "content": "full summary",
+            "signature": "sig",
+        });
+
+        let mut events = Vec::new();
+
+        for frame in [
+            frames(
+                "message_start",
+                json!({"message": {"id": "msg_5", "model": "claude-test",
+                                   "usage": {"input_tokens": 0, "output_tokens": 0,
+                                             "iterations": [{"type": "compaction",
+                                                             "input_tokens": 9,
+                                                             "output_tokens": 4}]}}}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": block.clone()}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 1, "content_block": {"type": "text"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 1, "delta": {"type": "text_delta", "text": "answer"}}),
+            ),
+            frames("content_block_stop", json!({"index": 1})),
+            frames(
+                "message_delta",
+                json!({"delta": {"stop_reason": "compaction"},
+                       "usage": {"output_tokens": 4}}),
+            ),
+            frames("message_stop", json!({})),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture stream is constructed to parse"
+            )]
+            let ingested = parser
+                .ingest_frame(&frame)
+                .expect("every fixture frame parses");
+
+            events.extend(ingested);
+        }
+
+        assert_eq!(parser.compaction_blocks, vec![(0, block.clone())]);
+        assert!(parser.compaction_stop);
+        assert_eq!(
+            parser.compaction_iterations,
+            vec![json!({"type": "compaction", "input_tokens": 9, "output_tokens": 4})]
+        );
+
+        // The ordinary text block still delivered its event; the compaction block rode the
+        // event stream verbatim at its block position, and the finish degraded to the
+        // canonical Stop.
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "msg_5".to_string(),
+                    model: "claude-test".to_string(),
+                },
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }),
+                IrEvent::CompactionMetadata {
+                    is_paused: false,
+                    iterations: parser.compaction_iterations.clone()
+                },
+                IrEvent::CompactionState {
+                    payload: block.clone()
+                },
+                IrEvent::TextDelta("answer".to_string()),
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 0,
+                    output_tokens: 4,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }),
+                IrEvent::finish(IrFinishReason::Stop),
+                IrEvent::CompactionMetadata {
+                    is_paused: true,
+                    iterations: parser.compaction_iterations.clone()
+                },
+            ]
         );
     }
 }

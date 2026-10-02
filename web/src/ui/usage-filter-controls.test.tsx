@@ -41,6 +41,8 @@ const modelRow: ModelResponse = {
     thinking_levels_override: null,
     max_input_tokens_override: null,
     max_output_tokens_override: null,
+    compaction_support: null,
+    compaction_support_override: null,
 };
 
 const apiKeyRow: ApiKeyResponse = {

@@ -7,6 +7,7 @@ import { ModelNewScreen } from "/src/screens/model-new-screen";
 import {
     bodyText,
     buttonWithText,
+    chooseSelect,
     createDisposals,
     labeledCheckbox,
     labeledInput,
@@ -256,6 +257,7 @@ describe("ModelNewScreen creation", () => {
                 thinking_levels_override: null,
                 max_input_tokens_override: null,
                 max_output_tokens_override: null,
+                compaction_support_override: null,
             },
         ]);
         expect(window.location.pathname).toBe(hrefs.modelDetail(11));
@@ -292,6 +294,13 @@ describe("ModelNewScreen creation", () => {
         typeInto(labeledInput("Max output tokens override"), "32768");
         await settle();
 
+        // A manual row has no discovered facts, so its compaction override
+        // is the only fact source it will ever carry.
+        switchWithLabel("Override compaction facts").click();
+        await settle();
+        chooseSelect("On-demand compaction", "supported");
+        await settle();
+
         buttonWithText("Create model").click();
         await settle();
 
@@ -306,6 +315,9 @@ describe("ModelNewScreen creation", () => {
                 ],
                 max_input_tokens_override: null,
                 max_output_tokens_override: 32_768,
+                compaction_support_override: {
+                    messages_on_demand_compaction: "supported",
+                },
             },
         ]);
     });

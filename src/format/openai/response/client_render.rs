@@ -22,7 +22,7 @@ const PRIMARY_INDEX: u32 = 0;
 
 /// Streaming client response renderer producing Responses SSE events.
 #[derive(Debug)]
-pub(super) struct SseRenderer {
+pub(crate) struct SseRenderer {
     /// Monotonic sequence number of the next event.
     sequence: u64,
 
@@ -43,6 +43,11 @@ pub(super) struct SseRenderer {
 
     /// Open assistant message item awaiting completion.
     message: Option<OpenTextItem>,
+
+    /// Compaction state items awaiting their added/done frame pairs, keyed by
+    /// their output position; drained once the response has opened, ahead of
+    /// every IR-derived item.
+    prefix_items: Vec<(usize, Value)>,
 
     /// Open function call items keyed by IR tool call index.
     calls: Vec<(usize, TrackedCall)>,
@@ -96,10 +101,24 @@ struct TrackedItem {
     item: OutputItem,
 }
 
-/// One rendered output item in the official Responses shape.
+/// One rendered output item: a gateway-rendered item in the official shape, or
+/// a verbatim vendor-shaped state item replayed at the output head.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum OutputItem {
+    /// A gateway-rendered item.
+    Rendered(RenderedOutputItem),
+
+    /// A vendor-shaped state item — a compaction item or native state replayed
+    /// ahead of the IR-derived items — carried verbatim; its shape is the
+    /// vendor's, not the gateway's.
+    State(Value),
+}
+
+/// The gateway-rendered output items in the official Responses shape.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum OutputItem {
+enum RenderedOutputItem {
     /// A reasoning item carrying its summary.
     Reasoning {
         /// Gateway-issued item identifier.
@@ -499,7 +518,7 @@ struct FunctionCallArgumentsDone {
 
 impl SseRenderer {
     /// Creates a renderer for one streamed response.
-    pub(super) fn new(model: String) -> Self {
+    pub(crate) fn new(model: String) -> Self {
         Self {
             sequence: FIRST_SEQUENCE_NUMBER,
             id: format!("resp_{}", ids::new_uuid()),
@@ -508,12 +527,63 @@ impl SseRenderer {
             is_created: false,
             reasoning: None,
             message: None,
+            prefix_items: Vec::new(),
             calls: Vec::new(),
             completed_items: Vec::new(),
             next_output_index: 0,
             usage: None,
             finish: None,
         }
+    }
+
+    /// Schedules the given vendor-shaped compaction items to render ahead of
+    /// every IR-derived item: each becomes an `output_item.added` and
+    /// `output_item.done` pair at its own output position once the response
+    /// has opened, and the terminal response object's output array opens with
+    /// them in the same order — the checkpoint-before-answer ordering the
+    /// automatic and trigger compaction flows require (README §6.8).
+    pub(crate) fn with_prefix_items(mut self, items: Vec<Value>) -> Self {
+        self.next_output_index = items.len();
+
+        self.prefix_items = items.into_iter().enumerate().collect();
+
+        self
+    }
+
+    /// Drains the scheduled prefix items, emitting each one's added/done frame
+    /// pair and recording it as a completed item for the terminal response
+    /// object.
+    fn take_prefix_frames(&mut self) -> Vec<String> {
+        let items = std::mem::take(&mut self.prefix_items);
+
+        let mut frames = Vec::with_capacity(items.len() * 2);
+
+        for (output_index, item) in items {
+            let rendered = OutputItem::State(item);
+
+            frames.push(self.event_frame(
+                "response.output_item.added",
+                OutputItemEvent {
+                    output_index,
+                    item: rendered.clone(),
+                },
+            ));
+
+            frames.push(self.event_frame(
+                "response.output_item.done",
+                OutputItemEvent {
+                    output_index,
+                    item: rendered.clone(),
+                },
+            ));
+
+            self.completed_items.push(TrackedItem {
+                output_index,
+                item: rendered,
+            });
+        }
+
+        frames
     }
 
     /// Closes any open reasoning or message items, emitting their done event sequences and
@@ -526,10 +596,10 @@ impl SseRenderer {
                 text: open.text.clone(),
             };
 
-            let completed_item = OutputItem::Reasoning {
+            let completed_item = OutputItem::Rendered(RenderedOutputItem::Reasoning {
                 id: open.item_id.clone(),
                 summary: vec![summary_part.clone()],
-            };
+            });
 
             frames.push(self.event_frame(
                 "response.reasoning_summary_text.done",
@@ -572,12 +642,12 @@ impl SseRenderer {
                 logprobs: Vec::new(),
             };
 
-            let completed_item = OutputItem::Message {
+            let completed_item = OutputItem::Rendered(RenderedOutputItem::Message {
                 id: open.item_id.clone(),
                 role: "assistant",
                 status: ItemStatus::Completed,
                 content: vec![content_part.clone()],
-            };
+            });
 
             frames.push(self.event_frame(
                 "response.output_text.done",
@@ -654,9 +724,83 @@ impl SseRenderer {
 }
 
 impl ClientSseRenderer for SseRenderer {
-    /// Renders one IR event into zero or more SSE frames.
+    /// Renders one IR event into zero or more SSE frames. Prefix items
+    /// scheduled through [`SseRenderer::with_prefix_items`] render once the
+    /// response has opened, ahead of the event's own frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String> {
+        // Prefix frames precede every IR-derived item, but never the
+        // response's own opening: they drain only once `response.created` has
+        // rendered (or, on a recovery path that never opens the response,
+        // ride the first rendered event).
+        let mut frames = if self.is_created {
+            self.take_prefix_frames()
+        } else {
+            Vec::new()
+        };
+
+        let mut event_frames = self.render_event(event);
+
+        frames.append(&mut event_frames);
+
+        frames
+    }
+
+    /// Renders a mid-stream error as a terminal `response.failed` event, classified once through
+    /// the shared API error (README §6.7).
+    ///
+    /// Strict clients validate the embedded response object like any other, so it carries the full
+    /// required shell rather than a bare id/status/error subset.
+    fn error_frame(&mut self, error: &crate::api::Error) -> String {
+        let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
+
+        shell.error = Some(crate::format::openai::error::render_body(error));
+
+        self.event_frame("response.failed", ResponseEvent { response: shell })
+    }
+}
+
+impl SseRenderer {
+    /// Renders one IR event into zero or more SSE frames: the body of
+    /// [`ClientSseRenderer::render`], which wraps it with the prefix-item
+    /// frames.
+    fn render_event(&mut self, event: &IrEvent) -> Vec<String> {
         match event {
+            IrEvent::CompactionState { payload } => {
+                // An upstream-observed native compaction item renders at its
+                // arrival position: the added/done pair the prefix items use,
+                // at the renderer's next output index, recorded for the
+                // terminal response object.
+                let output_index = self.next_output_index;
+
+                self.next_output_index += 1;
+
+                let rendered = OutputItem::State(payload.clone());
+
+                let frames = vec![
+                    self.event_frame(
+                        "response.output_item.added",
+                        OutputItemEvent {
+                            output_index,
+                            item: rendered.clone(),
+                        },
+                    ),
+                    self.event_frame(
+                        "response.output_item.done",
+                        OutputItemEvent {
+                            output_index,
+                            item: rendered.clone(),
+                        },
+                    ),
+                ];
+
+                self.completed_items.push(TrackedItem {
+                    output_index,
+                    item: rendered,
+                });
+
+                frames
+            }
+
             IrEvent::MessageStart { .. } => {
                 if self.is_created {
                     return Vec::new();
@@ -666,7 +810,7 @@ impl ClientSseRenderer for SseRenderer {
 
                 let shell = self.response_shell(ResponseStatus::InProgress, Vec::new());
 
-                vec![
+                let mut frames = vec![
                     self.event_frame(
                         "response.created",
                         ResponseEvent {
@@ -674,7 +818,11 @@ impl ClientSseRenderer for SseRenderer {
                         },
                     ),
                     self.event_frame("response.in_progress", ResponseEvent { response: shell }),
-                ]
+                ];
+
+                frames.extend(self.take_prefix_frames());
+
+                frames
             }
 
             IrEvent::ReasoningDelta(delta) => {
@@ -697,10 +845,10 @@ impl ClientSseRenderer for SseRenderer {
                                 "response.output_item.added",
                                 OutputItemEvent {
                                     output_index,
-                                    item: OutputItem::Reasoning {
+                                    item: OutputItem::Rendered(RenderedOutputItem::Reasoning {
                                         id: item_id.clone(),
                                         summary: Vec::new(),
-                                    },
+                                    }),
                                 },
                             ),
                             self.event_frame(
@@ -769,12 +917,12 @@ impl ClientSseRenderer for SseRenderer {
                                 "response.output_item.added",
                                 OutputItemEvent {
                                     output_index,
-                                    item: OutputItem::Message {
+                                    item: OutputItem::Rendered(RenderedOutputItem::Message {
                                         id: item_id.clone(),
                                         role: "assistant",
                                         status: ItemStatus::InProgress,
                                         content: Vec::new(),
-                                    },
+                                    }),
                                 },
                             ),
                             self.event_frame(
@@ -859,7 +1007,9 @@ impl ClientSseRenderer for SseRenderer {
                             "response.output_item.added",
                             OutputItemEvent {
                                 output_index,
-                                item: OutputItem::FunctionCall(item.clone()),
+                                item: OutputItem::Rendered(RenderedOutputItem::FunctionCall(
+                                    item.clone(),
+                                )),
                             },
                         ));
 
@@ -915,14 +1065,16 @@ impl ClientSseRenderer for SseRenderer {
                             "response.output_item.added",
                             OutputItemEvent {
                                 output_index,
-                                item: OutputItem::FunctionCall(FunctionCallItem {
-                                    id: item_id.clone(),
-                                    status: ItemStatus::InProgress,
-                                    call_id: call_id.clone(),
-                                    name: name.clone(),
-                                    arguments: String::new(),
-                                    thought_signature: None,
-                                }),
+                                item: OutputItem::Rendered(RenderedOutputItem::FunctionCall(
+                                    FunctionCallItem {
+                                        id: item_id.clone(),
+                                        status: ItemStatus::InProgress,
+                                        call_id: call_id.clone(),
+                                        name: name.clone(),
+                                        arguments: String::new(),
+                                        thought_signature: None,
+                                    },
+                                )),
                             },
                         )];
 
@@ -961,7 +1113,8 @@ impl ClientSseRenderer for SseRenderer {
                     },
                 ));
 
-                let completed_item = OutputItem::FunctionCall(open.item);
+                let completed_item =
+                    OutputItem::Rendered(RenderedOutputItem::FunctionCall(open.item));
 
                 frames.push(self.event_frame(
                     "response.output_item.done",
@@ -985,6 +1138,7 @@ impl ClientSseRenderer for SseRenderer {
                 self.close_open_items()
             }
 
+            IrEvent::CompactionMetadata { .. } => Vec::new(),
             IrEvent::Usage(usage) => {
                 self.usage = Some(*usage);
 
@@ -1036,36 +1190,30 @@ impl ClientSseRenderer for SseRenderer {
             }
         }
     }
-
-    /// Renders a mid-stream error as a terminal `response.failed` event, classified once through
-    /// the shared API error (README §6.7).
-    ///
-    /// Strict clients validate the embedded response object like any other, so it carries the full
-    /// required shell rather than a bare id/status/error subset.
-    fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
-
-        shell.error = Some(crate::format::openai::error::render_body(error));
-
-        self.event_frame("response.failed", ResponseEvent { response: shell })
-    }
 }
 
 /// Renders an aggregated completion as a non-streaming Responses API response.
+/// Upstream-observed native compaction items ride the output head, in their
+/// arrival order, ahead of the derived items — a native compaction precedes
+/// the answer output it precedes upstream.
 pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> ResponseObject {
-    let mut output: Vec<OutputItem> = Vec::new();
+    let mut output: Vec<OutputItem> = aggregation
+        .compaction_states
+        .iter()
+        .map(|item| OutputItem::State(item.clone()))
+        .collect();
 
     if !aggregation.reasoning.is_empty() {
-        output.push(OutputItem::Reasoning {
+        output.push(OutputItem::Rendered(RenderedOutputItem::Reasoning {
             id: format!("rs_{}", ids::new_uuid()),
             summary: vec![SummaryPart::SummaryText {
                 text: aggregation.reasoning.clone(),
             }],
-        });
+        }));
     }
 
     if !aggregation.text.is_empty() {
-        output.push(OutputItem::Message {
+        output.push(OutputItem::Rendered(RenderedOutputItem::Message {
             id: format!("msg_{}", ids::new_uuid()),
             role: "assistant",
             status: ItemStatus::Completed,
@@ -1074,18 +1222,20 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
                 annotations: Vec::new(),
                 logprobs: Vec::new(),
             }],
-        });
+        }));
     }
 
     for tool_call in &aggregation.tool_calls {
-        output.push(OutputItem::FunctionCall(FunctionCallItem {
-            id: format!("fc_{}", ids::new_uuid()),
-            status: ItemStatus::Completed,
-            call_id: tool_call.call_id.clone(),
-            name: tool_call.name.clone(),
-            arguments: tool_call.arguments.clone(),
-            thought_signature: tool_call.thought_signature.clone(),
-        }));
+        output.push(OutputItem::Rendered(RenderedOutputItem::FunctionCall(
+            FunctionCallItem {
+                id: format!("fc_{}", ids::new_uuid()),
+                status: ItemStatus::Completed,
+                call_id: tool_call.call_id.clone(),
+                name: tool_call.name.clone(),
+                arguments: tool_call.arguments.clone(),
+                thought_signature: tool_call.thought_signature.clone(),
+            },
+        )));
     }
 
     let incomplete_reason = aggregation.finish.and_then(incomplete_details_reason);
@@ -1110,6 +1260,26 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
     }
 }
 
+/// Renders an aggregated completion whose output opens with the given
+/// vendor-shaped compaction items: the checkpoint-before-answer ordering of
+/// the automatic and trigger compaction flows (README §6.8), rendered as
+/// the same item values the streaming path's prefix frames carry.
+pub(super) fn render_json_response_with_prefix_items(
+    model: &str,
+    aggregation: &IrAggregation,
+    prefix_items: Vec<Value>,
+) -> ResponseObject {
+    let mut response = render_json_response(model, aggregation);
+
+    let mut output: Vec<OutputItem> = prefix_items.into_iter().map(OutputItem::State).collect();
+
+    output.append(&mut response.output);
+
+    response.output = output;
+
+    response
+}
+
 /// Renders the `incomplete_details.reason` string for a finish reason that marks an incomplete
 /// response; [`None`] for complete responses.
 fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
@@ -1124,7 +1294,7 @@ fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseRenderer, render_json_response};
+    use super::{SseRenderer, render_json_response, render_json_response_with_prefix_items};
     use crate::{
         format::{ClientSseRenderer as _, aggregated_body_json},
         ir::{IrAggregation, IrEvent, IrUsage},
@@ -1305,5 +1475,138 @@ mod tests {
                 "total_tokens": 9,
             }))
         );
+    }
+
+    /// Prefix items render once the response has opened and ahead of every
+    /// IR-derived item — the checkpoint-before-answer ordering (README
+    /// §4.3) — each as an added/done pair at its own output position, and the
+    /// terminal response object's output array opens with them in order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered frames diverge from the ordering contract.
+    #[test]
+    fn prefix_items_render_ahead_of_the_ir_derived_items() {
+        let checkpoint = serde_json::json!({
+            "type": "compaction",
+            "id": "cmp_1",
+            "encrypted_content": "state",
+        });
+
+        let mut renderer = SseRenderer::new("m".to_string()).with_prefix_items(vec![
+            checkpoint.clone(),
+            serde_json::json!({"type": "reasoning", "encrypted_content": "cipher"}),
+        ]);
+
+        let mut frames = renderer.render(&IrEvent::MessageStart {
+            id: String::new(),
+            model: String::new(),
+        });
+
+        frames.extend(renderer.render(&IrEvent::TextDelta("answer".to_string())));
+
+        frames.extend(renderer.render(&IrEvent::Done));
+
+        // The first two frames open the response; the four following are the
+        // two prefix items' added/done pairs; only then does the answer item
+        // open.
+        let event_names: Vec<&str> = frames
+            .iter()
+            .filter_map(|frame| frame.split_once("\ndata: ").map(|(head, _)| head))
+            .filter_map(|head| head.strip_prefix("event: "))
+            .collect();
+
+        assert_eq!(
+            event_names,
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.output_item.done",
+                "response.output_item.added",
+                "response.output_item.done",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                "response.completed",
+            ],
+        );
+
+        // The prefix items open at output indices 0 and 1, and the derived
+        // message follows at index 2.
+        let checkpoint_index = frame_payload(&frames, "response.output_item.added")
+            .get("output_index")
+            .and_then(Value::as_u64);
+
+        assert_eq!(checkpoint_index, Some(0));
+
+        let terminal = terminal_frame_payload(&frames);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the terminal response is under test; a missing output is the failure"
+        )]
+        let output = terminal
+            .pointer("/response/output")
+            .and_then(Value::as_array)
+            .expect("the terminal response carries its output");
+
+        assert_eq!(output.first(), Some(&checkpoint));
+
+        assert_eq!(output.len(), 3);
+    }
+
+    /// The aggregated rendering with prefix items opens the output array with
+    /// exactly the same item values the streaming path renders, so both
+    /// representations of one lifecycle agree (README §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the aggregated output diverges from the streaming output.
+    #[test]
+    fn the_aggregated_rendering_opens_with_the_prefix_items() {
+        let prefix = vec![serde_json::json!({
+            "type": "compaction",
+            "id": "cmp_1",
+            "encrypted_content": "state",
+        })];
+
+        let aggregation = IrAggregation {
+            text: "answer".to_string(),
+            usage: Some(IrUsage {
+                input_tokens: 5,
+                output_tokens: 2,
+                ..IrUsage::default()
+            }),
+            ..IrAggregation::default()
+        };
+
+        let body = aggregated_body_json(&render_json_response_with_prefix_items(
+            "m",
+            &aggregation,
+            prefix.clone(),
+        ));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the aggregated body is under test; a missing output is the failure"
+        )]
+        let output = body
+            .get("output")
+            .and_then(Value::as_array)
+            .expect("the body carries its output");
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the one-element fixture prefix always carries index 0"
+        )]
+        {
+            assert_eq!(output.first(), Some(&prefix[0]));
+        }
+
+        assert_eq!(output.len(), 2);
     }
 }
