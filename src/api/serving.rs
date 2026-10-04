@@ -1977,13 +1977,17 @@ where
 /// surface's typed success body, which [`json_response`] serializes; each entry's capability
 /// values are already the effective `override ?? base` composition, with `None` (unknown) left
 /// for the surface to omit (README §6.5).
-pub(super) async fn model_list_response<S, T, F>(database: &Database, render_page: F) -> Response
+pub(super) async fn model_list_response<S, T, F>(
+    database: &Database,
+    api_key_id: i64,
+    render_page: F,
+) -> Response
 where
     S: Surface,
     F: FnOnce(Vec<EnabledModel>) -> T,
     T: Serialize,
 {
-    match models::list_enabled_models_with_owner(database).await {
+    match models::list_enabled_models_with_owner(database, api_key_id).await {
         Ok(listed) => json_response(StatusCode::OK, &render_page(listed)),
 
         Err(error) => {
@@ -2765,6 +2769,13 @@ mod tests {
         .await
         .expect("fixture route publishes");
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the serving fixture explicitly grants route access"
+        )]
+        crate::test_support::structural_api_key(&database)
+            .await
+            .expect("fixture key");
         (database, guard)
     }
 
@@ -2779,6 +2790,13 @@ mod tests {
     async fn compact_rejections_classify_through_the_shared_taxonomy() {
         let (database, _guard) = create_test_database().await;
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture explicitly creates a real authenticated key"
+        )]
+        crate::test_support::structural_api_key(&database)
+            .await
+            .expect("fixture key");
         let context = context(database);
 
         #[expect(

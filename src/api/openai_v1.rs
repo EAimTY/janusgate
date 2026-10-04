@@ -199,10 +199,15 @@ async fn responses_compact(
 }
 
 /// Handles `GET /models`.
-async fn models(State(context): State<Context>) -> Response {
-    serving::model_list_response::<Surface, _, _>(&context.database, |listed| ModelList {
-        object: "list",
-        data: listed.into_iter().map(model_object).collect(),
+async fn models(
+    State(context): State<Context>,
+    api_key: serving::AuthenticatedApiKeyRow,
+) -> Response {
+    serving::model_list_response::<Surface, _, _>(&context.database, api_key.0, |listed| {
+        ModelList {
+            object: "list",
+            data: listed.into_iter().map(model_object).collect(),
+        }
     })
     .await
 }

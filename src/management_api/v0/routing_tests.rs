@@ -87,6 +87,7 @@ async fn native_model_lists_share_the_explicit_public_namespace() -> Result<(), 
             name: "client",
             key: "client-secret",
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await?;
@@ -378,5 +379,145 @@ async fn route_and_pool_actions_share_transactional_contracts() -> Result<(), Bo
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+/// Complete key writes report strict policy errors through the real management boundary and
+/// preserve the committed row after every rejected replacement.
+///
+/// # Errors
+/// Returns setup, transport, serialization, or storage failures.
+///
+/// # Panics
+/// Panics if rejection statuses or replacement atomicity differ from the public contract.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "global configuration fixtures serialize reloads"
+)]
+async fn key_policy_replacements_reject_atomically() -> Result<(), Box<dyn StdError>> {
+    let _configuration = test_support::configuration_lock();
+    test_support::install_global_configuration();
+    let (database, _database_guard) = test_support::create_test_database().await;
+    let definition = test_support::insert_static_key_definition(
+        &database,
+        "policy-fixture",
+        crate::format::UpstreamFormat::OpenAiResponse,
+    )
+    .await;
+    let provider_id = test_support::insert_provider(
+        &database,
+        &definition,
+        "A",
+        None,
+        crate::provider::StoredCredentials::ApiKey {
+            api_key: "upstream-secret".into(),
+        },
+    )
+    .await
+    .id;
+    let context = Context {
+        database: database.clone(),
+        api_log_store: None,
+        affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+        quota_coordinator: std::sync::Arc::new(
+            crate::provider::quota::coordinator::Coordinator::default(),
+        ),
+        data_plane: crate::http_client::data_plane(),
+        control_plane: crate::http_client::control_plane(),
+    };
+    let mut router = super::router().with_state(context);
+    let policy = json!({"default_access":"deny", "owner_defaults":[
+        {"type":"provider", "provider_id":provider_id, "access":"allow"}
+    ], "route_overrides":[]});
+    let create_request = json!({"name":"client", "key":"client-secret", "is_enabled":true,
+        "access_control":policy});
+    let (status, created) =
+        request(&mut router, "/api-keys:create", create_request.clone()).await?;
+    assert_eq!(status, StatusCode::OK);
+    let key_id = test_support::at(&created, "/api_key/id")
+        .as_i64()
+        .ok_or("created key")?;
+    let baseline = crate::storage::api_keys::list_api_keys(&database).await?;
+    let (status, _) = request(&mut router, "/api-keys:create", create_request).await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+    for (invalid, expected) in [
+        (
+            json!({"default_access":"deny","owner_defaults":[
+            {"type":"provider","provider_id":provider_id,"access":"allow"},
+            {"type":"provider","provider_id":provider_id,"access":"allow"}
+        ],"route_overrides":[]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"default_access":"allow","owner_defaults":[
+            {"type":"provider","provider_id":provider_id,"access":"allow"},
+            {"type":"provider","provider_id":provider_id,"access":"deny"}
+        ],"route_overrides":[]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"default_access":"deny","owner_defaults":[],"route_overrides":[
+                {"model_route_id":9999,"access":"allow"}
+            ]}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json!({"default_access":"deny","owner_defaults":[
+            {"type":"pool","pool_id":9999,"access":"allow"}
+        ],"route_overrides":[]}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json!({"default_access":"deny","owner_defaults":[
+            {"type":"provider","provider_id":9999,"access":"allow"}
+        ],"route_overrides":[]}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json!({"default_access":"inherit","owner_defaults":[],"route_overrides":[]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"default_access":"deny","owner_defaults":[
+            {"type":"provider","provider_id":provider_id,"pool_id":1,"access":"allow"}
+        ],"route_overrides":[]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"default_access":"deny","owner_defaults":[
+            {"type":"unknown","provider_id":provider_id,"access":"allow"}
+        ],"route_overrides":[]}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let (status, _) = request(
+            &mut router,
+            "/api-keys:update",
+            json!({
+                "api_key_id":key_id,"name":"changed","key":"rotated","is_enabled":false,
+                "access_control":invalid
+            }),
+        )
+        .await?;
+        assert_eq!(status, expected);
+        assert_eq!(
+            crate::storage::api_keys::list_api_keys(&database).await?,
+            baseline
+        );
+        let (status, _) = request(
+            &mut router,
+            "/api-keys:create",
+            json!({
+                "name":"failed","key":"new-secret","is_enabled":true,"access_control":invalid
+            }),
+        )
+        .await?;
+        assert_eq!(status, expected);
+        assert_eq!(
+            crate::storage::api_keys::list_api_keys(&database).await?,
+            baseline
+        );
+    }
     Ok(())
 }

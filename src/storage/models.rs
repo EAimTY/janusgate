@@ -253,8 +253,9 @@ pub(crate) async fn list_model_entries(
 /// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn list_enabled_models_with_owner(
     database: &Database,
+    api_key_id: i64,
 ) -> Result<Vec<EnabledModel>, Error> {
-    super::route_listing::list_public_models(database).await
+    super::route_listing::list_public_models(database, api_key_id).await
 }
 
 /// Applies one account's complete nonempty discovery result in a short transaction.
@@ -788,7 +789,11 @@ mod tests {
             Err(crate::gateway::Error::ModelNotFound { .. })
         ));
 
-        let enabled_models = list_enabled_models_with_owner(&database).await?;
+        let enabled_models = list_enabled_models_with_owner(
+            &database,
+            crate::test_support::structural_api_key(&database).await?,
+        )
+        .await?;
 
         assert_eq!(enabled_models.len(), 2);
 
@@ -965,7 +970,11 @@ mod tests {
         // compaction facts resolve per mechanism, so the explicit `unknown` override suppresses
         // the discovered on-demand fact into nothing while the override-only trigger fact and
         // the untouched base threshold fact render.
-        let listed = list_enabled_models_with_owner(&database).await?;
+        let listed = list_enabled_models_with_owner(
+            &database,
+            crate::test_support::structural_api_key(&database).await?,
+        )
+        .await?;
 
         #[expect(
             clippy::expect_used,
@@ -1029,7 +1038,11 @@ mod tests {
         );
 
         // With the base gone, the listing renders the surviving override facts alone.
-        let listed = list_enabled_models_with_owner(&database).await?;
+        let listed = list_enabled_models_with_owner(
+            &database,
+            crate::test_support::structural_api_key(&database).await?,
+        )
+        .await?;
 
         #[expect(
             clippy::expect_used,
@@ -1206,7 +1219,11 @@ mod tests {
         )
         .await?;
 
-        let listed = list_enabled_models_with_owner(&database).await?;
+        let listed = list_enabled_models_with_owner(
+            &database,
+            crate::test_support::structural_api_key(&database).await?,
+        )
+        .await?;
 
         assert_eq!(listed.len(), 2);
 

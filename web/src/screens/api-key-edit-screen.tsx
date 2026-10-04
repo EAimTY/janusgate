@@ -1,19 +1,22 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal } from "solid-js";
+import { type AccessInventory, isSamePolicy, missingReferences } from "/src/access-control";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ApiKeyResponse } from "/src/management-api/generated/v0";
+import type { ApiKeyAccessControl, ApiKeyResponse } from "/src/management-api/generated/v0";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
     createScreenRead,
     isSameApiKeyRow,
+    readAll,
     readApiKeys,
-    readOne,
+    readPublishedInventory,
     type ScreenRead,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
+import { ApiKeyAccess } from "/src/ui/api-key-access";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Switch } from "/src/ui/controls";
@@ -31,6 +34,7 @@ export function ApiKeyEditScreen(props: {
     readonly api: ManagementApi;
     readonly apiKeyId: number;
 }): JSX.Element {
+    const [inventory, setInventory] = createSignal<AccessInventory | null>(null);
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
 
     const latestKey = createMemo(
@@ -67,7 +71,12 @@ export function ApiKeyEditScreen(props: {
     const read = createScreenRead({
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
-            const keysResult = await readOne(signal, readApiKeys(props.api));
+            const [keysResult, inventoryResult] = await readAll(
+                signal,
+                readApiKeys(props.api),
+                readPublishedInventory(props.api, null),
+            );
+            setInventory(inventoryResult);
 
             setKeys(keysResult.api_keys);
             edit.reportReloaded();
@@ -113,6 +122,7 @@ export function ApiKeyEditScreen(props: {
                     <SettingsCard
                         api={props.api}
                         apiKey={row}
+                        inventory={inventory()}
                         otherEnabledCount={otherEnabledCount()}
                         read={read}
                         onDirtyChange={edit.reportFormDirty}
@@ -135,6 +145,7 @@ export function ApiKeyEditScreen(props: {
 function SettingsCard(props: {
     readonly api: ManagementApi;
     readonly apiKey: ApiKeyResponse;
+    readonly inventory: AccessInventory | null;
     readonly otherEnabledCount: number;
     readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;
@@ -144,14 +155,41 @@ function SettingsCard(props: {
     // them onto the values it sent, because api-keys:update answers `{}` and
     // the write's result is otherwise known only to this form.
     const [baseline, setBaseline] = createSignal(props.apiKey);
-    const [isEnabled, setIsEnabled] = createSignal(props.apiKey.is_enabled);
-    const [name, setName] = createSignal(props.apiKey.name);
-    const [secret, setSecret] = createSignal(props.apiKey.key);
+    const [draft, setDraft] = createSignal(props.apiKey);
+    const name = (): string => draft().name;
+    const secret = (): string => draft().key;
+    const isEnabled = (): boolean => draft().is_enabled;
+    const policy = (): ApiKeyAccessControl => draft().access_control;
+    const setName = (name: string): void => {
+        setDraft((current) => ({
+            ...current,
+            name,
+        }));
+    };
+    const setSecret = (key: string): void => {
+        setDraft((current) => ({
+            ...current,
+            key,
+        }));
+    };
+    const setIsEnabled = (is_enabled: boolean): void => {
+        setDraft((current) => ({
+            ...current,
+            is_enabled,
+        }));
+    };
+    const setPolicy = (access_control: ApiKeyAccessControl): void => {
+        setDraft((current) => ({
+            ...current,
+            access_control,
+        }));
+    };
 
     const isDirty = (): boolean =>
         isEnabled() !== baseline().is_enabled ||
         name() !== baseline().name ||
-        secret() !== baseline().key;
+        secret() !== baseline().key ||
+        !isSamePolicy(policy(), baseline().access_control);
 
     /** Inline error for the name, shown where it was typed. The stored name
      * is non-empty by contract, so an empty value here is the operator's
@@ -165,12 +203,19 @@ function SettingsCard(props: {
     const secretError = (): string | null =>
         secret() === "" ? "A key needs a secret." : bearerSecretError(secret(), "Key");
 
-    const canSave = (): boolean => isDirty() && nameError() === null && isBearerSecret(secret());
+    const canSave = (): boolean => {
+        const inventory = props.inventory;
+        return (
+            isDirty() &&
+            nameError() === null &&
+            isBearerSecret(secret()) &&
+            inventory !== null &&
+            missingReferences(policy(), inventory).length === 0
+        );
+    };
 
     const revert = (): void => {
-        setIsEnabled(baseline().is_enabled);
-        setName(baseline().name);
-        setSecret(baseline().key);
+        setDraft(baseline());
         // Reverting resolves a held row onto the gateway's current version.
         props.read.reload();
     };
@@ -186,6 +231,7 @@ function SettingsCard(props: {
                     name: name(),
                     key: secret(),
                     is_enabled: isEnabled(),
+                    access_control: policy(),
                 }),
             ),
         onSucceeded: () => {
@@ -196,6 +242,7 @@ function SettingsCard(props: {
                 name: name(),
                 key: secret(),
                 is_enabled: isEnabled(),
+                access_control: policy(),
             });
 
             // Both consequences read the row the form opened on: the save
@@ -268,6 +315,14 @@ function SettingsCard(props: {
                     hint="Replacing the secret revokes the old value on save."
                     error={secretError()}
                 />
+                {props.inventory && (
+                    <ApiKeyAccess
+                        policy={policy()}
+                        inventory={props.inventory}
+                        onChange={setPolicy}
+                        isDisabled={form.isSaving()}
+                    />
+                )}
                 <DirtyFormFooter
                     canSave={canSave()}
                     isSaving={form.isSaving()}
@@ -299,7 +354,7 @@ function DangerCard(props: {
     return (
         <ConfirmDeleteCard
             title="Delete this key"
-            description="Deleting revokes the key at once. Clients holding it start getting 401s. Nothing else is removed."
+            description="Deleting revokes the key at once. Clients holding it start getting 401s. Its model access rules are removed; historical accounting remains."
             question={
                 props.isLastEnabled
                     ? `Delete ${props.apiKey.name}? It is the last enabled key — the gateway will serve nothing until another key is turned on.`

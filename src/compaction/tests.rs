@@ -195,6 +195,7 @@ async fn scenario_with_quota_policy(
             name: "acceptance",
             key: API_KEY,
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await
@@ -936,6 +937,37 @@ async fn native_standalone_survives_compact_replay_and_recompaction() {
 
     let requests = assert_count(&scenario, 3);
     assert_eq!(requests[2].line(), "POST /responses/compact");
+
+    // A replay artifact and a bound native window never confer route permission.
+    api_keys::update_api_key(
+        &scenario._database.0,
+        scenario.api_key_id,
+        ApiKeyFields {
+            name: "revoked",
+            key: API_KEY,
+            is_enabled: true,
+            access_control: &crate::access_control::ApiKeyAccessControl {
+                default_access: crate::access_control::AccessDecision::Deny,
+                owner_defaults: Vec::new(),
+                route_overrides: Vec::new(),
+            },
+        },
+    )
+    .await
+    .expect("revoke replay key");
+    for path in [
+        "/api/openai-v1/responses",
+        "/api/openai-v1/responses/compact",
+    ] {
+        let (status, _) = post_openai(
+            &scenario,
+            path,
+            json!({"model": MODEL, "input": replay_input.clone()}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let _requests = assert_count(&scenario, 3);
+    }
 
     drop(scenario);
 }

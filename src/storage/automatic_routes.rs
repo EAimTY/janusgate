@@ -19,8 +19,8 @@ struct Entry {
 ///
 /// Membership hides provider entries even for disabled pools. Each pool exposes the union of
 /// its members' stored models; execution filters enabled, non-vanished candidates separately.
-/// Rebuilding preserves IDs for unchanged targets and permits overlapping prefix renames and
-/// direct-to-pool namespace transfers. Authored aliases remain independent. Conflicts roll back
+/// In-place updates preserve surviving rows and their foreign references, permitting prefix renames
+/// and direct-to-pool namespace transfers. Authored aliases remain independent. Conflicts roll back
 /// the owning inventory, prefix, membership, or deletion mutation without partial exposure.
 ///
 /// # Errors
@@ -103,14 +103,33 @@ pub(super) async fn synchronize(transaction: &mut Transaction) -> Result<(), Err
             });
         }
     }
-    transaction
-        .execute("DELETE FROM model_routes WHERE is_automatic = 1", ())
-        .await?;
+    // Public routing tokens cannot contain `:`. Park surviving names in this transaction-only
+    // namespace so overlapping prefix renames are unique at every statement, without deleting
+    // rows and cascading their route-attached rules. Only departed targets lose their identity.
+    for route in &existing {
+        if entries.iter().any(|entry| entry.target == route.target) {
+            transaction
+                .execute(
+                    "UPDATE model_routes SET public_id = ?1 WHERE id = ?2",
+                    params![format!(":automatic:{}", route.id), route.id],
+                )
+                .await?;
+        } else {
+            transaction
+                .execute("DELETE FROM model_routes WHERE id = ?1", params![route.id])
+                .await?;
+        }
+    }
     for entry in entries {
-        let id = existing
-            .iter()
-            .find(|route| route.target == entry.target)
-            .map(|route| route.id);
+        if let Some(route) = existing.iter().find(|route| route.target == entry.target) {
+            transaction
+                .execute(
+                    "UPDATE model_routes SET public_id = ?1 WHERE id = ?2",
+                    params![entry.public_id, route.id],
+                )
+                .await?;
+            continue;
+        }
         let (model_id, pool_id, upstream_id) = match entry.target {
             ModelRouteTarget::Direct { model_id } => (Some(model_id), None, None),
             ModelRouteTarget::Pool {
@@ -118,14 +137,11 @@ pub(super) async fn synchronize(transaction: &mut Transaction) -> Result<(), Err
                 upstream_id,
             } => (None, Some(pool_id), Some(upstream_id)),
         };
-        transaction
-            .execute(
-                "INSERT INTO model_routes \
-                 (id, public_id, model_id, pool_id, upstream_id, is_automatic) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1)",
-                params![id, entry.public_id, model_id, pool_id, upstream_id],
-            )
-            .await?;
+        transaction.execute(
+            "INSERT INTO model_routes (public_id, model_id, pool_id, upstream_id, is_automatic) \
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![entry.public_id, model_id, pool_id, upstream_id],
+        ).await?;
     }
     Ok(())
 }

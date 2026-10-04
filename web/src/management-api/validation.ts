@@ -1,6 +1,8 @@
 import { ContractViolationError } from "/src/management-api/errors";
 
 import {
+    type AccessDecision,
+    type ApiKeyAccessControl,
     type ApiKeyEnvelope,
     type ApiKeyResponse,
     type ApiLogResponse,
@@ -605,6 +607,89 @@ export function parseQueryUsageResponse(value: unknown): QueryUsageResponse {
 }
 
 /** One gateway API key row: the complete readable state, plaintext secret included. */
+/** Strict permission boundaries mirror the generated contract, including tagged owners. */
+function accessRecord(value: unknown, context: string, fields: ReadonlyArray<string>): object {
+    const record = expectRecord(value, context);
+    for (const field of Object.keys(record)) {
+        if (!fields.includes(field))
+            throw new ContractViolationError(`${context}.${field} is unknown`);
+    }
+    return record;
+}
+
+function parseAccessDecision(value: unknown, context: string): AccessDecision {
+    if (value !== "allow" && value !== "deny")
+        throw new ContractViolationError(`${context} must be allow or deny`);
+    return value;
+}
+
+function parseAccessControl(value: unknown, context: string): ApiKeyAccessControl {
+    const record = accessRecord(value, context, [
+        "default_access",
+        "owner_defaults",
+        "route_overrides",
+    ]);
+    return {
+        default_access: parseAccessDecision(
+            Reflect.get(record, "default_access"),
+            `${context}.default_access`,
+        ),
+        owner_defaults: expectArray(
+            Reflect.get(record, "owner_defaults"),
+            `${context}.owner_defaults`,
+        ).map((value, index) => {
+            const path = `${context}.owner_defaults[${index}]`;
+            const owner = expectRecord(value, path);
+            const type = Reflect.get(owner, "type");
+            if (type === "provider") {
+                accessRecord(owner, path, [
+                    "type",
+                    "provider_id",
+                    "access",
+                ]);
+                return {
+                    type,
+                    provider_id: expectInteger(
+                        Reflect.get(owner, "provider_id"),
+                        `${path}.provider_id`,
+                    ),
+                    access: parseAccessDecision(Reflect.get(owner, "access"), `${path}.access`),
+                };
+            }
+            if (type === "pool") {
+                accessRecord(owner, path, [
+                    "type",
+                    "pool_id",
+                    "access",
+                ]);
+                return {
+                    type,
+                    pool_id: expectInteger(Reflect.get(owner, "pool_id"), `${path}.pool_id`),
+                    access: parseAccessDecision(Reflect.get(owner, "access"), `${path}.access`),
+                };
+            }
+            throw new ContractViolationError(`${path}.type must be provider or pool`);
+        }),
+        route_overrides: expectArray(
+            Reflect.get(record, "route_overrides"),
+            `${context}.route_overrides`,
+        ).map((value, index) => {
+            const path = `${context}.route_overrides[${index}]`;
+            const rule = accessRecord(value, path, [
+                "model_route_id",
+                "access",
+            ]);
+            return {
+                model_route_id: expectInteger(
+                    Reflect.get(rule, "model_route_id"),
+                    `${path}.model_route_id`,
+                ),
+                access: parseAccessDecision(Reflect.get(rule, "access"), `${path}.access`),
+            };
+        }),
+    };
+}
+
 function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
     const record = expectRecord(value, context);
 
@@ -614,6 +699,10 @@ function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
         key: expectString(Reflect.get(record, "key"), `${context}.key`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
         created_at: expectInteger(Reflect.get(record, "created_at"), `${context}.created_at`),
+        access_control: parseAccessControl(
+            Reflect.get(record, "access_control"),
+            `${context}.access_control`,
+        ),
     };
 }
 

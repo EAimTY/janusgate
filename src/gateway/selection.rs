@@ -36,13 +36,18 @@ impl Selection {
     ///
     /// Returns storage or model-not-found failures; empty pools remain available for binding
     /// lookup.
-    pub(super) async fn load(database: &Database, public_id: &str) -> Result<Self, Error> {
+    pub(super) async fn load(
+        database: &Database,
+        public_id: &str,
+        api_key_id: i64,
+    ) -> Result<Self, Error> {
         let not_found = || Error::ModelNotFound {
             model: public_id.into(),
         };
-        let snapshot = storage::route_snapshot::find_route(database, public_id)
-            .await?
-            .ok_or_else(not_found)?;
+        let snapshot =
+            storage::route_snapshot::find_admitted_route(database, public_id, api_key_id)
+                .await?
+                .ok_or_else(not_found)?;
         if !snapshot.route.is_enabled {
             return Err(not_found());
         }
@@ -483,7 +488,7 @@ pub(super) async fn select_compaction(
     preparation: &crate::compaction::history::BoundaryPreparation,
     api_key_id: i64,
 ) -> Result<CompactionSelection, Error> {
-    let mut selection = Selection::load(&context.database, &parsed.ir.model).await?;
+    let mut selection = Selection::load(&context.database, &parsed.ir.model, api_key_id).await?;
     if selection.pool_id().is_none() {
         return Ok(CompactionSelection::direct(selection.first_structural()?));
     }
@@ -520,7 +525,8 @@ pub(super) async fn select_compaction(
             Decision::Wait(waiter) => match waiter.wait().await {
                 WaitOutcome::Bound(lease) => Ownership::Bound(lease),
                 WaitOutcome::Reevaluate => {
-                    selection = Selection::load(&context.database, &parsed.ir.model).await?;
+                    selection =
+                        Selection::load(&context.database, &parsed.ir.model, api_key_id).await?;
                     continue;
                 }
             },
@@ -562,7 +568,7 @@ pub(crate) async fn execute_selection(
 ) -> Result<SelectedAttempt, Error> {
     let ir = parsed.ir;
     let is_client_streaming = parsed.is_streaming;
-    let mut selection = Selection::load(&context.database, &ir.model).await?;
+    let mut selection = Selection::load(&context.database, &ir.model, api_key_id).await?;
     let projector = selection
         .pool_id()
         .map(|_| parsed.affinity.project(&ir.messages));
@@ -596,7 +602,8 @@ pub(crate) async fn execute_selection(
                 Decision::Wait(waiter) => match waiter.wait().await {
                     WaitOutcome::Bound(lease) => Ownership::Bound(lease),
                     WaitOutcome::Reevaluate => {
-                        selection = Selection::load(&context.database, &ir.model).await?;
+                        selection =
+                            Selection::load(&context.database, &ir.model, api_key_id).await?;
                         let Some(pool_id) = selection.pool_id() else {
                             ownership = Ownership::Direct;
                             break;

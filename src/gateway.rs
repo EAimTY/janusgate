@@ -180,9 +180,13 @@ pub(crate) async fn resolve_routing(
     database: &Database,
     public_id: &str,
 ) -> Result<ModelRouting, Error> {
-    selection::Selection::load(database, public_id)
-        .await?
-        .first_structural()
+    selection::Selection::load(
+        database,
+        public_id,
+        crate::test_support::structural_api_key(database).await?,
+    )
+    .await?
+    .first_structural()
 }
 
 /// Selects a compaction target using the already authenticated active producer requirement.

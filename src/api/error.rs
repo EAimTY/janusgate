@@ -273,8 +273,11 @@ impl From<InvalidRequest> for Error {
 }
 
 impl From<StorageError> for Error {
-    fn from(_: StorageError) -> Self {
-        Self::Internal
+    fn from(error: StorageError) -> Self {
+        match error {
+            StorageError::InactiveApiKey { .. } => Self::InvalidApiKey,
+            _ => Self::Internal,
+        }
     }
 }
 
@@ -363,6 +366,7 @@ impl From<&GatewayError> for Error {
             // The provider-failure classification lives once, in `From<ProviderError>`.
             GatewayError::Provider(error) => Self::from(error.clone()),
 
+            GatewayError::Storage(StorageError::InactiveApiKey { .. }) => Self::InvalidApiKey,
             GatewayError::Storage(_) | GatewayError::Internal { .. } => Self::Internal,
         }
     }

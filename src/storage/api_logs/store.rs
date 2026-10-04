@@ -944,6 +944,7 @@ mod tests {
                 name: "service",
                 key: "sk-live",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -1107,6 +1108,7 @@ mod tests {
                 name: "still-works",
                 key: "sk-after",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;

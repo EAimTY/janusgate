@@ -59,16 +59,41 @@ pub(crate) struct RouteSnapshot {
     pub(crate) target: TargetSnapshot,
 }
 
+impl RouteSnapshot {
+    /// Current typed owner in this coherent snapshot; pooled members never affect ownership.
+    pub(crate) fn owner(&self) -> crate::access_control::RouteOwner {
+        match &self.target {
+            TargetSnapshot::Direct { provider, .. } => {
+                crate::access_control::RouteOwner::Provider(provider.id)
+            }
+            TargetSnapshot::Pool { id, .. } => crate::access_control::RouteOwner::Pool(*id),
+        }
+    }
+}
+
 /// Reads one public route and its physical targets without holding a transaction across I/O.
 ///
 /// # Errors
 ///
 /// Returns database failures or malformed stored rows.
-pub(crate) async fn find_route(
+pub(crate) async fn find_admitted_route(
     database: &Database,
     public_id: &str,
+    api_key_id: i64,
 ) -> Result<Option<RouteSnapshot>, Error> {
     let mut transaction = database.transaction().await?;
+    let snapshot = read_admitted_route(&mut transaction, public_id, api_key_id).await?;
+    transaction.commit().await?;
+    Ok(snapshot)
+}
+
+/// Resolves key state, policy, route identity, and owner within the caller's snapshot.
+pub(super) async fn read_admitted_route(
+    transaction: &mut Transaction,
+    public_id: &str,
+    api_key_id: i64,
+) -> Result<Option<RouteSnapshot>, Error> {
+    let policy = super::api_keys::read_enabled_policy(transaction, api_key_id).await?;
     let rows = transaction
         .query(
             "SELECT id, public_id, is_enabled, model_id, pool_id, upstream_id, is_automatic \
@@ -77,13 +102,23 @@ pub(crate) async fn find_route(
         )
         .await?;
     let snapshot = match rows.first() {
-        Some(row) => {
-            Some(read_target(&mut transaction, super::routing::route_from_row(row)?).await?)
-        }
+        Some(row) => Some(read_target(transaction, super::routing::route_from_row(row)?).await?),
         None => None,
     };
-    transaction.commit().await?;
-    Ok(snapshot)
+    Ok(snapshot.filter(|snapshot| {
+        policy.resolve(snapshot.route.id, snapshot.owner())
+            == crate::access_control::AccessDecision::Allow
+    }))
+}
+
+/// Structural fixture read through the same production admission path.
+#[cfg(test)]
+pub(crate) async fn find_route(
+    database: &Database,
+    public_id: &str,
+) -> Result<Option<RouteSnapshot>, Error> {
+    let api_key_id = crate::test_support::structural_api_key(database).await?;
+    find_admitted_route(database, public_id, api_key_id).await
 }
 
 /// Reads a route's target within the caller's coherent snapshot.

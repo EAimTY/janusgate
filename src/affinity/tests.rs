@@ -103,6 +103,7 @@ async fn management_deletion_owns_cache_invalidation_across_caller_cancellation(
             name: "client",
             key: "client-secret",
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await?;

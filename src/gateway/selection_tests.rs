@@ -138,7 +138,7 @@ async fn run(context: &Context) -> Result<SelectedAttempt, Error> {
     execute_selection(
         context,
         ordinary_request(ir),
-        19,
+        fresh_pool_selection_key(&context.database).await?,
         ApiLogEndpointType::OpenaiChatCompletions,
     )
     .await
@@ -214,6 +214,7 @@ async fn compaction_abandonments_finalize_before_the_next_account() -> Result<()
                 name: "compact",
                 key: "gateway-key",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -315,6 +316,7 @@ async fn compaction_abandonments_finalize_before_the_next_account() -> Result<()
                 name: "stage-ledger",
                 key: "stage-ledger-key",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -804,6 +806,7 @@ async fn all_ordinary_surfaces_share_selection_and_actual_account_finalization()
                     name: "router",
                     key: "gateway-key",
                     is_enabled: true,
+                    access_control: &crate::test_support::allow_all_access(),
                 },
             )
             .await?;
@@ -1094,14 +1097,19 @@ async fn exact_model_blocks_and_direct_routes_preserve_their_distinct_contracts(
     )
     .await?;
     let select = |public_id: &str| {
+        let key_database = context.database.clone();
         let mut ir = super::tests::fixture_ir();
         ir.model = public_id.into();
-        execute_selection(
-            &context,
-            ordinary_request(ir),
-            19,
-            ApiLogEndpointType::OpenaiChatCompletions,
-        )
+        let context = &context;
+        async move {
+            execute_selection(
+                context,
+                ordinary_request(ir),
+                fresh_selection_key(&key_database).await?,
+                ApiLogEndpointType::OpenaiChatCompletions,
+            )
+            .await
+        }
     };
     for public_id in ["first-M", "second-M"] {
         let selected = select(public_id).await?;
@@ -1175,7 +1183,7 @@ async fn exact_model_blocks_and_direct_routes_preserve_their_distinct_contracts(
     let selected = execute_selection(
         &context,
         ordinary_request(ir),
-        19,
+        fresh_selection_key(&context.database).await?,
         ApiLogEndpointType::OpenaiChatCompletions,
     )
     .await?;
@@ -1236,6 +1244,7 @@ async fn accepted_headers_bind_through_body_failure_and_quota() -> Result<(), Bo
             name: "binding",
             key: "binding-key",
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await?;
@@ -1367,6 +1376,7 @@ async fn released_follower_reloads_its_route_target() -> Result<(), Box<dyn StdE
             name: "follower",
             key: "follower-key",
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await?;
@@ -1540,6 +1550,7 @@ async fn failed_quota_reads_preserve_blocks_and_allow_unrestricted_accounts()
                 name: "optional-quota",
                 key: "optional-quota-key",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -1685,6 +1696,7 @@ async fn fresh_followers_wait_for_account_commit_and_generate_independently()
             name: "concurrent",
             key: "concurrent-key",
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await?;
@@ -1860,6 +1872,7 @@ async fn priority_swaps_preserve_history_and_redirect_fresh_requests()
             name: "mutation",
             key: "mutation-key",
             is_enabled: true,
+            access_control: &crate::test_support::allow_all_access(),
         },
     )
     .await?;
@@ -2334,7 +2347,7 @@ async fn discovered_models_dispatch_without_pool_membership_or_authored_aliases(
         let selected = execute_selection(
             &context,
             ordinary_request(ir),
-            19,
+            fresh_selection_key(&context.database).await?,
             ApiLogEndpointType::OpenaiChatCompletions,
         )
         .await?;
@@ -2357,6 +2370,338 @@ async fn discovered_models_dispatch_without_pool_membership_or_authored_aliases(
             request.get("model").and_then(serde_json::Value::as_str),
             Some("new-model")
         );
+    }
+    Ok(())
+}
+
+/// A real client for structural fixtures that also exercise Direct routes.
+async fn fresh_selection_key(database: &Database) -> Result<i64, Error> {
+    Ok(storage::api_keys::insert_api_key(
+        database,
+        &storage::api_keys::ApiKeyFields {
+            name: "Fresh selection",
+            key: &format!("fresh-{}", rand::random::<u64>()),
+            is_enabled: true,
+            access_control: &test_support::allow_all_access(),
+        },
+    )
+    .await?
+    .id)
+}
+
+/// A real, independently authenticated client for fixtures asserting fresh selection behavior.
+async fn fresh_pool_selection_key(database: &Database) -> Result<i64, Error> {
+    // Every eligible pool member remains usable even when its Direct-owner default denies.
+    let owner_defaults = storage::providers::list_providers(database)
+        .await?
+        .into_iter()
+        .map(
+            |provider| crate::access_control::ApiKeyOwnerDefault::Provider {
+                provider_id: provider.id,
+                access: crate::access_control::AccessDecision::Deny,
+            },
+        )
+        .chain(
+            storage::routing::list_pools(database)
+                .await?
+                .into_iter()
+                .map(|pool| crate::access_control::ApiKeyOwnerDefault::Pool {
+                    pool_id: pool.id,
+                    access: crate::access_control::AccessDecision::Allow,
+                }),
+        )
+        .collect();
+    let policy = crate::access_control::ApiKeyAccessControl {
+        default_access: crate::access_control::AccessDecision::Deny,
+        owner_defaults,
+        route_overrides: Vec::new(),
+    };
+    Ok(storage::api_keys::insert_api_key(
+        database,
+        &storage::api_keys::ApiKeyFields {
+            name: "Fresh selection",
+            key: &format!("fresh-{}", rand::random::<u64>()),
+            is_enabled: true,
+            access_control: &policy,
+        },
+    )
+    .await?
+    .id)
+}
+
+/// Affinity reevaluation reauthorizes policy/key state before any account work, while a bound
+/// selection deliberately retains its admission until its existing operation finishes.
+///
+/// # Panics
+/// Panics if waiting requests dispatch after revocation, retarget denial, or key removal.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "selection fixtures serialize global configuration"
+)]
+async fn released_affinity_waiters_reauthorize_coherent_admission() -> Result<(), Box<dyn StdError>>
+{
+    let _configuration = test_support::configuration_lock();
+    for change in 0..4 {
+        let (context, _database, _directory, servers, targets, route_id) =
+            pool(vec![MockAction::Close]).await?;
+        let pool_id = storage::routing::list_pools(&context.database)
+            .await?
+            .first()
+            .map(|pool| pool.id)
+            .ok_or("fixture pool")?;
+        let policy = crate::access_control::ApiKeyAccessControl {
+            default_access: crate::access_control::AccessDecision::Deny,
+            owner_defaults: vec![crate::access_control::ApiKeyOwnerDefault::Pool {
+                pool_id,
+                access: crate::access_control::AccessDecision::Allow,
+            }],
+            route_overrides: Vec::new(),
+        };
+        let key = storage::api_keys::insert_api_key(
+            &context.database,
+            &storage::api_keys::ApiKeyFields {
+                name: "Waiter",
+                key: "waiter-key",
+                is_enabled: true,
+                access_control: &policy,
+            },
+        )
+        .await?;
+        let mut ir = super::tests::fixture_ir();
+        ir.model = "public-model".into();
+        let request = ordinary_request(ir);
+        let evidence = request.affinity.project(&request.ir.messages).evidence();
+        let namespace = crate::affinity::Namespace {
+            api_key_id: key.id,
+            pool_id,
+        };
+        #[expect(
+            clippy::panic,
+            reason = "the first fixture request reserves a fresh lease"
+        )]
+        let crate::affinity::Decision::Fresh(leader) =
+            context.affinity_cache.acquire(namespace, &evidence)
+        else {
+            panic!("fresh fixture lease");
+        };
+        let task_context = context.clone();
+        let follower = tokio::spawn(async move {
+            execute_selection(
+                &task_context,
+                request,
+                key.id,
+                ApiLogEndpointType::OpenaiChatCompletions,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !context.affinity_cache.has_waiting_request(namespace) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        match change {
+            0 => {
+                storage::api_keys::update_api_key(
+                    &context.database,
+                    key.id,
+                    storage::api_keys::ApiKeyFields {
+                        name: "Waiter",
+                        key: "waiter-key",
+                        is_enabled: true,
+                        access_control: &crate::access_control::ApiKeyAccessControl {
+                            default_access: crate::access_control::AccessDecision::Deny,
+                            owner_defaults: Vec::new(),
+                            route_overrides: Vec::new(),
+                        },
+                    },
+                )
+                .await?
+            }
+            1 => {
+                storage::api_keys::update_api_key(
+                    &context.database,
+                    key.id,
+                    storage::api_keys::ApiKeyFields {
+                        name: "Waiter",
+                        key: "waiter-key",
+                        is_enabled: false,
+                        access_control: &policy,
+                    },
+                )
+                .await?
+            }
+            2 => {
+                storage::api_keys::delete_api_key(&context.database, key.id).await?;
+            }
+            _ => {
+                let model_id = targets
+                    .first()
+                    .map(|(_, model_id)| *model_id)
+                    .ok_or("fixture target")?;
+                storage::routing::update_route(
+                    &context.database,
+                    route_id,
+                    "public-model",
+                    true,
+                    &ModelRouteTarget::Direct { model_id },
+                )
+                .await?;
+            }
+        }
+        drop(leader);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), follower).await??;
+        if change == 1 || change == 2 {
+            assert!(matches!(
+                result,
+                Err(Error::Storage(StorageError::InactiveApiKey { .. }))
+            ));
+        } else {
+            assert!(matches!(result, Err(Error::ModelNotFound { .. })));
+        }
+        assert!(rows(&context).await?.is_empty());
+        for (_, recorded) in servers {
+            #[expect(clippy::expect_used, reason = "the request recorder is unpoisoned")]
+            let has_requests = !recorded.lock().expect("requests").is_empty();
+            assert!(!has_requests);
+        }
+    }
+    Ok(())
+}
+
+/// Pool access includes members added after policy authoring; once dispatch begins, its admitted
+/// priority scan can finish across accounts even when later admissions see revoked permission.
+///
+/// # Errors
+/// Returns fixture, transport, storage, or task failures.
+///
+/// # Panics
+/// Panics if revocation interrupts admitted fallback or later requests reach an account.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "selection configuration fixtures serialize reloads"
+)]
+async fn admitted_pool_fallback_survives_revocation_and_includes_future_members()
+-> Result<(), Box<dyn StdError>> {
+    let _configuration = test_support::configuration_lock();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let MockAction::Respond(rejection) = exhausted() else {
+        return Err("complete rejection fixture".into());
+    };
+    let (context, _database, _directory, servers, targets, _) = pool(vec![
+        MockAction::RespondAfterSignal {
+            response: rejection,
+            release: Arc::clone(&release),
+        },
+        MockAction::respond_json(
+            serde_json::json!({
+                "choices":[{"index":0,"message":{"role":"assistant","content":"accepted"},
+                    "finish_reason":"stop"}]
+            })
+            .to_string(),
+        ),
+    ])
+    .await?;
+    let pool_id = storage::routing::list_pools(&context.database)
+        .await?
+        .first()
+        .map(|pool| pool.id)
+        .ok_or("fixture pool")?;
+    let members = targets
+        .iter()
+        .zip(0_u32..)
+        .map(|((provider_id, _), priority)| ProviderPoolMember {
+            provider_id: *provider_id,
+            priority,
+        })
+        .collect::<Vec<_>>();
+    let first = members.first().cloned().ok_or("first member")?;
+    storage::routing::update_pool(
+        &context.database,
+        pool_id,
+        "pool",
+        "pool-pool-",
+        true,
+        &[first],
+    )
+    .await?;
+    let key_id = fresh_pool_selection_key(&context.database).await?;
+    storage::routing::update_pool(
+        &context.database,
+        pool_id,
+        "pool",
+        "pool-pool-",
+        true,
+        &members,
+    )
+    .await?;
+    let execution_context = context.clone();
+    let running = tokio::spawn(async move {
+        let mut ir = super::tests::fixture_ir();
+        ir.model = "public-model".into();
+        execute_selection(
+            &execution_context,
+            ordinary_request(ir),
+            key_id,
+            ApiLogEndpointType::OpenaiChatCompletions,
+        )
+        .await
+    });
+    let (_, requests) = servers.first().ok_or("first transport")?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            #[expect(clippy::expect_used, reason = "the recorder lock is not poisoned")]
+            let has_started = !requests.lock().expect("recorder").is_empty();
+            if has_started {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let key = storage::api_keys::find_api_key_by_id(&context.database, key_id)
+        .await?
+        .ok_or("admitted key")?;
+    storage::api_keys::update_api_key(
+        &context.database,
+        key_id,
+        storage::api_keys::ApiKeyFields {
+            name: &key.name,
+            key: &key.key,
+            is_enabled: true,
+            access_control: &crate::access_control::ApiKeyAccessControl {
+                default_access: crate::access_control::AccessDecision::Deny,
+                owner_defaults: Vec::new(),
+                route_overrides: Vec::new(),
+            },
+        },
+    )
+    .await?;
+    release.notify_one();
+    let accepted = running.await??;
+    assert!(matches!(accepted.outcome, AttemptOutcome::Accepted { .. }));
+    assert_eq!(
+        targets.get(1).map(|(provider_id, _)| *provider_id),
+        Some(accepted.routing.provider.id)
+    );
+    let mut ir = super::tests::fixture_ir();
+    ir.model = "public-model".into();
+    assert!(matches!(
+        execute_selection(
+            &context,
+            ordinary_request(ir),
+            key_id,
+            ApiLogEndpointType::OpenaiChatCompletions
+        )
+        .await,
+        Err(Error::ModelNotFound { .. })
+    ));
+    for (_, requests) in &servers {
+        #[expect(clippy::expect_used, reason = "the recorder lock is not poisoned")]
+        let count = requests.lock().expect("recorder").len();
+        assert_eq!(count, 1);
     }
     Ok(())
 }

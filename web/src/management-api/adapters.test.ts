@@ -300,6 +300,11 @@ const apiKey: ApiKeyResponse = {
     key: "sk-live",
     is_enabled: true,
     created_at: 1_700_000_000_000_000,
+    access_control: {
+        default_access: "deny",
+        owner_defaults: [],
+        route_overrides: [],
+    },
 };
 
 describe("toUpdateApiKeyRequest", () => {
@@ -309,6 +314,11 @@ describe("toUpdateApiKeyRequest", () => {
             name: "service-a",
             key: "sk-live",
             is_enabled: true,
+            access_control: {
+                default_access: "deny",
+                owner_defaults: [],
+                route_overrides: [],
+            },
         });
     });
 
@@ -323,6 +333,11 @@ describe("toUpdateApiKeyRequest", () => {
             name: "renamed",
             key: "sk-live",
             is_enabled: false,
+            access_control: {
+                default_access: "deny",
+                owner_defaults: [],
+                route_overrides: [],
+            },
         });
     });
 

@@ -70,6 +70,7 @@ async fn physical_inventory_exposes_models_and_preserves_aliases() -> Result<(),
         2
     );
     assert_eq!(list_routes(&database).await?.len(), 4);
+    let pinned = pin_publication(&database).await?;
     let routes = list_routes(&database)
         .await?
         .into_iter()
@@ -98,7 +99,11 @@ async fn physical_inventory_exposes_models_and_preserves_aliases() -> Result<(),
             .collect::<Vec<_>>(),
         routes
     );
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(
         listed
             .iter()
@@ -107,7 +112,11 @@ async fn physical_inventory_exposes_models_and_preserves_aliases() -> Result<(),
         ["A-M", "B-M", "B-N", "M", "other-M"]
     );
     crate::storage::models::apply_discovered_models(&database, a, &[]).await?;
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(
         listed
             .iter()
@@ -137,6 +146,10 @@ async fn physical_inventory_exposes_models_and_preserves_aliases() -> Result<(),
             .collect::<Vec<_>>(),
         routes
     );
+    assert_eq!(
+        crate::storage::api_keys::find_api_key_by_id(&database, pinned.id).await?,
+        Some(pinned)
+    );
     let restored = crate::gateway::resolve_routing(&database, "M").await?;
     assert_eq!(restored.model_route_id, direct_route);
     assert_eq!(
@@ -145,7 +158,11 @@ async fn physical_inventory_exposes_models_and_preserves_aliases() -> Result<(),
         },
         *a_target
     );
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(
         listed
             .iter()
@@ -203,9 +220,12 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
     )
     .await?;
     assert_eq!(
-        crate::storage::models::list_enabled_models_with_owner(&database)
-            .await?
-            .len(),
+        crate::storage::models::list_enabled_models_with_owner(
+            &database,
+            crate::test_support::structural_api_key(&database).await?
+        )
+        .await?
+        .len(),
         2
     );
     let pool = create_pool(
@@ -257,7 +277,11 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         &ModelRouteTarget::Direct { model_id },
     )
     .await?;
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(
         listed
             .iter()
@@ -290,7 +314,11 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
             ],
         )
         .await?;
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     let pooled_support = listed
         .iter()
         .find(|route| route.public_id == "coding-M")
@@ -316,7 +344,11 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
             crate::database::params![a],
         )
         .await?;
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(listed.len(), 3);
     let pooled_support = listed
         .iter()
@@ -330,7 +362,11 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
             crate::database::params![a],
         )
         .await?;
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(listed.len(), 2);
     #[expect(clippy::unwrap_used, reason = "B remains a structural candidate")]
     let remaining_levels = listed
@@ -350,9 +386,12 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         )
         .await?;
     assert!(
-        crate::storage::models::list_enabled_models_with_owner(&database)
-            .await?
-            .is_empty()
+        crate::storage::models::list_enabled_models_with_owner(
+            &database,
+            crate::test_support::structural_api_key(&database).await?
+        )
+        .await?
+        .is_empty()
     );
     assert_eq!(list_routes(&database).await?.len(), 4);
     Ok(())
@@ -710,7 +749,11 @@ async fn discovery_automatically_exposes_prefixed_direct_models() -> Result<(), 
             .await?
             .is_some()
     );
-    let listed = crate::storage::models::list_enabled_models_with_owner(&database).await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
     assert_eq!(
         listed
             .iter()
@@ -772,6 +815,7 @@ async fn prefix_changes_preserve_identity_and_roll_back_conflicts() -> Result<()
         ],
     )
     .await?;
+    let pinned = pin_publication(&database).await?;
     let before = list_routes(&database).await?;
     for route in &before {
         assert!(
@@ -794,6 +838,10 @@ async fn prefix_changes_preserve_identity_and_roll_back_conflicts() -> Result<()
         },
     )
     .await?;
+    assert_eq!(
+        crate::storage::api_keys::find_api_key_by_id(&database, pinned.id).await?,
+        Some(pinned)
+    );
     let after = list_routes(&database).await?;
     for original in &before {
         let renamed = after.iter().find(|route| route.id == original.id);
@@ -860,6 +908,7 @@ async fn pool_exposure_tracks_member_inventory_and_suppresses_member_prefixes()
         )
         .await?;
     }
+    let pinned = pin_publication(&database).await?;
     let pool_id = create_pool(
         &database,
         "coding",
@@ -877,6 +926,10 @@ async fn pool_exposure_tracks_member_inventory_and_suppresses_member_prefixes()
         ],
     )
     .await?;
+    let surviving = crate::storage::api_keys::find_api_key_by_id(&database, pinned.id)
+        .await?
+        .ok_or("publication key")?;
+    assert!(surviving.access_control.route_overrides.is_empty());
     crate::storage::models::apply_discovered_models(
         &database,
         b,
@@ -904,6 +957,29 @@ async fn pool_exposure_tracks_member_inventory_and_suppresses_member_prefixes()
         .await?
         .expect("pooled model");
     let route_id = route.route.id;
+    let pool_policy = crate::access_control::ApiKeyAccessControl {
+        default_access: crate::access_control::AccessDecision::Allow,
+        owner_defaults: vec![crate::access_control::ApiKeyOwnerDefault::Pool {
+            pool_id,
+            access: crate::access_control::AccessDecision::Allow,
+        }],
+        route_overrides: vec![crate::access_control::ApiKeyRouteOverride {
+            model_route_id: route_id,
+            access: crate::access_control::AccessDecision::Deny,
+        }],
+    };
+    crate::storage::api_keys::update_api_key(
+        &database,
+        pinned.id,
+        crate::storage::api_keys::ApiKeyFields {
+            name: &pinned.name,
+            key: &pinned.key,
+            is_enabled: true,
+            access_control: &pool_policy,
+        },
+    )
+    .await?;
+
     #[expect(
         clippy::panic,
         reason = "the automatic pool entry must target its pool"
@@ -942,6 +1018,12 @@ async fn pool_exposure_tracks_member_inventory_and_suppresses_member_prefixes()
             .await?
             .map(|route| route.route.id),
         Some(route_id)
+    );
+    assert_eq!(
+        crate::storage::api_keys::find_api_key_by_id(&database, pinned.id)
+            .await?
+            .map(|key| key.access_control),
+        Some(pool_policy)
     );
     let alias = create_route(
         &database,
@@ -1008,4 +1090,32 @@ async fn pool_exposure_tracks_member_inventory_and_suppresses_member_prefixes()
             .is_some()
     );
     Ok(())
+}
+
+/// Pins the current publication with explicit denial for lifecycle preservation assertions.
+async fn pin_publication(
+    database: &crate::database::Database,
+) -> Result<crate::storage::api_keys::ApiKey, Box<dyn StdError>> {
+    let policy = crate::access_control::ApiKeyAccessControl {
+        default_access: crate::access_control::AccessDecision::Allow,
+        owner_defaults: Vec::new(),
+        route_overrides: list_routes(database)
+            .await?
+            .into_iter()
+            .map(|route| crate::access_control::ApiKeyRouteOverride {
+                model_route_id: route.id,
+                access: crate::access_control::AccessDecision::Deny,
+            })
+            .collect(),
+    };
+    Ok(crate::storage::api_keys::insert_api_key(
+        database,
+        &crate::storage::api_keys::ApiKeyFields {
+            name: "Pinned publication",
+            key: "publication-secret",
+            is_enabled: true,
+            access_control: &policy,
+        },
+    )
+    .await?)
 }

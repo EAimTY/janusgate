@@ -78,17 +78,22 @@ struct ModelEntry {
 /// Handles `GET /models`: the native `{"models": [...]}` shape over the same
 /// effective-model set every surface lists, ignoring pagination parameters and returning
 /// the full list in one page with no token.
-async fn models(State(context): State<Context>) -> Response {
-    serving::model_list_response::<super::Surface, _, _>(&context.database, |listed| ModelList {
-        models: listed
-            .into_iter()
-            .map(|model| ModelEntry {
-                name: format!("models/{}", model.public_id),
-                input_token_limit: model.max_input_tokens,
-                output_token_limit: model.max_output_tokens,
-                compaction: model.compaction,
-            })
-            .collect(),
+async fn models(
+    State(context): State<Context>,
+    api_key: serving::AuthenticatedApiKeyRow,
+) -> Response {
+    serving::model_list_response::<super::Surface, _, _>(&context.database, api_key.0, |listed| {
+        ModelList {
+            models: listed
+                .into_iter()
+                .map(|model| ModelEntry {
+                    name: format!("models/{}", model.public_id),
+                    input_token_limit: model.max_input_tokens,
+                    output_token_limit: model.max_output_tokens,
+                    compaction: model.compaction,
+                })
+                .collect(),
+        }
     })
     .await
 }

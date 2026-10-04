@@ -122,6 +122,7 @@ type ApiKeyEdits = {
     readonly name?: string;
     readonly key?: string;
     readonly is_enabled?: boolean;
+    readonly access_control?: ApiKeyResponse["access_control"];
 };
 
 /**
@@ -137,6 +138,7 @@ export function toUpdateApiKeyRequest(
         name: edits.name ?? apiKey.name,
         key: edits.key ?? apiKey.key,
         is_enabled: edits.is_enabled ?? apiKey.is_enabled,
+        access_control: edits.access_control ?? apiKey.access_control,
     };
 }
 

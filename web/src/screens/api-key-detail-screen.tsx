@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal } from "solid-js";
+import type { AccessInventory } from "/src/access-control";
 import { formatTimestamp } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
@@ -8,11 +9,13 @@ import {
     createPinnedRow,
     createScreenRead,
     isSameApiKeyRow,
+    readAll,
     readApiKeys,
-    readOne,
+    readPublishedInventory,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
+import { ApiKeyAccess } from "/src/ui/api-key-access";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { AppLink } from "/src/ui/app-link";
 import { proseLinkClass } from "/src/ui/attributes";
@@ -24,17 +27,23 @@ import { RowNotFound } from "./row-not-found";
 /**
  * One serving key's page: its secret, its facts, and what serving clients
  * did with it. Nothing is changed here — the edit page owns every change.
- * Deleting a key revokes it; unlike a provider, nothing cascades.
+ * Deleting a key revokes it and removes its model access rules; accounting remains.
  */
 export function ApiKeyDetailScreen(props: {
     readonly api: ManagementApi;
     readonly apiKeyId: number;
 }): JSX.Element {
+    const [inventory, setInventory] = createSignal<AccessInventory | null>(null);
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
 
     const read = createScreenRead({
         load: async (signal) => {
-            const keysResult = await readOne(signal, readApiKeys(props.api));
+            const [keysResult, inventoryResult] = await readAll(
+                signal,
+                readApiKeys(props.api),
+                readPublishedInventory(props.api, null),
+            );
+            setInventory(inventoryResult);
 
             setKeys(keysResult.api_keys);
         },
@@ -96,8 +105,8 @@ export function ApiKeyDetailScreen(props: {
                             is aimed at live on the Overview's Endpoints card —
                             the fact the management API never states. */}
                         <p class="mt-3 text-[12.5px] text-ink-faint">
-                            Point your client at an endpoint — every surface serves every model; the
-                            URLs are on the{" "}
+                            Point your client at an endpoint — every surface serves permitted public
+                            entries; the URLs are on the{" "}
                             <AppLink
                                 href={hrefs.home()}
                                 class={proseLinkClass}
@@ -131,6 +140,26 @@ export function ApiKeyDetailScreen(props: {
                         </FactList>
                     </Card>
 
+                    {inventory() && (
+                        <Card>
+                            <ApiKeyAccess
+                                policy={row.access_control}
+                                inventory={
+                                    inventory() ?? {
+                                        providers: [],
+                                        models: [],
+                                        pools: [],
+                                        modelRoutes: [],
+                                    }
+                                }
+                            />
+                            <div class="mt-4">
+                                <ButtonLink href={hrefs.apiKeyEdit(row.id)}>
+                                    Edit API key
+                                </ButtonLink>
+                            </div>
+                        </Card>
+                    )}
                     <EntityUsageCard
                         api={props.api}
                         filter={{

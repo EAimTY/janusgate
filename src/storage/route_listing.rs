@@ -22,8 +22,12 @@ use crate::{
 /// # Panics
 ///
 /// Panics if an enforced account or pool foreign reference is missing within the snapshot.
-pub(super) async fn list_public_models(database: &Database) -> Result<Vec<EnabledModel>, Error> {
+pub(super) async fn list_public_models(
+    database: &Database,
+    api_key_id: i64,
+) -> Result<Vec<EnabledModel>, Error> {
     let mut transaction = database.transaction().await?;
+    let policy = super::api_keys::read_enabled_policy(&mut transaction, api_key_id).await?;
     let rows = transaction
         .query(
             "SELECT id, public_id, is_enabled, model_id, pool_id, upstream_id, is_automatic \
@@ -38,6 +42,11 @@ pub(super) async fn list_public_models(database: &Database) -> Result<Vec<Enable
             super::routing::route_from_row(row)?,
         )
         .await?;
+        if policy.resolve(snapshot.route.id, snapshot.owner())
+            == crate::access_control::AccessDecision::Deny
+        {
+            continue;
+        }
         let entry = match &snapshot.target {
             super::route_snapshot::TargetSnapshot::Direct { provider, model } => {
                 model.is_effectively_enabled(provider.is_enabled).then(|| {

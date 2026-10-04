@@ -475,13 +475,17 @@ impl Error {
                 ProviderError::Internal { .. } => ErrorCode::Internal,
             },
             Self::Storage(error) => match error {
-                StorageError::NotFound { .. } => ErrorCode::NotFound,
+                StorageError::NotFound { .. } | StorageError::MissingAccessReference { .. } => {
+                    ErrorCode::NotFound
+                }
+                StorageError::DuplicateAccessReference { .. } => ErrorCode::InvalidRequest,
 
                 StorageError::Conflict { .. } | StorageError::Constraint { .. } => {
                     ErrorCode::Conflict
                 }
 
-                StorageError::Busy { .. }
+                StorageError::InactiveApiKey { .. }
+                | StorageError::Busy { .. }
                 | StorageError::Drift { .. }
                 | StorageError::Database(_) => ErrorCode::Internal,
             },

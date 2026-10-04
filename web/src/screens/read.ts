@@ -10,6 +10,7 @@
  * the action's diagnosis a re-read never retried.
  */
 import { type Accessor, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { isSamePolicy } from "/src/access-control";
 import { registerDirtyForm } from "/src/dirty-form-registry";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
@@ -748,5 +749,12 @@ export function isSameModelRow(previous: ModelResponse, fresh: ModelResponse): b
 
 /** Whether a fresh read answers the same serving-key row, content and all. */
 export function isSameApiKeyRow(previous: ApiKeyResponse, fresh: ApiKeyResponse): boolean {
-    return isSameRowFields(previous, fresh);
+    return (
+        previous.id === fresh.id &&
+        previous.name === fresh.name &&
+        previous.key === fresh.key &&
+        previous.is_enabled === fresh.is_enabled &&
+        previous.created_at === fresh.created_at &&
+        isSamePolicy(previous.access_control, fresh.access_control)
+    );
 }

@@ -12,6 +12,7 @@ use deref_once_lock::OnceLock;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::{ffi::OsString, path::PathBuf};
 
+mod access_control;
 mod accounting;
 mod affinity;
 mod api;

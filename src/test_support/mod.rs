@@ -616,3 +616,34 @@ pub(crate) async fn insert_definition(
     .await
     .unwrap_or_else(|error| panic!("fixture definition inserts: {error}"))
 }
+
+/// Explicit broad-access policy for fixtures testing behavior other than permission admission.
+pub(crate) fn allow_all_access() -> crate::access_control::ApiKeyAccessControl {
+    crate::access_control::ApiKeyAccessControl {
+        default_access: crate::access_control::AccessDecision::Allow,
+        owner_defaults: Vec::new(),
+        route_overrides: Vec::new(),
+    }
+}
+
+/// A real enabled fixture key for structural route/listing tests, using production admission.
+pub(crate) async fn structural_api_key(
+    database: &crate::database::Database,
+) -> Result<i64, crate::storage::Error> {
+    if let Some(key) =
+        crate::storage::api_keys::find_api_key_by_key(database, "structural-fixture-key").await?
+    {
+        return Ok(key.id);
+    }
+    Ok(crate::storage::api_keys::insert_api_key(
+        database,
+        &crate::storage::api_keys::ApiKeyFields {
+            name: "Structural fixture",
+            key: "structural-fixture-key",
+            is_enabled: true,
+            access_control: &allow_all_access(),
+        },
+    )
+    .await?
+    .id)
+}

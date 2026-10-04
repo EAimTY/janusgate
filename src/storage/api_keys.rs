@@ -1,274 +1,455 @@
-//! Gateway API keys: the database-managed secrets authorizing outward `/api/*` traffic.
-//!
-//! Each row carries its plaintext key — like upstream credentials, the gateway stores the secret
-//! verbatim and performs no hashing — plus a non-unique human label, a serving switch, and the
-//! creation timestamp in database-clock microseconds. Key values are unique: a duplicate insert or
-//! rewrite is a conflict. Names are deliberately not unique and carry no routing meaning.
-//!
-//! The outward authentication middleware reads only enabled secrets through
-//! [`list_enabled_api_key_secrets`]; the management surface owns the full CRUD below. Storage
-//! failures classify through the shared storage error domain ([`Error`]): a missing row is a 404,
-//! a taken key a 409, and a constraint backstop the generic collision message. Messages never
-//! carry the secret itself — only the row id — so a conflict body stays safe to render and log.
+//! Complete serving-key policies and atomic, retryable full-state writes.
 
 use super::Error;
 use crate::{
-    database::{Database, params},
+    access_control::{
+        AccessDecision, ApiKeyAccessControl, ApiKeyOwnerDefault, ApiKeyRouteOverride, RouteOwner,
+    },
+    database::{Database, Transaction, params},
     unix_time,
 };
+use std::collections::{BTreeMap, HashSet};
 
-/// Column order of API key selects, consumed positionally by [`api_key_from_row`].
-const API_KEY_COLUMNS: &str = "id, name, key, is_enabled, created_at";
+/// Column order shared by complete-key reads.
+const API_KEY_COLUMNS: &str = "id, name, key, is_enabled, created_at, default_access";
 
-/// A stored gateway API key.
+/// A stored key and its complete authored policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApiKey {
-    /// Row identifier; every management reference to the key goes through it.
+    /// Stable key identity.
     pub(crate) id: i64,
-
-    /// Human label; not unique and never validated beyond non-emptiness.
+    /// Nonunique human label.
     pub(crate) name: String,
-
-    /// Plaintext shared secret presented as `Authorization: Bearer <key>`.
+    /// Plaintext serving secret; never included in failures.
     pub(crate) key: String,
-
-    /// Whether the key authorizes traffic.
+    /// Global serving switch.
     pub(crate) is_enabled: bool,
-
-    /// Creation timestamp in UTC microseconds.
+    /// Creation time in UTC microseconds.
     pub(crate) created_at: i64,
+    /// Complete policy with canonical sparse arrays.
+    pub(crate) access_control: ApiKeyAccessControl,
 }
 
-/// The complete field state of one API key row, the single shape both `api-keys:create` and
-/// `api-keys:update` write (README §7.0 rule 3): the caller states the label, the secret, and the
-/// serving state, and the write applies every field verbatim — the row identity and creation
-/// timestamp are the only server-assigned parts.
+/// Complete desired writable state for both create and update.
 #[derive(Debug, Clone)]
 pub(crate) struct ApiKeyFields<'a> {
-    /// Human label; must be non-empty.
+    /// Human label validated at the write boundary.
     pub(crate) name: &'a str,
-
-    /// Plaintext shared secret; must be non-empty and not held by another row.
+    /// Unique serving secret validated at the write boundary.
     pub(crate) key: &'a str,
-
-    /// Whether the key authorizes traffic.
+    /// Global serving switch.
     pub(crate) is_enabled: bool,
+    /// Complete replacement policy; all references are checked inside the write transaction.
+    pub(crate) access_control: &'a ApiKeyAccessControl,
 }
 
-/// The wire wording for an unknown API key id, owned once here as the single source both surfaces
-/// render from: the transactional write constructs its storage rejection with it, and the
-/// management error domain's `ApiKeyNotFound` variant renders its display through it — a wording
-/// edit lands here and reaches every 404 identically.
+/// A rejected rule identity with its collection, independent of bearer secrets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum AccessReference {
+    /// Provider default.
+    Provider(i64),
+    /// Pool default.
+    Pool(i64),
+    /// Public-route override.
+    Route(i64),
+}
+
+/// Shared wire wording for an unknown key.
 pub(crate) fn api_key_not_found_message(id: i64) -> String {
     format!("API key {id} does not exist")
 }
 
-/// The wire wording for a taken key value, owned once here as the single source both surfaces
-/// render from: the checked rewrite constructs its storage rejection with it, and the management
-/// error domain's `ApiKeyTaken` variant renders its display through it. The value itself is never
-/// named: it is a bearer secret and must stay out of rendered bodies and log records.
+/// Shared wire wording for a taken secret, without exposing its value.
 pub(crate) fn api_key_taken_message() -> String {
-    "API key is already taken".to_string()
+    "API key is already taken".into()
 }
 
-/// Lists every stored API key, ordered by row id.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or a row is malformed.
+/// Lists complete keys using one transaction and three batched rule reads.
 pub(crate) async fn list_api_keys(database: &Database) -> Result<Vec<ApiKey>, Error> {
-    let sql = format!("SELECT {API_KEY_COLUMNS} FROM api_keys ORDER BY id");
-
-    let rows = database.query(sql, ()).await?;
-
-    rows.iter().map(api_key_from_row).collect()
+    read_keys(database, "", None).await
 }
 
-/// Fetches one API key by its secret value, for creation-time taken checks.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or the row is malformed.
+/// Fetches a complete key by secret in one coherent transaction.
+#[cfg(test)]
 pub(crate) async fn find_api_key_by_key(
     database: &Database,
     key: &str,
 ) -> Result<Option<ApiKey>, Error> {
-    let rows = database
-        .query(
-            format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE key = ?1"),
-            params![key],
-        )
-        .await?;
-
-    rows.first().map(api_key_from_row).transpose()
+    Ok(read_keys(
+        database,
+        "WHERE key = ?1",
+        Some(crate::database::Value::Text(key.into())),
+    )
+    .await?
+    .pop())
 }
 
-/// Fetches one API key by id.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or the row is malformed.
+/// Fetches a complete key by identity in one coherent transaction.
+#[cfg(test)]
 pub(crate) async fn find_api_key_by_id(
     database: &Database,
-    api_key_id: i64,
+    id: i64,
 ) -> Result<Option<ApiKey>, Error> {
-    let rows = database
-        .query(
-            format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE id = ?1"),
-            params![api_key_id],
-        )
-        .await?;
-
-    rows.first().map(api_key_from_row).transpose()
+    Ok(read_keys(
+        database,
+        "WHERE id = ?1",
+        Some(crate::database::Value::Integer(id)),
+    )
+    .await?
+    .pop())
 }
 
-/// Lists the identities and secrets of every enabled API key, for the outward authentication
-/// middleware: each pair is the row's never-recycled id beside its secret value.
-///
-/// Only these pairs cross this boundary — no row reads them back — so a disabled key stops
-/// authorizing traffic as soon as its row is rewritten.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails.
+/// Reads key fields and batches all matching sparse collections before releasing the snapshot.
+async fn read_keys(
+    database: &Database,
+    predicate: &str,
+    value: Option<crate::database::Value>,
+) -> Result<Vec<ApiKey>, Error> {
+    let mut transaction = database.transaction().await?;
+    let arguments: Vec<_> = value.into_iter().collect();
+    let rows = transaction
+        .query(
+            format!("SELECT {API_KEY_COLUMNS} FROM api_keys {predicate} ORDER BY id"),
+            arguments,
+        )
+        .await?;
+    let mut keys = BTreeMap::new();
+    for row in &rows {
+        let key = api_key_from_row(row)?;
+        keys.insert(key.id, key);
+    }
+    // A single-key read narrows rule reads; list reads remain one query per collection.
+    let only_id = if !predicate.is_empty() {
+        keys.keys().next().copied()
+    } else {
+        None
+    };
+    if !keys.is_empty() {
+        for (table, column, kind) in [
+            ("api_key_provider_defaults", "provider_id", 0),
+            ("api_key_pool_defaults", "pool_id", 1),
+            ("api_key_model_route_overrides", "model_route_id", 2),
+        ] {
+            let predicate = if only_id.is_some() {
+                "WHERE api_key_id = ?1"
+            } else {
+                ""
+            };
+            let rows = transaction
+                .query(
+                    format!(
+                        "SELECT api_key_id, {column}, access FROM {table} {predicate} \
+                         ORDER BY {column}"
+                    ),
+                    only_id.into_iter().collect::<Vec<_>>(),
+                )
+                .await?;
+            for row in &rows {
+                let id = row.get(0)?;
+                if let Some(key) = keys.get_mut(&id) {
+                    let target = row.get(1)?;
+                    let access = AccessDecision::from_stored(&row.get::<String>(2)?)?;
+                    match kind {
+                        0 => key
+                            .access_control
+                            .owner_defaults
+                            .push(ApiKeyOwnerDefault::Provider {
+                                provider_id: target,
+                                access,
+                            }),
+                        1 => key
+                            .access_control
+                            .owner_defaults
+                            .push(ApiKeyOwnerDefault::Pool {
+                                pool_id: target,
+                                access,
+                            }),
+                        _ => key
+                            .access_control
+                            .route_overrides
+                            .push(ApiKeyRouteOverride {
+                                model_route_id: target,
+                                access,
+                            }),
+                    }
+                }
+            }
+        }
+    }
+    transaction.commit().await?;
+    Ok(keys.into_values().collect())
+}
+
+/// Middleware secrets deliberately carry identity without a separately stale policy snapshot.
 pub(crate) async fn list_enabled_api_key_secrets(
     database: &Database,
 ) -> Result<Vec<(i64, String)>, Error> {
     let rows = database
         .query("SELECT id, key FROM api_keys WHERE is_enabled = 1", ())
         .await?;
-
-    let mut keys = Vec::with_capacity(rows.len());
-
-    for row in &rows {
-        keys.push((row.get(0)?, row.get(1)?));
-    }
-
-    Ok(keys)
+    rows.iter()
+        .map(|row| Ok((row.get(0)?, row.get(1)?)))
+        .collect()
 }
 
-/// Inserts one API key row, stamping the creation time from the database clock, and returns the
-/// stored row constructed from the supplied fields: the returned row is exactly what the statement
-/// wrote, so callers never re-read after creation.
+/// Loads enabled key state and its policy inside the caller's route/listing snapshot.
+pub(super) async fn read_enabled_policy(
+    transaction: &mut Transaction,
+    id: i64,
+) -> Result<ApiKeyAccessControl, Error> {
+    let rows = transaction
+        .query(
+            "SELECT default_access FROM api_keys WHERE id = ?1 AND is_enabled = 1",
+            params![id],
+        )
+        .await?;
+    let Some(row) = rows.first() else {
+        return Err(Error::InactiveApiKey { id });
+    };
+    let mut policy = ApiKeyAccessControl {
+        default_access: AccessDecision::from_stored(&row.get::<String>(0)?)?,
+        owner_defaults: Vec::new(),
+        route_overrides: Vec::new(),
+    };
+    for (table, column, kind) in [
+        ("api_key_provider_defaults", "provider_id", 0),
+        ("api_key_pool_defaults", "pool_id", 1),
+        ("api_key_model_route_overrides", "model_route_id", 2),
+    ] {
+        let rows = transaction
+            .query(
+                format!(
+                    "SELECT {column}, access FROM {table} WHERE api_key_id = ?1 ORDER BY {column}"
+                ),
+                params![id],
+            )
+            .await?;
+        for row in &rows {
+            let target = row.get(0)?;
+            let access = AccessDecision::from_stored(&row.get::<String>(1)?)?;
+            match kind {
+                0 => policy.owner_defaults.push(ApiKeyOwnerDefault::Provider {
+                    provider_id: target,
+                    access,
+                }),
+                1 => policy.owner_defaults.push(ApiKeyOwnerDefault::Pool {
+                    pool_id: target,
+                    access,
+                }),
+                _ => policy.route_overrides.push(ApiKeyRouteOverride {
+                    model_route_id: target,
+                    access,
+                }),
+            }
+        }
+    }
+    Ok(policy)
+}
+
+/// Validates the payload's typed rule identities without reading mutable database state.
+fn policy_references(policy: &ApiKeyAccessControl) -> Result<Vec<AccessReference>, Error> {
+    let mut seen = HashSet::new();
+    let references = policy
+        .owner_defaults
+        .iter()
+        .map(|rule| match rule.parts().0 {
+            RouteOwner::Provider(id) => AccessReference::Provider(id),
+            RouteOwner::Pool(id) => AccessReference::Pool(id),
+        })
+        .chain(
+            policy
+                .route_overrides
+                .iter()
+                .map(|rule| AccessReference::Route(rule.model_route_id)),
+        )
+        .collect::<Vec<_>>();
+    for reference in &references {
+        if !seen.insert(*reference) {
+            return Err(Error::DuplicateAccessReference {
+                reference: *reference,
+            });
+        }
+    }
+    Ok(references)
+}
+
+/// Rejects duplicate identities before any writes, and checks references in the write snapshot.
+async fn validate_policy(
+    transaction: &mut Transaction,
+    policy: &ApiKeyAccessControl,
+) -> Result<(), Error> {
+    let references = policy_references(policy)?;
+    for reference in references {
+        let (table, id) = match reference {
+            AccessReference::Provider(id) => ("providers", id),
+            AccessReference::Pool(id) => ("provider_pools", id),
+            AccessReference::Route(id) => ("model_routes", id),
+        };
+        if transaction
+            .query(format!("SELECT id FROM {table} WHERE id = ?1"), params![id])
+            .await?
+            .is_empty()
+        {
+            return Err(Error::MissingAccessReference { reference });
+        }
+    }
+    Ok(())
+}
+
+/// Checks secret uniqueness in the same snapshot as the subsequent write and reference checks.
+async fn check_secret(
+    transaction: &mut Transaction,
+    secret: &str,
+    id: Option<i64>,
+) -> Result<(), Error> {
+    let rows = transaction
+        .query(
+            "SELECT id FROM api_keys WHERE key = ?1 AND (?2 IS NULL OR id != ?2)",
+            params![secret, id],
+        )
+        .await?;
+    if !rows.is_empty() {
+        return Err(Error::Conflict {
+            message: api_key_taken_message(),
+        });
+    }
+    Ok(())
+}
+
+/// Replaces sparse rules, keeping explicit pins even when they equal inherited defaults.
+async fn replace_policy(
+    transaction: &mut Transaction,
+    id: i64,
+    policy: &ApiKeyAccessControl,
+) -> Result<(), Error> {
+    for table in [
+        "api_key_provider_defaults",
+        "api_key_pool_defaults",
+        "api_key_model_route_overrides",
+    ] {
+        transaction
+            .execute(
+                format!("DELETE FROM {table} WHERE api_key_id = ?1"),
+                params![id],
+            )
+            .await?;
+    }
+    for rule in &policy.owner_defaults {
+        let (owner, access) = rule.parts();
+        let (table, column, target) = match owner {
+            RouteOwner::Provider(target) => ("api_key_provider_defaults", "provider_id", target),
+            RouteOwner::Pool(target) => ("api_key_pool_defaults", "pool_id", target),
+        };
+        transaction
+            .execute(
+                format!("INSERT INTO {table} (api_key_id, {column}, access) VALUES (?1, ?2, ?3)"),
+                params![id, target, access.as_str()],
+            )
+            .await?;
+    }
+    for rule in &policy.route_overrides {
+        transaction
+            .execute(
+                "INSERT INTO api_key_model_route_overrides (api_key_id, model_route_id, access) \
+             VALUES (?1, ?2, ?3)",
+                params![id, rule.model_route_id, rule.access.as_str()],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Creates ordinary fields and the full policy atomically, retrying every validation together.
 ///
-/// A key value another row already holds violates the schema's uniqueness and surfaces as a
-/// constraint error; the management pre-check renders the clean conflict.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the insert fails.
+/// # Panics
+/// Panics if a successful single-row INSERT RETURNING produces no identity.
 pub(crate) async fn insert_api_key(
     database: &Database,
     fields: &ApiKeyFields<'_>,
 ) -> Result<ApiKey, Error> {
-    let created_at = unix_time::unix_now_micros();
-
-    let rows = database
-        .query(
-            "INSERT INTO api_keys (name, key, is_enabled, created_at) \
-             VALUES (?1, ?2, ?3, ?4) RETURNING id",
-            params![
-                fields.name,
-                fields.key,
-                i64::from(fields.is_enabled),
-                created_at,
-            ],
-        )
-        .await?;
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "a single-row INSERT RETURNING yields exactly the inserted row, or errors"
-    )]
-    let id: i64 = rows[0].get(0)?;
-
-    Ok(ApiKey {
-        id,
-        name: fields.name.to_string(),
-        key: fields.key.to_string(),
-        is_enabled: fields.is_enabled,
-        created_at,
-    })
-}
-
-/// Applies one `api-keys:update` rewrite to an existing key inside a single transaction.
-///
-/// The row is re-read inside the transaction, so a caller's stale outer snapshot can never write
-/// through a concurrent change's results. An unknown key — including one deleted between the
-/// caller's outer read and this call — is rejected and nothing is written, as is a key value
-/// another row already holds; the row's own value re-sent unchanged is never a conflict. The
-/// transaction runs under the storage tier's `in_retryable_transaction` bounded stale-snapshot
-/// retry: a concurrent commit that invalidates the snapshot between the reads and the write
-/// re-runs the whole read-then-write against the newer state instead of surfacing the refusal.
-///
-/// # Errors
-///
-/// Returns [`Error`] for an unknown key, a failed statement, or a taken key value.
-pub(crate) async fn update_api_key(
-    database: &Database,
-    api_key_id: i64,
-    fields: ApiKeyFields<'_>,
-) -> Result<(), Error> {
+    let _ = policy_references(fields.access_control)?;
     in_retryable_transaction!(database, transaction, async {
-        let is_missing = transaction
+        check_secret(&mut transaction, fields.key, None).await?;
+        validate_policy(&mut transaction, fields.access_control).await?;
+        let created_at = unix_time::unix_now_micros();
+        let rows = transaction
             .query(
-                format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE id = ?1"),
-                params![api_key_id],
-            )
-            .await?
-            .is_empty();
-
-        if is_missing {
-            return Err(Error::NotFound {
-                message: api_key_not_found_message(api_key_id),
-            });
-        }
-
-        // A rewrite must not take a key value another row already holds; the row's own value is
-        // excluded, so re-sending the unchanged secret is never a conflict.
-        let key_holders = transaction
-            .query(
-                "SELECT id FROM api_keys WHERE key = ?1 AND id != ?2",
-                params![fields.key, api_key_id],
-            )
-            .await?;
-
-        if !key_holders.is_empty() {
-            return Err(Error::Conflict {
-                message: api_key_taken_message(),
-            });
-        }
-
-        transaction
-            .execute(
-                "UPDATE api_keys SET name = ?1, key = ?2, is_enabled = ?3 WHERE id = ?4",
+                "INSERT INTO api_keys (name, key, is_enabled, created_at, default_access) \
+             VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
                 params![
                     fields.name,
                     fields.key,
                     i64::from(fields.is_enabled),
-                    api_key_id
+                    created_at,
+                    fields.access_control.default_access.as_str()
                 ],
             )
             .await?;
+        #[expect(
+            clippy::expect_used,
+            reason = "successful single-row INSERT RETURNING yields its identity"
+        )]
+        let id = rows.first().expect("inserted key identity").get(0)?;
+        replace_policy(&mut transaction, id, fields.access_control).await?;
+        let mut access_control = fields.access_control.clone();
+        access_control.canonicalize();
+        Ok::<_, Error>(ApiKey {
+            id,
+            name: fields.name.into(),
+            key: fields.key.into(),
+            is_enabled: fields.is_enabled,
+            created_at,
+            access_control,
+        })
+    })
+}
 
+/// Replaces ordinary fields and the entire policy in one bounded retryable transaction.
+pub(crate) async fn update_api_key(
+    database: &Database,
+    id: i64,
+    fields: ApiKeyFields<'_>,
+) -> Result<(), Error> {
+    let _ = policy_references(fields.access_control)?;
+    in_retryable_transaction!(database, transaction, async {
+        if transaction
+            .query("SELECT id FROM api_keys WHERE id = ?1", params![id])
+            .await?
+            .is_empty()
+        {
+            return Err(Error::NotFound {
+                message: api_key_not_found_message(id),
+            });
+        }
+        check_secret(&mut transaction, fields.key, Some(id)).await?;
+        validate_policy(&mut transaction, fields.access_control).await?;
+        transaction
+            .execute(
+                "UPDATE api_keys SET name = ?1, key = ?2, is_enabled = ?3, \
+             default_access = ?4 WHERE id = ?5",
+                params![
+                    fields.name,
+                    fields.key,
+                    i64::from(fields.is_enabled),
+                    fields.access_control.default_access.as_str(),
+                    id
+                ],
+            )
+            .await?;
+        replace_policy(&mut transaction, id, fields.access_control).await?;
         Ok(())
     })
 }
 
-/// Deletes one API key by id, returning whether a row was removed.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the delete fails.
-pub(crate) async fn delete_api_key(database: &Database, api_key_id: i64) -> Result<bool, Error> {
-    let changes = database
-        .execute("DELETE FROM api_keys WHERE id = ?1", params![api_key_id])
-        .await?;
-
-    Ok(changes == 1)
+/// Deletes a key and cascades its rules while historical accounting remains separate.
+pub(crate) async fn delete_api_key(database: &Database, id: i64) -> Result<bool, Error> {
+    Ok(database
+        .execute("DELETE FROM api_keys WHERE id = ?1", params![id])
+        .await?
+        == 1)
 }
 
-/// Parses an API key row in [`API_KEY_COLUMNS`] order.
+/// Parses ordinary fields; callers load sparse rules within the same transaction.
 fn api_key_from_row(row: &crate::database::Row) -> Result<ApiKey, Error> {
     Ok(ApiKey {
         id: row.get(0)?,
@@ -276,9 +457,13 @@ fn api_key_from_row(row: &crate::database::Row) -> Result<ApiKey, Error> {
         key: row.get(2)?,
         is_enabled: row.get::<i64>(3)? != 0,
         created_at: row.get(4)?,
+        access_control: ApiKeyAccessControl {
+            default_access: AccessDecision::from_stored(&row.get::<String>(5)?)?,
+            owner_defaults: Vec::new(),
+            route_overrides: Vec::new(),
+        },
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +489,7 @@ mod tests {
                 name: "service-a",
                 key: "sk-first",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -322,6 +508,7 @@ mod tests {
                 name: "service-a",
                 key: "sk-second",
                 is_enabled: false,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -362,6 +549,7 @@ mod tests {
                 name: "service-a",
                 key: "sk-first",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -372,6 +560,7 @@ mod tests {
                 name: "service-b",
                 key: "sk-second",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -383,6 +572,7 @@ mod tests {
                 name: "renamed-a",
                 key: "sk-rotated",
                 is_enabled: false,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -403,6 +593,7 @@ mod tests {
                 name: "renamed-a",
                 key: "sk-rotated",
                 is_enabled: false,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -415,6 +606,7 @@ mod tests {
                 name: "renamed-a",
                 key: "sk-second",
                 is_enabled: false,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await;
@@ -434,6 +626,7 @@ mod tests {
                 name: "ghost",
                 key: "sk-ghost",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await;
@@ -465,6 +658,7 @@ mod tests {
                 name: "service-a",
                 key: "sk-first",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;
@@ -476,24 +670,115 @@ mod tests {
                 name: "service-b",
                 key: "sk-first",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await;
 
         #[expect(
             clippy::expect_used,
-            reason = "the schema UNIQUE rejects the duplicate"
+            reason = "checked creation rejects the duplicate secret"
         )]
-        let error = duplicate.expect_err("a duplicate secret must violate the schema UNIQUE");
+        let error = duplicate.expect_err("a duplicate secret must conflict");
 
         assert!(
-            matches!(error, Error::Constraint { .. }),
-            "a schema UNIQUE violation must classify as a storage constraint error"
+            matches!(error, Error::Conflict { .. }),
+            "a duplicate secret must classify as a checked conflict"
         );
 
         // The empty name and secret are not column invariants: the composition boundary rejects
         // them at the management write, before any statement runs.
 
+        Ok(())
+    }
+
+    /// A refused snapshot repeats the real write validation on a fresh transaction: a deleted
+    /// owner becomes a missing reference and a concurrently claimed secret becomes a conflict.
+    ///
+    /// # Errors
+    /// Returns fixture, query, or decoding failures.
+    ///
+    /// # Panics
+    /// Panics if stale writes succeed or retry validation ignores the concurrent commit.
+    #[tokio::test]
+    async fn retries_revalidate_changed_references_and_secrets() -> Result<(), Box<dyn StdError>> {
+        for is_reference_deleted in [false, true] {
+            let (database, _guard) = create_test_database().await;
+            let provider_id =
+                crate::storage::test_support::insert_test_provider(&database, "A").await?;
+            let policy = ApiKeyAccessControl {
+                default_access: AccessDecision::Deny,
+                owner_defaults: vec![crate::access_control::ApiKeyOwnerDefault::Provider {
+                    provider_id,
+                    access: AccessDecision::Allow,
+                }],
+                route_overrides: Vec::new(),
+            };
+            let key = insert_api_key(
+                &database,
+                &ApiKeyFields {
+                    name: "original",
+                    key: "original-secret",
+                    is_enabled: true,
+                    access_control: &policy,
+                },
+            )
+            .await?;
+            let attempts = std::cell::Cell::new(0);
+            let result: Result<(), Error> =
+                in_retryable_transaction!(&database, transaction, async {
+                    attempts.set(attempts.get() + 1);
+                    check_secret(&mut transaction, "replacement-secret", Some(key.id)).await?;
+                    validate_policy(&mut transaction, &policy).await?;
+                    if attempts.get() == 1 {
+                        // Deterministic commit between validation and the attempted snapshot
+                        // upgrade.
+                        if is_reference_deleted {
+                            database
+                                .execute(
+                                    "DELETE FROM providers WHERE id = ?1",
+                                    params![provider_id],
+                                )
+                                .await?;
+                        } else {
+                            insert_api_key(
+                                &database,
+                                &ApiKeyFields {
+                                    name: "concurrent",
+                                    key: "replacement-secret",
+                                    is_enabled: true,
+                                    access_control: &crate::test_support::allow_all_access(),
+                                },
+                            )
+                            .await?;
+                        }
+                    }
+                    transaction
+                        .execute(
+                            "UPDATE api_keys SET key = ?1 WHERE id = ?2",
+                            params!["replacement-secret", key.id],
+                        )
+                        .await?;
+                    Ok::<(), Error>(())
+                });
+            assert_eq!(attempts.get(), 2);
+            if is_reference_deleted {
+                assert!(matches!(result, Err(Error::MissingAccessReference {
+                    reference: AccessReference::Provider(id)
+                }) if id == provider_id));
+            } else {
+                assert!(matches!(result, Err(Error::Conflict { .. })));
+            }
+            let survived = find_api_key_by_id(&database, key.id)
+                .await?
+                .ok_or("original key")?;
+            assert_eq!(survived.key, key.key);
+            assert_eq!(survived.name, key.name);
+            assert_eq!(
+                survived.access_control.owner_defaults.is_empty(),
+                is_reference_deleted
+            );
+        }
         Ok(())
     }
 }

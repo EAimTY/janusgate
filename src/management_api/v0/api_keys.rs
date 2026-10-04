@@ -2,6 +2,7 @@
 
 use super::{EmptyResponse, Error, route};
 use crate::{
+    access_control::ApiKeyAccessControl,
     context::Context,
     storage::api_keys::{self, ApiKey, ApiKeyFields},
 };
@@ -64,6 +65,9 @@ pub(super) struct ApiKeyResponse {
     /// Whether the key authorizes traffic.
     pub is_enabled: bool,
 
+    /// Complete authored model access policy.
+    pub access_control: ApiKeyAccessControl,
+
     /// Creation timestamp in UTC microseconds.
     pub created_at: i64,
 }
@@ -77,6 +81,7 @@ impl ApiKeyResponse {
             key: api_key.key.clone(),
             is_enabled: api_key.is_enabled,
             created_at: api_key.created_at,
+            access_control: api_key.access_control.clone(),
         }
     }
 }
@@ -111,6 +116,9 @@ pub(super) struct CreateApiKeyRequest {
 
     /// Serving state.
     pub is_enabled: bool,
+
+    /// Complete authored model access policy.
+    pub access_control: ApiKeyAccessControl,
 }
 
 /// Strictly parsed `api-keys:update` request (README §7.1): the complete desired state of the row,
@@ -132,6 +140,9 @@ pub(super) struct UpdateApiKeyRequest {
 
     /// Serving state.
     pub is_enabled: bool,
+
+    /// Complete authored model access policy.
+    pub access_control: ApiKeyAccessControl,
 }
 
 /// Strictly parsed `api-keys:delete` request.
@@ -172,21 +183,13 @@ pub(super) async fn create(
     super::validate_identifier("name", &request.name)?;
     super::validate_composition("key", &request.key)?;
 
-    // The pre-insert check renders a clean conflict without naming the secret; the schema's UNIQUE
-    // constraint is the concurrent backstop.
-    if api_keys::find_api_key_by_key(&context.database, &request.key)
-        .await?
-        .is_some()
-    {
-        return Err(Error::ApiKeyTaken);
-    }
-
     let api_key = api_keys::insert_api_key(
         &context.database,
         &ApiKeyFields {
             name: &request.name,
             key: &request.key,
             is_enabled: request.is_enabled,
+            access_control: &request.access_control,
         },
     )
     .await?;
@@ -206,14 +209,6 @@ pub(super) async fn update(
     super::validate_identifier("name", &request.name)?;
     super::validate_composition("key", &request.key)?;
 
-    // The outer read pins request validation only; the transactional write re-reads the row for
-    // the missing-row and taken-secret checks.
-    let Some(_) = api_keys::find_api_key_by_id(&context.database, request.api_key_id).await? else {
-        return Err(Error::ApiKeyNotFound {
-            id: request.api_key_id,
-        });
-    };
-
     api_keys::update_api_key(
         &context.database,
         request.api_key_id,
@@ -221,6 +216,7 @@ pub(super) async fn update(
             name: &request.name,
             key: &request.key,
             is_enabled: request.is_enabled,
+            access_control: &request.access_control,
         },
     )
     .await?;
@@ -283,16 +279,26 @@ mod tests {
             clippy::unwrap_used,
             reason = "the documented payloads are constructed to parse"
         )]
-        let created: CreateApiKeyRequest =
-            serde_json::from_str(r#"{"name":"service-a","key":"sk-live","is_enabled":true}"#)
-                .unwrap();
+        let created: CreateApiKeyRequest = serde_json::from_str(
+            r#"{"name":"service-a",
+                "key":"sk-live",
+                "is_enabled":true,
+                "access_control":{"default_access":"allow",
+                "owner_defaults":[],
+                "route_overrides":[]}}"#,
+        )
+        .unwrap();
 
         assert_eq!(created.name, "service-a");
 
         // A required field's absence is named by serde's own missing-field rejection.
         assert!(
             serde_json::from_str::<CreateApiKeyRequest>(
-                r#"{"name":"service-a","is_enabled":true}"#
+                r#"{"name":"service-a",
+                "is_enabled":true,
+                "access_control":{"default_access":"allow",
+                "owner_defaults":[],
+                "route_overrides":[]}}"#
             )
             .is_err()
         );
@@ -300,7 +306,10 @@ mod tests {
         // An unknown field is rejected.
         assert!(
             serde_json::from_str::<CreateApiKeyRequest>(
-                r#"{"name":"service-a","key":"sk-live","is_enabled":true,"created_at":1}"#
+                r#"{"name":"service-a",
+                "key":"sk-live",
+                "is_enabled":true,
+                "created_at":1}"#
             )
             .is_err()
         );
@@ -310,7 +319,13 @@ mod tests {
             reason = "the documented payloads are constructed to parse"
         )]
         let updated: UpdateApiKeyRequest = serde_json::from_str(
-            r#"{"api_key_id":7,"name":"service-a","key":"sk-live","is_enabled":false}"#,
+            r#"{"api_key_id":7,
+                "name":"service-a",
+                "key":"sk-live",
+                "is_enabled":false,
+                "access_control":{"default_access":"allow",
+                "owner_defaults":[],
+                "route_overrides":[]}}"#,
         )
         .unwrap();
 
@@ -318,7 +333,12 @@ mod tests {
 
         assert!(
             serde_json::from_str::<UpdateApiKeyRequest>(
-                r#"{"api_key_id":7,"name":"service-a","is_enabled":false}"#
+                r#"{"api_key_id":7,
+                "name":"service-a",
+                "is_enabled":false,
+                "access_control":{"default_access":"allow",
+                "owner_defaults":[],
+                "route_overrides":[]}}"#
             )
             .is_err()
         );
@@ -331,6 +351,7 @@ mod tests {
                 key: "sk-live".to_string(),
                 is_enabled: true,
                 created_at: 1_700_000_000_000_000,
+                access_control: crate::test_support::allow_all_access(),
             },
         })
         .expect("the key body serializes");
@@ -344,6 +365,9 @@ mod tests {
                     "key": "sk-live",
                     "is_enabled": true,
                     "created_at": 1_700_000_000_000_000_i64,
+                    "access_control": {
+                        "default_access":"allow", "owner_defaults":[], "route_overrides":[]
+                    },
                 }
             })
         );

@@ -809,6 +809,7 @@ mod tests {
                 name: "e2e",
                 key: "sk-e2e",
                 is_enabled: true,
+                access_control: &crate::test_support::allow_all_access(),
             },
         )
         .await?;

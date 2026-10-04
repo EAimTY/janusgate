@@ -1,15 +1,25 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import {
+    type AccessInventory,
+    isSamePolicy,
+    missingReferences,
+    newAccessControl,
+} from "/src/access-control";
+import { registerDirtyForm } from "/src/dirty-form-registry";
 import type { ManagementApi } from "/src/management-api/client";
+import type { ApiKeyAccessControl } from "/src/management-api/generated/v0";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
+import { ApiKeyAccess } from "/src/ui/api-key-access";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, Switch } from "/src/ui/controls";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { createCreateAction } from "./create-form";
 import type { ScreenNotice } from "./read";
-import { StatedNotice } from "./read-notice";
+import { createScreenRead, readOne, readPublishedInventory } from "./read";
+import { ReadNotice, StatedNotice } from "./read-notice";
 
 /**
  * One creation page for a serving key: whether it works from the start, a
@@ -17,13 +27,61 @@ import { StatedNotice } from "./read-notice";
  * new key's page, like a provider creation does.
  */
 export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
-    const [name, setName] = createSignal("");
+    const [draft, setDraft] = createSignal({
+        name: "",
+        key: "",
+        is_enabled: true,
+        access_control: newAccessControl(),
+    });
+    const name = (): string => draft().name;
+    const secret = (): string => draft().key;
+    const isEnabled = (): boolean => draft().is_enabled;
+    const policy = (): ApiKeyAccessControl => draft().access_control;
+    const setName = (name: string): void => {
+        setDraft((current) => ({
+            ...current,
+            name,
+        }));
+    };
+    const setSecret = (key: string): void => {
+        setDraft((current) => ({
+            ...current,
+            key,
+        }));
+    };
+    const setIsEnabled = (is_enabled: boolean): void => {
+        setDraft((current) => ({
+            ...current,
+            is_enabled,
+        }));
+    };
+    const setPolicy = (access_control: ApiKeyAccessControl): void => {
+        setDraft((current) => ({
+            ...current,
+            access_control,
+        }));
+    };
     // The name's error is stated only once the operator has typed into the
     // field — a pristine form is not an error, an emptied name is.
     const [hasNameInput, setHasNameInput] = createSignal(false);
-    const [secret, setSecret] = createSignal("");
-    const [isEnabled, setIsEnabled] = createSignal(true);
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
+
+    const [inventory, setInventory] = createSignal<AccessInventory | null>(null);
+    const read = createScreenRead({
+        load: async (signal) => {
+            setInventory(await readOne(signal, readPublishedInventory(props.api, null)));
+        },
+    });
+    const registration = registerDirtyForm();
+    createEffect(
+        () =>
+            name() !== "" ||
+            secret() !== "" ||
+            !isEnabled() ||
+            !isSamePolicy(policy(), newAccessControl()),
+        registration.reportDirty,
+    );
+    onCleanup(registration.unregister);
 
     /** Inline error for the name, shown where it was typed. */
     const nameError = (): string | null => (hasNameInput() ? apiKeyNameError(name()) : null);
@@ -32,7 +90,15 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     const secretError = (): string | null => bearerSecretError(secret(), "Key");
 
     /** The creation's composition rules: a named key carrying a complete secret. */
-    const canCompose = (): boolean => name() !== "" && isBearerSecret(secret());
+    const canCompose = (): boolean => {
+        const current = inventory();
+        return (
+            name() !== "" &&
+            isBearerSecret(secret()) &&
+            current !== null &&
+            missingReferences(policy(), current).length === 0
+        );
+    };
 
     const create = createCreateAction({
         action: "create-api-key",
@@ -45,10 +111,12 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                     name: name(),
                     key: secret(),
                     is_enabled: isEnabled(),
+                    access_control: policy(),
                 }),
             ),
         }),
         onCreated: (result) => {
+            registration.reportDirty(false);
             navigate(hrefs.apiKeyDetail(result.api_key.id));
         },
     });
@@ -64,6 +132,10 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 backLabel="API keys"
             />
 
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
             <StatedNotice notice={failure} />
 
             <Card>
@@ -97,6 +169,23 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         isDisabled={create.isCreating()}
                         error={secretError()}
                     />
+                    <Show
+                        when={inventory()}
+                        fallback={
+                            <p class="text-[13px] text-ink-faint">
+                                Load model access inventory before creating a key.
+                            </p>
+                        }
+                    >
+                        {(current) => (
+                            <ApiKeyAccess
+                                policy={policy()}
+                                inventory={current()}
+                                onChange={setPolicy}
+                                isDisabled={create.isCreating()}
+                            />
+                        )}
+                    </Show>
                     <div>
                         <Button
                             type="submit"

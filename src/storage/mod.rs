@@ -98,6 +98,8 @@ macro_rules! in_retryable_transaction {
     }};
 }
 
+#[cfg(test)]
+mod api_key_access_tests;
 pub(crate) mod api_keys;
 pub(crate) mod api_logs;
 mod automatic_routes;
@@ -165,6 +167,25 @@ const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, \
 /// never inspect the database error domain themselves.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
+    /// Repeated authored rule identity; equal decisions are duplicates too.
+    #[error("duplicate API key access reference: {reference:?}")]
+    DuplicateAccessReference {
+        /// Typed collection and rejected identity, never the key secret.
+        reference: api_keys::AccessReference,
+    },
+    /// A referenced permission target vanished or never existed.
+    #[error("API key access reference does not exist: {reference:?}")]
+    MissingAccessReference {
+        /// Typed collection and missing identity.
+        reference: api_keys::AccessReference,
+    },
+    /// The authenticated key was removed or disabled before the admission snapshot.
+    #[error("authenticated API key {id} is missing or disabled")]
+    InactiveApiKey {
+        /// Previously matched identity.
+        id: i64,
+    },
+
     /// A checked lookup or precondition failed: the addressed row does not exist.
     #[error("{message}")]
     NotFound {

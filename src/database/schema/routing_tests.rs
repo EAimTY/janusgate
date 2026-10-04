@@ -347,3 +347,81 @@ async fn pool_exposure_schema_and_migration_preserve_owned_routes() -> Result<()
     }
     Ok(())
 }
+
+/// Existing baseline keys migrate to deny without grants; both installation paths enforce
+/// sparse-rule foreign keys and delete key-owned rules under active enforcement.
+///
+/// # Errors
+/// Returns schema, fixture, or query errors.
+///
+/// # Panics
+/// Panics if migrated keys gain access, invalid references persist, or rules survive deletion.
+#[tokio::test]
+async fn access_rules_match_fresh_and_migrated_storage() -> Result<(), Box<dyn StdError>> {
+    for is_migrated in [false, true] {
+        let connection = if is_migrated {
+            let connection = inventory().await?;
+            connection.execute_batch(
+                "INSERT INTO api_keys (name, key, created_at) VALUES ('baseline', 'secret', 1);"
+            ).await?;
+            connection
+                .execute_batch(version_2::SCHEMA.migration)
+                .await?;
+            connection
+        } else {
+            let connection = inventory_schema(version_2::SCHEMA.schema).await?;
+            connection.execute_batch(
+                "INSERT INTO api_keys (name, key, created_at) VALUES ('baseline', 'secret', 1);"
+            ).await?;
+            connection
+        };
+        assert_eq!(
+            integer(
+                &connection,
+                "SELECT COUNT(*) FROM api_keys WHERE default_access = 'deny'"
+            )
+            .await?,
+            1
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO api_key_provider_defaults VALUES (1, 1, 'allow');
+             INSERT INTO api_key_pool_defaults VALUES (1, 1, 'deny');",
+            )
+            .await?;
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO api_key_provider_defaults VALUES (1, 999, 'allow')",
+                    ()
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO api_key_pool_defaults VALUES (1, 1, 'inherit')",
+                    ()
+                )
+                .await
+                .is_err()
+        );
+        connection
+            .execute("DELETE FROM api_keys WHERE id = 1", ())
+            .await?;
+        assert_eq!(
+            integer(
+                &connection,
+                "SELECT COUNT(*) FROM api_key_provider_defaults"
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            integer(&connection, "SELECT COUNT(*) FROM api_key_pool_defaults").await?,
+            0
+        );
+    }
+    Ok(())
+}

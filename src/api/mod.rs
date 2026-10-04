@@ -27,3 +27,6 @@ pub(crate) fn router(database: Database) -> Router<Context> {
         .fallback(server::fallback)
         .layer(crate::CONFIG.api_cors_layer())
 }
+
+#[cfg(test)]
+mod access_tests;

@@ -630,6 +630,11 @@ describe("response validation", () => {
             key: "sk-live",
             is_enabled: true,
             created_at: 1_700_000_000_000_000,
+            access_control: {
+                default_access: "deny",
+                owner_defaults: [],
+                route_overrides: [],
+            },
         };
 
         expect(
@@ -662,6 +667,108 @@ describe("response validation", () => {
                 ],
             }),
         ).toThrow(/response\.api_keys\[0\]\.key must be a string/);
+    });
+
+    it("rejects incomplete, nullable, unknown, and inheritance policy wire values", () => {
+        const valid = {
+            default_access: "deny",
+            owner_defaults: [
+                {
+                    type: "provider",
+                    provider_id: 7,
+                    access: "allow",
+                },
+            ],
+            route_overrides: [
+                {
+                    model_route_id: 9,
+                    access: "deny",
+                },
+            ],
+        };
+        const row = {
+            id: 7,
+            name: "client",
+            key: "secret",
+            is_enabled: true,
+            created_at: 1,
+            access_control: valid,
+        };
+        expect(
+            parseApiKeyEnvelope({
+                api_key: row,
+            }).api_key.access_control,
+        ).toEqual(valid);
+        for (const access_control of [
+            null,
+            {},
+            {
+                ...valid,
+                default_access: "inherit",
+            },
+            {
+                ...valid,
+                owner_defaults: null,
+            },
+            {
+                ...valid,
+                route_overrides: null,
+            },
+            {
+                ...valid,
+                future_field: true,
+            },
+            {
+                ...valid,
+                owner_defaults: [
+                    {
+                        type: "unknown",
+                        provider_id: 7,
+                        access: "allow",
+                    },
+                ],
+            },
+            {
+                ...valid,
+                owner_defaults: [
+                    {
+                        type: "provider",
+                        provider_id: 7,
+                        access: "inherit",
+                    },
+                ],
+            },
+            {
+                ...valid,
+                owner_defaults: [
+                    {
+                        type: "pool",
+                        pool_id: 7,
+                        access: "allow",
+                        provider_id: 7,
+                    },
+                ],
+            },
+            {
+                ...valid,
+                route_overrides: [
+                    {
+                        model_route_id: 9,
+                        access: "deny",
+                        extra: true,
+                    },
+                ],
+            },
+        ]) {
+            expect(() =>
+                parseApiKeyEnvelope({
+                    api_key: {
+                        ...row,
+                        access_control,
+                    },
+                }),
+            ).toThrow(ContractViolationError);
+        }
     });
 
     it("accepts only an object as an empty response", () => {

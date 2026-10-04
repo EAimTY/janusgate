@@ -11,6 +11,7 @@ import {
     goneFailure,
     labeledInput,
     settle,
+    stubListings,
     stubManagementApi,
     switchWithLabel,
     typeInto,
@@ -32,6 +33,7 @@ function screenApi(
     sent: UpdateApiKeyRequest[] = [],
 ): ManagementApi {
     return stubManagementApi({
+        ...stubListings({}),
         listModelRoutes: () =>
             Promise.resolve({
                 model_routes: [],
@@ -54,6 +56,7 @@ function screenApi(
                           name: request.name,
                           key: request.key,
                           is_enabled: request.is_enabled,
+                          access_control: request.access_control,
                       }
                     : row,
             );
@@ -241,6 +244,11 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
                 name: "saved-here",
                 key: "sk-rotated",
                 is_enabled: true,
+                access_control: {
+                    default_access: "deny",
+                    owner_defaults: [],
+                    route_overrides: [],
+                },
             },
         ]);
         expect(holder.keys).toEqual([
@@ -394,6 +402,7 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
                               name: request.name,
                               key: request.key,
                               is_enabled: request.is_enabled,
+                              access_control: request.access_control,
                           }
                         : row,
                 );
@@ -442,6 +451,11 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
                 name: "service-a",
                 key: "sk-live",
                 is_enabled: false,
+                access_control: {
+                    default_access: "deny",
+                    owner_defaults: [],
+                    route_overrides: [],
+                },
             },
         ]);
 

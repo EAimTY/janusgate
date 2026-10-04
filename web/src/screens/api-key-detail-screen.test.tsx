@@ -3,7 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
-import { bodyText, createDisposals, settle, stubManagementApi } from "./screen-test-support";
+import {
+    bodyText,
+    createDisposals,
+    settle,
+    stubListings,
+    stubManagementApi,
+} from "./screen-test-support";
 
 /** One serving key whose secret spells its own name. */
 function keyRow(isEnabled: boolean): ApiKeyResponse {
@@ -13,12 +19,18 @@ function keyRow(isEnabled: boolean): ApiKeyResponse {
         key: "sk-ci-runner",
         is_enabled: isEnabled,
         created_at: 1_700_000_000_000_000,
+        access_control: {
+            default_access: "deny",
+            owner_defaults: [],
+            route_overrides: [],
+        },
     };
 }
 
 /** A management API whose key listing answers the fixture; usage answers empty. */
 function screenApi(apiKey: ApiKeyResponse): ManagementApi {
     return stubManagementApi({
+        ...stubListings({}),
         listModelRoutes: () =>
             Promise.resolve({
                 model_routes: [],

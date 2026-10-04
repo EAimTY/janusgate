@@ -422,6 +422,11 @@ describe("createManagementApi", () => {
                         key: "sk-live",
                         is_enabled: true,
                         created_at: 1_700_000_000_000_000,
+                        access_control: {
+                            default_access: "deny",
+                            owner_defaults: [],
+                            route_overrides: [],
+                        },
                     },
                 });
             }
@@ -448,12 +453,22 @@ describe("createManagementApi", () => {
             name: "service-a",
             key: "sk-live",
             is_enabled: true,
+            access_control: {
+                default_access: "deny",
+                owner_defaults: [],
+                route_overrides: [],
+            },
         });
         await api.updateApiKey({
             api_key_id: 7,
             name: "service-a",
             key: "sk-live",
             is_enabled: false,
+            access_control: {
+                default_access: "deny",
+                owner_defaults: [],
+                route_overrides: [],
+            },
         });
         await api.deleteApiKey({
             api_key_id: 7,
@@ -495,12 +510,22 @@ describe("createManagementApi", () => {
                 name: "service-a",
                 key: "sk-live",
                 is_enabled: true,
+                access_control: {
+                    default_access: "deny",
+                    owner_defaults: [],
+                    route_overrides: [],
+                },
             },
             {
                 api_key_id: 7,
                 name: "service-a",
                 key: "sk-live",
                 is_enabled: false,
+                access_control: {
+                    default_access: "deny",
+                    owner_defaults: [],
+                    route_overrides: [],
+                },
             },
             {
                 api_key_id: 7,

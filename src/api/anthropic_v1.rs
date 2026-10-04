@@ -203,8 +203,12 @@ async fn messages(
 
 /// Handles `GET /models` in the native Anthropic shape over the same effective-model set every
 /// surface lists, ignoring pagination parameters and returning the full list in one page.
-async fn models(State(context): State<Context>) -> Response {
-    serving::model_list_response::<Surface, _, _>(&context.database, native_model_page).await
+async fn models(
+    State(context): State<Context>,
+    api_key: serving::AuthenticatedApiKeyRow,
+) -> Response {
+    serving::model_list_response::<Surface, _, _>(&context.database, api_key.0, native_model_page)
+        .await
 }
 
 #[cfg(test)]

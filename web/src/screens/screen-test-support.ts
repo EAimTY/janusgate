@@ -243,6 +243,11 @@ export function apiKeyRow(overrides: Partial<ApiKeyResponse> = {}): ApiKeyRespon
         key: "sk-live",
         is_enabled: true,
         created_at: 1_700_000_000_000_000,
+        access_control: {
+            default_access: "deny",
+            owner_defaults: [],
+            route_overrides: [],
+        },
         ...overrides,
     };
 }

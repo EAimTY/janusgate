@@ -50,6 +50,11 @@ const apiKeyRow: ApiKeyResponse = {
     key: "sk-live",
     is_enabled: true,
     created_at: 1,
+    access_control: {
+        default_access: "deny",
+        owner_defaults: [],
+        route_overrides: [],
+    },
 };
 
 const disposes = createDisposals();

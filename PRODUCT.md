@@ -102,3 +102,5 @@ The gateway it fronts carries the same posture: strict upstream model passthroug
 ## Accessibility & Inclusion
 
 The web UI is held to **WCAG 2.2 AA**: keyboard-complete operation, correct semantics and focus order, and contrast verified against the standard. This commitment applies especially to the official public deployment, where operators arrive without training and cannot be assumed to use a pointer.
+
+Serving keys restrict stable public entries with a required allow/deny default, typed provider/pool defaults, and model-route overrides. Permission inherits route → owner → key; pool permission covers every eligible member and future members. Global availability remains separate. Key forms start deny, load inventory, and save model access with ordinary settings; explicit intent survives renames, retargets, filtering, and dirty refresh holds, while deleted references require removal. Key detail explains effective access and its source. Deletion cascades permission rules and preserves historical accounting.

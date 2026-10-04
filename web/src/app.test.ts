@@ -149,8 +149,7 @@ describe("App disconnect confirm", () => {
     });
 
     it("asks its consequence in the armed state, and the armed action returns to setup", async () => {
-        // The probe answers; nothing else ever answers, because the shell is
-        // mounted on the new-key route, the one screen that reads nothing.
+        // The probe answers while the required key-policy inventory reads stay pending.
         vi.stubGlobal("fetch", (input: RequestInfo | URL) =>
             String(input).endsWith("/providers:list")
                 ? jsonResponse(200, {
@@ -172,6 +171,9 @@ describe("App disconnect confirm", () => {
             baseUrl: gatewayAddress,
             token: "any token",
         });
+
+        // Key creation now owns required inventory reads, including the shell refresh action.
+        expect(buttonWithText("Refresh").disabled).toBe(false);
 
         // Arming states what arming costs — the bar's one armed control
         // speaks the same confirm grammar as every in-page confirm: the

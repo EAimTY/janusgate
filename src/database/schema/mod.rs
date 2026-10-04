@@ -634,6 +634,9 @@ mod tests {
 
             for (previous, schema) in schemas.iter().zip(schemas.iter().skip(1)) {
                 let connection = open_memory_connection().await;
+                connection
+                    .execute_batch("PRAGMA foreign_keys = ON;")
+                    .await?;
                 connection.execute_batch(previous.schema).await?;
                 connection.execute_batch(schema.migration).await?;
                 assert_declared_schema(&connection, schema).await?;

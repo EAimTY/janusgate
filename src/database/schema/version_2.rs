@@ -205,8 +205,32 @@ CREATE TABLE api_keys (
     name TEXT NOT NULL,
     key TEXT NOT NULL UNIQUE,
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    default_access TEXT NOT NULL DEFAULT 'deny' CHECK (default_access IN ('allow', 'deny'))
 ) STRICT;
+
+CREATE TABLE api_key_provider_defaults (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, provider_id)
+) STRICT;
+CREATE TABLE api_key_pool_defaults (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    pool_id INTEGER NOT NULL REFERENCES provider_pools(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, pool_id)
+) STRICT;
+CREATE TABLE api_key_model_route_overrides (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    model_route_id INTEGER NOT NULL REFERENCES model_routes(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, model_route_id)
+) STRICT;
+CREATE INDEX idx_api_key_provider_defaults_provider_id ON api_key_provider_defaults (provider_id);
+CREATE INDEX idx_api_key_pool_defaults_pool_id ON api_key_pool_defaults (pool_id);
+CREATE INDEX idx_api_key_model_route_overrides_model_route_id
+    ON api_key_model_route_overrides (model_route_id);
 "###,
     migration: r###"
 ALTER TABLE provider_pools ADD COLUMN model_prefix TEXT NOT NULL DEFAULT '';
@@ -257,5 +281,30 @@ INSERT INTO model_routes (public_id, pool_id, upstream_id, is_automatic)
 SELECT DISTINCT pool.model_prefix || model.upstream_id, pool.id, model.upstream_id, 1 FROM
 provider_pools pool JOIN provider_pool_members member ON member.pool_id = pool.id JOIN models
 model ON model.provider_id = member.provider_id;
+ALTER TABLE api_keys ADD COLUMN default_access TEXT NOT NULL DEFAULT 'deny'
+    CHECK (default_access IN ('allow', 'deny'));
+
+CREATE TABLE api_key_provider_defaults (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, provider_id)
+) STRICT;
+CREATE TABLE api_key_pool_defaults (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    pool_id INTEGER NOT NULL REFERENCES provider_pools(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, pool_id)
+) STRICT;
+CREATE TABLE api_key_model_route_overrides (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    model_route_id INTEGER NOT NULL REFERENCES model_routes(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, model_route_id)
+) STRICT;
+CREATE INDEX idx_api_key_provider_defaults_provider_id ON api_key_provider_defaults (provider_id);
+CREATE INDEX idx_api_key_pool_defaults_pool_id ON api_key_pool_defaults (pool_id);
+CREATE INDEX idx_api_key_model_route_overrides_model_route_id
+    ON api_key_model_route_overrides (model_route_id);
 "###,
 };

@@ -593,18 +593,10 @@ function TopBar(): JSX.Element {
 }
 
 /**
- * The routes whose screen performs no gateway read at all, so the Refresh
- * control would pulse a refresh nothing answers: there it is disabled, its
- * hint stating why, instead of pretending. Today's two such screens are the
- * new API key page, which renders from local state only, and the not-found
- * page, the fallback for addresses the router cannot match — including a row
- * address whose identifier does not parse — which renders links alone. Every
- * other screen's reads ride the refresh pulse, the new provider page's boot
- * read included. A future screen that reads nothing joins this set with its
- * route.
+ * A not-found address renders links alone and has no read to refresh. Key creation owns the
+ * inventory read behind its policy editor, so its screen participates in the refresh pulse.
  */
 const REFRESHLESS_ROUTE_NAMES: ReadonlySet<AppRoute["name"]> = new Set([
-    "apiKeyNew",
     "notFound",
 ]);
 
