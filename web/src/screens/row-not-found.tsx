@@ -6,7 +6,7 @@ import { EmptyState } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
 
 /** The rows whose detail and edit screens share this not-found state. */
-type RowNotFoundKind = "api_key" | "model" | "provider";
+type RowNotFoundKind = "api_key" | "model" | "provider" | "pool" | "model_route";
 
 /** The door to creating a replacement, offered only where one is a way forward. */
 type CreateAction = {
@@ -25,6 +25,22 @@ const KIND_COPY: Record<
         readonly description: string;
     }
 > = {
+    pool: {
+        rowName: "Pool",
+        listLabel: "Pools",
+        listHref: hrefs.providerPools(),
+        backActionLabel: "Back to pools",
+        description:
+            "The gateway holds no pool here. It was deleted, or the address was typed wrong.",
+    },
+    model_route: {
+        rowName: "Public route",
+        listLabel: "Public routes",
+        listHref: hrefs.modelRoutes(),
+        backActionLabel: "Back to public routes",
+        description:
+            "The gateway holds no public route here. It was deleted, or the address was typed wrong.",
+    },
     api_key: {
         rowName: "API key",
         listLabel: "API keys",

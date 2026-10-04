@@ -36,6 +36,7 @@ import {
     type UsageEntityIndex,
     usageApiKeyLabel,
     usageModelLabel,
+    usageModelRouteLabel,
     usageProviderLabel,
 } from "./usage-labels";
 import { nextUsagePage, usageCursor } from "./usage-pagination";
@@ -330,6 +331,7 @@ export function UsageScreen(props: {
                             fields={draft()}
                             providers={entities().providers}
                             models={entities().models}
+                            modelRoutes={entities().modelRoutes}
                             apiKeys={entities().apiKeys}
                             hasEntityListings={hasEntityListings()}
                             statusError={statusError(draft().statusInput)}
@@ -519,6 +521,8 @@ function UsageRow(props: {
 }): JSX.Element {
     const outcome = (): BadgeMark => usageOutcomeBadge(props.row.outcome);
 
+    const modelRoute = () =>
+        usageModelRouteLabel(props.index.modelRoutesById, props.row.model_route_id);
     const model = () => usageModelLabel(props.index.modelsById, props.row.model_id);
     const provider = () => usageProviderLabel(props.index.providersById, props.row.provider_id);
     const apiKey = () => usageApiKeyLabel(props.index.apiKeysById, props.row.api_key_id);
@@ -539,6 +543,17 @@ function UsageRow(props: {
                 </span>
             </div>
             <p class="tnum mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13.5px]">
+                <UsageEntityLabel
+                    text={modelRoute().text}
+                    isListed={modelRoute().isListed}
+                    href={hrefs.modelRouteEdit(props.row.model_route_id)}
+                />
+                <span
+                    aria-hidden="true"
+                    class="text-ink-faint"
+                >
+                    ·
+                </span>
                 <UsageEntityLabel
                     text={model().text}
                     isListed={model().isListed}
@@ -574,7 +589,7 @@ function UsageRow(props: {
                 </span>
             </p>
             <p class="tnum mt-1 text-[12.5px] text-ink-faint">
-                {props.row.http_status === null ? "—" : props.row.http_status}
+                {`Client ${props.row.http_status ?? "—"} · Upstream ${props.row.upstream_http_status ?? "—"}`}
                 {` · ${formatDuration(props.row.duration)} · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)}${optionalTokenTail(
                     props.row.cached_tokens,
                     props.row.cache_write_tokens,

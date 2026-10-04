@@ -560,7 +560,13 @@ impl From<crate::provider::quota::Error> for Error {
             crate::provider::quota::Error::NotConfigured { provider_id } => {
                 Self::QuotaNotConfigured { provider_id }
             }
-            crate::provider::quota::Error::Provider(error) => Self::Provider(error),
+            crate::provider::quota::Error::Provider(error)
+            | crate::provider::quota::Error::Renewal(error) => Self::Provider(error),
+            crate::provider::quota::Error::MalformedResponse => {
+                Self::Provider(crate::provider::Error::Unavailable {
+                    detail: "quota response could not be read as JSON".into(),
+                })
+            }
             crate::provider::quota::Error::Extraction(error) => Self::QuotaExtraction(error),
         }
     }

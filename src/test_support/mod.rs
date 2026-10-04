@@ -140,6 +140,34 @@ pub(crate) fn install_global_configuration() -> &'static crate::config::schema::
     install_test_configuration(&database_path, Some(&api_logs_directory))
 }
 
+/// Enables the canonical accounting fixture for tests exercising real dispatch stamps.
+/// Callers must hold [`configuration_lock`] throughout configuration-sensitive execution.
+/// A prior recording-off installer or completed reload scenario may leave the shared switch off;
+/// the live watcher enables it before any test dispatch instead of fabricating a draft stamp.
+///
+/// # Panics
+///
+/// Panics if the canonical fixture cannot be written or its watcher does not apply the reload.
+pub(crate) async fn install_recording_configuration() {
+    install_global_configuration();
+    if crate::CONFIG.api_logs.is_some() {
+        return;
+    }
+    let directory = configuration_directory().join("api-logs");
+    std::fs::write(
+        test_configuration_file_path(),
+        configuration_body(&crate::CONFIG.database.path, Some(&directory)),
+    )
+    .unwrap_or_else(|error| panic!("the accounting fixture configuration writes: {error}"));
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while crate::CONFIG.api_logs.is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|error| panic!("the accounting fixture reload applies: {error}"));
+}
+
 /// The fixed per-process directory the shared test configuration lives in.
 fn configuration_directory() -> PathBuf {
     std::env::temp_dir().join(format!("janusgate-test-config-{}", std::process::id()))
@@ -205,6 +233,7 @@ pub(crate) fn install_test_configuration(
 
     // The reload watcher needs a runtime of its own: the installing test
     // may be a synchronous unit test with none.
+    let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(0);
     std::thread::spawn(move || {
         #[expect(
             clippy::unwrap_used,
@@ -215,8 +244,26 @@ pub(crate) fn install_test_configuration(
             .build()
             .unwrap();
 
-        runtime.block_on(watcher);
+        runtime.block_on(async move {
+            use std::{future::Future as _, task::Poll};
+
+            let mut watcher = Box::pin(watcher);
+            // Its first poll registers filesystem watches before waiting for an event. Do not
+            // let a reload fixture write its first update before that registration has finished.
+            std::future::poll_fn(|context| {
+                assert!(watcher.as_mut().poll(context).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            ready_sender
+                .send(())
+                .unwrap_or_else(|error| panic!("the watcher fixture announces readiness: {error}"));
+            watcher.await;
+        });
     });
+    ready_receiver
+        .recv()
+        .unwrap_or_else(|error| panic!("the watcher fixture becomes ready: {error}"));
 
     #[expect(
         clippy::expect_used,
@@ -403,7 +450,6 @@ pub(crate) async fn insert_provider(
     database: &Database,
     definition: &ProviderDefinition,
     name: &str,
-    model_prefix: &str,
     base_url: Option<&str>,
     credentials: StoredCredentials,
 ) -> Provider {
@@ -416,8 +462,8 @@ pub(crate) async fn insert_provider(
     storage::providers::insert_provider(
         database,
         storage::providers::NewProvider {
+            model_prefix: &format!("{name}-"),
             name,
-            model_prefix,
             base_url,
             credentials: &credentials,
             definition,
@@ -468,9 +514,6 @@ pub(crate) struct FlowFixtureDelta {
     /// Overrides the base provider name `Some("created")`; `Some(None)` clears it.
     pub(crate) provider_name: Option<Option<String>>,
 
-    /// Overrides the base model prefix `Some("")`; `Some(None)` clears it.
-    pub(crate) model_prefix: Option<Option<String>>,
-
     /// Overrides the base target provider id `None`.
     pub(crate) target_provider_id: Option<i64>,
 
@@ -508,7 +551,6 @@ pub(crate) async fn insert_flow_fixture(
         state_token,
         purpose,
         provider_name,
-        model_prefix,
         target_provider_id,
         device_code,
         device_user_code,
@@ -520,12 +562,13 @@ pub(crate) async fn insert_flow_fixture(
     insert_flow(
         database,
         NewFlow {
+            model_prefix: (purpose.unwrap_or(FlowPurpose::Create) == FlowPurpose::Create)
+                .then(String::new),
             definition_name: definition.name.clone(),
             definition_version: definition.version,
             state_token: state_token.unwrap_or_else(|| "state-token".to_string()),
             purpose: purpose.unwrap_or(FlowPurpose::Create),
             provider_name: provider_name.unwrap_or_else(|| Some("created".to_string())),
-            model_prefix: model_prefix.unwrap_or_else(|| Some(String::new())),
             base_url: None,
             target_provider_id,
             grant_type: FlowGrant::Device,

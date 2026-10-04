@@ -2,9 +2,7 @@
 //! translation into IR event streams.
 
 use super::{
-    api::Error as ApiError,
     context::Context,
-    database::Database,
     format::{PayloadError, UpstreamEventParser, UpstreamFormat, anthropic, gemini, openai},
     http_body, ids,
     ir::{Aggregator, InvalidRequest, IrAggregation, IrEvent, IrRequest},
@@ -18,16 +16,25 @@ use super::{
         oauth,
     },
     sse::{SseFrame, SseParser},
-    storage::{
-        self, Error as StorageError,
-        api_logs::{ApiLogDraft, finalize_api_log},
-    },
+    storage::{self, Error as StorageError, api_logs::ApiLogDraft},
 };
 use crate::compaction::accounting::{CompactionLedger, IterationKind};
+#[cfg(test)]
+use crate::database::Database;
 use log::{debug, error};
 use reqwest::{Client, StatusCode};
 use std::pin::Pin;
 use tokio_stream::{Stream, StreamExt as _, wrappers::ReceiverStream};
+
+mod attempt;
+pub(crate) use attempt::{AttemptOutcome, execute_attempt};
+mod selection;
+pub(crate) use selection::{CompactionSelection, execute_selection};
+
+#[cfg(test)]
+mod attempt_tests;
+#[cfg(test)]
+mod selection_tests;
 
 /// The shared pipeline-stage buffer size: the capacity of the channel at every adjacent
 /// execution-pipeline hop — the IR event channel between the upstream pump task and the response
@@ -44,14 +51,11 @@ pub(crate) const EVENT_CHANNEL_BUFFER: usize = 64;
 /// The Displays carry the complete human message the outward surface renders; the surface only maps
 /// each variant onto its status, `type`, `code`, and `param`.
 ///
-/// **Dispatch timing invariant**: only [`Error::Upstream`] (a mirrored non-2xx status) and
-/// [`Error::Unavailable`] (a transport or payload failure) can be produced *after* dispatch —
-/// after the upstream `send()` inside [`execute`] — because every other variant arises strictly
-/// before it (routing, validation, token refresh, payload rendering). The set of post-dispatch
-/// variants therefore contains every failure [`execute`] can report after it stamped the
-/// accounting draft, which is what lets [`execute`] finalize the request's accounting row itself,
-/// exactly once, and lets every later finalization point classify a stream failure after its
-/// conversion into [`ApiError`] (README §3 *ApiLog*).
+/// Failure variants do not imply dispatch timing: rejection evidence persistence can fail after
+/// headers, while payload and renewal failures occur before dispatch. The account draft's typed
+/// progress and dispatch stamp determine commitment and recording. Quota classifications remain
+/// typed until the routing or compaction coordinator has decided whether a fallback is permitted;
+/// conversion into [`crate::api::Error`] belongs to the final outward boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The client's request was rejected while preparing the upstream call.
@@ -65,6 +69,45 @@ pub(crate) enum Error {
         model: String,
     },
 
+    /// An enabled pool route has no account with an enabled exact physical model.
+    #[error("The model `{model}` has no available account in its pool.")]
+    PoolUnavailable {
+        /// Requested public model name.
+        model: String,
+    },
+
+    /// Every structural candidate was blocked or positively rejected for quota.
+    #[error("The model `{model}` has exhausted quota on every account in its pool.")]
+    PoolQuotaExhausted {
+        /// Requested public alias, never the foreign error body.
+        model: String,
+        /// Positive whole seconds to the earliest completely known candidate reset.
+        retry_after: Option<std::num::NonZeroU64>,
+    },
+
+    /// The established account cannot serve the requested public model in this pool.
+    #[error("The model `{model}` cannot use its required account.")]
+    BoundAccountUnavailable {
+        /// Requested public model alias.
+        model: String,
+    },
+
+    /// The established account has an applicable quota restriction; switching is forbidden.
+    #[error("The model `{model}` has exhausted quota on its required account.")]
+    BoundAccountQuotaExhausted {
+        /// Requested public model alias.
+        model: String,
+        /// Positive whole seconds until every applicable restriction has a known future reset.
+        retry_after: Option<std::num::NonZeroU64>,
+    },
+
+    /// Active authoritative/artifact routing evidence conflicts with a single live binding.
+    #[error("The model `{model}` has conflicting routing requirements.")]
+    RoutingStateConflict {
+        /// Requested public model alias.
+        model: String,
+    },
+
     /// The upstream answered a non-2xx status, which the outward surface mirrors verbatim. The
     /// status is carried as a [`StatusCode`] taken verbatim from the upstream response, so an
     /// invalid status is unrepresentable and the mirror needs no conversion.
@@ -75,6 +118,17 @@ pub(crate) enum Error {
 
         /// Truncated upstream body excerpt.
         detail: String,
+    },
+
+    /// A rejected data-plane response positively matched its authored quota policy.
+    #[error("Upstream request failed: {detail}")]
+    QuotaRejected {
+        /// Actual rejected upstream header status, mirrored by direct routes.
+        status: StatusCode,
+        /// Normal outward excerpt; never used as classification evidence.
+        detail: String,
+        /// Exact normal identity and applicability, resolved from the dispatch's physical model.
+        restriction: Box<crate::provider::quota_rejection::ClassifiedQuotaRejection>,
     },
 
     /// The upstream failed without a usable HTTP response: a transport failure, an oversized frame,
@@ -105,70 +159,53 @@ pub(crate) enum Error {
     },
 }
 
-/// Finalizes the accounting row of a post-dispatch failure inside [`execute`]: classifies the
-/// failure through the shared [`ApiError`] accounting — the one classification every finalization
-/// point shares — and hands the draft to [`finalize_api_log`], which never reports back —
-/// accounting failures stay out of the HTTP error domain (README §8).
-async fn finalize_dispatch_failure(context: &Context, log: &ApiLogDraft, error: &ApiError) {
-    let (outcome, http_status) = error.accounting();
-
-    finalize_api_log(
-        context.api_log_store.as_ref(),
-        log,
-        outcome,
-        Some(http_status),
-        None,
-    )
-    .await;
-}
-
 /// A stream of translated IR events; always terminates with [`IrEvent::Done`].
 pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, Error>> + Send>>;
 
-/// Resolves a public routing ID (README §3) to its enabled routing row.
+/// Resolves an enabled explicit public route to one real account and physical model.
 ///
-/// Zero special-casing: a `vanished` row resolves like any other, and its false three-input
-/// effective status lands it in the same 404 `model_not_found` outcome as an unknown or disabled
-/// model — same error classification, same message (README §6.5).
+/// Direct targets bypass pooled selection. Pool membership and physical state come from one
+/// coherent snapshot released before I/O, and eligible members follow authored priority.
 ///
 /// # Errors
 ///
-/// Returns [`Error::ModelNotFound`] for unknown, disabled, or vanished models.
+/// Returns model-not-found for unknown or disabled routes, pools, or direct targets;
+/// pool-unavailable for enabled pools with no structural candidate; or storage failures.
+///
+/// # Panics
+///
+/// Panics if a selected structural candidate has no physical model, an enforced local invariant.
+#[cfg(test)]
 pub(crate) async fn resolve_routing(
     database: &Database,
     public_id: &str,
 ) -> Result<ModelRouting, Error> {
-    match storage::models::find_routing(database, public_id).await? {
-        Some(routing) if routing.is_effectively_enabled => Ok(routing),
-        _ => Err(Error::ModelNotFound {
-            model: public_id.to_string(),
-        }),
-    }
+    selection::Selection::load(database, public_id)
+        .await?
+        .first_structural()
 }
 
-/// Executes a completion request end to end, returning the translated IR event stream.
-///
-/// The stream is pumped by a spawned task reading the upstream response; the client response is
-/// rendered on the handler side from the returned events.
-///
-/// `log` is the request's accounting draft: this function stamps its dispatch instant the moment
-/// before `send()` leaves and — should it then fail after dispatch — finalizes the row itself,
-/// leaving an unstamped draft untouched for every pre-dispatch failure (README §3 *ApiLog*).
-///
-/// `compaction` carries the native compaction passthrough's dispatch
-/// extensions — body controls and header overlay — when the compaction
-/// pipeline routes an ordinary execution through a passthrough upstream.
+/// Selects a compaction target using the already authenticated active producer requirement.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] — converted from the pipeline's own [`Error`] at the boundary, in one
-/// place per failure — for routing, token, and upstream failures detected before the response
-/// stream starts, and — per the dispatch timing invariant on [`Error`] — for the two
-/// post-dispatch failures it finalizes itself.
-/// The compaction dispatch extensions one ordinary execution may carry: a
-/// native compaction passthrough's body extension and header overlay. `None`
-/// for every request the compaction pipeline routes through the ordinary path
-/// without passthrough controls.
+/// Returns route/storage failures, incompatible native state, or the required pool account's
+/// availability/quota failure. Unbound pools use quota-aware priority selection; direct routes
+/// bypass affinity.
+///
+/// # Panics
+///
+/// Panics if the storage snapshot disagrees with its authored route target.
+pub(crate) async fn resolve_compaction_routing(
+    context: &Context,
+    parsed: &crate::format::ParsedRequest,
+    preparation: &crate::compaction::history::BoundaryPreparation,
+    api_key_id: i64,
+) -> Result<CompactionSelection, Error> {
+    selection::select_compaction(context, parsed, preparation, api_key_id).await
+}
+
+/// Native compaction body controls and header overlays carried by an ordinary dispatch.
 #[derive(Debug, Default)]
 pub(crate) struct CompactionDispatch {
     /// The vendor-shaped Responses `context_management` entries riding the
@@ -179,8 +216,6 @@ pub(crate) struct CompactionDispatch {
     /// verbatim.
     pub(crate) threshold_edits: Option<Vec<serde_json::Value>>,
 
-    /// Whether the outer compaction coordinator owns pre-stream failure finalization.
-    pub(crate) should_defer_failure_accounting: bool,
     /// Header rows overlaying the inference descriptor's own, replacing
     /// same-named rows — the operation betas a native passthrough requires.
     pub(crate) overlay_headers: Vec<crate::provider::definition::template::ParamRow>,
@@ -191,8 +226,9 @@ pub(crate) struct CompactionDispatch {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for pre-dispatch failures and — per the dispatch timing invariant — for
-/// the post-dispatch failures it finalizes itself.
+/// Returns typed [`Error`] values for preparation, transport, and rejected headers. Classified
+/// quota evidence remains distinguishable until the caller decides its operation's fallback.
+/// Its caller owns the draft and every finalization decision, including cancellation.
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
@@ -200,7 +236,8 @@ pub(crate) async fn execute(
     is_client_streaming: bool,
     log: &mut ApiLogDraft,
     compaction: Option<&CompactionDispatch>,
-) -> Result<IrEventStream, ApiError> {
+    affinity: Option<&mut crate::affinity::Ownership>,
+) -> Result<IrEventStream, Error> {
     // The client's reasoning effort string needs no interpretation here: it is opaque end to end
     // (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
     // renderers write it verbatim into the upstream's own parameter.
@@ -209,10 +246,10 @@ pub(crate) async fn execute(
     // remove it first, and a damaged marker must never be forwarded upstream. Its presence here is
     // an internal invariant violation, not client state, so it fails fast (README §6.8).
     if ir.state_items.iter().any(|item| item.is_gateway) {
-        return Err(ApiError::from(Error::Internal {
+        return Err(Error::Internal {
             message: "a gateway compaction carrier reached dispatch without preparation"
                 .to_string(),
-        }));
+        });
     }
 
     // Names the upstream in every error-level record the pump tasks emit. Which single site logs
@@ -239,7 +276,7 @@ pub(crate) async fn execute(
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
-        routing.model.public_id,
+        routing.public_id,
         upstream_format.as_str(),
         is_client_streaming
     );
@@ -253,37 +290,45 @@ pub(crate) async fn execute(
         compaction,
     )?;
 
-    // The dispatch mark: everything above ran before dispatch (no accounting row exists yet for
-    // any failure above), and everything below ran after it. With accounting disabled the stamp
-    // is skipped, and the request stays unrecordable end to end (README §3 *ApiLog*).
+    // The dispatch mark fixes this attempt's recording switch and advances commitment even
+    // when recording is disabled. Every earlier failure remains unrecordable (README §3).
     log.stamp();
 
     let response = match request_builder.send().await {
         Ok(response) => response,
 
         Err(error) => {
-            let error = ApiError::from(Error::Unavailable {
+            let error = Error::Unavailable {
                 detail: format!("upstream unreachable: {error}"),
-            });
-
-            if !compaction.is_some_and(|dispatch| dispatch.should_defer_failure_accounting) {
-                finalize_dispatch_failure(context, log, &error).await;
-            }
+            };
 
             return Err(error);
         }
     };
 
     let status = response.status();
+    log.observe_response(status);
 
     if !status.is_success() {
-        let error = ApiError::from(upstream_error_of(response).await);
+        let body = http_body::read_bounded_error_body(response).await;
+        let failure = quota_error_of(
+            context,
+            &provider,
+            &routing.model.upstream_id,
+            status,
+            &body,
+        )
+        .await
+        .unwrap_or_else(|error| Some(error))
+        .unwrap_or_else(|| Error::Upstream {
+            status,
+            detail: http_body::truncate_excerpt(&body.lossy_text()),
+        });
+        return Err(failure);
+    }
 
-        if !compaction.is_some_and(|dispatch| dispatch.should_defer_failure_accounting) {
-            finalize_dispatch_failure(context, log, &error).await;
-        }
-
-        return Err(error);
+    if let Some(affinity) = affinity {
+        affinity.accept(routing.provider.id);
     }
 
     debug!("{upstream_label}: upstream responded {status}");
@@ -371,6 +416,7 @@ pub(crate) async fn execute_internal(
     ledger: &mut CompactionLedger,
     kind: IterationKind,
     log: &mut ApiLogDraft,
+    ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<IrAggregation, Error> {
     ir.model = routing.model.upstream_id.clone();
 
@@ -402,8 +448,26 @@ pub(crate) async fn execute_internal(
         }
     };
 
+    log.observe_response(response.status());
     if !response.status().is_success() {
-        return Err(upstream_error_of(response).await);
+        let status = response.status();
+        let body = http_body::read_bounded_error_body(response).await;
+        return Err(quota_error_of(
+            context,
+            &provider,
+            &routing.model.upstream_id,
+            status,
+            &body,
+        )
+        .await?
+        .unwrap_or_else(|| Error::Upstream {
+            status,
+            detail: http_body::truncate_excerpt(&body.lossy_text()),
+        }));
+    }
+
+    if let Some(ownership) = ownership {
+        ownership.accept(routing.provider.id);
     }
 
     let is_streaming = is_upstream_streaming(&provider.definition.payload.inference, false);
@@ -452,7 +516,7 @@ fn observe_internal_usage(
         _ => return,
     }
     if let Some(usage) = iteration_usage.or(*last_usage) {
-        log.stamp_billed_usage(billed_before.saturating_sum(usage));
+        log.stamp_billed_usage(Some(billed_before.saturating_sum(usage)));
     }
 }
 
@@ -1211,19 +1275,46 @@ fn serialize_frame(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap()
 }
 
-/// Builds the upstream error for a non-2xx response through the shared bounded error-body read
-/// ([`http_body::read_error_body`]) and the one excerpt policy ([`http_body::truncate_excerpt`]):
-/// the full body is never buffered, because a hostile upstream must not be able to stream unbounded
-/// bytes into gateway memory just to shape an error message.
-pub(crate) async fn upstream_error_of(response: reqwest::Response) -> Error {
-    let status = response.status();
-
-    let body = http_body::read_error_body(response).await;
-
-    Error::Upstream {
+/// Applies exact quota rules to a rejected generation/native body and orders durable evidence.
+/// Token counters and every control-plane operation deliberately never call this function.
+///
+/// # Errors
+///
+/// Returns storage failures; a stale generation or deleted account never recreates evidence.
+pub(crate) async fn quota_error_of(
+    context: &Context,
+    provider: &Provider,
+    upstream_id: &str,
+    status: StatusCode,
+    body: &http_body::ErrorBody,
+) -> Result<Option<Error>, Error> {
+    let Some(restriction) = crate::provider::quota_rejection::classify_rejection(
+        status.as_u16(),
+        body,
+        provider
+            .definition
+            .payload
+            .inference
+            .quota_exhaustion
+            .as_ref(),
+        upstream_id,
+    ) else {
+        return Ok(None);
+    };
+    storage::quota_blocks::record_rejection(
+        &context.database,
+        provider.id,
+        provider.quota_generation,
+        &restriction.key,
+        &restriction.applies_to,
+        crate::unix_time::unix_now_micros(),
+    )
+    .await?;
+    Ok(Some(Error::QuotaRejected {
         status,
-        detail: http_body::truncate_excerpt(&body),
-    }
+        detail: http_body::truncate_excerpt(&body.lossy_text()),
+        restriction: Box::new(restriction),
+    }))
 }
 
 impl From<PayloadError> for Error {
@@ -1286,7 +1377,7 @@ mod tests {
     }
 
     /// Builds a minimal one-turn chat request the dispatch bodies render from.
-    fn fixture_ir() -> IrRequest {
+    pub(super) fn fixture_ir() -> IrRequest {
         IrRequest {
             state_items: Vec::new(),
             model: "upstream-model".to_string(),
@@ -1316,11 +1407,13 @@ mod tests {
         clippy::expect_used,
         reason = "the fixture version literal is positive"
     )]
-    fn fixture_provider(envelope: Option<TemplateNode>) -> Provider {
+    pub(super) fn fixture_provider(envelope: Option<TemplateNode>) -> Provider {
         Provider {
+            model_prefix: String::new(),
+            quota_generation: 0,
+            quota_revision: 0,
             id: 1,
             name: "test-provider".to_string(),
-            model_prefix: String::new(),
             base_url: None,
             credentials: StoredCredentials::ApiKey {
                 api_key: "key".to_string(),
@@ -1339,6 +1432,7 @@ mod tests {
                         render_options: vec![],
                         envelope,
                         response_unwrap: None,
+                        quota_exhaustion: None,
                     },
                     credential: CredentialAcquisition::ApiKey,
                     provisioning: None,
@@ -1363,12 +1457,13 @@ mod tests {
     )]
     fn fixture_wire_body(http: &Client, provider: &Provider, ir: &IrRequest) -> serde_json::Value {
         let routing = ModelRouting {
+            model_route_id: 1,
+            public_id: ir.model.clone(),
+            provider_pool_id: None,
             provider: provider.clone(),
             model: Model {
                 id: 1,
                 upstream_id: ir.model.clone(),
-                public_id: "public-model".to_string(),
-                id_override: None,
                 is_enabled: true,
                 discovery_state: DiscoveryState::Manual,
                 thinking_levels: None,
@@ -1380,7 +1475,6 @@ mod tests {
                 compaction_support: None,
                 compaction_support_override: None,
             },
-            is_effectively_enabled: true,
         };
 
         let request = build_upstream_request(http, provider, &routing, ir, false, None)

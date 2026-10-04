@@ -44,6 +44,21 @@ function screenApi(options: {
     readonly discoveryAnswer?: Promise<DiscoverModelsResponse>;
 }): ManagementApi {
     return stubManagementApi({
+        listProviderPools: () =>
+            Promise.resolve({
+                provider_pools: [],
+            }),
+        getProviderAvailability: () =>
+            Promise.resolve({
+                blocks: [],
+                last_refresh: {
+                    type: "not_observed",
+                },
+            }),
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [],
+            }),
         listProviders: (signal) => {
             options.onListProviders?.();
             signal?.throwIfAborted();
@@ -151,6 +166,9 @@ describe("ProviderDetailScreen automatic discovery", () => {
                 document.body,
             ),
         );
+        await settle();
+        expect(getQuota).not.toHaveBeenCalled();
+        buttonWithText("Refresh quota").click();
         await settle();
         expect(bodyText()).toContain("quota read failed");
         expect(bodyText()).toContain("Models · 1");
@@ -272,7 +290,6 @@ describe("ProviderDetailScreen discovery notice", () => {
         ...discoveredModel,
         id: 12,
         upstream_id: "qwen3:14b",
-        public_id: "local-qwen3-14b",
     };
 
     function mountWithRefresh(api: ManagementApi): void {
@@ -487,10 +504,10 @@ describe("ProviderDetailScreen facts", () => {
 
     /** The shared OAuth row, holding a stored base URL and a valid credential. */
     const oauthProvider = providerRow({
+        model_prefix: "",
         type: "oauth",
         id: 5,
         name: "local",
-        model_prefix: "local-",
         provider_definition_name: "codex-oauth",
         format: "openai_response",
         base_url: "https://relay.example.com",
@@ -539,10 +556,10 @@ describe("ProviderDetailScreen credential reconnect", () => {
 
     /** One OAuth provider whose authorization lapsed long ago. */
     const expiredOauth = providerRow({
+        model_prefix: "",
         type: "oauth",
         id: 5,
         name: "local",
-        model_prefix: "local-",
         provider_definition_name: "codex-oauth",
         format: "openai_response",
         base_url: null,

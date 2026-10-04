@@ -60,6 +60,39 @@ pub(crate) struct Config {
     /// Removing a key intentionally invalidates its artifacts.
     #[serde(default)]
     pub(crate) compaction: Option<CompactionConfig>,
+
+    /// Live quota refresh cadence and bounded content-free pool affinity.
+    #[serde(default)]
+    pub(crate) pooling: PoolingConfig,
+}
+
+/// Positive pool runtime limits, defaulted as a whole and field by field.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PoolingConfig {
+    /// Automatic quota check interval, in whole seconds; defaults to 60.
+    #[serde(default = "super::defaults::quota_refresh_interval_seconds")]
+    pub(crate) quota_refresh_interval_seconds: NonZero<u32>,
+    /// Historical anchor idle lifetime, in whole seconds; defaults to 86400.
+    #[serde(default = "super::defaults::sticky_idle_timeout_seconds")]
+    pub(crate) sticky_idle_timeout_seconds: NonZero<u32>,
+    /// Exact fresh-request retry lifetime, in whole seconds; defaults to 60.
+    #[serde(default = "super::defaults::sticky_retry_timeout_seconds")]
+    pub(crate) sticky_retry_timeout_seconds: NonZero<u32>,
+    /// Maximum counted cache entries; defaults to 100000.
+    #[serde(default = "super::defaults::sticky_maximum_entries")]
+    pub(crate) sticky_maximum_entries: NonZero<usize>,
+}
+
+impl Default for PoolingConfig {
+    fn default() -> Self {
+        Self {
+            quota_refresh_interval_seconds: super::defaults::quota_refresh_interval_seconds(),
+            sticky_idle_timeout_seconds: super::defaults::sticky_idle_timeout_seconds(),
+            sticky_retry_timeout_seconds: super::defaults::sticky_retry_timeout_seconds(),
+            sticky_maximum_entries: super::defaults::sticky_maximum_entries(),
+        }
+    }
 }
 
 /// Remote-compaction sealing key configuration.

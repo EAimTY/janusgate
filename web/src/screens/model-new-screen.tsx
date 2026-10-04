@@ -20,10 +20,7 @@ import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     CompactionSupportOverrideFields,
     compactionOverrideSelection,
-    composedPublicId,
-    ModelIdOverrideFields,
     normalizedCompactionOverride,
-    normalizedPublicIdOverride,
     normalizedThinkingLevelsOverride,
     normalizedTokenCapOverride,
     ThinkingLevelsOverrideFields,
@@ -150,8 +147,6 @@ function ModelCreateForm(props: {
     const [providerId, setProviderId] = createSignal(initialSelection());
     const [upstreamId, setUpstreamId] = createSignal(props.initialUpstreamId ?? "");
     const [isEnabled, setIsEnabled] = createSignal(true);
-    const [hasIdOverride, setHasIdOverride] = createSignal(false);
-    const [idOverride, setIdOverride] = createSignal("");
     const [hasLevelsOverride, setHasLevelsOverride] = createSignal(false);
     const [selectedLevels, setSelectedLevels] = createSignal<ReadonlyArray<string>>([]);
     const [hasMaxInputOverride, setHasMaxInputOverride] = createSignal(false);
@@ -170,14 +165,8 @@ function ModelCreateForm(props: {
 
     const trimmedUpstream = (): string => upstreamId().trim();
 
-    const normalizedOverride = (): string | null =>
-        normalizedPublicIdOverride(hasIdOverride(), idOverride());
-
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "Upstream ID");
-
-    const overrideError = (): string | null =>
-        routingTokenError(normalizedOverride(), "Public ID override");
 
     const maxInputError = (): string | null =>
         tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "Max input tokens override");
@@ -189,19 +178,11 @@ function ModelCreateForm(props: {
             "Max output tokens override",
         );
 
-    const composedId = (): string =>
-        composedPublicId(
-            selectedProvider()?.model_prefix ?? "",
-            trimmedUpstream(),
-            normalizedOverride(),
-        );
-
     /** The creation's composition rules: an owned provider with a routable identity. */
     const canCompose = (): boolean =>
         selectedProvider() !== null &&
         trimmedUpstream() !== "" &&
         upstreamError() === null &&
-        overrideError() === null &&
         maxInputError() === null &&
         maxOutputError() === null;
 
@@ -224,7 +205,6 @@ function ModelCreateForm(props: {
                 outcome: await performManagementCall(() =>
                     props.api.createModel(
                         toCreateModelRequest(provider.id, trimmedUpstream(), {
-                            id_override: normalizedOverride(),
                             is_enabled: isEnabled(),
                             thinking_levels_override: normalizedThinkingLevelsOverride(
                                 hasLevelsOverride(),
@@ -265,7 +245,7 @@ function ModelCreateForm(props: {
             <Notice
                 tone="warn"
                 title="A model added by hand is never removed automatically — and it claims back what discovery lost."
-                detail="Naming a provider and upstream ID the upstream no longer reports claims that model back under the settings below."
+                detail="Naming a provider and upstream ID the upstream no longer reports claims that model back under the settings below. The model is automatically exposed through its standalone provider prefix or owning pool prefixes."
             />
 
             {/* One form spans both cards, so pressing Enter in the identity
@@ -326,16 +306,6 @@ function ModelCreateForm(props: {
                             isOn={isEnabled()}
                             isDisabled={create.isCreating()}
                             onToggle={setIsEnabled}
-                        />
-
-                        <ModelIdOverrideFields
-                            hasIdOverride={hasIdOverride()}
-                            onHasIdOverrideToggle={setHasIdOverride}
-                            idOverride={idOverride()}
-                            onIdOverrideInput={setIdOverride}
-                            composedId={composedId()}
-                            idOverrideError={overrideError()}
-                            isDisabled={create.isCreating()}
                         />
 
                         <ThinkingLevelsOverrideFields

@@ -12,16 +12,18 @@ use crate::{
     ir::{InvalidRequest, IrAggregation},
 };
 
+mod affinity;
 mod client_render;
 mod compaction;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
+mod window_affinity;
 
 pub(crate) use self::{
     compaction::{
-        compaction_item_json, parse_compact_request, render_compacted_response,
-        render_gateway_compacted_response, render_trigger_stream_frames,
+        CompactedResponseBody, compaction_item_json, gateway_window_anchors, parse_compact_request,
+        render_compacted_response, render_gateway_compacted_response, render_trigger_stream_frames,
     },
     upstream_parse::{
         CompactedResponseNative, UpstreamParser, UpstreamUsage, parse_compact_response,
@@ -51,6 +53,24 @@ impl ClientFormat for Format {
         client_render::render_json_response(public_id, aggregation)
     }
 
+    fn project_json_response(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        client_render::project_json_response(response, projector)
+    }
+
+    fn completed_json_artifacts(response: &Self::JsonResponse) -> Vec<crate::affinity::Anchor> {
+        client_render::completed_json_artifacts(response)
+    }
+
+    fn project_json_checkpoint(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        client_render::project_json_after_prefix(response, projector, 1)
+    }
+
     fn render_json_response_with_prefix(
         public_id: &str,
         aggregation: &IrAggregation,
@@ -63,4 +83,11 @@ impl ClientFormat for Format {
             prefix.to_vec(),
         )
     }
+}
+
+/// Borrows one sealer-proven checkpoint window into its canonical active projection.
+pub(crate) fn gateway_checkpoint_projection(
+    items: &[serde_json::Value],
+) -> Option<crate::affinity::fingerprint::Projector> {
+    window_affinity::project(items, true, true)
 }

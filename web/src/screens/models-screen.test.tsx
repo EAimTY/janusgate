@@ -85,7 +85,6 @@ describe("ModelsScreen search", () => {
                                 providerRow({
                                     id: 3,
                                     name: "mix-ops",
-                                    model_prefix: "",
                                 }),
                             ],
                             models: [
@@ -93,7 +92,6 @@ describe("ModelsScreen search", () => {
                                     provider_id: 3,
                                     provider: "mix-ops",
                                     upstream_id: "llama3-70b",
-                                    public_id: "llama3-70b",
                                 }),
                             ],
                         })}
@@ -140,7 +138,7 @@ describe("ModelsScreen count line", () => {
         modelRow({
             provider_id: 3,
             provider: "mix-ops",
-            public_id: publicId,
+
             upstream_id: publicId,
         }),
     );
@@ -155,7 +153,6 @@ describe("ModelsScreen count line", () => {
                                 providerRow({
                                     id: 3,
                                     name: "mix-ops",
-                                    model_prefix: "",
                                 }),
                             ],
                             models,
@@ -209,7 +206,6 @@ describe("ModelsScreen provider filter", () => {
                                 providerRow({
                                     id: 3,
                                     name: "mix-ops",
-                                    model_prefix: "",
                                 }),
                             ],
                             models: [
@@ -247,7 +243,6 @@ describe("ModelsScreen provider filter", () => {
                 provider_id: 3,
                 provider: "mix-ops",
                 upstream_id: "llama3-70b",
-                public_id: "llama3-70b",
             }),
         ]);
         await settle();

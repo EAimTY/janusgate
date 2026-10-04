@@ -23,11 +23,11 @@ import {
 } from "./screen-test-support";
 
 const provider = providerRow({
+    model_prefix: "",
     provider_definition_name: "generic-openai-responses",
     format: "openai_response",
     id: 3,
     name: "alpha",
-    model_prefix: "alpha-",
     base_url: "https://alpha.example",
 });
 
@@ -36,15 +36,13 @@ const model = modelRow({
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
-    public_id: "alpha-gpt-x",
 });
 
 /**
  * A management API standing in for the gateway itself: its listings answer
  * from mutable holders, every read re-parses the rows into fresh objects the
  * way the real wire does, and `models:update` applies the request over the
- * held row — recomposing the public ID from the provider's current prefix
- * when no override stands — so a reload after a save answers the saved row
+ * held row, so a reload after a save answers the saved physical inventory row
  * the way the real gateway would.
  */
 function screenApi(holder: {
@@ -74,22 +72,13 @@ function screenApi(holder: {
                     return row;
                 }
 
-                const owner = holder.providers.find(
-                    (candidate) => candidate.id === row.provider_id,
-                );
-                const override = request.id_override;
-
                 return {
                     ...row,
-                    id_override: override,
                     is_enabled: request.is_enabled,
                     thinking_levels_override: request.thinking_levels_override,
                     max_input_tokens_override: request.max_input_tokens_override,
                     max_output_tokens_override: request.max_output_tokens_override,
                     compaction_support_override: request.compaction_support_override,
-                    public_id:
-                        override ??
-                        `${owner === undefined ? "" : owner.model_prefix}${row.upstream_id}`,
                 };
             });
 
@@ -108,15 +97,14 @@ function screenApi(holder: {
     });
 }
 
-/** Opens the override and names it, the model form's dirtiest path. */
-async function overridePublicId(value: string): Promise<HTMLInputElement> {
-    switchWithLabel("Override the public ID").click();
+/** Makes a capability edit so refresh tests exercise the held-form contract. */
+async function overrideInputLimit(): Promise<HTMLInputElement> {
+    switchWithLabel("Override max input tokens").click();
     await settle();
-    const override = labeledInput("Public ID override");
-    typeInto(override, value);
+    const input = labeledInput("Max input tokens override");
+    typeInto(input, "30000");
     await settle();
-
-    return override;
+    return input;
 }
 
 describe("ModelEditScreen refresh against an open form", () => {
@@ -139,32 +127,6 @@ describe("ModelEditScreen refresh against an open form", () => {
         );
     }
 
-    it("hints the composed ID once the override is toggled off over stale field text", async () => {
-        const holder = {
-            providers: [
-                provider,
-            ],
-            models: [
-                model,
-            ],
-        };
-        mount(holder);
-        await settle();
-
-        switchWithLabel("Override the public ID").click();
-        await settle();
-        typeInto(labeledInput("Public ID override"), "custom-gpt-x");
-        await settle();
-        switchWithLabel("Override the public ID").click();
-        await settle();
-
-        // The switch is off, so the save discards the field's stale text and
-        // the gateway recomposes the public ID from the provider's prefix —
-        // the off-hint must name exactly that ID, never the discarded
-        // override.
-        expect(paragraphWithText("Clients call").textContent).toBe("Clients call alpha-gpt-x.");
-    });
-
     it("keeps a dirty form across a refresh whose listings re-answer the same rows", async () => {
         const holder = {
             providers: [
@@ -177,13 +139,13 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        const override = await overridePublicId("custom-gpt-x");
+        const override = await overrideInputLimit();
         expect(document.body.textContent).toContain("Unsaved changes");
 
         requestRefresh();
         await settle();
 
-        expect(labeledInput("Public ID override").value).toBe("custom-gpt-x");
+        expect(labeledInput("Max input tokens override").value).toBe("30000");
         expect(override.isConnected).toBe(true);
         expect(document.body.textContent).toContain("Unsaved changes");
     });
@@ -200,7 +162,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom-gpt-x");
+        await overrideInputLimit();
 
         holder.models = [
             {
@@ -211,7 +173,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         requestRefresh();
         await settle();
 
-        expect(labeledInput("Public ID override").value).toBe("custom-gpt-x");
+        expect(labeledInput("Max input tokens override").value).toBe("30000");
         expect(document.body.textContent).toContain("changed on the gateway");
     });
 
@@ -237,7 +199,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         await settle();
 
         expect(document.body.textContent).not.toContain("changed on the gateway");
-        expect(switchWithLabel("Override the public ID").getAttribute("aria-checked")).toBe(
+        expect(switchWithLabel("Override max input tokens").getAttribute("aria-checked")).toBe(
             "false",
         );
     });
@@ -254,7 +216,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom-gpt-x");
+        await overrideInputLimit();
         holder.models = [
             {
                 ...model,
@@ -268,7 +230,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         buttonWithText("Revert").click();
         await settle();
 
-        expect(switchWithLabel("Override the public ID").getAttribute("aria-checked")).toBe(
+        expect(switchWithLabel("Override max input tokens").getAttribute("aria-checked")).toBe(
             "false",
         );
         expect(document.body.textContent).not.toContain("changed on the gateway");
@@ -286,7 +248,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom-gpt-x");
+        await overrideInputLimit();
         holder.models = [
             {
                 ...model,
@@ -306,17 +268,16 @@ describe("ModelEditScreen refresh against an open form", () => {
                 // The form's own settings state is what Save writes over the
                 // gateway's version — the concurrent serving switch included.
                 is_enabled: true,
-                id_override: "custom-gpt-x",
-                public_id: "custom-gpt-x",
+                max_input_tokens_override: 30_000,
             },
         ]);
-        expect(labeledInput("Public ID override").value).toBe("custom-gpt-x");
+        expect(labeledInput("Max input tokens override").value).toBe("30000");
         expect(document.body.textContent).not.toContain("changed on the gateway");
         expect(document.body.textContent).not.toContain("Unsaved changes");
-        expect(document.body.textContent).toContain("Clients now call it custom-gpt-x.");
+        expect(document.body.textContent).toContain("Model saved.");
     });
 
-    it("saves capability overrides beside the routing settings", async () => {
+    it("saves capability overrides beside the inventory switch", async () => {
         const holder = {
             providers: [
                 provider,
@@ -419,7 +380,7 @@ describe("ModelEditScreen refresh against an open form", () => {
                     provider_id: 3,
                     provider: "alpha",
                     upstream_id: "gpt-x",
-                    public_id: "alpha-gpt-x",
+
                     compaction_support_override: {
                         messages_on_demand_compaction: "supported",
                     },
@@ -447,7 +408,6 @@ describe("ModelEditScreen refresh against an open form", () => {
                     provider_id: 3,
                     provider: "alpha",
                     upstream_id: "gpt-x",
-                    public_id: "alpha-gpt-x",
                 }),
                 compaction_support_override: null,
             },
@@ -481,7 +441,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         );
         await settle();
 
-        await overridePublicId("custom-gpt-x");
+        await overrideInputLimit();
         holder.models = [];
         buttonWithText("Save changes").click();
         await settle();
@@ -508,12 +468,9 @@ describe("ModelEditScreen refresh against an open form", () => {
         buttonWithText("Delete…").click();
         await settle();
 
-        // The armed question is where the operator decides: nothing survives
-        // the deletion to claim back — both recoveries return a new row with
-        // a fresh identity, and a discovered rebuild carries no custom public
-        // ID (README §7.1).
-        expect(paragraphWithText("Delete alpha-gpt-x?").textContent).toBe(
-            "Delete alpha-gpt-x? Clients calling it 404 until it exists again — a discovered model returns as new on the next discovery (without a custom public ID); a manual one can be re-added from the Create model page as a new row.",
+        // Re-creating inventory cannot restore the direct routes deleted with it.
+        expect(paragraphWithText("Delete gpt-x?").textContent).toBe(
+            "Delete gpt-x? Its direct routes are deleted too. Pool routes remain stored. Rediscovery or manual creation produces a new physical row and does not restore deleted routes.",
         );
     });
 
@@ -567,7 +524,7 @@ describe("ModelEditScreen vanished model", () => {
         provider_id: 3,
         provider: "alpha",
         upstream_id: "gpt-x",
-        public_id: "alpha-gpt-x",
+
         discovery_state: "vanished",
     });
 
@@ -621,7 +578,7 @@ describe("ModelEditScreen vanished model", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom-gpt-x");
+        await overrideInputLimit();
         buttonWithText("Save changes").click();
         await settle();
 
@@ -631,78 +588,5 @@ describe("ModelEditScreen vanished model", () => {
         expect(bodyText()).toContain("Model saved.");
         expect(bodyText()).not.toContain("Clients now call it");
         expect(bodyText()).toContain("The upstream no longer reports this model.");
-    });
-});
-
-describe("ModelEditScreen parked provider", () => {
-    const disposes = createDisposals();
-
-    /** The shared provider row parked: its switch is off, so nothing it holds serves. */
-    const parkedProvider: ProviderResponse = {
-        ...provider,
-        is_enabled: false,
-    };
-
-    function mount(holder: {
-        providers: ReadonlyArray<ProviderResponse>;
-        models: ReadonlyArray<ModelResponse>;
-    }): void {
-        disposes.push(
-            render(
-                () => (
-                    <ModelEditScreen
-                        api={screenApi(holder)}
-                        modelId={11}
-                    />
-                ),
-                document.body,
-            ),
-        );
-    }
-
-    it("names the re-enable instead of the routing line on a save under the parked provider", async () => {
-        // Restoring a parked provider works model-side: the row is enabled
-        // and reported, so a save's routing line would read as service
-        // restored while clients calling the ID still 404 — the provider's
-        // switch is off, and nothing else on this page states that hold.
-        const holder = {
-            providers: [
-                parkedProvider,
-            ],
-            models: [
-                model,
-            ],
-        };
-        mount(holder);
-        await settle();
-
-        await overridePublicId("custom-gpt-x");
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(bodyText()).toContain("Model saved.");
-        expect(bodyText()).not.toContain("Clients now call it");
-        expect(bodyText()).toContain(
-            "Clients will call it custom-gpt-x once the provider is re-enabled.",
-        );
-    });
-
-    it("keeps the routing line when the owning provider row is absent", async () => {
-        // Without the provider row the hold cannot be proven — the gate
-        // stays out of the way and the save notice speaks as usual.
-        const holder = {
-            providers: [],
-            models: [
-                model,
-            ],
-        };
-        mount(holder);
-        await settle();
-
-        await overridePublicId("custom-gpt-x");
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(bodyText()).toContain("Clients now call it custom-gpt-x.");
     });
 });

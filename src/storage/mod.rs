@@ -15,23 +15,20 @@
 //! [`DiscoveryState`]), while the OAuth and discovery engines — the domain's executors — call
 //! storage to read and write those same rows.
 //!
-//! The entity split interlocks deliberately, mirroring the management API's transaction
-//! contracts: `providers:update` recomputes its models' public IDs from the fresh prefix, so
-//! [`providers`] reads model rows through [`models::find_models_in_transaction`], while model
-//! writes and the OAuth flows' atomic commits re-read the provider row inside their transactions
-//! through [`providers::find_provider_by_id_in_transaction`].
+//! Physical model writes and OAuth commits re-read their account inside short transactions.
+//! Public route selection and listing share a coherent account/model/membership snapshot.
 
 use self::models::ModelEntry;
 use crate::{
     compaction::support_facts::CompactionSupportFacts,
     database::{
-        Database, Error as DatabaseError, IntoParams, Row, Transaction, TursoError, Value, params,
+        Database, Error as DatabaseError, IntoParams, Row, Transaction, TursoError, Value,
         params::IntoValue,
     },
     ir::IrReasoningLevel,
     provider::{CredentialKind, DiscoveryState, Model, Provider, definition::ProviderDefinition},
 };
-use std::{collections::HashMap, num::NonZeroI64};
+use std::num::NonZeroI64;
 
 /// How many times [`in_retryable_transaction!`] runs one read-then-write attempt, counting the
 /// first: three attempts absorb two intervening commits on top of the initial one.
@@ -103,19 +100,25 @@ macro_rules! in_retryable_transaction {
 
 pub(crate) mod api_keys;
 pub(crate) mod api_logs;
+mod automatic_routes;
 pub(crate) mod models;
 pub(crate) mod oauth_flows;
 pub(crate) mod provider_definitions;
 pub(crate) mod providers;
+pub(crate) mod quota_blocks;
+mod route_listing;
+pub(crate) mod route_snapshot;
+pub(crate) mod routing;
 #[cfg(test)]
 mod test_support;
 
 /// Column order of provider selects: the row identity, the routing columns, the credential
 /// state, and then the definition columns the row references, consumed positionally by
 /// [`provider_from_row`].
-const PROVIDER_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.base_url, p.credentials, \
-     p.is_enabled, d.name, d.version, d.format, d.inference, d.credential, d.provisioning, \
-     d.discovery, d.compaction, d.quota, d.created_at";
+const PROVIDER_COLUMNS: &str = "p.id, p.name, p.base_url, p.credentials, \
+     p.is_enabled, p.quota_generation, p.quota_revision, d.name, d.version, \
+     d.format, d.inference, d.credential, d.provisioning, \
+     d.discovery, d.compaction, d.quota, d.created_at, p.model_prefix";
 
 /// The join behind every provider read: the row and the exact definition version it references.
 pub(crate) const PROVIDER_JOINED_FROM: &str = "FROM providers p JOIN provider_definitions d \
@@ -136,22 +139,22 @@ const MODELS_JOINED_PROVIDERS: &str = "FROM models m JOIN providers p ON p.id = 
 /// capability override mirrors, and the two compaction support fact columns. The owning
 /// provider is never carried in the row itself — every read knows it through the query's filter
 /// or its join.
-const MODEL_COLUMNS: &str = "id, upstream_id, public_id, id_override, is_enabled, \
+const MODEL_COLUMNS: &str = "id, upstream_id, is_enabled, \
      discovery_state, thinking_levels, max_input_tokens, max_output_tokens, \
      thinking_levels_override, max_input_tokens_override, max_output_tokens_override, \
      compaction_support, compaction_support_override";
 
 /// The model columns as a provider-model join projects them, appended after
 /// [`PROVIDER_COLUMNS`].
-const MODEL_COLUMNS_JOINED: &str = "m.id, m.upstream_id, m.public_id, m.id_override, \
+const MODEL_COLUMNS_JOINED: &str = "m.id, m.upstream_id, \
      m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
      m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
      m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
 
 /// The combined column order of the model-entry join, consumed positionally by
 /// [`model_entry_from_row`]: the provider id and name, then the model columns.
-const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, m.public_id, \
-     m.id_override, m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
+const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, \
+     m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
      m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
      m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
 
@@ -449,7 +452,7 @@ fn support_facts_into_value(facts: Option<&CompactionSupportFacts>) -> Result<Va
 
 /// The column count of [`PROVIDER_COLUMNS`]: a provider-model join appends the model columns
 /// after it.
-pub(crate) const PROVIDER_COLUMN_COUNT: usize = 16;
+pub(crate) const PROVIDER_COLUMN_COUNT: usize = 18;
 
 /// Parses a definition payload JSON column, wrapped exactly once as internal storage drift: the
 /// column was written only through the validated management path, so a payload failing here is
@@ -518,7 +521,7 @@ pub(crate) fn definition_from_row_offset(
 /// definition version the row references.
 pub(crate) fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     let name: String = row.get(1)?;
-    let credentials_json: String = row.get(4)?;
+    let credentials_json: String = row.get(3)?;
 
     // The typed parse failure is wrapped exactly once as internal storage drift: the row was
     // written only through the validated management path, so a payload failing here is never the
@@ -531,11 +534,13 @@ pub(crate) fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     Ok(Provider {
         id: row.get(0)?,
         name,
-        model_prefix: row.get(2)?,
-        base_url: row.get(3)?,
+        model_prefix: row.get(17)?,
+        base_url: row.get(2)?,
         credentials,
-        is_enabled: row.get::<i64>(5)? != 0,
-        definition: definition_from_row_offset(row, 6)?,
+        is_enabled: row.get::<i64>(4)? != 0,
+        quota_generation: row.get(5)?,
+        quota_revision: row.get(6)?,
+        definition: definition_from_row_offset(row, 7)?,
     })
 }
 
@@ -553,26 +558,24 @@ fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, Error> {
     Ok(Model {
         id: row.get(offset)?,
         upstream_id: row.get(offset + 1)?,
-        public_id: row.get(offset + 2)?,
-        id_override: row.get(offset + 3)?,
-        is_enabled: row.get::<i64>(offset + 4)? != 0,
-        discovery_state: discovery_state_from_value(row.get_value(offset + 5)?)?,
-        thinking_levels: levels_from_column(row.get(offset + 6)?, "thinking_levels")?,
-        max_input_tokens: row.get(offset + 7)?,
-        max_output_tokens: row.get(offset + 8)?,
+        is_enabled: row.get::<i64>(offset + 2)? != 0,
+        discovery_state: discovery_state_from_value(row.get_value(offset + 3)?)?,
+        thinking_levels: levels_from_column(row.get(offset + 4)?, "thinking_levels")?,
+        max_input_tokens: row.get(offset + 5)?,
+        max_output_tokens: row.get(offset + 6)?,
         thinking_levels_override: levels_from_column(
-            row.get(offset + 9)?,
+            row.get(offset + 7)?,
             "thinking_levels_override",
         )?,
-        max_input_tokens_override: row.get(offset + 10)?,
-        max_output_tokens_override: row.get(offset + 11)?,
+        max_input_tokens_override: row.get(offset + 8)?,
+        max_output_tokens_override: row.get(offset + 9)?,
         compaction_support: support_facts_from_column(
-            row.get(offset + 12)?,
+            row.get(offset + 10)?,
             "compaction_support",
             SupportFactDomain::Known,
         )?,
         compaction_support_override: support_facts_from_column(
-            row.get(offset + 13)?,
+            row.get(offset + 11)?,
             "compaction_support_override",
             SupportFactDomain::WithUnknown,
         )?,
@@ -594,208 +597,6 @@ fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
     })
 }
 
-/// Rejects one provider's freshly composed public IDs when two of its rows would converge on one
-/// ID.
-///
-/// `composed` carries `(public_id, upstream_id)` pairs.
-fn ensure_ids_pairwise_distinct(
-    provider_name: &str,
-    composed: &[(&str, &str)],
-) -> Result<(), Error> {
-    let mut seen: HashMap<&str, &str> = HashMap::with_capacity(composed.len());
-
-    for (new_id, upstream_id) in composed {
-        if let Some(first_upstream_id) = seen.insert(new_id, upstream_id) {
-            return Err(Error::Conflict {
-                message: format!(
-                    "Public model ID `{new_id}` collides between upstream models \
-                     `{first_upstream_id}` and `{upstream_id}` of provider `{provider_name}`"
-                ),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-/// The holder facts of one routed model row that the public-ID collision checks consult.
-struct RoutedHolder {
-    /// Owning provider's row identifier.
-    provider_id: i64,
-
-    /// The holder's upstream identifier — half of the natural key that exempts a row from
-    /// colliding with itself.
-    upstream_id: String,
-
-    /// Owning provider's name, rendered by the conflict message.
-    provider_name: String,
-}
-
-/// Parses a routed-holder row in `(provider_id, upstream_id, provider_name)` column order at the
-/// given column offset.
-fn routed_holder_from_row_offset(row: &Row, offset: usize) -> Result<RoutedHolder, Error> {
-    Ok(RoutedHolder {
-        provider_id: row.get(offset)?,
-        upstream_id: row.get(offset + 1)?,
-        provider_name: row.get(offset + 2)?,
-    })
-}
-
-/// Whether a routed holder genuinely collides with a write: every holder collides except the very
-/// row being written, identified by its natural key `(provider_id, upstream_id)`.
-fn is_id_collision(holder: &RoutedHolder, provider_id: i64, upstream_id: &str) -> bool {
-    holder.provider_id != provider_id || holder.upstream_id != upstream_id
-}
-
-/// The conflict for a composed public ID already routed by another model row.
-fn id_collision_error(new_id: &str, holder: &RoutedHolder) -> Error {
-    Error::Conflict {
-        message: format!(
-            "Public model ID `{new_id}` is already routed by provider `{}`",
-            holder.provider_name
-        ),
-    }
-}
-
-/// Reads one routed-map snapshot inside a transaction: every model row's public ID mapped to its
-/// [`RoutedHolder`] — a `vanished` or `manual` row and an `id_override` holder all appear, since
-/// every holder reserves its public ID regardless of its discovery state.
-///
-/// Runs inside the caller's transaction, so the routed rows it observes cannot interleave with the
-/// caller's writes.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or a row is malformed.
-async fn read_routed_holders_in_transaction(
-    transaction: &mut Transaction,
-) -> Result<HashMap<String, RoutedHolder>, Error> {
-    let routed_rows = transaction
-        .query(
-            format!(
-                "SELECT m.public_id, m.provider_id, m.upstream_id, p.name {}",
-                MODELS_JOINED_PROVIDERS
-            ),
-            (),
-        )
-        .await?;
-
-    let mut routed: HashMap<String, RoutedHolder> = HashMap::with_capacity(routed_rows.len());
-
-    for row in &routed_rows {
-        routed.insert(row.get(0)?, routed_holder_from_row_offset(row, 1)?);
-    }
-
-    Ok(routed)
-}
-
-/// Rejects a freshly composed public ID that a [`read_routed_holders_in_transaction`] snapshot
-/// shows to be routed by another model row. The caller owns the snapshot's freshness: the check is
-/// exact only while no write since the snapshot can have introduced a holder of `new_id`.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the ID collides.
-fn ensure_id_routable_against(
-    routed: &HashMap<String, RoutedHolder>,
-    provider_id: i64,
-    new_id: &str,
-    upstream_id: &str,
-) -> Result<(), Error> {
-    if let Some(holder) = routed.get(new_id)
-        && is_id_collision(holder, provider_id, upstream_id)
-    {
-        return Err(id_collision_error(new_id, holder));
-    }
-
-    Ok(())
-}
-
-/// Rejects freshly composed public IDs that a row of another provider routes — the batch
-/// collision check behind [`super::providers::update_provider`]'s whole-provider recompute,
-/// evaluated against the POST-write routed landscape the caller's recompute produces.
-///
-/// The caller rewrites every row of the provider in the same transaction — a row with an
-/// `id_override` recomputes to its stored override and never moves — so the provider's own
-/// pre-write holders are artifacts of the very write being checked: a same-provider holder of a
-/// composed ID is either the row being written (exempt by its natural key) or a row the same
-/// write moves onto a different ID, vacating the composed one. A same-provider holder keeping
-/// the composed ID would converge with the row being written, which the caller's pairwise
-/// distinctness check has already rejected — so the post-write evaluation reduces to the holders
-/// this write cannot move: a row of another provider routes the composed ID both before and
-/// after the write, and conflicts with nothing written (README §7.1).
-///
-/// `composed` carries `(public_id, upstream_id)` pairs of the provider identified by
-/// `provider_id`; the caller must have rejected pairwise convergence first, because the vacating
-/// argument above rests on it. Runs inside the caller's transaction, so the routed rows it
-/// observes cannot interleave with the caller's writes.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or an ID collides.
-async fn ensure_ids_routable(
-    transaction: &mut Transaction,
-    provider_id: i64,
-    composed: &[(&str, &str)],
-) -> Result<(), Error> {
-    let routed = read_routed_holders_in_transaction(transaction).await?;
-
-    for (new_id, _) in composed {
-        if let Some(holder) = routed.get(*new_id)
-            && holder.provider_id != provider_id
-        {
-            return Err(id_collision_error(new_id, holder));
-        }
-    }
-
-    Ok(())
-}
-
-/// Rejects a freshly composed public ID that is already routed by another model row — the
-/// single-pair counterpart of [`ensure_ids_routable`], scoped to writes that move no other row:
-/// its callers write one model row apiece, so a holder of the same provider is a genuine
-/// collision here (every holder collides except the row being written, exempted by its natural
-/// key `(provider_id, upstream_id)`), whatever the holder's discovery state. This deliberately
-/// diverges from the batch form, which evaluates only foreign holders because that caller's
-/// whole-provider rewrite vacates the provider's other IDs itself.
-///
-/// The probe reads only the rows matching the candidate — `models.public_id` is unique, so this is
-/// an indexed single-row read rather than the batch form's full-table scan — and a holder of a
-/// different public ID is never consulted, exactly as the batch form's map lookup never consulted
-/// one. Runs inside the caller's transaction, so the routed rows it observes cannot interleave
-/// with the caller's writes.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or the ID collides.
-async fn ensure_id_routable_in_transaction(
-    transaction: &mut Transaction,
-    provider_id: i64,
-    new_id: &str,
-    upstream_id: &str,
-) -> Result<(), Error> {
-    let rows = transaction
-        .query(
-            format!(
-                "SELECT m.provider_id, m.upstream_id, p.name {} WHERE m.public_id = ?1",
-                MODELS_JOINED_PROVIDERS
-            ),
-            params![new_id],
-        )
-        .await?;
-
-    // `models.public_id` is unique: at most one holder row matches the probe.
-    if let Some(row) = rows.first() {
-        let holder = routed_holder_from_row_offset(row, 0)?;
-
-        if is_id_collision(&holder, provider_id, upstream_id) {
-            return Err(id_collision_error(new_id, &holder));
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -803,15 +604,7 @@ mod tests {
         reason = "a fixture violating its own invariant fails the test loudly"
     )]
 
-    use super::{
-        models::{
-            ModelUpdate, apply_discovered_models, discovered, find_routing,
-            list_enabled_models_with_owner, list_model_entries, update_model_overrides_checked,
-        },
-        providers::{ProviderUpdate, list_providers, update_provider},
-        test_support::{entry, insert_test_provider, oauth_definition},
-        *,
-    };
+    use super::{test_support::oauth_definition, *};
     use crate::{
         provider::{
             CredentialKind,
@@ -995,299 +788,6 @@ mod tests {
         // The refused transaction is dead; dropping it discards its connection, the documented
         // path for an unfinished handle.
         drop(reader);
-
-        Ok(())
-    }
-
-    /// Verifies the public-ID lifecycle end to end: discovery composes IDs from the provider's
-    /// prefix, `models:update` (addressed by row id) applies an override, routing follows the
-    /// composed ID, a `providers:update` prefix change recomputes every unoverridden ID while an
-    /// overridden one stays, clearing the override recomposes, a colliding override is rejected
-    /// without writing, and the two enabled switches gate the enabled-model listing and routing's
-    /// effective status.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn overrides_ids_and_recomputes_them_on_prefix_update() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
-
-        let discovered = apply_discovered_models(
-            &database,
-            provider_id,
-            &[discovered("gpt-4"), discovered("claude")],
-        )
-        .await?;
-
-        assert_eq!(discovered.len(), 2);
-
-        assert_eq!(
-            discovered
-                .first()
-                .map(|entry| entry.model.public_id.as_str()),
-            Some("p1-claude")
-        );
-
-        assert_eq!(
-            discovered
-                .get(1)
-                .map(|entry| entry.model.public_id.as_str()),
-            Some("p1-gpt-4")
-        );
-
-        let entries = list_model_entries(&database, None).await?;
-        let gpt4 = entry(&entries, "gpt-4");
-
-        assert_eq!(gpt4.model.public_id, "p1-gpt-4");
-        assert_eq!(gpt4.model.id_override, None);
-        assert!(gpt4.model.is_enabled);
-        assert_eq!(gpt4.model.discovery_state, DiscoveryState::Discovered);
-        assert!(gpt4.model.is_effectively_enabled(true));
-
-        let gpt4_id = gpt4.model.id;
-
-        let updated = update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: gpt4_id,
-                id_override: Some("top-gpt"),
-                is_enabled: true,
-                thinking_levels_override: None,
-                max_input_tokens_override: None,
-                max_output_tokens_override: None,
-                compaction_support_override: None,
-            },
-        )
-        .await?;
-
-        assert_eq!(updated.model.id, gpt4_id);
-        assert_eq!(updated.model.public_id, "top-gpt");
-        assert_eq!(updated.model.id_override.as_deref(), Some("top-gpt"));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "top-gpt")
-            .await?
-            .expect("the overridden ID routes");
-
-        assert_eq!(routing.model.upstream_id, "gpt-4");
-        assert!(routing.is_effectively_enabled);
-
-        assert!(find_routing(&database, "p1-gpt-4").await?.is_none());
-
-        // 3. A prefix change recomputes unoverridden IDs; the overridden row keeps its override.
-        update_provider(
-            &database,
-            provider_id,
-            ProviderUpdate {
-                name: "provider-1",
-                model_prefix: "new-p1-",
-                base_url: Some("http://localhost:8080"),
-                is_enabled: true,
-                definition: None,
-                credentials: None,
-            },
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, None).await?;
-
-        assert_eq!(entry(&entries, "gpt-4").model.public_id, "top-gpt");
-        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1-claude");
-
-        // 4. Clearing the override recomposes from the current prefix.
-        let cleared = update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: gpt4_id,
-                id_override: None,
-                is_enabled: true,
-                thinking_levels_override: None,
-                max_input_tokens_override: None,
-                max_output_tokens_override: None,
-                compaction_support_override: None,
-            },
-        )
-        .await?;
-
-        assert_eq!(cleared.model.public_id, "new-p1-gpt-4");
-        assert_eq!(cleared.model.id_override, None);
-
-        let claude_id = entry(&entries, "claude").model.id;
-
-        let collision = update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: claude_id,
-                id_override: Some("new-p1-gpt-4"),
-                is_enabled: true,
-                thinking_levels_override: None,
-                max_input_tokens_override: None,
-                max_output_tokens_override: None,
-                compaction_support_override: None,
-            },
-        )
-        .await;
-
-        assert!(matches!(collision, Err(Error::Conflict { .. })));
-
-        let entries = list_model_entries(&database, None).await?;
-
-        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1-claude");
-
-        update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: claude_id,
-                id_override: None,
-                is_enabled: false,
-                thinking_levels_override: None,
-                max_input_tokens_override: None,
-                max_output_tokens_override: None,
-                compaction_support_override: None,
-            },
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, None).await?;
-        let claude = entry(&entries, "claude");
-
-        assert!(!claude.model.is_enabled);
-        assert!(!claude.model.is_effectively_enabled(true));
-
-        let enabled_models = list_enabled_models_with_owner(&database).await?;
-
-        assert_eq!(enabled_models.len(), 1);
-
-        assert_eq!(
-            enabled_models.first().map(|model| model.public_id.as_str()),
-            Some("new-p1-gpt-4")
-        );
-
-        // The provider is the master switch: disabling it disables every model effectively.
-        let provider = list_providers(&database).await?;
-
-        assert_eq!(provider.len(), 1);
-
-        update_provider(
-            &database,
-            provider_id,
-            ProviderUpdate {
-                name: "provider-1",
-                model_prefix: "new-p1-",
-                base_url: Some("http://localhost:8080"),
-                is_enabled: false,
-                definition: None,
-                credentials: None,
-            },
-        )
-        .await?;
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "new-p1-gpt-4")
-            .await?
-            .expect("the row still resolves");
-
-        assert!(!routing.is_effectively_enabled);
-        assert!(list_enabled_models_with_owner(&database).await?.is_empty());
-
-        Ok(())
-    }
-
-    /// Verifies the prefix recompute against a shifted same-provider landscape: with an empty
-    /// prefix the rows `b` and `xb` legally hold those IDs, and raising the prefix to `x`
-    /// recomputes row `b` onto `xb` — the ID another of the provider's own rows holds pre-write
-    /// but vacates in the same write (`xb` → `xxb`). The batch collision check consults the
-    /// post-write routed landscape, so the shift succeeds with the recomposed IDs.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn prefix_shift_onto_a_vacating_own_row_recomputes_instead_of_conflicting()
-    -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "").await?;
-
-        apply_discovered_models(&database, provider_id, &[discovered("b"), discovered("xb")])
-            .await?;
-
-        let entries = list_model_entries(&database, Some(provider_id)).await?;
-
-        assert_eq!(entry(&entries, "b").model.public_id, "b");
-        assert_eq!(entry(&entries, "xb").model.public_id, "xb");
-
-        update_provider(
-            &database,
-            provider_id,
-            ProviderUpdate {
-                name: "provider-1",
-                model_prefix: "x",
-                base_url: Some("http://localhost:8080"),
-                is_enabled: true,
-                definition: None,
-                credentials: None,
-            },
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, Some(provider_id)).await?;
-
-        assert_eq!(entry(&entries, "b").model.public_id, "xb");
-        assert_eq!(entry(&entries, "xb").model.public_id, "xxb");
-
-        Ok(())
-    }
-
-    /// Verifies that the documented conflict domain survives the post-write evaluation: a
-    /// recomputed public ID a row of another provider holds — a holder the prefix write never
-    /// moves — rejects the whole `providers:update` with a conflict and writes nothing, even when
-    /// the same recompute also shifts an ID between the provider's own rows (README §7.1).
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn prefix_shift_onto_a_foreign_held_id_conflicts_without_writing()
-    -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "").await?;
-        let other_provider_id = insert_test_provider(&database, "provider-2", "x").await?;
-
-        apply_discovered_models(&database, provider_id, &[discovered("b"), discovered("xb")])
-            .await?;
-
-        // The other provider pre-reserves `xxb`, the ID provider-1's `xb` row recomputes to.
-        apply_discovered_models(&database, other_provider_id, &[discovered("xb")]).await?;
-
-        let conflict = update_provider(
-            &database,
-            provider_id,
-            ProviderUpdate {
-                name: "provider-1",
-                model_prefix: "x",
-                base_url: Some("http://localhost:8080"),
-                is_enabled: true,
-                definition: None,
-                credentials: None,
-            },
-        )
-        .await;
-
-        assert!(matches!(conflict, Err(Error::Conflict { .. })));
-
-        // Nothing was written: both of the provider's rows keep their pre-update public IDs.
-        let entries = list_model_entries(&database, Some(provider_id)).await?;
-
-        assert_eq!(entry(&entries, "b").model.public_id, "b");
-        assert_eq!(entry(&entries, "xb").model.public_id, "xb");
 
         Ok(())
     }

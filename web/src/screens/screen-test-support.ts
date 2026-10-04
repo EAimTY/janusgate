@@ -5,6 +5,7 @@ import type {
     ApiKeyResponse,
     ApiLogResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
     UsageBucket,
 } from "/src/management-api/generated/v0";
@@ -38,6 +39,23 @@ function refusedRoute(route: keyof ManagementApi): Promise<never> {
  */
 export function stubManagementApi(overrides: Partial<ManagementApi>): ManagementApi {
     return {
+        listProviderPools: overrides.listProviderPools ?? (() => refusedRoute("listProviderPools")),
+        createProviderPool:
+            overrides.createProviderPool ?? (() => refusedRoute("createProviderPool")),
+        updateProviderPool:
+            overrides.updateProviderPool ?? (() => refusedRoute("updateProviderPool")),
+        deleteProviderPool:
+            overrides.deleteProviderPool ?? (() => refusedRoute("deleteProviderPool")),
+        listModelRoutes: overrides.listModelRoutes ?? (() => refusedRoute("listModelRoutes")),
+        createModelRoute: overrides.createModelRoute ?? (() => refusedRoute("createModelRoute")),
+        updateModelRoute: overrides.updateModelRoute ?? (() => refusedRoute("updateModelRoute")),
+        deleteModelRoute: overrides.deleteModelRoute ?? (() => refusedRoute("deleteModelRoute")),
+        getProviderAvailability:
+            overrides.getProviderAvailability ?? (() => refusedRoute("getProviderAvailability")),
+        resetProviderAvailability:
+            overrides.resetProviderAvailability ??
+            (() => refusedRoute("resetProviderAvailability")),
+
         listProviderDefinitions:
             overrides.listProviderDefinitions ?? (() => refusedRoute("listProviderDefinitions")),
         createProviderDefinition:
@@ -70,7 +88,7 @@ export function stubManagementApi(overrides: Partial<ManagementApi>): Management
 }
 
 /**
- * The entity-listing fragment of the route table: each of the three listings
+ * The entity-listing fragment of the route table: each of the four listings
  * answers from the given rows — a kind left out answers empty — wrapped the
  * way the wire answers it. Suites spread this fragment over their own
  * remaining overrides inside `stubManagementApi`, keeping their other stub
@@ -80,8 +98,22 @@ export function stubListings(rows: {
     readonly providers?: ReadonlyArray<ProviderResponse>;
     readonly models?: ReadonlyArray<ModelResponse>;
     readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
+    readonly modelRoutes?: ReadonlyArray<ModelRouteResponse>;
+    readonly pools?: ReadonlyArray<import("/src/management-api/generated/v0").ProviderPoolResponse>;
 }): Partial<ManagementApi> {
     return {
+        listProviderPools: () =>
+            Promise.resolve({
+                provider_pools: [
+                    ...(rows.pools ?? []),
+                ],
+            }),
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [
+                    ...(rows.modelRoutes ?? []),
+                ],
+            }),
         listProviders: () =>
             Promise.resolve({
                 providers: [
@@ -117,10 +149,10 @@ type ApiKeyProviderRow = Extract<
  * expiry carries the same type on either side.
  */
 const defaultProviderRow: ApiKeyProviderRow = {
+    model_prefix: "",
     type: "api_key",
     id: 1,
     name: "local",
-    model_prefix: "local-",
     is_enabled: true,
     provider_definition_name: "generic-openai-chat-completions",
     provider_definition_version: 1,
@@ -185,8 +217,7 @@ export function modelRow(overrides: Partial<ModelResponse> = {}): ModelResponse 
         provider_id: 1,
         provider: "local",
         upstream_id: "qwen3:32b",
-        public_id: "local-qwen3-32b",
-        id_override: null,
+
         is_enabled: true,
         discovery_state: "discovered",
         thinking_levels: null,
@@ -228,6 +259,8 @@ export const API_LOG_CURSOR_BASE = 1_700_000_000_000_000;
 export function apiLogRow(offset: number, overrides: Partial<ApiLogResponse> = {}): ApiLogResponse {
     return {
         started_at: API_LOG_CURSOR_BASE + offset,
+        model_route_id: 17,
+        upstream_http_status: 200,
         api_key_id: 7,
         provider_id: 1,
         model_id: 9,

@@ -2,8 +2,14 @@ import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type {
+    ModelResponse,
+    ModelRouteResponse,
+    ProviderPoolResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
 import {
+    automaticModelNames,
     type CompactionFact,
     capabilitySource,
     effectiveCompactionFacts,
@@ -24,7 +30,7 @@ import {
     isSameModelRow,
     isSameProviderRow,
     readOne,
-    readProviderCatalog,
+    readPublishedInventory,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
@@ -34,7 +40,7 @@ import { proseLinkClass } from "/src/ui/attributes";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
-import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
+import { modelDiscoveryBadge, modelInventoryBadge } from "/src/ui/models-table";
 import { RowNotFound } from "./row-not-found";
 
 /**
@@ -47,13 +53,17 @@ export function ModelDetailScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [modelRoutes, setModelRoutes] = createSignal<ReadonlyArray<ModelRouteResponse>>([]);
+    const [pools, setPools] = createSignal<ReadonlyArray<ProviderPoolResponse>>([]);
 
     const read = createScreenRead({
         load: async (signal) => {
-            const catalog = await readOne(signal, readProviderCatalog(props.api, null));
+            const catalog = await readOne(signal, readPublishedInventory(props.api, null));
 
             setProviders(catalog.providers);
             setModels(catalog.models);
+            setModelRoutes(catalog.modelRoutes);
+            setPools(catalog.pools);
         },
     });
 
@@ -105,6 +115,8 @@ export function ModelDetailScreen(props: {
                     api={props.api}
                     provider={both.provider}
                     model={both.model}
+                    modelRoutes={modelRoutes()}
+                    pools={pools()}
                 />
             )}
         </ScreenFrame>
@@ -289,15 +301,17 @@ function ModelFacts(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse | null;
     readonly model: ModelResponse;
+    readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
+    readonly pools: ReadonlyArray<ProviderPoolResponse>;
 }): JSX.Element {
-    const serving = (): BadgeMark => modelServingBadge(props.model, props.provider ?? undefined);
+    const serving = (): BadgeMark => modelInventoryBadge(props.model, props.provider ?? undefined);
 
     const discovery = (): BadgeMark => modelDiscoveryBadge(props.model);
 
     return (
         <>
             <PageHeader
-                title={props.model.public_id}
+                title={props.model.upstream_id}
                 description={`${props.model.upstream_id} on ${props.model.provider}.`}
                 backHref={hrefs.models(props.model.provider_id)}
                 backLabel="Models"
@@ -310,6 +324,7 @@ function ModelFacts(props: {
                     tone={discovery().tone}
                     label={discovery().label}
                 />
+                <ButtonLink href={hrefs.modelRouteNew(props.model.id)}>Add alias</ButtonLink>
                 <ButtonLink href={hrefs.modelEdit(props.model.id)}>Edit model</ButtonLink>
             </PageHeader>
 
@@ -323,10 +338,25 @@ function ModelFacts(props: {
                 <CardHeader title="Details" />
                 <FactList>
                     <Fact
-                        label="Public ID"
-                        value={props.model.public_id}
+                        label="Public model names"
+                        value={
+                            automaticModelNames(props.model, props.modelRoutes, props.pools).join(
+                                ", ",
+                            ) || "No automatic entry"
+                        }
                         isTabular
                         class="break-all"
+                    />
+                    <Fact
+                        label="Direct routes"
+                        value={String(
+                            props.modelRoutes.filter(
+                                (route) =>
+                                    route.target.type === "direct" &&
+                                    route.target.model_id === props.model.id,
+                            ).length,
+                        )}
+                        isTabular
                     />
                     <Fact
                         label="Upstream ID"

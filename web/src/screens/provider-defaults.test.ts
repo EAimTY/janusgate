@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultModelPrefix, suggestProviderName } from "./provider-defaults";
+import { suggestProviderName } from "./provider-defaults";
 
 describe("suggestProviderName", () => {
     it("uses the base name while it is free", () => {
@@ -28,15 +28,5 @@ describe("suggestProviderName", () => {
                 ]),
             ),
         ).toBe("codex-2");
-    });
-});
-
-describe("defaultModelPrefix", () => {
-    it("derives from the name with one trailing dash", () => {
-        expect(defaultModelPrefix("codex")).toBe("codex-");
-    });
-
-    it("stays empty while there is no name", () => {
-        expect(defaultModelPrefix("")).toBe("");
     });
 });

@@ -28,17 +28,21 @@ import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 import { ApiKeyNewScreen } from "/src/screens/api-key-new-screen";
 import { ApiKeysScreen } from "/src/screens/api-keys-screen";
+import { BulkPublicationScreen } from "/src/screens/bulk-publication-screen";
 import { ConnectionScreen } from "/src/screens/connection-screen";
 import { HomeScreen } from "/src/screens/home-screen";
 import { ModelDetailScreen } from "/src/screens/model-detail-screen";
 import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import { ModelNewScreen } from "/src/screens/model-new-screen";
+import { ModelRouteEditorScreen } from "/src/screens/model-route-editor-screen";
 import { ModelsScreen } from "/src/screens/models-screen";
 import { NotFoundScreen } from "/src/screens/not-found-screen";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
 import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
+import { ProviderPoolEditorScreen } from "/src/screens/provider-pool-editor-screen";
 import { ProvidersScreen } from "/src/screens/providers-screen";
+import { ModelRoutesScreen, ProviderPoolsScreen } from "/src/screens/routing-lists-screen";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import { UsageScreen } from "/src/screens/usage-screen";
 import { cycleTheme, type ThemePreference, themePreference } from "/src/theme";
@@ -136,7 +140,7 @@ export function guardUnsavedFormsOnLeave(event: LeaveEvent): void {
     event.returnValue = "";
 }
 
-type NavKey = "overview" | "providers" | "models" | "keys" | "usage";
+type NavKey = "overview" | "providers" | "models" | "pools" | "routes" | "keys" | "usage";
 
 const NAV_ITEMS: ReadonlyArray<{
     readonly key: NavKey;
@@ -158,9 +162,21 @@ const NAV_ITEMS: ReadonlyArray<{
     },
     {
         key: "models",
-        label: "Models",
+        label: "Inventory",
         glyph: "stack",
         href: hrefs.models(null),
+    },
+    {
+        key: "pools",
+        label: "Pools",
+        glyph: "stack",
+        href: hrefs.providerPools(),
+    },
+    {
+        key: "routes",
+        label: "Public routes",
+        glyph: "stack",
+        href: hrefs.modelRoutes(),
     },
     {
         key: "keys",
@@ -185,6 +201,13 @@ const NAV_ITEMS: ReadonlyArray<{
  */
 const ROUTE_NAV_KEYS: Record<AppRoute["name"], NavKey | null> = {
     home: "overview",
+    bulkPublication: "routes",
+    providerPools: "pools",
+    providerPoolNew: "pools",
+    providerPoolEdit: "pools",
+    modelRoutes: "routes",
+    modelRouteNew: "routes",
+    modelRouteEdit: "routes",
     providers: "providers",
     providerNew: "providers",
     providerDetail: "providers",
@@ -275,6 +298,10 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
 
     const providerDetailRoute = routeNamed(route, "providerDetail");
     const providerEditRoute = routeNamed(route, "providerEdit");
+    const publicationRoute = routeNamed(route, "bulkPublication");
+    const poolEditRoute = routeNamed(route, "providerPoolEdit");
+    const routeEditRoute = routeNamed(route, "modelRouteEdit");
+    const routeNewRoute = routeNamed(route, "modelRouteNew");
     const modelsRoute = routeNamed(route, "models");
     const modelNewRoute = routeNamed(route, "modelNew");
     const apiKeyDetailRoute = routeNamed(route, "apiKeyDetail");
@@ -304,6 +331,66 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
 
                 <main id="main">
                     <Switch fallback={<NotFoundScreen />}>
+                        <Match
+                            when={publicationRoute()}
+                            keyed
+                        >
+                            {(current) => (
+                                <BulkPublicationScreen
+                                    api={api}
+                                    providerFilter={current.providerFilter}
+                                />
+                            )}
+                        </Match>
+
+                        <Match when={route().name === "providerPools"}>
+                            <ProviderPoolsScreen api={api} />
+                        </Match>
+                        <Match when={route().name === "providerPoolNew"}>
+                            <ProviderPoolEditorScreen
+                                api={api}
+                                poolId={null}
+                            />
+                        </Match>
+                        <Match
+                            when={poolEditRoute()}
+                            keyed
+                        >
+                            {(current) => (
+                                <ProviderPoolEditorScreen
+                                    api={api}
+                                    poolId={current.poolId}
+                                />
+                            )}
+                        </Match>
+                        <Match when={route().name === "modelRoutes"}>
+                            <ModelRoutesScreen api={api} />
+                        </Match>
+                        <Match
+                            when={routeNewRoute()}
+                            keyed
+                        >
+                            {(current) => (
+                                <ModelRouteEditorScreen
+                                    api={api}
+                                    routeId={null}
+                                    initialModelId={current.initialModelId}
+                                />
+                            )}
+                        </Match>
+                        <Match
+                            when={routeEditRoute()}
+                            keyed
+                        >
+                            {(current) => (
+                                <ModelRouteEditorScreen
+                                    api={api}
+                                    routeId={current.routeId}
+                                    initialModelId={null}
+                                />
+                            )}
+                        </Match>
+
                         <Match when={route().name === "home"}>
                             <HomeScreen
                                 api={api}

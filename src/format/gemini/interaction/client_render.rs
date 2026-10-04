@@ -185,8 +185,10 @@ fn finish_status(finish: Option<IrFinishReason>) -> &'static str {
 
 /// Streaming renderer emitting the official event vocabulary with `event:` lines and `event_type`
 /// members.
-#[derive(Debug)]
 pub(super) struct SseRenderer {
+    /// Digest-only projection of actual outward step fields.
+    projection: Option<super::affinity::Output>,
+
     /// Public routing id the client addressed, echoed in the created frame.
     public_id: String,
 
@@ -199,10 +201,10 @@ pub(super) struct SseRenderer {
     /// Whether the created frame was emitted.
     is_created: bool,
 
-    /// Open model output step, accumulating its text.
+    /// Open model output position; text is delivered immediately in deltas.
     open_output: Option<OpenOutputStep>,
 
-    /// Open model reasoning block, accumulating its summary.
+    /// Open model reasoning position; summary is delivered immediately in deltas.
     open_thought: Option<OpenThoughtStep>,
 
     /// Open model tool invocations by call index.
@@ -224,9 +226,6 @@ pub(super) struct SseRenderer {
 struct OpenOutputStep {
     /// Minted step index.
     index: u64,
-
-    /// Text streamed so far.
-    text: String,
 }
 
 /// An open model reasoning block of the client stream.
@@ -234,9 +233,6 @@ struct OpenOutputStep {
 struct OpenThoughtStep {
     /// Minted step index.
     index: u64,
-
-    /// Summary streamed so far.
-    summary: String,
 }
 
 /// An open model tool invocation of the client stream.
@@ -390,6 +386,7 @@ impl SseRenderer {
     pub(super) fn new(public_id: String) -> Self {
         Self {
             public_id,
+            projection: None,
             interaction_id: format!("int_{}", ids::new_uuid()),
             next_step_index: 0,
             is_created: false,
@@ -441,10 +438,7 @@ impl SseRenderer {
 
         let index = self.next_index();
 
-        self.open_output = Some(OpenOutputStep {
-            index,
-            text: String::new(),
-        });
+        self.open_output = Some(OpenOutputStep { index });
 
         frames.push(start_frame(index, StartStep::ModelOutput {}));
 
@@ -461,10 +455,7 @@ impl SseRenderer {
 
         frames.push(start_frame(index, StartStep::Thought {}));
 
-        self.open_thought = Some(OpenThoughtStep {
-            index,
-            summary: String::new(),
-        });
+        self.open_thought = Some(OpenThoughtStep { index });
 
         index
     }
@@ -489,19 +480,8 @@ impl SseRenderer {
         self.close_output_step(&mut frames);
 
         if let Some(open) = self.open_thought.take() {
-            // Conformant streams pair a thought block's deltas with its done; this defensive
-            // close streams the buffered summary so a closed block never loses its text.
-            if !open.summary.is_empty() {
-                frames.push(delta_frame(
-                    open.index,
-                    OutDelta::ThoughtSummary {
-                        content: SummaryContent::Text {
-                            text: open.summary.as_str(),
-                        },
-                    },
-                ));
-            }
-
+            // The deltas already delivered every summary byte; a terminal close emits only
+            // the boundary, including upstreams that expose reasoning without a done event.
             frames.push(stop_frame(open.index));
         }
 
@@ -562,9 +542,9 @@ fn stop_frame(index: u64) -> String {
     )
 }
 
-impl ClientSseRenderer for SseRenderer {
+impl SseRenderer {
     /// Renders one IR event into zero or more native SSE frames.
-    fn render(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
+    fn render_frames(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
         use crate::ir::IrEvent;
 
         match event {
@@ -579,10 +559,6 @@ impl ClientSseRenderer for SseRenderer {
                 let mut frames = self.ensure_created();
                 let index = self.open_output_step(&mut frames);
 
-                if let Some(open) = &mut self.open_output {
-                    open.text.push_str(delta);
-                }
-
                 frames.push(delta_frame(index, OutDelta::Text { text: delta }));
 
                 frames
@@ -591,10 +567,6 @@ impl ClientSseRenderer for SseRenderer {
             IrEvent::ReasoningDelta(delta) => {
                 let mut frames = self.ensure_created();
                 let index = self.open_thought_step(&mut frames);
-
-                if let Some(open) = &mut self.open_thought {
-                    open.summary.push_str(delta);
-                }
 
                 frames.push(delta_frame(
                     index,
@@ -820,8 +792,7 @@ impl ClientSseRenderer for SseRenderer {
 
                 self.finish = Some(*reason);
 
-                // The finish closes the open output step. An open reasoning block without its
-                // done is closed defensively at completion; conformant streams always pair them.
+                // Completion closes any delta-only thought without replaying delivered bytes.
                 self.close_output_step(&mut frames);
 
                 frames
@@ -841,8 +812,32 @@ impl ClientSseRenderer for SseRenderer {
 
     /// Renders a mid-stream error as a terminal data frame carrying the Gemini error envelope,
     /// classified once through the shared API error.
-    fn error_frame(&mut self, error: &crate::api::Error) -> String {
+    fn render_error_frame(&mut self, error: &crate::api::Error) -> String {
         error_data_frame(error)
+    }
+}
+
+impl ClientSseRenderer for SseRenderer {
+    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.projection = Some(super::affinity::Output::new(projector));
+    }
+
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        self.projection
+            .take()
+            .and_then(super::affinity::Output::finish)
+    }
+
+    fn render(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
+        let frames = self.render_frames(event);
+        if let Some(projection) = &mut self.projection {
+            projection.observe(event, &frames);
+        }
+        frames
+    }
+
+    fn error_frame(&mut self, error: &crate::api::Error) -> String {
+        self.render_error_frame(error)
     }
 }
 
@@ -1220,6 +1215,61 @@ mod tests {
         assert!(joined.contains(r#""type":"arguments_delta","arguments""#));
     }
 
+    /// Completion closes delta-only thoughts without repeating text already delivered.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a terminal close duplicates summary text or fails to close either open step.
+    #[test]
+    fn completion_closes_delta_only_thoughts_without_repeating_content() {
+        use crate::ir::IrEvent;
+        let mut renderer = SseRenderer::new("public-model".into());
+        let mut frames = renderer.render(&IrEvent::TextDelta("answer".into()));
+        frames.extend(renderer.render(&IrEvent::ReasoningDelta("plan ".into())));
+        frames.extend(renderer.render(&IrEvent::ReasoningDelta("λ".into())));
+        frames.extend(renderer.render(&IrEvent::finish(IrFinishReason::Stop)));
+        frames.extend(renderer.render(&IrEvent::Done));
+        frames.extend(renderer.render(&IrEvent::Done));
+        let bodies: Vec<serde_json::Value> = frames
+            .iter()
+            .map(|frame| {
+                #[expect(clippy::expect_used, reason = "own rendered frames carry a data line")]
+                let data = frame
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("rendered data");
+                #[expect(
+                    clippy::expect_used,
+                    reason = "own rendered payloads serialize valid JSON"
+                )]
+                let body = serde_json::from_str(data).expect("rendered JSON");
+                body
+            })
+            .collect();
+        let summary: String = bodies
+            .iter()
+            .filter_map(|body| {
+                body.pointer("/delta/content/text")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .collect();
+        assert_eq!(summary, "plan λ");
+        assert_eq!(
+            event_names(&frames)
+                .iter()
+                .filter(|name| **name == super::super::EVENT_STEP_STOP)
+                .count(),
+            2
+        );
+        assert_eq!(
+            event_names(&frames)
+                .iter()
+                .filter(|name| **name == super::super::EVENT_COMPLETED)
+                .count(),
+            1
+        );
+    }
+
     /// A done carrying the full text with no prior deltas still delivers its block: the renderer
     /// opens the step, streams the text, and closes it — the done-only path mirrors the
     /// delta-then-empty-done path. A done-only tool call streams its complete arguments as one
@@ -1509,4 +1559,15 @@ mod tests {
             Some(&serde_json::json!("UNAUTHENTICATED"))
         );
     }
+}
+
+/// Projects emitted ordered steps through borrowed accepted-replay field views.
+pub(super) fn project_json_response(
+    response: &JsonResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    response
+        .steps
+        .iter()
+        .all(|step| super::json_affinity::project_step(step, projector))
 }

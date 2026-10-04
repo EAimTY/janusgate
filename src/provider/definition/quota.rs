@@ -34,10 +34,30 @@ pub struct QuotaEntryExtraction {
     pub measurement: QuotaMeasurementSource,
     /// Reset metadata mapping.
     pub reset: QuotaResetSource,
+    /// Authored dispatch applicability, independent of presentation scope and labels.
+    #[serde(default)]
+    pub routing: QuotaRoutingSource,
     /// Optional explicit boolean that bypasses numeric measurement extraction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub is_unlimited: Option<QuotaField>,
+}
+
+/// Authored dispatch applicability of one independently identified restriction.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuotaRoutingSource {
+    /// Informational only; never blocks dispatch.
+    #[default]
+    MonitoringOnly,
+    /// Applies to every exact physical model on the account.
+    AllModels,
+    /// Applies only to the nonempty set of exact IDs resolved in this entry's contexts.
+    Models {
+        /// Required text sources; unresolved values invalidate the complete observation.
+        upstream_ids: Vec<QuotaTextSource>,
+    },
 }
 
 /// A scalar selection with an explicit response context.

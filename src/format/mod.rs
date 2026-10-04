@@ -42,6 +42,7 @@ use std::{
 };
 use thiserror::Error;
 
+pub(crate) mod affinity;
 pub(crate) mod anthropic;
 pub(crate) mod gemini;
 pub(crate) mod openai;
@@ -146,6 +147,9 @@ pub(crate) struct PayloadError {
 pub(crate) struct ParsedRequest {
     /// Format-independent request.
     pub(crate) ir: IrRequest,
+
+    /// Actual client tool identity/result source facts, never sent to a model or stored in cache.
+    pub(crate) affinity: affinity::Sources,
 
     /// Whether the client requested a streamed response.
     pub(crate) is_streaming: bool,
@@ -549,10 +553,43 @@ pub(in crate::format) fn complete_call_events(
     ]
 }
 
+/// Digest-only metadata of an actual complete artifact awaiting its last emitted frame.
+pub(crate) struct CompletedArtifact {
+    /// Position of the artifact's final frame in the current render batch.
+    pub(crate) terminal_index: usize,
+    /// Fully replayable checkpoint state and artifact hints, without generated content.
+    pub(crate) anchors: Vec<crate::affinity::Anchor>,
+}
+
 /// Client-side SSE rendering contract implemented by every outward codec.
 pub(crate) trait ClientSseRenderer {
+    /// Takes a newly completed native artifact from the actual current render batch.
+    fn take_completed_artifact(&mut self) -> Option<CompletedArtifact> {
+        None
+    }
+
+    /// Takes the last completed prepared-prefix frame index from the latest render batch.
+    fn take_prefix_boundary(&mut self) -> Option<usize> {
+        None
+    }
+
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String>;
+
+    /// Enables codec-owned incremental projection only for a pooled accepted result.
+    /// Codecs without an integrated projection discard this metadata until their adapter exists.
+    fn begin_projection(&mut self, _projector: crate::affinity::fingerprint::Projector) {}
+
+    /// Starts ordinary answer projection after one already projected, sealer-proven checkpoint.
+    fn begin_checkpoint_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.begin_projection(projector);
+    }
+
+    /// Takes a fully replayable emitted continuation at terminal rendering. Unfingerprintable
+    /// output, or a codec without an integrated adapter, returns no completed history.
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        None
+    }
 
     /// Renders a mid-stream error as a terminal frame from the shared [`crate::api::Error`]
     /// classification: the HTTP error path and the stream-frame path share one classification
@@ -593,6 +630,28 @@ pub(crate) trait ClientFormat {
     /// Renders an aggregated completion as a non-streaming response body. `public_id` is the public
     /// routing ID (README §3) the client addressed.
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse;
+
+    /// Projects the actual rendered conversation fields as this codec parses their replay.
+    /// Returns false for output that cannot be replayed, without changing the inference result.
+    fn project_json_response(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool;
+
+    /// Identifies actual complete native output artifacts at the successful buffered handoff.
+    /// Newly sealed gateway checkpoints carry their authenticated identities separately.
+    fn completed_json_artifacts(_response: &Self::JsonResponse) -> Vec<crate::affinity::Anchor> {
+        Vec::new()
+    }
+
+    /// Projects the actual answer following one checkpoint already present in the projector.
+    /// Only codecs with a checkpoint channel implement this delivery path.
+    fn project_json_checkpoint(
+        _response: &Self::JsonResponse,
+        _projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        false
+    }
 
     /// Renders an aggregated completion whose output opens with compaction
     /// prefix state — the checkpoint-before-answer ordering of the compaction

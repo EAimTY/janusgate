@@ -45,7 +45,7 @@ const MAX_LIMIT: i64 = 1000;
 /// users, and every value becomes a bound SQL parameter.
 const FILTER_VALUES_CAP: usize = 100;
 
-/// One accounting row in its management wire shape (README §7.1): the row's fourteen published
+/// One accounting row in its management wire shape (README §7.1): the row's sixteen published
 /// columns — the rowid never appears, serving only as the per-file tie-break of the read
 /// ordering. `http_status` and the five token columns mirror their nullable storage columns
 /// (`T | null`, rule 2), and no field carries a name or content: labels are resolved through the
@@ -53,6 +53,10 @@ const FILTER_VALUES_CAP: usize = 100;
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ApiLogResponse {
+    /// Stable requested public route identity.
+    pub model_route_id: i64,
+    /// First data-plane upstream header status; null means no upstream response was received.
+    pub upstream_http_status: Option<i64>,
     /// Dispatch-start instant in UTC microseconds; the `usage:list` pagination cursor.
     pub started_at: i64,
 
@@ -106,6 +110,8 @@ impl ApiLogResponse {
     /// Mirrors one stored row verbatim.
     fn from_log(log: &ApiLog) -> Self {
         Self {
+            model_route_id: log.model_route_id,
+            upstream_http_status: log.upstream_http_status,
             started_at: log.started_at,
             api_key_id: log.api_key_id,
             provider_id: log.provider_id,
@@ -198,6 +204,10 @@ pub(super) struct QueryUsageRequest {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UsageBucketKey {
+    /// The grouped public route identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+    pub model_route_id: Option<i64>,
     /// The UTC day of `started_at`, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
@@ -252,6 +262,7 @@ impl UsageBucketKey {
             match dimension {
                 UsageGroupBy::Day => wire.day = key.day.clone(),
                 UsageGroupBy::Model => wire.model_id = key.model_id,
+                UsageGroupBy::ModelRoute => wire.model_route_id = key.model_route_id,
                 UsageGroupBy::Provider => wire.provider_id = key.provider_id,
                 UsageGroupBy::ApiKey => wire.api_key_id = key.api_key_id,
                 UsageGroupBy::EndpointType => wire.endpoint_type = key.endpoint_type,
@@ -383,6 +394,10 @@ fn resolve_filter(filter: Option<UsageFilter>) -> Result<UsageFilter, Error> {
             filter.provider_id.as_ref().map(Vec1::len),
         ),
         ("filter.model_id", filter.model_id.as_ref().map(Vec1::len)),
+        (
+            "filter.model_route_id",
+            filter.model_route_id.as_ref().map(Vec1::len),
+        ),
         (
             "filter.endpoint_type",
             filter.endpoint_type.as_ref().map(Vec1::len),
@@ -682,7 +697,7 @@ mod tests {
     }
 
     /// Pins the wire shapes at the JSON level (README §7.1, §7.0 rule 7): the row renders its
-    /// fourteen published columns with the nullable mirrors as `null` — and positively carries
+    /// sixteen published columns with the nullable mirrors as `null` — and positively carries
     /// no row id, no name, and no content column — while a bucket renders its composite key with
     /// exactly the requested dimensions beside plain numeric sums.
     ///
@@ -692,6 +707,8 @@ mod tests {
     #[test]
     fn renders_the_documented_wire_shapes() {
         let log = crate::storage::api_logs::ApiLog {
+            model_route_id: 9,
+            upstream_http_status: Some(429),
             started_at: 1_700_000_000_000_000,
             api_key_id: 3,
             provider_id: 5,
@@ -716,6 +733,8 @@ mod tests {
             rendered,
             serde_json::json!({
                 "started_at": 1_700_000_000_000_000_i64,
+                "model_route_id": 9,
+                "upstream_http_status": 429,
                 "api_key_id": 3,
                 "provider_id": 5,
                 "model_id": 7,

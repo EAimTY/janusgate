@@ -54,6 +54,92 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+it("publishes explicit pool routes and replaces member order atomically without polling quota", async () => {
+    const availability = {
+        blocks: [],
+        last_refresh: {
+            type: "not_observed",
+        },
+    };
+    const calls = stubFetch((call) =>
+        jsonResponse(
+            200,
+            call.url.endsWith("/provider-pools:create")
+                ? {
+                      provider_pool_id: 7,
+                  }
+                : call.url.endsWith("/model-routes:create")
+                  ? {
+                        model_route_id: 9,
+                    }
+                  : call.url.endsWith("/providers:availability")
+                    ? availability
+                    : {},
+        ),
+    );
+    const api = createManagementApi(connection);
+    const initial = [
+        {
+            provider_id: 3,
+            priority: 0,
+        },
+        {
+            provider_id: 5,
+            priority: 1,
+        },
+    ];
+    await api.createProviderPool({
+        model_prefix: "",
+        name: "Coding",
+        is_enabled: true,
+        members: initial,
+    });
+    await api.createModelRoute({
+        public_id: "coding-M",
+        is_enabled: true,
+        target: {
+            type: "pool",
+            pool_id: 7,
+            upstream_id: "M",
+        },
+    });
+    const members = [
+        {
+            provider_id: 5,
+            priority: 0,
+        },
+        {
+            provider_id: 3,
+            priority: 1,
+        },
+    ];
+    await api.updateProviderPool({
+        model_prefix: "",
+        provider_pool_id: 7,
+        name: "Coding",
+        is_enabled: true,
+        members,
+    });
+    expect(
+        await api.getProviderAvailability({
+            provider_id: 3,
+        }),
+    ).toEqual(availability);
+    expect(calls.map((call) => call.url.split("/v0")[1])).toEqual([
+        "/provider-pools:create",
+        "/model-routes:create",
+        "/provider-pools:update",
+        "/providers:availability",
+    ]);
+    expect(JSON.parse(String(calls[2]?.init.body))).toEqual({
+        model_prefix: "",
+        provider_pool_id: 7,
+        name: "Coding",
+        is_enabled: true,
+        members,
+    });
+});
+
 describe("createManagementApi", () => {
     it("keeps current upstream quota failures inline and ignores aborted late management-auth failures", async () => {
         const onUnauthorized = vi.fn();
@@ -177,10 +263,10 @@ describe("createManagementApi", () => {
 
         const error = await createManagementApi(connection)
             .createProvider({
+                model_prefix: "",
                 provider_definition_name: "generic-openai-responses",
                 provider_definition_version: 1,
                 name: "taken",
-                model_prefix: "",
                 is_enabled: true,
                 base_url: "https://upstream.example.com",
                 api_key: "key",
@@ -301,8 +387,7 @@ describe("createManagementApi", () => {
                         provider_id: 4,
                         provider: "local",
                         upstream_id: "gpt-4o",
-                        public_id: "local-gpt-4o",
-                        id_override: null,
+
                         is_enabled: true,
                         discovery_state: "discovered",
                         thinking_levels: null,
@@ -349,7 +434,7 @@ describe("createManagementApi", () => {
         await api.createModel({
             provider_id: 4,
             upstream_id: "gpt-4o",
-            id_override: null,
+
             is_enabled: true,
             thinking_levels_override: null,
             max_input_tokens_override: null,
@@ -396,7 +481,7 @@ describe("createManagementApi", () => {
             {
                 provider_id: 4,
                 upstream_id: "gpt-4o",
-                id_override: null,
+
                 is_enabled: true,
                 thinking_levels_override: null,
                 max_input_tokens_override: null,
@@ -434,9 +519,9 @@ describe("createManagementApi", () => {
 
         await expect(
             createManagementApi(connection).updateProvider({
+                model_prefix: "",
                 provider_id: 5,
                 name: "chatgpt",
-                model_prefix: "",
                 is_enabled: true,
                 base_url: null,
             }),

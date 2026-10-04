@@ -31,6 +31,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "usage",
             ],
             label: "Pool",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "unknown",
             },
@@ -101,9 +104,15 @@ describe("quota mounted identity and refresh lifecycle", () => {
             });
         const beforeEdit = mount();
         await settle();
+        expect(get).not.toHaveBeenCalled();
+        expect(beforeEdit.state().type).toBe("unobserved");
+        beforeEdit.refresh();
+        await settle();
         disposals.pop()?.();
         expect(signals[0]?.aborted).toBe(true);
         const afterEdit = mount();
+        await settle();
+        afterEdit.refresh();
         await settle();
         late.resolve(snapshot);
         await settle();
@@ -117,7 +126,7 @@ describe("quota mounted identity and refresh lifecycle", () => {
         });
         expect(get).toHaveBeenCalledTimes(2);
     });
-    it("fetches once, suppresses duplicate refreshes, retains failed refreshes, and replaces the whole snapshot", async () => {
+    it("queries only on demand, suppresses duplicate refreshes, retains failed refreshes, and replaces the whole snapshot", async () => {
         const held = deferred<GetProviderQuotaResponse>();
         const get = vi
             .fn()
@@ -142,6 +151,9 @@ describe("quota mounted identity and refresh lifecycle", () => {
                 provider: () => provider,
             });
         });
+        await settle();
+        expect(get).not.toHaveBeenCalled();
+        view.refresh();
         await settle();
         expect(get).toHaveBeenCalledTimes(1);
         view.refresh();
@@ -215,10 +227,14 @@ describe("quota mounted identity and refresh lifecycle", () => {
             };
         });
         await settle();
+        mounted.view.refresh();
+        await settle();
         mounted.setRow({
             ...provider,
             id: provider.id + 1,
         });
+        await settle();
+        mounted.view.refresh();
         await settle();
         first.resolve({
             observed_at: 1,
@@ -227,6 +243,8 @@ describe("quota mounted identity and refresh lifecycle", () => {
         await settle();
         expect(mounted.view.state().type).toBe("loading");
         mounted.setApi(newApi);
+        await settle();
+        mounted.view.refresh();
         await settle();
         second.reject(new Error("late failure"));
         await settle();
@@ -245,11 +263,15 @@ describe("quota mounted identity and refresh lifecycle", () => {
             provider_definition_version: 3,
         });
         await settle();
+        mounted.view.refresh();
+        await settle();
         mounted.setRow({
             ...provider,
             provider_definition_version: 3,
             base_url: "https://changed.example",
         });
+        await settle();
+        mounted.view.refresh();
         await settle();
         expect(newGet).toHaveBeenCalledTimes(3);
         mounted.setRow({
@@ -295,6 +317,10 @@ describe("quota mounted identity and refresh lifecycle", () => {
         expect(mounted.view.state().type).toBe("unsupported");
         expect(get).not.toHaveBeenCalled();
         mounted.setRow(provider);
+        await settle();
+        expect(mounted.view.state().type).toBe("unobserved");
+        expect(get).not.toHaveBeenCalled();
+        mounted.view.refresh();
         await settle();
         expect(mounted.view.state().type).toBe("failed");
         const failedApi = stubManagementApi({

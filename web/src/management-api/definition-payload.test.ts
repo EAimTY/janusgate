@@ -55,6 +55,227 @@ const storedDefinition = {
 };
 
 describe("validateDefinitionPayload", () => {
+    it("preserves ordered exact quota rejection rules and normalizes their status sets", () => {
+        const rule = {
+            name: "weekly",
+            statuses: [
+                429,
+                402,
+                429,
+            ],
+            code: {
+                at: [
+                    "error",
+                    "code",
+                ],
+                value: "",
+            },
+            restriction_key: [
+                {
+                    type: "literal",
+                    value: "account/weekly",
+                },
+                {
+                    type: "requested_model",
+                },
+            ],
+            applies_to: {
+                type: "requested_model",
+            },
+        };
+        const quota_exhaustion = {
+            rules: [
+                rule,
+                {
+                    ...rule,
+                    name: "account",
+                    statuses: [
+                        403,
+                    ],
+                    applies_to: {
+                        type: "all_models",
+                    },
+                },
+            ],
+        };
+        const definition = {
+            ...storedDefinition,
+            inference: {
+                ...storedDefinition.inference,
+                quota_exhaustion,
+            },
+        };
+        const parsed = validateDefinitionPayload({
+            format: definition.format,
+            credential: definition.credential,
+            discovery: definition.discovery,
+            inference: definition.inference,
+        });
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed.payload.inference.quota_exhaustion).toEqual({
+            rules: [
+                {
+                    ...rule,
+                    statuses: [
+                        402,
+                        429,
+                    ],
+                },
+                quota_exhaustion.rules[1],
+            ],
+        });
+        const rows = parseListProviderDefinitionsResponse({
+            provider_definitions: [
+                definition,
+            ],
+        });
+        expect(rows.provider_definitions[0]?.inference).toEqual(parsed.payload.inference);
+    });
+
+    it("rejects ambiguous or incomplete rejection policies before saving any definition", () => {
+        const rule = {
+            name: "weekly",
+            statuses: [
+                429,
+            ],
+            code: {
+                at: [
+                    "error",
+                    "code",
+                ],
+                value: "quota",
+            },
+            restriction_key: [
+                {
+                    type: "literal",
+                    value: "account",
+                },
+            ],
+            applies_to: {
+                type: "all_models",
+            },
+        };
+        for (const quota_exhaustion of [
+            {
+                rules: [],
+            },
+            {
+                rules: [
+                    rule,
+                    rule,
+                ],
+            },
+            ...[
+                {
+                    ...rule,
+                    name: "",
+                },
+                {
+                    ...rule,
+                    statuses: [],
+                },
+                {
+                    ...rule,
+                    statuses: [
+                        200,
+                    ],
+                },
+                {
+                    ...rule,
+                    statuses: [
+                        99,
+                    ],
+                },
+                {
+                    ...rule,
+                    statuses: [
+                        1000,
+                    ],
+                },
+                {
+                    ...rule,
+                    statuses: [
+                        429.5,
+                    ],
+                },
+                {
+                    ...rule,
+                    code: {
+                        at: [],
+                        value: "quota",
+                    },
+                },
+                {
+                    ...rule,
+                    code: {
+                        at: [
+                            "",
+                        ],
+                        value: "quota",
+                    },
+                },
+                {
+                    ...rule,
+                    code: {
+                        at: [
+                            "error",
+                        ],
+                        value: 5,
+                    },
+                },
+                {
+                    ...rule,
+                    restriction_key: [],
+                },
+                {
+                    ...rule,
+                    restriction_key: [
+                        {
+                            type: "literal",
+                            value: "",
+                        },
+                    ],
+                },
+                {
+                    ...rule,
+                    restriction_key: [
+                        {
+                            type: "requested_model",
+                            value: "M",
+                        },
+                    ],
+                },
+                {
+                    ...rule,
+                    applies_to: {
+                        type: "models",
+                        upstream_ids: [
+                            "M",
+                        ],
+                    },
+                },
+                {
+                    ...rule,
+                    regex: "quota",
+                },
+            ].map((rule) => ({
+                rules: [
+                    rule,
+                ],
+            })),
+        ]) {
+            const parsed = validateDefinitionPayload({
+                format: storedDefinition.format,
+                credential: storedDefinition.credential,
+                inference: {
+                    ...storedDefinition.inference,
+                    quota_exhaustion,
+                },
+            });
+            expect("error" in parsed).toBe(true);
+        }
+    });
+
     it("accepts every catalog payload verbatim", () => {
         for (const preset of PROVIDER_PRESETS) {
             const result = validateDefinitionPayload(preset.payload);

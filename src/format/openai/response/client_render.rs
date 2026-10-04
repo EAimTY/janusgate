@@ -21,10 +21,12 @@ const FIRST_SEQUENCE_NUMBER: u64 = 0;
 const PRIMARY_INDEX: u32 = 0;
 
 /// Streaming client response renderer producing Responses SSE events.
-#[derive(Debug)]
 pub(crate) struct SseRenderer {
     /// Monotonic sequence number of the next event.
     sequence: u64,
+
+    /// Digest-only projection of actual outward item positions.
+    projection: Option<super::affinity::Output>,
 
     /// Gateway-issued response identifier.
     id: String,
@@ -48,6 +50,15 @@ pub(crate) struct SseRenderer {
     /// their output position; drained once the response has opened, ahead of
     /// every IR-derived item.
     prefix_items: Vec<(usize, Value)>,
+
+    /// Actual final prefix frame in the latest render batch.
+    prefix_boundary: Option<usize>,
+
+    /// Digest-only native checkpoint waiting for its actual output-item done handoff.
+    completed_artifact: Option<crate::format::CompletedArtifact>,
+
+    /// Whether an authenticated prefix has already seeded the active projection.
+    is_prefix_prepared: bool,
 
     /// Open function call items keyed by IR tool call index.
     calls: Vec<(usize, TrackedCall)>,
@@ -152,7 +163,7 @@ enum RenderedOutputItem {
 /// before its identity is known carries empty strings until its done event stamps the authoritative
 /// values.
 #[derive(Debug, Clone, Serialize)]
-struct FunctionCallItem {
+pub(super) struct FunctionCallItem {
     /// Gateway-issued item identifier.
     id: String,
 
@@ -160,17 +171,17 @@ struct FunctionCallItem {
     status: ItemStatus,
 
     /// Identifier of the invocation, round-tripped to the matching tool result.
-    call_id: String,
+    pub(super) call_id: String,
 
     /// Name of the invoked function.
-    name: String,
+    pub(super) name: String,
 
     /// JSON-encoded arguments, accumulated across the call's stream.
-    arguments: String,
+    pub(super) arguments: String,
 
     /// Upstream thought signature the client must replay on the next turn.
     #[serde(skip_serializing_if = "Option::is_none")]
-    thought_signature: Option<String>,
+    pub(super) thought_signature: Option<String>,
 }
 
 /// Lifecycle status of a rendered output item.
@@ -521,6 +532,7 @@ impl SseRenderer {
     pub(crate) fn new(model: String) -> Self {
         Self {
             sequence: FIRST_SEQUENCE_NUMBER,
+            projection: None,
             id: format!("resp_{}", ids::new_uuid()),
             model,
             created_at: unix_time::unix_now(),
@@ -528,6 +540,9 @@ impl SseRenderer {
             reasoning: None,
             message: None,
             prefix_items: Vec::new(),
+            prefix_boundary: None,
+            completed_artifact: None,
+            is_prefix_prepared: false,
             calls: Vec::new(),
             completed_items: Vec::new(),
             next_output_index: 0,
@@ -553,12 +568,17 @@ impl SseRenderer {
     /// Drains the scheduled prefix items, emitting each one's added/done frame
     /// pair and recording it as a completed item for the terminal response
     /// object.
-    fn take_prefix_frames(&mut self) -> Vec<String> {
+    fn take_prefix_frames(&mut self, preceding_frames: usize) -> Vec<String> {
         let items = std::mem::take(&mut self.prefix_items);
 
         let mut frames = Vec::with_capacity(items.len() * 2);
 
         for (output_index, item) in items {
+            if !self.is_prefix_prepared
+                && let Some(projection) = &mut self.projection
+            {
+                projection.observe_state();
+            }
             let rendered = OutputItem::State(item);
 
             frames.push(self.event_frame(
@@ -583,6 +603,9 @@ impl SseRenderer {
             });
         }
 
+        if !frames.is_empty() {
+            self.prefix_boundary = Some(preceding_frames + frames.len() - 1);
+        }
         frames
     }
 
@@ -724,21 +747,50 @@ impl SseRenderer {
 }
 
 impl ClientSseRenderer for SseRenderer {
+    fn take_completed_artifact(&mut self) -> Option<crate::format::CompletedArtifact> {
+        self.completed_artifact.take()
+    }
+
+    fn take_prefix_boundary(&mut self) -> Option<usize> {
+        self.prefix_boundary.take()
+    }
+
+    fn begin_checkpoint_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.begin_projection(projector);
+        self.is_prefix_prepared = true;
+    }
+
+    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.projection = Some(super::affinity::Output::new(projector));
+    }
+
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        self.projection
+            .take()
+            .and_then(super::affinity::Output::finish)
+    }
+
     /// Renders one IR event into zero or more SSE frames. Prefix items
     /// scheduled through [`SseRenderer::with_prefix_items`] render once the
     /// response has opened, ahead of the event's own frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String> {
+        self.prefix_boundary = None;
+        self.completed_artifact = None;
         // Prefix frames precede every IR-derived item, but never the
         // response's own opening: they drain only once `response.created` has
         // rendered (or, on a recovery path that never opens the response,
         // ride the first rendered event).
         let mut frames = if self.is_created {
-            self.take_prefix_frames()
+            self.take_prefix_frames(0)
         } else {
             Vec::new()
         };
 
+        let preceding_frames = frames.len();
         let mut event_frames = self.render_event(event);
+        if let Some(artifact) = &mut self.completed_artifact {
+            artifact.terminal_index += preceding_frames;
+        }
 
         frames.append(&mut event_frames);
 
@@ -766,6 +818,13 @@ impl SseRenderer {
     fn render_event(&mut self, event: &IrEvent) -> Vec<String> {
         match event {
             IrEvent::CompactionState { payload } => {
+                // Native state closes the preceding ordinary item. A following text delta
+                // therefore receives a new position after the checkpoint instead of extending
+                // an earlier covered item.
+                let mut frames = self.close_open_items();
+                let anchors = self.projection.as_mut().and_then(|projection| {
+                    projection.complete_state(self.next_output_index, payload)
+                });
                 // An upstream-observed native compaction item renders at its
                 // arrival position: the added/done pair the prefix items use,
                 // at the renderer's next output index, recorded for the
@@ -776,7 +835,7 @@ impl SseRenderer {
 
                 let rendered = OutputItem::State(payload.clone());
 
-                let frames = vec![
+                frames.extend(vec![
                     self.event_frame(
                         "response.output_item.added",
                         OutputItemEvent {
@@ -791,13 +850,20 @@ impl SseRenderer {
                             item: rendered.clone(),
                         },
                     ),
-                ];
+                ]);
 
                 self.completed_items.push(TrackedItem {
                     output_index,
                     item: rendered,
                 });
 
+                if let Some(anchors) = anchors {
+                    // Every complete state renders its added/done pair in this batch.
+                    self.completed_artifact = Some(crate::format::CompletedArtifact {
+                        terminal_index: frames.len() - 1,
+                        anchors,
+                    });
+                }
                 frames
             }
 
@@ -820,7 +886,7 @@ impl SseRenderer {
                     self.event_frame("response.in_progress", ResponseEvent { response: shell }),
                 ];
 
-                frames.extend(self.take_prefix_frames());
+                frames.extend(self.take_prefix_frames(frames.len()));
 
                 frames
             }
@@ -944,6 +1010,10 @@ impl SseRenderer {
                     }
                 };
 
+                if let Some(projection) = &mut self.projection {
+                    projection.text(output_index, delta.as_bytes());
+                }
+
                 if let Some(open) = &mut self.message {
                     open.text.push_str(delta);
                 }
@@ -1019,6 +1089,10 @@ impl SseRenderer {
                         (item_id, output_index)
                     }
                 };
+
+                if let Some(projection) = &mut self.projection {
+                    projection.reserve_call(output_index);
+                }
 
                 if !arguments_delta.is_empty() {
                     frames.push(self.event_frame(
@@ -1112,6 +1186,10 @@ impl SseRenderer {
                         arguments: arguments.clone(),
                     },
                 ));
+
+                if let Some(projection) = &mut self.projection {
+                    projection.complete_call(output_index, &open.item);
+                }
 
                 let completed_item =
                     OutputItem::Rendered(RenderedOutputItem::FunctionCall(open.item));
@@ -1609,4 +1687,71 @@ mod tests {
 
         assert_eq!(output.len(), 2);
     }
+}
+
+/// Projects actual ordered output items, excluding unencrypted reasoning dropped on replay.
+pub(super) fn project_json_response(
+    response: &ResponseObject,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    project_json_after_prefix(response, projector, 0)
+}
+
+/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
+pub(super) fn project_json_after_prefix(
+    response: &ResponseObject,
+    projector: &mut crate::affinity::fingerprint::Projector,
+    prefix_count: usize,
+) -> bool {
+    for item in response.output.iter().skip(prefix_count) {
+        match item {
+            OutputItem::Rendered(RenderedOutputItem::Message { content, .. }) => {
+                for OutputTextPart::OutputText { text, .. } in content {
+                    projector.text(
+                        crate::affinity::fingerprint::Role::Assistant,
+                        text.as_bytes(),
+                    );
+                }
+            }
+            OutputItem::Rendered(RenderedOutputItem::FunctionCall(call)) => {
+                if !crate::format::affinity::project_call(
+                    projector,
+                    &call.call_id,
+                    &call.name,
+                    &call.arguments,
+                    call.thought_signature.as_deref(),
+                ) {
+                    return false;
+                }
+            }
+            OutputItem::Rendered(RenderedOutputItem::Reasoning { .. }) => {}
+            OutputItem::State(value) => {
+                let Some(state) = super::window_affinity::prepare_native_state(value, projector)
+                else {
+                    return false;
+                };
+                if super::compaction::native_artifact_anchor(value, projector).is_some() {
+                    *projector = crate::affinity::fingerprint::Projector::new();
+                }
+                projector.state_prepared(state);
+            }
+        }
+    }
+    true
+}
+
+/// Identifies actual complete raw native checkpoints without treating reflected markers as ours.
+pub(super) fn completed_json_artifacts(response: &ResponseObject) -> Vec<crate::affinity::Anchor> {
+    let projector = crate::affinity::fingerprint::Projector::new();
+    response
+        .output
+        .iter()
+        .flat_map(|item| match item {
+            OutputItem::State(value) => {
+                super::window_affinity::prepare_native_checkpoint(value, &projector)
+                    .map_or_else(Vec::new, |(_, anchors)| anchors)
+            }
+            OutputItem::Rendered(_) => Vec::new(),
+        })
+        .collect()
 }

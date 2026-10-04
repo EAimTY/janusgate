@@ -4,10 +4,10 @@ import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { credentialBadge } from "/src/ui/providers-table";
 
 const staticKeyProvider: ProviderResponse = {
+    model_prefix: "",
     type: "api_key",
     id: 4,
     name: "local",
-    model_prefix: "local-",
     is_enabled: true,
     provider_definition_name: "generic-openai-chat-completions",
     provider_definition_version: 1,
@@ -18,10 +18,10 @@ const staticKeyProvider: ProviderResponse = {
 /** The OAuth variant of the same row, carrying the expiry under test. */
 function oauthProvider(expiresAt: number | null): ProviderResponse {
     return {
+        model_prefix: "",
         type: "oauth",
         id: 5,
         name: "cloud",
-        model_prefix: "cloud-",
         is_enabled: true,
         provider_definition_name: "openai",
         provider_definition_version: 1,

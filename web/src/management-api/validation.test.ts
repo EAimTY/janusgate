@@ -18,9 +18,9 @@ import {
 } from "./validation";
 
 const sharedFields = (overrides: Record<string, unknown> = {}) => ({
+    model_prefix: "",
     id: 1,
     name: "local",
-    model_prefix: "local-",
     is_enabled: true,
     provider_definition_name: "generic-openai-chat-completions",
     provider_definition_version: 1,
@@ -37,9 +37,9 @@ const compatibleProvider = {
 const oauthProvider = {
     type: "oauth",
     ...sharedFields({
+        model_prefix: "",
         id: 2,
         name: "chatgpt",
-        model_prefix: "",
         is_enabled: false,
         provider_definition_name: "codex",
         format: "openai_response",
@@ -51,9 +51,9 @@ const oauthProvider = {
 const antigravityProvider = {
     type: "oauth",
     ...sharedFields({
+        model_prefix: "",
         id: 3,
         name: "antigravity",
-        model_prefix: "ag-",
         is_enabled: true,
         provider_definition_name: "antigravity",
         format: "gemini_generate_content",
@@ -65,9 +65,9 @@ const antigravityProvider = {
 const responsesProvider = {
     type: "api_key",
     ...sharedFields({
+        model_prefix: "",
         id: 4,
         name: "responses",
-        model_prefix: "",
         provider_definition_name: "generic-openai-responses",
         format: "openai_response",
         base_url: "https://api.openai.com/v1",
@@ -77,9 +77,9 @@ const responsesProvider = {
 const geminiProvider = {
     type: "api_key",
     ...sharedFields({
+        model_prefix: "",
         id: 5,
         name: "gemini",
-        model_prefix: "gemini-",
         provider_definition_name: "generic-gemini-generate-content",
         format: "gemini_generate_content",
     }),
@@ -92,8 +92,7 @@ const model = {
     provider_id: 1,
     provider: "local",
     upstream_id: "qwen3:32b",
-    public_id: "local-qwen3-32b",
-    id_override: null,
+
     is_enabled: true,
     discovery_state: "discovered",
     thinking_levels: null,
@@ -108,6 +107,8 @@ const model = {
 
 const apiLog = {
     started_at: 1_780_000_000_000_000,
+    model_route_id: 17,
+    upstream_http_status: 200,
     api_key_id: 7,
     provider_id: 1,
     model_id: 9,
@@ -234,7 +235,7 @@ describe("response validation", () => {
     it("keeps the nullable mirror column of a model", () => {
         const overridden = {
             ...model,
-            id_override: "custom-id",
+
             discovery_state: "manual",
         };
 
@@ -423,15 +424,15 @@ describe("response validation", () => {
     });
 
     it("rejects an omitted required-nullable field", () => {
-        const { id_override: _idOverride, ...withoutOverride } = model;
+        const { thinking_levels: _thinkingLevels, ...withoutLevels } = model;
 
         expect(() =>
             parseListModelsResponse({
                 models: [
-                    withoutOverride,
+                    withoutLevels,
                 ],
             }),
-        ).toThrow(/response\.models\[0\]\.id_override must be a string or null/);
+        ).toThrow(/response\.models\[0\]\.thinking_levels must be an array/);
     });
 
     it("parses envelopes and discovery listings", () => {

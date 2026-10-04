@@ -11,7 +11,7 @@
 
 use super::{
     client_render::SseRenderer,
-    request_parse::{ItemIn, build_instructions, convert_input},
+    request_parse::{ItemIn, OptionalReplayText, build_instructions, convert_input},
     upstream_parse::{CompactedResponseNative, UpstreamUsage},
 };
 use crate::{
@@ -26,8 +26,13 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The `object` spelling of a compacted response body.
-const COMPACTED_RESPONSE_OBJECT: &str = "response.compaction";
+/// The closed object discriminator of a standalone compaction response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum CompactedResponseObject {
+    /// Canonical client-held next window.
+    #[serde(rename = "response.compaction")]
+    Compaction,
+}
 
 /// The strictly parsed standalone compact request body.
 ///
@@ -144,6 +149,10 @@ pub(crate) fn parse_compact_request(body: &[u8]) -> Result<ParsedRequest, Invali
     }
 
     Ok(ParsedRequest {
+        affinity: crate::format::affinity::Sources::from_wire_messages(
+            crate::format::UpstreamFormat::OpenAiResponse,
+            &converted.messages,
+        ),
         ir: IrRequest {
             state_items: converted.state_items,
             model: request.model,
@@ -176,6 +185,42 @@ struct CompactionItemOut {
     /// Authoring provenance, carried only when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     created_by: Option<String>,
+}
+
+/// Accepted replay state, preserving an omitted wire ID instead of inventing one.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename = "compaction")]
+struct ReplayedCompactionItem {
+    /// Provider-minted identity, only when the client actually supplied it.
+    #[serde(skip_serializing_if = "OptionalReplayText::is_absent")]
+    id: OptionalReplayText,
+    /// Exact accepted native ciphertext or gateway carrier.
+    encrypted_content: String,
+    /// Authoring provenance, only when supplied.
+    #[serde(skip_serializing_if = "OptionalReplayText::is_absent")]
+    created_by: OptionalReplayText,
+}
+
+/// Converts accepted state without applying new-output identity generation.
+///
+/// # Panics
+///
+/// Panics if this concrete replay payload fails to serialize, an impossible serde contract.
+pub(super) fn replayed_compaction_item_json(
+    id: OptionalReplayText,
+    encrypted_content: String,
+    created_by: OptionalReplayText,
+) -> Value {
+    #[expect(
+        clippy::expect_used,
+        reason = "the concrete replay payload serializes totally"
+    )]
+    serde_json::to_value(ReplayedCompactionItem {
+        id,
+        encrypted_content,
+        created_by,
+    })
+    .expect("the accepted compaction item serializes")
 }
 
 /// Builds the JSON value of one `compaction` item in the official member
@@ -236,13 +281,13 @@ pub(super) fn reasoning_item_json(reasoning: &super::request_parse::ReasoningIte
 /// object. The output is the canonical next window — the complete ordered
 /// vendor-shaped item list — never reduced to its compaction item (README
 /// §4.1).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CompactedResponseBody {
     /// Gateway-issued response identifier.
     id: String,
 
     /// Always `response.compaction`.
-    object: &'static str,
+    object: CompactedResponseObject,
 
     /// Unix creation timestamp in seconds.
     created_at: i64,
@@ -252,6 +297,114 @@ pub(crate) struct CompactedResponseBody {
 
     /// Token accounting of the calls that produced the window.
     usage: CompactUsage,
+
+    /// Sealer-proven identity retained only for this response's ephemeral registration.
+    #[serde(skip)]
+    gateway_artifact_id: Option<String>,
+}
+
+/// The only Responses item kind that establishes a standalone artifact hint.
+#[derive(Serialize, Deserialize)]
+enum ReplayedArtifactKind {
+    /// Complete client-held compaction state.
+    #[serde(rename = "compaction")]
+    Compaction,
+}
+
+/// Borrowed accepted native artifact fields, excluding unsupported replay members.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayedArtifact<'a> {
+    /// Closed native item discriminator, kept explicit beside strict accepted member parsing.
+    #[serde(rename = "type")]
+    kind: ReplayedArtifactKind,
+    /// Wire identity, only when supplied.
+    #[serde(borrow)]
+    id: Option<&'a str>,
+    /// Exact native state or sealed gateway token.
+    encrypted_content: &'a str,
+    /// Optional native authoring attribution.
+    #[serde(borrow)]
+    created_by: Option<&'a str>,
+}
+
+impl CompactedResponseBody {
+    /// Projects the actual canonical next window independently of its discarded covered input.
+    /// The codec borrows existing response text and state instead of rebuilding another prompt.
+    pub(crate) fn window_anchors(&self) -> Vec<crate::affinity::Anchor> {
+        completed_window_anchors(&self.output, self.gateway_artifact_id.is_some())
+    }
+
+    /// Identifies only the latest complete replayable outward artifact, without parsing prompts,
+    /// copying retained text, unsealing our own carrier again, or trusting an outer resource ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if accepted native JSON fails to serialize to the infallible hashing sink.
+    pub(crate) fn artifact_anchor(
+        &self,
+        projector: &crate::affinity::fingerprint::Projector,
+    ) -> Option<crate::affinity::Anchor> {
+        if let Some(artifact_id) = &self.gateway_artifact_id {
+            return Some(crate::affinity::Anchor::Artifact(
+                projector.gateway_artifact(artifact_id),
+            ));
+        }
+        for item in self.output.iter().rev() {
+            let Ok(artifact) = ReplayedArtifact::deserialize(item) else {
+                continue;
+            };
+            if crate::compaction::sealing::is_gateway_marker(artifact.encrypted_content) {
+                // Native upstream output cannot supply the sealer-proven sidecar of our newly
+                // emitted carrier. Never invent gateway provenance from a reflected marker.
+                return None;
+            }
+            return Some(crate::affinity::Anchor::Artifact(
+                projector.native_artifact(item),
+            ));
+        }
+        None
+    }
+}
+
+/// Projects a newly sealed gateway checkpoint's actual completed Responses output. Callers
+/// must carry the sealer-proven identity separately; reflected upstream markers cannot use it.
+pub(crate) fn gateway_window_anchors(output: &[Value]) -> Vec<crate::affinity::Anchor> {
+    completed_window_anchors(output, true)
+}
+
+/// Identifies a completed native artifact's actual accepted wire payload without provenance
+/// inference. Reflected gateway markers require their authenticated sealer identity instead.
+pub(super) fn native_artifact_anchor(
+    item: &Value,
+    projector: &crate::affinity::fingerprint::Projector,
+) -> Option<crate::affinity::Anchor> {
+    let artifact = ReplayedArtifact::deserialize(item).ok()?;
+    if crate::compaction::sealing::is_gateway_marker(artifact.encrypted_content) {
+        return None;
+    }
+    Some(crate::affinity::Anchor::Artifact(
+        projector.native_artifact(item),
+    ))
+}
+
+/// Derives complete and latest-active history anchors without reconstructing response text.
+fn completed_window_anchors(
+    output: &[Value],
+    has_gateway_provenance: bool,
+) -> Vec<crate::affinity::Anchor> {
+    let Some(window) = super::window_affinity::project(output, has_gateway_provenance, false)
+    else {
+        return Vec::new();
+    };
+    let mut anchors = window.completed_anchors();
+    // Also register the latest active window used by routing preparation, which omits the
+    // preceding covered units, including any older accepted alias state. Only a
+    // fully replayable complete returned window can establish either history projection.
+    if let Some(active) = super::window_affinity::project(output, has_gateway_provenance, true) {
+        anchors.extend(active.completed_anchors());
+    }
+    anchors
 }
 
 /// Token accounting of a compacted response, in the official Responses usage
@@ -261,7 +414,7 @@ pub(crate) struct CompactedResponseBody {
 /// included (openai-python `ResponseUsage`) — so absent upstream breakdowns
 /// zero-fill; xAI's optional `dropped_message_count` rides beside them only
 /// when the upstream reported it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CompactUsage {
     /// Tokens consumed by the input.
     input_tokens: u64,
@@ -285,7 +438,7 @@ struct CompactUsage {
 }
 
 /// The input token breakdown of a compacted response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CompactInputTokensDetails {
     /// Input tokens served from the upstream prompt cache.
     cached_tokens: u64,
@@ -295,7 +448,7 @@ struct CompactInputTokensDetails {
 }
 
 /// The output token breakdown of a compacted response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CompactOutputTokensDetails {
     /// Output tokens spent on model reasoning.
     reasoning_tokens: u64,
@@ -359,10 +512,11 @@ pub(crate) fn render_compacted_response(native: CompactedResponseNative) -> Comp
         id: native
             .id
             .unwrap_or_else(|| format!("resp_{}", ids::new_uuid())),
-        object: COMPACTED_RESPONSE_OBJECT,
+        object: CompactedResponseObject::Compaction,
         created_at: native.created_at.unwrap_or_else(unix_time::unix_now),
         output: native.output,
         usage: CompactUsage::from_upstream(native.usage.unwrap_or_default()),
+        gateway_artifact_id: None,
     }
 }
 
@@ -371,14 +525,16 @@ pub(crate) fn render_compacted_response(native: CompactedResponseNative) -> Comp
 /// summary call's usage and zero-filled breakdowns.
 pub(crate) fn render_gateway_compacted_response(
     carrier: String,
+    artifact_id: String,
     usage: IrUsage,
 ) -> CompactedResponseBody {
     CompactedResponseBody {
         id: format!("resp_{}", ids::new_uuid()),
-        object: COMPACTED_RESPONSE_OBJECT,
+        object: CompactedResponseObject::Compaction,
         created_at: unix_time::unix_now(),
         output: vec![compaction_item_json(None, carrier, None)],
         usage: CompactUsage::from_ir(usage),
+        gateway_artifact_id: Some(artifact_id),
     }
 }
 
@@ -790,6 +946,7 @@ mod tests {
     fn gateway_compacted_results_render_one_carrier_item() {
         let body = render_gateway_compacted_response(
             "sealed-carrier".to_string(),
+            "authenticated-artifact".to_string(),
             IrUsage {
                 input_tokens: 5,
                 output_tokens: 1,

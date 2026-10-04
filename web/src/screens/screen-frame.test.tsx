@@ -16,11 +16,11 @@ import {
 } from "./screen-test-support";
 
 const provider = providerRow({
+    model_prefix: "",
     provider_definition_name: "generic-openai-responses",
     format: "openai_response",
     id: 3,
     name: "alpha",
-    model_prefix: "alpha-",
     base_url: "https://alpha.example",
 });
 

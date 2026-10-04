@@ -24,16 +24,15 @@ import {
     providerRow,
     settle,
     stubManagementApi,
-    switchWithLabel,
     typeInto,
 } from "./screen-test-support";
 
 const provider = providerRow({
+    model_prefix: "",
     provider_definition_name: "generic-openai-responses",
     format: "openai_response",
     id: 3,
     name: "alpha",
-    model_prefix: "alpha-",
     base_url: "https://alpha.example",
 });
 
@@ -42,7 +41,6 @@ const model = modelRow({
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
-    public_id: "alpha-gpt-x",
 });
 
 /**
@@ -85,7 +83,6 @@ function screenApi(
                 const rewritten: ProviderResponse = {
                     ...row,
                     name: request.name,
-                    model_prefix: request.model_prefix,
                     is_enabled: request.is_enabled,
                 };
 
@@ -196,80 +193,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
         expect(labeledInput("Name").value).toBe("renamed");
     });
 
-    it("restates a typed custom prefix byte-for-byte in the update request", async () => {
-        const holder = {
-            providers: [
-                provider,
-            ],
-            models: [],
-        };
-        const sent: UpdateProviderRequest[] = [];
-        mount(holder, sent);
-        await settle();
-
-        // The typed prefix carries its own trailing dash, and the field
-        // promises it is used exactly as typed (gateway README §7 stores the
-        // prefix verbatim and recomposes every unoverridden public ID from
-        // exactly what the write states).
-        switchWithLabel("Custom model prefix").click();
-        await settle();
-        typeInto(labeledInput("Model prefix"), "q-");
-        await settle();
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(sent).toHaveLength(1);
-        expect(sent[0]?.model_prefix).toBe("q-");
-        expect(holder.providers).toEqual([
-            {
-                ...provider,
-                model_prefix: "q-",
-            },
-        ]);
-        expect(labeledInput("Model prefix").value).toBe("q-");
-        expect(document.body.textContent).not.toContain("Unsaved changes");
-    });
-
-    it("restates a typed custom prefix byte-for-byte on an OAuth provider", async () => {
-        const codex = providerRow({
-            type: "oauth",
-            id: 3,
-            name: "chatgpt",
-            model_prefix: "gpt-",
-            provider_definition_name: "codex",
-            format: "openai_response",
-            base_url: null,
-            expires_at: null,
-        });
-        const holder = {
-            providers: [
-                codex,
-            ],
-            models: [],
-        };
-        const sent: UpdateProviderRequest[] = [];
-        mount(holder, sent);
-        await settle();
-
-        // The OAuth row already carries a hand-set prefix, so its field is
-        // open at mount; the save must restate the typed value byte-for-byte
-        // exactly as the static-key path must.
-        typeInto(labeledInput("Model prefix"), "gpt2-");
-        await settle();
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(sent).toHaveLength(1);
-        expect(sent[0]?.model_prefix).toBe("gpt2-");
-        expect(sent[0]?.base_url ?? null).toBe(null);
-        expect(holder.providers).toEqual([
-            {
-                ...codex,
-                model_prefix: "gpt2-",
-            },
-        ]);
-    });
-
     it("saves a static provider whose definition never references a base URL", async () => {
         // A preset like OpenCode Zen stores `base_url: null`: its definition's
         // URLs never reference the base, so the empty field is the row's legal
@@ -306,32 +229,10 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...zen,
                 name: "zen-renamed",
-                model_prefix: "zen-renamed-",
             },
         ]);
         expect(document.body.textContent).toContain("zen-renamed saved.");
         expect(document.body.textContent).not.toContain("Unsaved changes");
-    });
-
-    it("opens clean when the stored prefix is a custom value ending in a dash", async () => {
-        const holder = {
-            providers: [
-                {
-                    ...provider,
-                    model_prefix: "q-",
-                },
-            ],
-            models: [],
-        };
-        mount(holder);
-        await settle();
-
-        // The stored prefix is verbatim gateway state, so the form must
-        // restate it byte-for-byte: a derived or normalized value would
-        // present an untouched form as dirty at mount.
-        expect(labeledInput("Model prefix").value).toBe("q-");
-        expect(document.body.textContent).not.toContain("Unsaved changes");
-        expect(buttonWithText("Save changes").disabled).toBe(true);
     });
 
     it("accepts a name the gateway would store verbatim, whitespace included", async () => {
@@ -345,13 +246,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
         mount(holder, sent);
         await settle();
 
-        // The gateway's only name rule is non-empty, stored verbatim: a
-        // whitespace-only name is legal once the prefix is hand-set, and
-        // nothing here is trimmed — rejecting more than the gateway would
-        // block a legal name.
-        switchWithLabel("Custom model prefix").click();
-        await settle();
-        typeInto(labeledInput("Model prefix"), "q-");
+        // Human labels remain independent of routing-safe public model identifiers.
         typeInto(labeledInput("Name"), " ");
         await settle();
 
@@ -366,7 +261,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: " ",
-                model_prefix: "q-",
             },
         ]);
     });
@@ -397,7 +291,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -450,7 +343,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -570,7 +462,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -595,7 +486,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -624,7 +514,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -638,105 +527,12 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "saved-here",
-                model_prefix: "saved-here-",
             },
         ]);
         expect(labeledInput("Name").value).toBe("saved-here");
         expect(document.body.textContent).not.toContain("changed on the gateway");
         expect(document.body.textContent).not.toContain("Unsaved changes");
         expect(document.body.textContent).toContain("saved-here saved.");
-    });
-
-    it("keeps the recomposition warning out of a held save that recomposes no public ID", async () => {
-        const holder = {
-            providers: [
-                provider,
-            ],
-            models: [
-                model,
-            ],
-        };
-        mount(holder);
-        await settle();
-
-        // The gateway renames itself to the very name the form holds and
-        // recomposes its model to match: the save then submits a prefix the
-        // gateway already holds, so no public ID changes and no warning may
-        // state one — whatever the form's first-read baseline says.
-        typeInto(labeledInput("Name"), "gamma");
-        holder.providers = [
-            {
-                ...provider,
-                name: "gamma",
-                model_prefix: "gamma-",
-            },
-        ];
-        holder.models = [
-            {
-                ...model,
-                provider: "gamma",
-                public_id: "gamma-gpt-x",
-            },
-        ];
-        requestRefresh();
-        await settle();
-        expect(document.body.textContent).toContain("changed on the gateway");
-
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(document.body.textContent).toContain("gamma saved.");
-        expect(document.body.textContent).not.toContain("recomposes the public ID");
-    });
-
-    it("states the recomposition warning when the save does recompose a public ID", async () => {
-        const holder = {
-            providers: [
-                provider,
-            ],
-            models: [
-                model,
-            ],
-        };
-        mount(holder);
-        await settle();
-
-        typeInto(labeledInput("Name"), "beta");
-        await settle();
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(holder.providers).toEqual([
-            {
-                ...provider,
-                name: "beta",
-                model_prefix: "beta-",
-            },
-        ]);
-        expect(document.body.textContent).toContain("beta saved.");
-        expect(document.body.textContent).toContain("recomposes the public ID");
-    });
-
-    it("states no recomposition warning over a provider with no models", async () => {
-        const holder = {
-            providers: [
-                provider,
-            ],
-            models: [],
-        };
-        mount(holder);
-        await settle();
-
-        typeInto(labeledInput("Name"), "beta");
-        await settle();
-        buttonWithText("Save changes").click();
-        await settle();
-
-        expect(document.body.textContent).toContain("beta saved.");
-        expect(document.body.textContent).not.toContain("recomposes the public ID");
-        // This save typed no key either, so the notice names no replacement:
-        // the line would read as a consequence the save never carried.
-        expect(document.body.textContent).not.toContain("The upstream API key was replaced.");
     });
 
     it("states the upstream key's replacement when the save submits one", async () => {
@@ -761,7 +557,6 @@ describe("ProviderEditScreen refresh against an open form", () => {
         expect(sent).toHaveLength(1);
         expect(sent[0]?.api_key).toBe("sk-replacement");
         expect(document.body.textContent).toContain("The upstream API key was replaced.");
-        // The prefix is unchanged here, so the replacement line stands alone.
         expect(document.body.textContent).not.toContain("recomposes the public ID");
     });
 });
@@ -863,14 +658,14 @@ describe("ProviderEditScreen deletion copy", () => {
         );
     }
 
-    it("names the cascade and the clients' 404s while models stand behind the provider", async () => {
+    it("states the physical cascade and preserves the distinction between direct and pooled routes", async () => {
         mountWith([
             model,
         ]);
         await settle();
 
         expect(document.body.textContent).toContain(
-            "Deleting removes the provider and, by cascade, its 1 model.",
+            "Deleting removes the account, its pool memberships, and its 1 physical model with their direct routes. Pool routes remain stored.",
         );
 
         const deleteButton = [
@@ -879,17 +674,15 @@ describe("ProviderEditScreen deletion copy", () => {
         deleteButton?.click();
         await settle();
 
-        expect(document.body.textContent).toContain(
-            "Delete alpha? Clients calling those public IDs will start getting 404s.",
-        );
+        expect(document.body.textContent).toContain("Delete alpha?");
     });
 
-    it("states no cascade over a provider with no models", async () => {
+    it("states pool membership removal over an account with no physical models", async () => {
         mountWith([]);
         await settle();
 
         expect(document.body.textContent).toContain(
-            "Deleting removes the provider. It has no models, so nothing else is removed.",
+            "Deleting removes the account and its pool memberships. It has no physical models.",
         );
         expect(document.body.textContent).not.toContain("by cascade");
 
@@ -904,128 +697,15 @@ describe("ProviderEditScreen deletion copy", () => {
     });
 });
 
-describe("ProviderEditScreen prefix-change warning", () => {
-    const disposes = createDisposals();
-
-    /** Mounts the screen over the fixture provider with the given models. */
-    function mountWith(models: ReadonlyArray<ModelResponse>): void {
-        const holder = {
-            providers: [
-                provider,
-            ],
-            models,
-        };
-        disposes.push(
-            render(
-                () => (
-                    <ProviderEditScreen
-                        api={screenApi(holder)}
-                        providerId={3}
-                    />
-                ),
-                document.body,
-            ),
-        );
-    }
-
-    it("counts the recomposed public IDs beside the prefix field while the prefix stands changed", async () => {
-        mountWith([
-            model,
-            {
-                ...model,
-                id: 12,
-                upstream_id: "gpt-y",
-                public_id: "hand-named",
-                id_override: "hand-named",
-            },
-        ]);
-        await settle();
-
-        expect(document.body.textContent).not.toContain("Saving recomposes");
-
-        switchWithLabel("Custom model prefix").click();
-        await settle();
-        typeInto(labeledInput("Model prefix"), "q-");
-        await settle();
-
-        // The same predicate the save notice answers with states itself
-        // before the write: only the unoverridden row whose public ID the
-        // submitted prefix would rewrite is counted — the override keeps
-        // its ID under any prefix, so it counts nothing.
-        const warning = paragraphWithText(
-            "Saving recomposes 1 model ID — clients calling the old IDs will 404 until updated.",
-        );
-        expect(cardWithTitle("Settings").contains(warning)).toBe(true);
-    });
-
-    it("counts two recomposed public IDs in the plural", async () => {
-        mountWith([
-            model,
-            {
-                ...model,
-                id: 12,
-                upstream_id: "gpt-y",
-                public_id: "alpha-gpt-y",
-            },
-        ]);
-        await settle();
-
-        switchWithLabel("Custom model prefix").click();
-        await settle();
-        typeInto(labeledInput("Model prefix"), "q-");
-        await settle();
-
-        expect(document.body.textContent).toContain(
-            "Saving recomposes 2 model IDs — clients calling the old IDs will 404 until updated.",
-        );
-    });
-
-    it("warns before the save while a rename moves the derived prefix", async () => {
-        mountWith([
-            model,
-        ]);
-        await settle();
-
-        // The prefix rides the name while the custom switch is off, so the
-        // rename alone stands the warning — no prefix field is open.
-        typeInto(labeledInput("Name"), "beta");
-        await settle();
-
-        expect(document.body.textContent).toContain(
-            "Saving recomposes 1 model ID — clients calling the old IDs will 404 until updated.",
-        );
-    });
-
-    it("states no warning over a dirty form whose prefix is unchanged", async () => {
-        mountWith([
-            model,
-        ]);
-        await settle();
-
-        // The custom switch on over the stored prefix restates it byte for
-        // byte, and the Enabled toggle dirties the form without moving the
-        // prefix: no recomposition stands to warn about.
-        switchWithLabel("Custom model prefix").click();
-        await settle();
-        typeInto(labeledInput("Model prefix"), "alpha-");
-        await settle();
-        switchWithLabel("Enabled").click();
-        await settle();
-
-        expect(document.body.textContent).toContain("Unsaved changes");
-        expect(document.body.textContent).not.toContain("Saving recomposes");
-    });
-});
-
 describe("ProviderEditScreen reauthorization", () => {
     const disposes = createDisposals();
 
     const oauthProvider = providerRow({
+        model_prefix: "",
         type: "oauth",
         expires_at: 1_700_000_000_000_000,
         id: 3,
         name: "chatgpt",
-        model_prefix: "gpt-",
         provider_definition_name: "codex",
         format: "openai_response",
         base_url: null,
@@ -1212,7 +892,7 @@ describe("ProviderEditScreen reauthorization", () => {
 
         // The settings form stands dirty, so the reload the succeeded
         // completion triggers keeps the pre-reconnect row held behind it.
-        typeInto(labeledInput("Model prefix"), "gpt2-");
+        typeInto(labeledInput("Name"), "chatgpt-renamed");
         await settle();
 
         // The gateway reauthorized: its listing now answers the fresh row
@@ -1238,7 +918,7 @@ describe("ProviderEditScreen reauthorization", () => {
         // second flow over a credential that is current.
         expect(document.body.textContent).toContain("Credentials replaced.");
         expect(document.body.textContent).toContain("changed on the gateway");
-        expect(labeledInput("Model prefix").value).toBe("gpt2-");
+        expect(labeledInput("Name").value).toBe("chatgpt-renamed");
         expect(document.body.textContent).toContain("Valid for");
         expect(document.body.textContent).not.toContain("Expired");
         expect(document.body.textContent).not.toContain("Reconnect the account");

@@ -274,7 +274,8 @@ export const API_LOG_ENDPOINT_TYPE = defineVocabulary<ApiLogEndpointType>(
 export const USAGE_GROUP_BY = defineVocabulary<UsageGroupBy>(
     {
         day: "Day",
-        model: "Model",
+        model: "Physical model",
+        model_route: "Public route",
         provider: "Provider",
         api_key: "API key",
         endpoint_type: "Endpoint",

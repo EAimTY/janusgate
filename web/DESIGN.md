@@ -264,3 +264,6 @@ stranger who read only the READMEs; in-app copy assumes an operator mid-task.
 - Display faces, webfonts, image assets, icon fonts, emoji-as-icons.
 - Anything that moves beyond the motion grammar, and any motion that
   needs JavaScript to run.
+
+
+Standalone provider models are automatically callable as `provider.model_prefix + upstream_id`. Any pool membership hides these entries; each pool automatically exposes the union of member upstream IDs as `pool.model_prefix + upstream_id`, selecting only members with that exact model. Provider and pool identity forms expose editable prefixes, including the empty prefix, and explain the renaming effect beside the field. Inventory rows and physical model details show the actual automatic names. Public-route listings distinguish automatic entries and link them to the owning physical model or pool. Additional direct aliases and pool routes remain optional; setup leads from discovery directly to issuing a serving key.

@@ -5,7 +5,7 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import {
     lapsedCredentialStanding,
-    servingModelCountsByProvider,
+    readyInventoryCountsByProvider,
 } from "/src/management-api/serving";
 import {
     CREDENTIAL_KIND,
@@ -56,10 +56,10 @@ type ProviderAttention = {
 };
 
 /**
- * One enabled provider with nothing effectively serving, together with the
+ * One enabled provider with no ready inventory, together with the
  * attention its cause calls for.
  */
-type ProviderServingAttention = {
+type ProviderInventoryAttention = {
     readonly provider: ProviderResponse;
     readonly attention: {
         readonly detail: string;
@@ -127,23 +127,28 @@ export function HomeScreen(props: {
 
     const providersById = createMemo(() => indexRowsById(entities().providers));
 
-    // One walk over the models per listings change: the per-provider serving
-    // counts the attention lines read below. The "Models routing" figure is
+    // One walk over the models per listings change: the per-provider ready-inventory
+    // counts the attention lines read below. The "Inventory ready" figure is
     // exactly that map's sum, so it derives from the same accumulation
     // instead of filtering the models a second time.
-    const servingModelCounts = createMemo(() =>
-        servingModelCountsByProvider(entities().models, providersById()),
+    const readyInventoryCounts = createMemo(() =>
+        readyInventoryCountsByProvider(entities().models, providersById()),
     );
 
-    const servingModels = createMemo(() => {
+    const readyInventoryModels = createMemo(() => {
         let total = 0;
 
-        for (const count of servingModelCounts().values()) {
+        for (const count of readyInventoryCounts().values()) {
             total += count;
         }
 
         return total;
     });
+
+    const enabledRoutes = createMemo(
+        () => entities().modelRoutes.filter((route) => route.is_enabled).length,
+    );
+    const hasNoPublicRoutes = () => entities().modelRoutes.length === 0;
 
     const attentionProviders = createMemo(() =>
         entities().providers.flatMap((provider): ProviderAttention[] => {
@@ -160,26 +165,26 @@ export function HomeScreen(props: {
         }),
     );
 
-    // An enabled provider with nothing effectively serving (README §3) needs
+    // An enabled provider with no ready inventory (README §3) needs
     // a human: its rows are all vanished, disabled, or absent — the vanished
     // case is the quietest failure there is, and a raw row count would hide
     // it. A deliberately disabled provider is the operator's choice, not a
     // fault, so it stays off this list. Each line's action follows the cause
     // its rows name, because discovery — the fix the absent case needs —
     // cannot repair a row that is merely switched off.
-    const providersWithoutServingModels = createMemo(
-        (): ReadonlyArray<ProviderServingAttention> => {
-            const servingCounts = servingModelCounts();
+    const providersWithoutReadyInventory = createMemo(
+        (): ReadonlyArray<ProviderInventoryAttention> => {
+            const readyCounts = readyInventoryCounts();
 
-            return entities().providers.flatMap((provider): ProviderServingAttention[] => {
-                if (!provider.is_enabled || (servingCounts.get(provider.id) ?? 0) !== 0) {
+            return entities().providers.flatMap((provider): ProviderInventoryAttention[] => {
+                if (!provider.is_enabled || (readyCounts.get(provider.id) ?? 0) !== 0) {
                     return [];
                 }
 
                 return [
                     {
                         provider,
-                        attention: servingGapAttention(entities().models, provider.id),
+                        attention: inventoryGapAttention(entities().models, provider.id),
                     },
                 ];
             });
@@ -187,14 +192,15 @@ export function HomeScreen(props: {
     );
 
     // Exactly what the list below counts: every item the section can show —
-    // credential problems, providers with nothing serving, the missing first
+    // credential problems, providers with no ready inventory, the missing first
     // key — so the all-clear notice and the list can never contradict each
     // other.
     const attentionCount = createMemo(
         () =>
             attentionProviders().length +
-            providersWithoutServingModels().length +
-            (entities().apiKeys.length === 0 ? 1 : 0),
+            providersWithoutReadyInventory().length +
+            (entities().apiKeys.length === 0 ? 1 : 0) +
+            (hasNoPublicRoutes() ? 1 : 0),
     );
 
     return (
@@ -218,7 +224,7 @@ export function HomeScreen(props: {
             />
 
             <Show when={read.isFirstRead()}>
-                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                     <For
                         each={[
                             0,
@@ -226,6 +232,7 @@ export function HomeScreen(props: {
                             2,
                             3,
                             4,
+                            5,
                         ]}
                     >
                         {() => <Skeleton class="h-24 w-full rounded-2xl" />}
@@ -239,22 +246,28 @@ export function HomeScreen(props: {
                     when={entities().providers.length > 0}
                     fallback={<GettingStarted apiKeyCount={entities().apiKeys.length} />}
                 >
-                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                         <StatLink
                             href={hrefs.providers()}
                             value={String(entities().providers.length)}
                             label="Providers"
                         />
-                        {/* The figure counts only the effectively-serving
+                        {/* The figure counts only the ready-inventory
                             rows — the three-input status — while its sibling
                             figures are raw counts, so the hint names the
                             listed total the figure selects from and the
                             smaller number cannot read as a wrong count. */}
                         <StatLink
+                            href={hrefs.modelRoutes()}
+                            value={String(enabledRoutes())}
+                            label="Public routes"
+                            hint={`enabled of ${entities().modelRoutes.length} stored`}
+                        />
+                        <StatLink
                             href={hrefs.models(null)}
-                            value={String(servingModels())}
-                            label="Models routing"
-                            hint={`serving of ${entities().models.length} listed`}
+                            value={String(readyInventoryModels())}
+                            label="Inventory ready"
+                            hint={`ready of ${entities().models.length} listed`}
                         />
                         <StatLink
                             href={hrefs.apiKeys()}
@@ -310,8 +323,8 @@ export function HomeScreen(props: {
                         fallback={
                             <Notice
                                 tone="ok"
-                                title="Everything looks healthy."
-                                detail={null}
+                                title="Stored settings reviewed."
+                                detail="Inspect public routes for quota availability. These figures describe stored switches and inventory."
                                 fix={null}
                             />
                         }
@@ -319,6 +332,25 @@ export function HomeScreen(props: {
                         <Card>
                             <CardHeader title="Needs attention" />
                             <ul class="mt-4 flex flex-col divide-y divide-rule">
+                                <Show when={hasNoPublicRoutes()}>
+                                    <AttentionRow
+                                        lead={
+                                            <Glyph
+                                                name="stack"
+                                                class="shrink-0 text-ink-faint"
+                                            />
+                                        }
+                                        action={{
+                                            href: hrefs.models(null),
+                                            label: "Discover models",
+                                        }}
+                                    >
+                                        <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
+                                            No models are available. Discover models on an enabled
+                                            provider.
+                                        </p>
+                                    </AttentionRow>
+                                </Show>
                                 <Show when={entities().apiKeys.length === 0}>
                                     <AttentionRow
                                         lead={
@@ -336,7 +368,7 @@ export function HomeScreen(props: {
                                             <span class="font-medium">No API keys yet.</span>
                                             <span class="text-ink-dim">
                                                 {
-                                                    " Serving clients authenticate with one — without it, the gateway serves nothing."
+                                                    " Serving clients authenticate with one — without it, the gateway has no ready inventory."
                                                 }
                                             </span>
                                         </p>
@@ -364,7 +396,7 @@ export function HomeScreen(props: {
                                         </AttentionRow>
                                     )}
                                 </For>
-                                <For each={providersWithoutServingModels()}>
+                                <For each={providersWithoutReadyInventory()}>
                                     {(item) => (
                                         <AttentionRow
                                             lead={
@@ -480,13 +512,13 @@ function EndpointsCard(props: { readonly baseUrl: string }): JSX.Element {
 }
 
 /**
- * The attention an enabled provider with nothing effectively serving carries,
+ * The attention an enabled provider with no ready inventory carries,
  * chosen by the cause its rows name: a provider holding no model rows at all
  * is missing its discovery — the provider's page runs it — while a provider
  * whose rows exist but none serve holds only switched-off or vanished rows,
  * which discovery cannot repair; its models page states each row's own cause.
  */
-function servingGapAttention(
+function inventoryGapAttention(
     models: ReadonlyArray<ModelResponse>,
     providerId: number,
 ): {
@@ -507,7 +539,7 @@ function servingGapAttention(
               },
           }
         : {
-              detail: " has no models serving — every model is switched off or suspended.",
+              detail: " has no ready inventory — every model is switched off or vanished.",
               action: {
                   label: "Review models",
                   href: hrefs.models(providerId),
@@ -609,9 +641,9 @@ function AttentionRow(props: {
 }
 
 /**
- * A fresh gateway: the five steps from here to a working endpoint. The key
+ * A fresh gateway: the six steps from here to a working endpoint. The key
  * count rides in because keys can exist with no provider standing — the
- * Endpoints card below links them — and a key already issued is step four's
+ * Endpoints card below links them — and a key already issued is step five's
  * done state, however early it was taken.
  */
 function GettingStarted(props: { readonly apiKeyCount: number }): JSX.Element {

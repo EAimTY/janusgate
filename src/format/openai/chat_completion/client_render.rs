@@ -33,7 +33,6 @@ pub(crate) struct ChatCompletionResponse {
 }
 
 /// Streaming client response renderer producing Chat Completions SSE frames.
-#[derive(Debug)]
 pub(super) struct SseRenderer {
     /// Gateway-issued completion identifier.
     id: String,
@@ -70,6 +69,8 @@ pub(super) struct SseRenderer {
     /// Latest token accounting observed; rendered once as the terminal usage chunk, because the
     /// official stream shape carries usage only on the final chunk before `[DONE]`.
     usage: Option<IrUsage>,
+    /// Optional digest-only text projection and per-call outward assembly, never cache content.
+    projection: Option<super::affinity::Output>,
 }
 
 /// The single aggregated choice.
@@ -290,6 +291,7 @@ impl SseRenderer {
             outward_indexes: Vec::new(),
             should_include_usage,
             usage: None,
+            projection: None,
         }
     }
 
@@ -347,7 +349,7 @@ impl SseRenderer {
 impl ClientSseRenderer for SseRenderer {
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String> {
-        match event {
+        let frames = match event {
             // Native compaction state is unrepresentable on this surface and
             // unreachable in practice: a caller that cannot express compaction
             // controls can never trigger a native compaction upstream.
@@ -569,7 +571,30 @@ impl ClientSseRenderer for SseRenderer {
 
                 frames
             }
+        };
+        if let Some(projection) = self.projection.as_mut() {
+            projection.observe(&frames);
+            if let IrEvent::ToolCallDone { index, .. } = event {
+                if let Some((_, outward_index)) = self
+                    .outward_indexes
+                    .iter()
+                    .find(|(ir_index, _)| ir_index == index)
+                {
+                    projection.complete_call(*outward_index);
+                }
+            }
         }
+        frames
+    }
+
+    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.projection = Some(super::affinity::Output::new(projector));
+    }
+
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        self.projection
+            .take()
+            .and_then(super::affinity::Output::finish)
     }
 
     /// Renders a mid-stream error as a terminal SSE frame carrying the OpenAI error envelope,
@@ -1072,4 +1097,31 @@ mod tests {
             }))
         );
     }
+}
+
+/// Projects the actual assistant message; reasoning_content is discarded by Chat replay.
+pub(super) fn project_json_response(
+    response: &ChatCompletionResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    for choice in &response.choices {
+        if let Some(text) = &choice.message.content {
+            projector.text(
+                crate::affinity::fingerprint::Role::Assistant,
+                text.as_bytes(),
+            );
+        }
+        for call in &choice.message.tool_calls {
+            if !crate::format::affinity::project_call(
+                projector,
+                &call.id,
+                &call.function.name,
+                &call.function.arguments,
+                call.thought_signature.as_deref(),
+            ) {
+                return false;
+            }
+        }
+    }
+    true
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGetProviderQuotaResponse } from "./quota";
+import { parseGetProviderQuotaResponse, parseQuotaDescriptor } from "./quota";
 
 const entry = {
     key: [
@@ -7,6 +7,9 @@ const entry = {
         "weekly",
     ],
     label: "Weekly",
+    routing: {
+        type: "monitoring_only",
+    },
     scope: {
         type: "unknown",
     },
@@ -25,6 +28,80 @@ const entry = {
 };
 
 describe("quota response validation", () => {
+    it("keeps model applicability independent of presentation labels and rejects malformed sets", () => {
+        for (const routing of [
+            {
+                type: "monitoring_only",
+            },
+            {
+                type: "all_models",
+            },
+            {
+                type: "models",
+                upstream_ids: [
+                    "M",
+                    "N",
+                ],
+            },
+        ]) {
+            const snapshot = {
+                observed_at: 1,
+                quotas: [
+                    {
+                        ...entry,
+                        routing,
+                    },
+                ],
+            };
+            expect(parseGetProviderQuotaResponse(snapshot)).toEqual(snapshot);
+        }
+        for (const routing of [
+            undefined,
+            null,
+            {
+                type: "models",
+                upstream_ids: [],
+            },
+            {
+                type: "models",
+                upstream_ids: [
+                    "M",
+                    "M",
+                ],
+            },
+            {
+                type: "models",
+                upstream_ids: [
+                    "bad id",
+                ],
+            },
+            {
+                type: "all_models",
+                upstream_ids: [
+                    "M",
+                ],
+            },
+            {
+                type: "model",
+                upstream_ids: [
+                    "M",
+                ],
+            },
+        ]) {
+            expect(() =>
+                parseGetProviderQuotaResponse({
+                    observed_at: 1,
+                    quotas: [
+                        {
+                            ...entry,
+                            routing,
+                        },
+                    ],
+                }),
+            ).toThrow();
+        }
+    });
+
     it("retains over-limit readings and independent tuple segments, including empty success", () => {
         const response = {
             observed_at: 1900000000000000,
@@ -160,5 +237,116 @@ describe("quota response validation", () => {
                 ],
             }),
         ).toThrow();
+    });
+});
+
+describe("authored quota routing", () => {
+    it("defaults to monitoring and preserves required per-entry selectors in their collection context", () => {
+        const parse = (routing: unknown, type = "map") =>
+            parseQuotaDescriptor(
+                {
+                    request: {},
+                    sources: [
+                        {
+                            type,
+                            key: "models",
+                            at: [],
+                            is_required: true,
+                            scope: {
+                                type: "unknown",
+                            },
+                            entries: [
+                                {
+                                    key: "allowance",
+                                    label: "Allowance",
+                                    at: [],
+                                    is_required: true,
+                                    window: {
+                                        type: "unknown",
+                                    },
+                                    measurement: {
+                                        type: "unknown",
+                                    },
+                                    reset: {
+                                        type: "unknown",
+                                    },
+                                    ...(routing === undefined
+                                        ? {}
+                                        : {
+                                              routing,
+                                          }),
+                                },
+                            ],
+                        },
+                    ],
+                },
+                "quota",
+                () => ({
+                    method: "GET",
+                    url: [
+                        {
+                            type: "literal",
+                            value: "https://example.test/quota",
+                        },
+                    ],
+                }),
+            );
+        expect(parse(undefined).sources[0]?.entries[0]?.routing).toEqual({
+            type: "monitoring_only",
+        });
+        const routing = {
+            type: "models",
+            upstream_ids: [
+                {
+                    type: "map_key",
+                },
+                {
+                    type: "field",
+                    field: {
+                        base: "entry",
+                        path: [
+                            "model",
+                        ],
+                        is_required: true,
+                    },
+                    encoding: "string",
+                },
+                {
+                    type: "literal",
+                    value: "M",
+                },
+            ],
+        };
+        expect(parse(routing).sources[0]?.entries[0]?.routing).toEqual(routing);
+        expect(() => parse(routing, "object")).toThrow();
+        for (const upstream_ids of [
+            [],
+            [
+                {
+                    type: "literal",
+                    value: "bad id",
+                },
+            ],
+            [
+                {
+                    type: "field",
+                    field: {
+                        base: "entry",
+                        path: [
+                            "model",
+                        ],
+                        is_required: false,
+                    },
+                    encoding: "string",
+                },
+            ],
+        ]) {
+            expect(() =>
+                parse({
+                    type: "models",
+                    upstream_ids,
+                }),
+            ).toThrow();
+        }
     });
 });

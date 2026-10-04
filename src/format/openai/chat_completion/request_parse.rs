@@ -391,6 +391,8 @@ const LEGACY_FUNCTION_CALL_ID: &str = "call_0";
 pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
     let request: RequestBody = format::parse_client_request(body)?;
 
+    let mut affinity =
+        crate::format::affinity::Sources::new(crate::format::UpstreamFormat::OpenAiChatCompletion);
     let mut instructions_parts: Vec<String> = Vec::new();
     let mut messages: Vec<IrMessage> = Vec::new();
 
@@ -477,6 +479,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                         // time.
                         format::arguments_as_object(&tool_call.function.arguments)?;
 
+                        affinity.call(true);
                         parts.push(IrPart::ToolCall {
                             call_id: tool_call.id.clone(),
                             name: tool_call.function.name.clone(),
@@ -497,6 +500,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                     // time.
                     format::arguments_as_object(&function_call.arguments)?;
 
+                    affinity.call(false);
                     parts.push(IrPart::ToolCall {
                         call_id: LEGACY_FUNCTION_CALL_ID.to_string(),
                         name: function_call.name.clone(),
@@ -515,6 +519,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                 content,
                 tool_call_id,
             } => {
+                affinity.result(true, crate::format::affinity::ResultShape::Text);
                 messages.push(IrMessage {
                     role: IrRole::Tool,
                     parts: vec![IrPart::ToolOutput {
@@ -583,6 +588,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     };
 
     Ok(ParsedRequest {
+        affinity,
         ir: IrRequest {
             state_items: Vec::new(),
             model: request.model,

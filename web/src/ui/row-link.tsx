@@ -46,7 +46,7 @@ export function RowLink(props: {
                     </span>
                 </Show>
             </span>
-            <span class="flex items-center gap-2">{props.badges}</span>
+            <span class="flex min-w-0 max-w-full flex-wrap items-center gap-2">{props.badges}</span>
             <Glyph
                 name="chev-right"
                 class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"

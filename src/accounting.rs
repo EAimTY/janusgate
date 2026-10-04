@@ -156,6 +156,10 @@ pub enum UsageGroupBy {
     #[serde(rename = "model")]
     Model,
 
+    /// Requested public route identity, stable through target edits.
+    #[serde(rename = "model_route")]
+    ModelRoute,
+
     /// Owning provider row id.
     #[serde(rename = "provider")]
     Provider,
@@ -189,6 +193,7 @@ impl UsageGroupBy {
         match self {
             Self::Day => "day",
             Self::Model => "model",
+            Self::ModelRoute => "model_route",
             Self::Provider => "provider",
             Self::ApiKey => "api_key",
             Self::EndpointType => "endpoint_type",

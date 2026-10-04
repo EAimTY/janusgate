@@ -7,6 +7,7 @@ import type {
     ListUsageRequest,
     ListUsageResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
@@ -80,6 +81,7 @@ function streamApi(
         readonly providers?: ReadonlyArray<ProviderResponse>;
         readonly models?: ReadonlyArray<ModelResponse>;
         readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
+        readonly modelRoutes?: ReadonlyArray<ModelRouteResponse>;
     } = {},
 ): ManagementApi {
     return stubManagementApi({
@@ -513,6 +515,12 @@ describe("UsageScreen filtering", () => {
         });
         await settle();
 
+        mount(streamApi(holder), {
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            modelRouteId: "17",
+        });
+        await settle();
+
         // The 24h window stays behind — the aggregates page totals all time —
         // so that door states the trade beside its label, while a draft
         // holding nothing beyond the one entity narrow reads its bare label:
@@ -520,6 +528,7 @@ describe("UsageScreen filtering", () => {
         expect(linkTo("/usage/query?provider=3").textContent).toBe(
             "View aggregates — the window and every other filter stay behind.",
         );
+        expect(linkTo("/usage/query?route=17").textContent).toBe("View aggregates");
         expect(linkTo("/usage/query?model=9").textContent).toBe("View aggregates");
         expect(linkTo("/usage/query?key=7").textContent).toBe("View aggregates");
 
@@ -577,7 +586,6 @@ describe("UsageScreen filtering", () => {
         const doorProvider = providerRow({
             id: 3,
             name: "door-provider",
-            model_prefix: "door-",
         });
         mount(
             streamApi(holder, {
@@ -751,6 +759,18 @@ describe("UsageScreen row links", () => {
                 apiKeys: [
                     apiKeyRow(),
                 ],
+                modelRoutes: [
+                    {
+                        is_automatic: false,
+                        id: 17,
+                        public_id: "coding",
+                        is_enabled: true,
+                        target: {
+                            type: "direct",
+                            model_id: 9,
+                        },
+                    },
+                ],
             }),
         );
         await settle();
@@ -760,18 +780,22 @@ describe("UsageScreen row links", () => {
                 {
                     ...logRow(1049),
                     provider_id: 2,
+                    model_route_id: 18,
                 },
             ],
         });
         await settle();
 
+        expect(linkTo("/routes/17/edit").textContent).toContain("coding");
         expect(linkTo("/providers/1").textContent).toContain("local");
-        expect(linkTo("/models/9").textContent).toContain("local-qwen3-32b");
+        expect(linkTo("/models/9").textContent).toContain("qwen3:32b");
         expect(linkTo("/api-keys/7").textContent).toContain("service-a");
 
         // A deleted row is named by its kind, never turned into a door that
         // leads nowhere.
         expect(bodyText()).toContain("Deleted provider");
+        expect(bodyText()).toContain("Deleted route");
+        expect(() => linkTo("/routes/18/edit")).toThrow("No link to /routes/18/edit");
         expect(() => linkTo("/providers/2")).toThrow("No link to /providers/2");
     });
 });
@@ -869,6 +893,38 @@ describe("UsageScreen row figures", () => {
         expect(figures).toContain("cached 0");
         expect(figures).toContain("cache write —");
         expect(figures).toContain("reasoning 8");
+    });
+
+    it("distinguishes an abandoned quota response from the outward response and a missing upstream response", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+        answerLast(holder.pages, {
+            api_logs: [
+                apiLogRow(30, {
+                    upstream_http_status: 429,
+                    http_status: null,
+                    outcome: "upstream_error",
+                }),
+                apiLogRow(20, {
+                    upstream_http_status: 200,
+                    http_status: 200,
+                }),
+                apiLogRow(10, {
+                    upstream_http_status: null,
+                    http_status: 502,
+                    outcome: "upstream_error",
+                }),
+            ],
+        });
+        await settle();
+        expect(bodyText()).toContain("Client — · Upstream 429");
+        expect(bodyText()).toContain("Client 200 · Upstream 200");
+        expect(bodyText()).toContain("Client 502 · Upstream —");
     });
 
     it("prints a row's duration as a human duration, not raw milliseconds", async () => {

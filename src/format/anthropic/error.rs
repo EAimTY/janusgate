@@ -77,15 +77,26 @@ pub(crate) fn render_body(error: &Error) -> AnthropicErrorBody {
 
         Error::InvalidUrl { .. } | Error::ModelNotFound { .. } => render("not_found_error"),
 
-        Error::MethodNotAllowed | Error::MalformedRequest { .. } => render("invalid_request_error"),
+        Error::MethodNotAllowed
+        | Error::MalformedRequest { .. }
+        | Error::RoutingStateConflict { .. } => render("invalid_request_error"),
 
         Error::PayloadTooLarge => render("request_too_large"),
 
-        Error::Upstream { status, .. } => render(mirrored_error_type(status.as_u16())),
+        Error::PoolQuotaExhausted { .. } | Error::BoundAccountQuotaExhausted { .. } => {
+            render("rate_limit_error")
+        }
+
+        Error::Upstream { status, .. } | Error::QuotaRejected { status, .. } => {
+            render(mirrored_error_type(status.as_u16()))
+        }
 
         // The official table has no 502 row and `api_error` is the gateway's own failure row:
         // its own 502 upstream-unavailable failure and its 500 internal failure render there.
-        Error::UpstreamUnavailable { .. } | Error::Internal => render("api_error"),
+        Error::PoolUnavailable { .. }
+        | Error::BoundAccountUnavailable { .. }
+        | Error::UpstreamUnavailable { .. }
+        | Error::Internal => render("api_error"),
     }
 }
 

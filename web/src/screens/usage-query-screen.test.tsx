@@ -75,6 +75,10 @@ function screenApi(
     return stubManagementApi({
         listProviders: (signal) => heldCall(signal, holder.providers),
         listModels: (_request, signal) => heldCall(signal, holder.models),
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [],
+            }),
         listApiKeys: (signal) => heldCall(signal, holder.apiKeys),
         queryUsage: () => {
             onQueryUsage();
@@ -459,6 +463,10 @@ describe("UsageQueryScreen a resolved query superseded before its continuation r
         const api = stubManagementApi({
             listProviders: (signal) => heldCall(signal, holder.providers),
             listModels: (_request, signal) => heldCall(signal, holder.models),
+            listModelRoutes: () =>
+                Promise.resolve({
+                    model_routes: [],
+                }),
             listApiKeys: (signal) => heldCall(signal, holder.apiKeys),
             queryUsage: (_request, signal) => heldCall(signal, queries),
         });
@@ -557,37 +565,48 @@ describe("UsageQueryScreen arrival subject", () => {
         await answerListings(holder);
     }
 
-    it("prefills the route's subject as the grouping and the filter", async () => {
-        const requests: QueryUsageRequest[] = [];
-        await mountAndAnswer(
-            requests,
-            {
-                providers: [],
-                models: [],
-                apiKeys: [],
-            },
+    it("prefills account and public-route subjects as independent grouping and filter dimensions", async () => {
+        for (const subject of [
             {
                 dimension: "provider",
                 id: 1,
             },
-        );
-
-        // The subject preselects its dimension beside the day default and
-        // fills its own filter field: the arrival query already asks about
-        // exactly the subject the aggregates link carried.
-        expect(requests).toEqual([
             {
-                group_by: [
-                    "day",
-                    "provider",
-                ],
-                filter: {
-                    provider_id: [
-                        1,
-                    ],
-                },
+                dimension: "model_route",
+                id: 17,
             },
-        ]);
+        ] as const) {
+            const requests: QueryUsageRequest[] = [];
+            await mountAndAnswer(
+                requests,
+                {
+                    providers: [],
+                    models: [],
+                    apiKeys: [],
+                },
+                subject,
+            );
+            expect(requests).toEqual([
+                {
+                    group_by: [
+                        "day",
+                        subject.dimension,
+                    ],
+                    filter:
+                        subject.dimension === "provider"
+                            ? {
+                                  provider_id: [
+                                      1,
+                                  ],
+                              }
+                            : {
+                                  model_route_id: [
+                                      17,
+                                  ],
+                              },
+                },
+            ]);
+        }
     });
 
     it("asks the bare page's default question when the route carries no subject", async () => {
@@ -1403,7 +1422,6 @@ describe("UsageQueryScreen filter options before the listings land", () => {
                 providerRow({
                     id: 2,
                     name: "other",
-                    model_prefix: "other-",
                 }),
             ],
         });

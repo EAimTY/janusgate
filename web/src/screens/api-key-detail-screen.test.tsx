@@ -19,6 +19,10 @@ function keyRow(isEnabled: boolean): ApiKeyResponse {
 /** A management API whose key listing answers the fixture; usage answers empty. */
 function screenApi(apiKey: ApiKeyResponse): ManagementApi {
     return stubManagementApi({
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [],
+            }),
         listApiKeys: () =>
             Promise.resolve({
                 api_keys: [

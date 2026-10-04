@@ -69,6 +69,8 @@ pub(super) struct ListProvidersResponse {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateProviderRequest {
+    /// Prefix prepended to each automatically exposed upstream model ID; empty is allowed.
+    pub model_prefix: String,
     /// The definition name the provider binds to.
     pub provider_definition_name: String,
 
@@ -77,9 +79,6 @@ pub(super) struct CreateProviderRequest {
 
     /// Unique provider name; must be non-empty.
     pub name: String,
-
-    /// Public model name prefix; may be empty, otherwise routing-safe.
-    pub model_prefix: String,
 
     /// Serving state.
     pub is_enabled: bool,
@@ -102,14 +101,13 @@ pub(super) struct CreateProviderRequest {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UpdateProviderRequest {
+    /// Prefix prepended to each automatically exposed upstream model ID; empty is allowed.
+    pub model_prefix: String,
     /// Addressed provider row.
     pub provider_id: i64,
 
     /// Unique provider name; a differing name renames the provider.
     pub name: String,
-
-    /// Public model name prefix; may be empty, otherwise routing-safe.
-    pub model_prefix: String,
 
     /// Serving state.
     pub is_enabled: bool,
@@ -270,6 +268,7 @@ pub(super) async fn delete(
             id: request.provider_id,
         });
     }
+    context.quota_coordinator.forget(request.provider_id);
 
     info!("deleted provider {}", request.provider_id);
 
@@ -451,7 +450,7 @@ mod tests {
         // An unknown field is rejected.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
-                r#"{"provider_id":7,"name":"acme","model_prefix":"","is_enabled":true,
+                r#"{"provider_id":7,"name":"acme","model_prefix":"acme-","is_enabled":true,
                     "base_url":null,"expires_at":1}"#
             )
             .is_err()
@@ -460,7 +459,7 @@ mod tests {
         // The write-only field never accepts `null`.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
-                r#"{"provider_id":7,"name":"acme","model_prefix":"","is_enabled":true,
+                r#"{"provider_id":7,"name":"acme","model_prefix":"acme-","is_enabled":true,
                     "base_url":null,"api_key":null}"#
             )
             .is_err()
@@ -470,7 +469,7 @@ mod tests {
         // handler's validation, because the wire shape cannot express the pairing rule.
         #[expect(clippy::unwrap_used, reason = "the payload is constructed to parse")]
         let partial: UpdateProviderRequest = serde_json::from_str(
-            r#"{"provider_id":7,"name":"acme","model_prefix":"","is_enabled":true,
+            r#"{"provider_id":7,"name":"acme","model_prefix":"acme-","is_enabled":true,
                 "base_url":null,"provider_definition_name":"d"}"#,
         )
         .unwrap();
@@ -501,7 +500,6 @@ mod tests {
             &database,
             &definition,
             "static-provider",
-            "s-",
             Some("https://upstream.example"),
             StoredCredentials::ApiKey {
                 api_key: "sk".to_string(),
@@ -516,9 +514,9 @@ mod tests {
         let error = handle_update(
             &database,
             UpdateProviderRequest {
+                model_prefix: String::new(),
                 provider_id: provider.id,
                 name: provider.name.clone(),
-                model_prefix: provider.model_prefix.clone(),
                 is_enabled: true,
                 base_url: None,
                 provider_definition_name: None,
@@ -563,7 +561,6 @@ mod tests {
             &database,
             &definition,
             "static-provider",
-            "s-",
             Some("https://upstream.example"),
             StoredCredentials::ApiKey {
                 api_key: "sk".to_string(),
@@ -578,9 +575,9 @@ mod tests {
         let error = handle_update(
             &database,
             UpdateProviderRequest {
+                model_prefix: String::new(),
                 provider_id: provider.id,
                 name: provider.name.clone(),
-                model_prefix: provider.model_prefix.clone(),
                 is_enabled: true,
                 base_url: None,
                 provider_definition_name: Some("absent-def".to_string()),

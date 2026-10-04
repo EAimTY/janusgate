@@ -826,7 +826,6 @@ mod tests {
             &database,
             &definition,
             "mock",
-            "e2e-",
             Some(&mock_base),
             crate::provider::StoredCredentials::ApiKey {
                 api_key: "upstream-secret".to_string(),
@@ -839,7 +838,6 @@ mod tests {
             ModelCreate {
                 provider_id: provider.id,
                 upstream_id: "model",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -853,7 +851,6 @@ mod tests {
             &database,
             &definition,
             "drift",
-            "drift-",
             None,
             crate::provider::StoredCredentials::ApiKey {
                 api_key: "drift-secret".to_string(),
@@ -866,7 +863,6 @@ mod tests {
             ModelCreate {
                 provider_id: drift_provider.id,
                 upstream_id: "model",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -884,7 +880,6 @@ mod tests {
             &database,
             &refresh_definition,
             "refresh",
-            "rf-",
             None,
             crate::provider::StoredCredentials::OAuth {
                 access_token: "stale".to_string(),
@@ -905,7 +900,6 @@ mod tests {
             ModelCreate {
                 provider_id: refresh_provider.id,
                 upstream_id: "model",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -924,6 +918,10 @@ mod tests {
                 api_logs_directory.clone(),
                 retention_days,
             )),
+            affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+            quota_coordinator: std::sync::Arc::new(
+                crate::provider::quota::coordinator::Coordinator::default(),
+            ),
             data_plane: crate::http_client::data_plane(),
             control_plane: crate::http_client::control_plane(),
         });
@@ -942,7 +940,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         // Pre-dispatch failures: authentication, routing, rendering, refresh — zero rows each.
-        let response = send_completion(&client, &base, "sk-wrong", "e2e-model", false).await?;
+        let response = send_completion(&client, &base, "sk-wrong", "mock-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
         assert_eq!(recorded_rows(&api_logs_directory).await?.len(), 0);
 
@@ -959,7 +957,7 @@ mod tests {
 
         // The failed refresh happens before dispatch; whichever transport shape the token
         // endpoint rejection takes, no row may exist once the response is rendered.
-        let response = send_completion(&client, &base, "sk-e2e", "rf-model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "refresh-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
         assert_eq!(recorded_rows(&api_logs_directory).await?.len(), 0);
 
@@ -968,7 +966,7 @@ mod tests {
 
         // Success (non-streaming): completed + 200, attributed ids, totals with a NULL breakdown.
         mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let _body = response.text().await?;
 
@@ -994,7 +992,7 @@ mod tests {
 
         // Upstream non-2xx mirrored: upstream_error with the very status, no usage reported.
         mock_mode.store(MOCK_UPSTREAM_429, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 
         let rows = wait_for_rows(&api_logs_directory, baseline + 1).await?;
@@ -1009,7 +1007,7 @@ mod tests {
 
         // Transport failure: the client receives 502 and the row mirrors that 502 (README §6.7).
         mock_mode.store(MOCK_CLOSE_ON_ARRIVAL, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
 
         let rows = wait_for_rows(&api_logs_directory, baseline + 1).await?;
@@ -1020,7 +1018,7 @@ mod tests {
         // A clean streaming completion: completed + 200, recorded once the body ends — and the
         // body end happens strictly after the row landed.
         mock_mode.store(MOCK_SSE_COMPLETE, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", true).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", true).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
         let stream_body = response.text().await?;
@@ -1040,7 +1038,7 @@ mod tests {
         // A client that aborts after the first delivered frame: client_aborted under the
         // already-declared 200, with no usage ever reported — five NULL token columns.
         mock_mode.store(MOCK_SSE_FOREVER, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", true).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", true).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
         let mut stream = response.bytes_stream();
@@ -1075,7 +1073,7 @@ mod tests {
         // response ever reached the client (README §3 *ApiLog* streaming rules).
         mock_mode.store(MOCK_SSE_DELAYED, Ordering::SeqCst);
 
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", true).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", true).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         drop(response);
 
@@ -1110,7 +1108,7 @@ mod tests {
         let baseline = rows.len();
 
         mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "mock-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
         let rows = recorded_rows(&api_logs_directory).await?;

@@ -1,6 +1,7 @@
 import type {
     ApiKeyResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
     UsageBucket,
     UsageBucketKey,
@@ -21,6 +22,7 @@ type UsageLabel = {
 /** The usage-domain entity lists indexed by row id, ready for O(1) lookups. */
 export type UsageEntityIndex = {
     readonly providersById: ReadonlyMap<number, ProviderResponse>;
+    readonly modelRoutesById: ReadonlyMap<number, ModelRouteResponse>;
     readonly modelsById: ReadonlyMap<number, ModelResponse>;
     readonly apiKeysById: ReadonlyMap<number, ApiKeyResponse>;
 };
@@ -34,6 +36,7 @@ export function indexUsageEntities(entities: UsageEntities): UsageEntityIndex {
     return {
         providersById: indexRowsById(entities.providers),
         modelsById: indexRowsById(entities.models),
+        modelRoutesById: indexRowsById(entities.modelRoutes),
         apiKeysById: indexRowsById(entities.apiKeys),
     };
 }
@@ -50,12 +53,20 @@ function resolveLabel(name: string | undefined, missingText: string): UsageLabel
           };
 }
 
-/** A request's model as its current public ID, or as a deleted model. */
+/** A request's public route as its current authored name, or a deleted route. */
+export function usageModelRouteLabel(
+    modelRoutesById: ReadonlyMap<number, ModelRouteResponse>,
+    modelRouteId: number,
+): UsageLabel {
+    return resolveLabel(modelRoutesById.get(modelRouteId)?.public_id, "Deleted route");
+}
+
+/** A request's physical model as its upstream ID, or a deleted model. */
 export function usageModelLabel(
     modelsById: ReadonlyMap<number, ModelResponse>,
     modelId: number,
 ): UsageLabel {
-    return resolveLabel(modelsById.get(modelId)?.public_id, "Deleted model");
+    return resolveLabel(modelsById.get(modelId)?.upstream_id, "Deleted model");
 }
 
 /** A request's provider as its current name, or as a deleted provider. */
@@ -112,6 +123,12 @@ export function usageDimensionLabel(
             const field = DIMENSION_KEY_FIELD[dimension];
 
             return bucketKeyField(key[field], field);
+        }
+
+        case "model_route": {
+            const field = DIMENSION_KEY_FIELD[dimension];
+            return usageModelRouteLabel(index.modelRoutesById, bucketKeyField(key[field], field))
+                .text;
         }
 
         case "model": {

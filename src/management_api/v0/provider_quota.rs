@@ -1,4 +1,4 @@
-//! Read-only upstream quota observation for an exact provider definition.
+//! Forced upstream quota observation and fenced account availability reconciliation.
 
 use super::{Error, route};
 use crate::{context::Context, provider::quota, storage};
@@ -35,17 +35,24 @@ pub(super) struct GetProviderQuotaResponse {
     pub quotas: Vec<quota::QuotaEntry>,
 }
 
-/// Loads the exact bound definition and observes quota without a quota/database write.
+/// Forces or joins a current-generation read and reconciles its complete derived evidence.
 pub(super) async fn get(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<GetProviderQuotaRequest>, Error>,
 ) -> Result<Json<GetProviderQuotaResponse>, Error> {
-    let provider = storage::providers::find_provider_by_id(&context.database, request.provider_id)
+    storage::providers::find_provider_by_id(&context.database, request.provider_id)
         .await?
         .ok_or(Error::ProviderNotFound {
             id: request.provider_id,
         })?;
-    let observation = quota::query(&context.database, &context.control_plane, &provider).await?;
+    let observation = context
+        .quota_coordinator
+        .refresh(
+            &context.database,
+            &context.control_plane,
+            request.provider_id,
+        )
+        .await?;
     Ok(Json(GetProviderQuotaResponse {
         observed_at: observation.observed_at,
         quotas: observation.quotas,
@@ -109,6 +116,10 @@ mod tests {
         Context {
             database,
             api_log_store: None,
+            affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+            quota_coordinator: std::sync::Arc::new(
+                crate::provider::quota::coordinator::Coordinator::default(),
+            ),
             data_plane: crate::http_client::data_plane(),
             control_plane: crate::http_client::control_plane(),
         }
@@ -256,7 +267,6 @@ mod tests {
                 &database,
                 &definition,
                 "fixture",
-                "",
                 None,
                 StoredCredentials::OAuth {
                     access_token: "current".into(),
@@ -314,7 +324,6 @@ mod tests {
             &database,
             &definition,
             "quota",
-            "q-",
             Some(&mock.base()),
             StoredCredentials::OAuth {
                 access_token: "expired".into(),
@@ -406,7 +415,6 @@ mod tests {
             &database,
             &unsupported,
             "unsupported",
-            "",
             Some(&mock.base()),
             StoredCredentials::OAuth {
                 access_token: "expired".into(),
@@ -435,7 +443,6 @@ mod tests {
             &database,
             &definition,
             "supported",
-            "",
             Some(&mock.base()),
             StoredCredentials::ApiKey {
                 api_key: "secret".into(),
@@ -471,7 +478,6 @@ mod tests {
             &database,
             &definition,
             "renewal-failure",
-            "",
             Some(&mock.base()),
             StoredCredentials::OAuth {
                 access_token: "expired".into(),
@@ -527,7 +533,6 @@ mod tests {
             &database,
             &definition,
             "slot",
-            "",
             Some(&mock.base()),
             StoredCredentials::OAuth {
                 access_token: "inference".into(),
@@ -569,8 +574,8 @@ mod tests {
             &database,
             provider.id,
             storage::providers::ProviderUpdate {
+                model_prefix: "",
                 name: &provider.name,
-                model_prefix: &provider.model_prefix,
                 base_url: provider.base_url.as_deref(),
                 is_enabled: true,
 

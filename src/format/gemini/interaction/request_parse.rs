@@ -514,6 +514,8 @@ pub(super) fn parse_request(
     // Consecutive same-role steps coalesce into one message per run, so a text turn followed by
     // its thought step and tool calls stays one assistant message.
     let mut run = format::RoleRun::default();
+    let mut affinity =
+        crate::format::affinity::Sources::new(crate::format::UpstreamFormat::GeminiInteraction);
 
     for step in steps {
         match step {
@@ -526,38 +528,7 @@ pub(super) fn parse_request(
             }
 
             StepIn::Thought { summary, signature } => {
-                // Summary blocks are a presentation of the model's reasoning: only their text
-                // joins the block, image blocks dropped — the IR reasoning channel is text-only
-                // by design.
-                let text = summary
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(ContentBlockIn::text)
-                    .collect::<Vec<_>>()
-                    .join("");
-
-                // The opaque payload is the step's own complete JSON: strict parsing guarantees
-                // no member escapes the typed shape, so re-serializing it preserves the value
-                // exactly.
-                #[expect(
-                    clippy::expect_used,
-                    reason = "the parsed step shape is a first-party type and serializes totally"
-                )]
-                let opaque = serde_json::to_value(StepIn::Thought {
-                    summary,
-                    signature: signature.clone(),
-                })
-                .expect("the parsed thought shape serializes");
-
-                run.push(
-                    IrRole::Assistant,
-                    vec![IrPart::Reasoning {
-                        text,
-                        signature,
-                        opaque,
-                    }],
-                );
+                run.push(IrRole::Assistant, vec![thought_part(summary, signature)]);
             }
 
             StepIn::FunctionCall {
@@ -565,6 +536,7 @@ pub(super) fn parse_request(
                 name,
                 arguments,
             } => {
+                affinity.call(true);
                 run.push(
                     IrRole::Assistant,
                     vec![IrPart::ToolCall {
@@ -582,6 +554,11 @@ pub(super) fn parse_request(
                 result,
                 is_error,
             } => {
+                let shape = match &result {
+                    FunctionResultPayload::Object(_) => crate::format::affinity::ResultShape::Json,
+                    _ => crate::format::affinity::ResultShape::Text,
+                };
+                affinity.result(true, shape);
                 run.push(
                     IrRole::Tool,
                     vec![IrPart::ToolOutput {
@@ -631,6 +608,7 @@ pub(super) fn parse_request(
         .transpose()?;
 
     Ok(ParsedRequest {
+        affinity,
         ir: IrRequest {
             state_items: Vec::new(),
             // The model rides the body on this surface: `POST /interactions` has no URL model
@@ -1572,5 +1550,34 @@ mod tests {
         .expect("the buffered body must parse");
 
         assert!(!buffered.is_streaming);
+    }
+}
+
+/// Converts an accepted inbound thought into its reasoning and normalized replay payload.
+///
+/// # Panics
+///
+/// Panics if a typed accepted thought cannot serialize, which its fields prevent.
+fn thought_part(summary: Option<Vec<ContentBlockIn>>, signature: Option<String>) -> IrPart {
+    let text = summary
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(ContentBlockIn::text)
+        .collect::<Vec<_>>()
+        .join("");
+    #[expect(
+        clippy::expect_used,
+        reason = "the typed accepted thought serializes totally"
+    )]
+    let opaque = serde_json::to_value(StepIn::Thought {
+        summary,
+        signature: signature.clone(),
+    })
+    .expect("accepted thought serializes");
+    IrPart::Reasoning {
+        text,
+        signature,
+        opaque,
     }
 }

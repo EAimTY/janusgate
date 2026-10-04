@@ -37,3 +37,40 @@ pub(super) fn api_logs_retention_days() -> NonZero<u32> {
 
     days
 }
+
+/// Constructs one positive first-party default constant.
+///
+/// # Panics
+///
+/// Panics if a first-party default literal is zero.
+fn positive<const VALUE: u32>() -> NonZero<u32> {
+    #[expect(clippy::expect_used, reason = "all default constants are positive")]
+    let value = NonZero::new(VALUE).expect("default is positive");
+    value
+}
+
+/// Default automatic quota check interval, in whole seconds.
+pub(super) fn quota_refresh_interval_seconds() -> NonZero<u32> {
+    positive::<60>()
+}
+
+/// Default historical pool affinity idle lifetime, in whole seconds.
+pub(super) fn sticky_idle_timeout_seconds() -> NonZero<u32> {
+    positive::<86400>()
+}
+
+/// Default exact-request retry hint lifetime, in whole seconds.
+pub(super) fn sticky_retry_timeout_seconds() -> NonZero<u32> {
+    positive::<60>()
+}
+
+/// Default maximum number of individually counted affinity entries.
+///
+/// # Panics
+///
+/// Never: the first-party literal 100000 is positive.
+pub(super) fn sticky_maximum_entries() -> NonZero<usize> {
+    #[expect(clippy::expect_used, reason = "the literal 100000 is positive")]
+    let entries = NonZero::new(100000).expect("default is positive");
+    entries
+}

@@ -375,8 +375,19 @@ fn threshold_block_start(block: &Value) -> Value {
 }
 
 /// Streaming client response renderer producing Messages SSE frames.
-#[derive(Debug)]
 pub(crate) struct SseRenderer {
+    /// Content-free projection of the actual emitted conversation blocks.
+    projection: Option<super::affinity::Output>,
+
+    /// Last completed prepared-prefix frame in the current render batch.
+    prefix_boundary: Option<usize>,
+
+    /// Digest-only native checkpoint awaiting its actual stop-frame handoff.
+    completed_artifact: Option<crate::format::CompletedArtifact>,
+
+    /// Whether authenticated checkpoint fields already seed the active projection.
+    is_prefix_prepared: bool,
+
     /// Gateway-issued message identifier.
     id: String,
 
@@ -686,6 +697,10 @@ impl SseRenderer {
     pub(crate) fn new(model: String) -> Self {
         Self {
             id: format!("msg_{}", ids::new_uuid()),
+            projection: None,
+            prefix_boundary: None,
+            completed_artifact: None,
+            is_prefix_prepared: false,
             model,
             next_index: 0,
             open_block: None,
@@ -808,9 +823,12 @@ impl SseRenderer {
     /// shape to the compaction prefix (start, optional full-content
     /// `compaction_delta`, stop) at the next stream content index.
     fn render_compaction_state_block(&mut self, payload: &Value) -> Vec<String> {
+        // State is a new content block. Closing the prior text/reasoning block keeps subsequent
+        // answer deltas at positions after this checkpoint, exactly as ordinary replay sees them.
+        let mut frames = self.close_open_block();
         self.pending_prefix.push(payload.clone());
-
-        self.drain_compaction_prefix()
+        frames.extend(self.drain_compaction_prefix());
+        frames
     }
 
     /// Closes the currently open block, if any.
@@ -980,15 +998,16 @@ impl SseRenderer {
     }
 }
 
-impl ClientSseRenderer for SseRenderer {
+impl SseRenderer {
     /// Renders one IR event into zero or more SSE frames.
-    fn render(&mut self, event: &IrEvent) -> Vec<String> {
+    fn render_frames(&mut self, event: &IrEvent) -> Vec<String> {
         // One-event lookahead: the head stays buffered until the next event resolves it, so
         // the stream-head partial usage report — published immediately after
         // [`IrEvent::MessageStart`] per the IR contract (README §6.2) — folds its input and
         // cache columns into the opening usage; every other event resolves the buffer with
         // zeros first, keeping `message_start` exactly once and first in every stream.
         let mut frames = Vec::new();
+        self.prefix_boundary = None;
 
         if self.is_start_buffered {
             self.is_start_buffered = false;
@@ -1002,7 +1021,11 @@ impl ClientSseRenderer for SseRenderer {
 
             // The compaction prefix rides immediately after the head, ahead of every ordinary
             // block the resolving event opens.
-            frames.extend(self.drain_compaction_prefix());
+            let prefix = self.drain_compaction_prefix();
+            if !prefix.is_empty() {
+                self.prefix_boundary = Some(frames.len() + prefix.len() - 1);
+            }
+            frames.extend(prefix);
         }
 
         frames.extend(match event {
@@ -1259,7 +1282,7 @@ impl ClientSseRenderer for SseRenderer {
     /// buffered flushes it ahead of the error frame — exactly once and first — so a stream
     /// that fails between the start and its first resolving event still opens natively; the
     /// two frames ride one body write, which SSE clients split on the blank-line delimiter.
-    fn error_frame(&mut self, error: &crate::api::Error) -> String {
+    fn render_error_frame(&mut self, error: &crate::api::Error) -> String {
         let mut head = String::new();
 
         if self.is_start_buffered {
@@ -1276,6 +1299,71 @@ impl ClientSseRenderer for SseRenderer {
                 error: render_body(error),
             },
         )
+    }
+}
+
+impl ClientSseRenderer for SseRenderer {
+    fn take_completed_artifact(&mut self) -> Option<crate::format::CompletedArtifact> {
+        self.completed_artifact.take()
+    }
+
+    fn take_prefix_boundary(&mut self) -> Option<usize> {
+        self.prefix_boundary.take()
+    }
+
+    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.projection = Some(super::affinity::Output::new(projector));
+    }
+
+    fn begin_checkpoint_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.begin_projection(projector);
+        self.is_prefix_prepared = true;
+    }
+
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        self.projection
+            .take()
+            .and_then(super::affinity::Output::finish)
+    }
+
+    fn render(&mut self, event: &IrEvent) -> Vec<String> {
+        self.completed_artifact = None;
+        let frames = self.render_frames(event);
+        if let Some(projection) = &mut self.projection {
+            let mut is_completed_state = false;
+            if let IrEvent::CompactionState { payload } = event {
+                if super::compaction_affinity::is_native_no_op(payload) {
+                    is_completed_state = true;
+                } else if let Some((window, anchors)) =
+                    super::compaction_affinity::completed_projection(payload, None)
+                {
+                    projection.replace_window(window);
+                    // A complete native compaction always renders start/stop frames here.
+                    self.completed_artifact = Some(crate::format::CompletedArtifact {
+                        terminal_index: frames.len() - 1,
+                        anchors,
+                    });
+                    is_completed_state = true;
+                }
+            }
+            if !is_completed_state {
+                let first = if self.is_prefix_prepared {
+                    self.prefix_boundary.map_or(0, |index| index + 1)
+                } else {
+                    0
+                };
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "the prefix boundary belongs to this batch"
+                )]
+                projection.observe(event, &frames[first..]);
+            }
+        }
+        frames
+    }
+
+    fn error_frame(&mut self, error: &crate::api::Error) -> String {
+        self.render_error_frame(error)
     }
 }
 
@@ -1977,4 +2065,39 @@ mod tests {
             &json!({"stop_reason": "end_turn", "stop_sequence": Value::Null}),
         );
     }
+}
+
+/// Projects actual output blocks through the same accepted assistant-block conversion as replay.
+pub(super) fn project_json_response(
+    response: &MessagesResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    project_json_after_prefix(response, projector, 0)
+}
+
+/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
+pub(super) fn project_json_after_prefix(
+    response: &MessagesResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+    prefix_count: usize,
+) -> bool {
+    response
+        .content
+        .iter()
+        .skip(prefix_count)
+        .all(|block| super::json_affinity::project_block(block, projector))
+}
+
+/// Identifies actual replayable native blocks without inferring gateway provenance or origin.
+pub(super) fn completed_json_artifacts(
+    response: &MessagesResponse,
+) -> Vec<crate::affinity::Anchor> {
+    response
+        .content
+        .iter()
+        .flat_map(|block| match block {
+            OutBlock::Verbatim(value) => super::compaction_affinity::completed_anchors(value, None),
+            OutBlock::Typed(_) => Vec::new(),
+        })
+        .collect()
 }

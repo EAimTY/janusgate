@@ -14,6 +14,7 @@ pub(crate) mod eval;
 pub(crate) mod inference;
 pub(crate) mod provisioning;
 pub(crate) mod quota;
+pub(crate) mod quota_exhaustion;
 mod quota_validation;
 pub(crate) mod template;
 pub(crate) mod validate;

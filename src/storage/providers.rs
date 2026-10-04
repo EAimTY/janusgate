@@ -7,13 +7,12 @@
 //! the persist on the acquired stamp — so a concurrent reauthorization or stale-lease
 //! reacquisition is never overwritten by a refresh derived from superseded credentials.
 
-use super::{Error, SqlExecutor, models, provider_from_row};
+use super::{Error, SqlExecutor, provider_from_row};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction, params},
-    provider::{Model, Provider, StoredCredentials, definition::ProviderDefinition},
+    provider::{Provider, StoredCredentials, definition::ProviderDefinition},
 };
 use serde::Serialize;
-use std::collections::HashSet;
 
 /// Inserts one provider row through the pooled or transactional executor, returning the new
 /// row's id: the statement is written once for both the pooled creation path and the device
@@ -29,16 +28,16 @@ async fn insert_provider_row<E: SqlExecutor>(
     let rows = executor
         .query(
             "INSERT INTO providers (name, provider_definition_name, provider_definition_version, \
-             is_enabled, model_prefix, base_url, credentials) \
+             is_enabled, base_url, credentials, model_prefix) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
             params![
                 provider.name,
                 provider.definition.name.as_str(),
                 provider.definition.version.get(),
                 i64::from(provider.is_enabled),
-                provider.model_prefix,
                 provider.base_url,
                 provider.credentials.to_json(),
+                provider.model_prefix,
             ],
         )
         .await?;
@@ -66,6 +65,8 @@ pub(crate) async fn insert_provider(
     let id = insert_provider_row(database, provider).await?;
 
     Ok(Provider {
+        quota_generation: 0,
+        quota_revision: 0,
         id,
         name: provider.name.to_string(),
         model_prefix: provider.model_prefix.to_string(),
@@ -188,11 +189,13 @@ pub(crate) async fn reload_provider(
 ///
 /// Returns [`Error`] when the delete fails.
 pub(crate) async fn delete_provider(database: &Database, provider_id: i64) -> Result<bool, Error> {
-    let changes = database
-        .execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
-        .await?;
-
-    Ok(changes == 1)
+    in_retryable_transaction!(database, transaction, async {
+        let changes = transaction
+            .execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
+            .await?;
+        super::automatic_routes::synchronize(&mut transaction).await?;
+        Ok::<_, Error>(changes == 1)
+    })
 }
 
 /// Replaces the whole credentials document inside the caller's transaction, so a credentials
@@ -213,46 +216,26 @@ pub(crate) async fn replace_credentials_in_transaction(
         )
         .await?;
 
+    super::quota_blocks::invalidate_in_transaction(transaction, provider_id).await?;
+
     Ok(())
 }
 
-/// Applies one `providers:update` rewrite to an existing provider inside a single transaction.
-///
-/// The provider row is re-read inside the transaction for the rename check, the definition-rebind
-/// validation, and the public-ID recompute, so a caller's stale outer snapshot can never write
-/// through a concurrent change's results. An unknown provider — including one deleted between the
-/// caller's outer read and this call — is rejected with 404 and nothing is written.
-///
-/// The write owns the provider row — the restated `name` included, so a different name renames the
-/// provider — an optional credentials replacement, and — upholding the model invariant — the
-/// `public_id` of unoverridden model rows, recomputed from the effective prefix through the shared
-/// composition rule [`Model::public_id`]. A named definition rebind validates the target version's
-/// existence and the credential-kind agreement against the replacement (or stored) credentials in
-/// the same transaction; the model routing is untouched beyond the prefix recompute, because the
-/// gateway never judges whether a model supports the target format. Nothing is written when the
-/// new name is already taken by another provider, when any recomputed public ID would collide with
-/// an existing model row of another provider, or when two of the provider's own models would
-/// converge on one public ID; all rejections are 409 conflicts. Abandoning the transaction on any
-/// error discards every partial write, so the provider row and its model IDs can never drift
-/// apart.
-///
-/// The transaction runs under the storage tier's `in_retryable_transaction` bounded
-/// stale-snapshot retry: a concurrent commit that invalidates the snapshot between the re-read
-/// and the write re-runs the whole read-then-write against the newer state instead of surfacing
-/// the refusal.
+/// Updates one account inside a short transaction, validating the name and exact definition rebind.
+/// Credential replacements must agree with the effective definition's kind, and its base-URL
+/// requirement must hold. Physical inventory and explicit public routes retain their identities.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an unknown provider or definition, a failed statement, a taken name, a
-/// credential-kind disagreement, a base-URL requirement the effective definition imposes, or a
-/// recomputed public ID collision.
+/// Returns errors for unknown references, taken names, incompatible credentials, missing required
+/// base URLs, or failed statements.
 pub(crate) async fn update_provider(
     database: &Database,
     provider_id: i64,
     update: ProviderUpdate<'_>,
 ) -> Result<(), Error> {
     in_retryable_transaction!(database, transaction, async {
-        // The re-read pins the rename check and the public-ID recompute to the transaction's
+        // The re-read pins the rename and definition checks to the transaction's
         // snapshot.
         let Some(provider) =
             find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
@@ -330,6 +313,10 @@ pub(crate) async fn update_provider(
             });
         }
 
+        let should_invalidate_quota = update.base_url != provider.base_url.as_deref()
+            || effective_definition.name != provider.definition.name
+            || effective_definition.version != provider.definition.version;
+
         let (definition_name, definition_version) = match rebind_target {
             Some(definition) => (definition.name, definition.version),
 
@@ -339,111 +326,29 @@ pub(crate) async fn update_provider(
             ),
         };
 
-        let models = models::find_models_in_transaction(&mut transaction, provider.id).await?;
-
-        let recomputed: Vec<(String, &Model)> = models
-            .iter()
-            .map(|model| {
-                let id = Model::public_id(
-                    update.model_prefix,
-                    &model.upstream_id,
-                    model.id_override.as_deref(),
-                );
-
-                (id, model)
-            })
-            .collect();
-
-        let composed: Vec<(&str, &str)> = recomputed
-            .iter()
-            .map(|(id, model)| (id.as_str(), model.upstream_id.as_str()))
-            .collect();
-
-        super::ensure_ids_pairwise_distinct(update.name, &composed)?;
-
-        super::ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
-
         transaction
             .execute(
                 "UPDATE providers SET name = ?1, provider_definition_name = ?2, \
-                 provider_definition_version = ?3, model_prefix = ?4, base_url = ?5, \
-                 is_enabled = ?6 WHERE id = ?7",
+                 provider_definition_version = ?3, base_url = ?4, \
+                 is_enabled = ?5, model_prefix = ?7 WHERE id = ?6",
                 params![
                     update.name,
                     definition_name,
                     definition_version.get(),
-                    update.model_prefix,
                     update.base_url,
                     i64::from(update.is_enabled),
                     provider.id,
+                    update.model_prefix,
                 ],
             )
             .await?;
 
+        super::automatic_routes::synchronize(&mut transaction).await?;
+
         if let Some(credentials) = update.credentials {
             replace_credentials_in_transaction(&mut transaction, provider.id, credentials).await?;
-        }
-
-        // The recompute writes every changed row onto its new ID. Writing in arbitrary order can
-        // violate `models.public_id` uniqueness mid-loop — moving row `b` onto `xb` while row
-        // `xb` still holds `xb` — so each write waits until its target ID is currently free, and
-        // each completed write vacates the row's previous ID for the rows waiting on it.
-        //
-        // The wait-for relation over the changed rows is acyclic, so the rounds below always
-        // make progress: every changed row recomputes to `new_prefix + upstream_id` from a
-        // stored `old_prefix + upstream_id` (a row with an `id_override` recomputes to its
-        // stored override and never changes), and a changed row can wait only on another changed
-        // row — a kept row or an `id_override` holder still on the target would converge with
-        // the waiting row's recomputed ID, which the pairwise check above rejected, and a
-        // foreign holder of the target was rejected by `ensure_ids_routable` above. Each link of
-        // a cycle would satisfy
-        // `new_prefix + upstream_waiting = old_prefix + upstream_waiting_on`, contributing the
-        // same length difference `|new_prefix| - |old_prefix|` to the waited-on upstream; the
-        // differences must sum to zero around the cycle, forcing prefixes of equal length and
-        // hence equal upstreams — one row, which cannot wait on itself. The relation is
-        // therefore a union of simple paths, each headed by a row whose target is free.
-        let mut held: HashSet<&str> = models
-            .iter()
-            .map(|model| model.public_id.as_str())
-            .collect();
-
-        let mut pending: Vec<(&str, &Model)> = recomputed
-            .iter()
-            .filter(|(new_id, model)| new_id != &model.public_id)
-            .map(|(new_id, model)| (new_id.as_str(), *model))
-            .collect();
-
-        while !pending.is_empty() {
-            let mut deferred: Vec<(&str, &Model)> = Vec::new();
-
-            for (new_id, model) in &pending {
-                if held.contains(*new_id) {
-                    deferred.push((*new_id, *model));
-
-                    continue;
-                }
-
-                transaction
-                    .execute(
-                        "UPDATE models SET public_id = ?1 WHERE provider_id = ?2 \
-                         AND upstream_id = ?3",
-                        params![*new_id, provider.id, model.upstream_id.as_str()],
-                    )
-                    .await?;
-
-                held.remove(model.public_id.as_str());
-            }
-
-            // A full round without progress means every remaining row's target is held by
-            // another remaining row — a cycle in the wait-for relation, a stored landscape the
-            // validated management paths cannot have produced per the acyclicity argument above.
-            if deferred.len() == pending.len() {
-                return Err(Error::Drift {
-                    message: "the public-ID recompute wait-for relation is cyclic".to_string(),
-                });
-            }
-
-            pending = deferred;
+        } else if should_invalidate_quota {
+            super::quota_blocks::invalidate_in_transaction(&mut transaction, provider.id).await?;
         }
 
         Ok(())
@@ -667,6 +572,9 @@ pub(crate) async fn rebind_credentials_in_transaction(
         )
         .await?;
 
+    if changes == 1 {
+        super::quota_blocks::invalidate_in_transaction(transaction, provider_id).await?;
+    }
     Ok(changes == 1)
 }
 
@@ -717,7 +625,7 @@ pub(crate) struct NewProvider<'a> {
     /// Unique, non-empty, renameable label; a later `providers:update` request may rename it.
     pub(crate) name: &'a str,
 
-    /// Prefix prepended to every public model name.
+    /// Prefix of automatically exposed direct model names.
     pub(crate) model_prefix: &'a str,
 
     /// Upstream base URL; required by definitions whose URLs reference the base.
@@ -742,7 +650,7 @@ pub(crate) struct ProviderUpdate<'a> {
     /// Unique provider name; may rename the provider.
     pub(crate) name: &'a str,
 
-    /// Prefix prepended to every public model name; may be empty.
+    /// Prefix of automatically exposed direct model names.
     pub(crate) model_prefix: &'a str,
 
     /// Upstream base URL; `null` when the definition's URLs never reference the base.
@@ -803,7 +711,6 @@ mod tests {
             &database,
             &definition,
             "leased",
-            "l-",
             Some("http://localhost:8080"),
             StoredCredentials::OAuth {
                 access_token: "old".to_string(),
@@ -970,7 +877,6 @@ mod tests {
             &database,
             &definition,
             "leased",
-            "l-",
             Some("http://localhost:8080"),
             StoredCredentials::OAuth {
                 access_token: "old".to_string(),

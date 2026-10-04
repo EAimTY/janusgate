@@ -7,18 +7,23 @@ import type {
     QuotaDescriptor,
     QuotaEntry,
     QuotaEntryExtraction,
+    QuotaExhaustion,
+    QuotaExhaustionRule,
     QuotaField,
     QuotaMeasurement,
     QuotaMeasurementSource,
     QuotaNumberField,
     QuotaReset,
     QuotaResetSource,
+    QuotaRouting,
+    QuotaRoutingSource,
     QuotaScope,
     QuotaScopeSource,
     QuotaSource,
     QuotaTextSource,
     QuotaWindow,
     QuotaWindowSource,
+    RestrictionKeySegment,
     StringExpr,
     TemplateNode,
 } from "/src/management-api/generated/v0";
@@ -53,6 +58,223 @@ function choice<T extends string>(value: unknown, choices: readonly T[], context
 function text(value: unknown, context: string): string {
     const result = expectString(value, context);
     return result.length > 0 ? result : invalid(context);
+}
+
+/** Exact authored model token; selectors never derive IDs from a presentation label. */
+function modelIdentifier(value: unknown, context: string): string {
+    const identifier = text(value, context);
+    if (!/^[!-~]+$/.test(identifier) || /[/:]/.test(identifier)) invalid(context);
+    return identifier;
+}
+
+/** Concrete routing applicability is required on every complete observation. */
+export function parseQuotaRouting(value: unknown, context: string): QuotaRouting {
+    const record = expectRecord(value, context);
+    const type = choice(
+        Reflect.get(record, "type"),
+        [
+            "monitoring_only",
+            "all_models",
+            "models",
+        ],
+        `${context}.type`,
+    );
+    shape(
+        value,
+        type === "models"
+            ? [
+                  "type",
+                  "upstream_ids",
+              ]
+            : [
+                  "type",
+              ],
+        context,
+    );
+    if (type !== "models")
+        return {
+            type,
+        };
+    const upstream_ids = expectArray(
+        Reflect.get(record, "upstream_ids"),
+        `${context}.upstream_ids`,
+    ).map((value, index) => modelIdentifier(value, `${context}.upstream_ids[${index}]`));
+    if (upstream_ids.length === 0 || new Set(upstream_ids).size !== upstream_ids.length)
+        invalid(context);
+    return {
+        type,
+        upstream_ids,
+    };
+}
+
+/** Authored omission defaults to monitoring; unresolved optional model fields are forbidden. */
+function routingSource(value: unknown, context: string, isMap: boolean): QuotaRoutingSource {
+    if (value === undefined)
+        return {
+            type: "monitoring_only",
+        };
+    const record = expectRecord(value, context);
+    const type = choice(
+        Reflect.get(record, "type"),
+        [
+            "monitoring_only",
+            "all_models",
+            "models",
+        ],
+        `${context}.type`,
+    );
+    shape(
+        value,
+        type === "models"
+            ? [
+                  "type",
+                  "upstream_ids",
+              ]
+            : [
+                  "type",
+              ],
+        context,
+    );
+    if (type !== "models")
+        return {
+            type,
+        };
+    const upstream_ids = expectArray(
+        Reflect.get(record, "upstream_ids"),
+        `${context}.upstream_ids`,
+    ).map((value, index) => {
+        const sourceContext = `${context}.upstream_ids[${index}]`;
+        const source = textSource(value, sourceContext, isMap, true);
+        if (source.type === "field" && !source.field.is_required) invalid(sourceContext);
+        if (source.type === "literal") modelIdentifier(source.value, sourceContext);
+        return source;
+    });
+    if (upstream_ids.length === 0) invalid(context);
+    return {
+        type,
+        upstream_ids,
+    };
+}
+
+/** Exact rejection policies share quota identities while retaining authored rule order. */
+export function parseQuotaExhaustion(value: unknown, context: string): QuotaExhaustion {
+    const record = shape(
+        value,
+        [
+            "rules",
+        ],
+        context,
+    );
+    const names = new Set<string>();
+    const rules = expectArray(Reflect.get(record, "rules"), `${context}.rules`).map(
+        (value, index): QuotaExhaustionRule => {
+            const ruleContext = `${context}.rules[${index}]`;
+            const rule = shape(
+                value,
+                [
+                    "name",
+                    "statuses",
+                    "code",
+                    "restriction_key",
+                    "applies_to",
+                ],
+                ruleContext,
+            );
+            const name = text(Reflect.get(rule, "name"), `${ruleContext}.name`);
+            if (names.has(name)) invalid(`${ruleContext}.name`);
+            names.add(name);
+            const statuses = Array.from(
+                new Set(
+                    expectArray(Reflect.get(rule, "statuses"), `${ruleContext}.statuses`).map(
+                        (value, index) => {
+                            const statusContext = `${ruleContext}.statuses[${index}]`;
+                            const status = integer(value, statusContext);
+                            if (status < 100 || status > 999 || (status >= 200 && status < 300))
+                                invalid(statusContext);
+                            return status;
+                        },
+                    ),
+                ),
+            ).sort((left, right) => left - right);
+            if (statuses.length === 0) invalid(`${ruleContext}.statuses`);
+            const code = shape(
+                Reflect.get(rule, "code"),
+                [
+                    "at",
+                    "value",
+                ],
+                `${ruleContext}.code`,
+            );
+            const at = path(Reflect.get(code, "at"), `${ruleContext}.code.at`);
+            if (at.length === 0) invalid(`${ruleContext}.code.at`);
+            const restriction_key = expectArray(
+                Reflect.get(rule, "restriction_key"),
+                `${ruleContext}.restriction_key`,
+            ).map((value, index): RestrictionKeySegment => {
+                const segmentContext = `${ruleContext}.restriction_key[${index}]`;
+                const segment = expectRecord(value, segmentContext);
+                const type = choice(
+                    Reflect.get(segment, "type"),
+                    [
+                        "literal",
+                        "requested_model",
+                    ],
+                    `${segmentContext}.type`,
+                );
+                shape(
+                    value,
+                    type === "literal"
+                        ? [
+                              "type",
+                              "value",
+                          ]
+                        : [
+                              "type",
+                          ],
+                    segmentContext,
+                );
+                return type === "literal"
+                    ? {
+                          type,
+                          value: text(Reflect.get(segment, "value"), `${segmentContext}.value`),
+                      }
+                    : {
+                          type,
+                      };
+            });
+            if (restriction_key.length === 0) invalid(`${ruleContext}.restriction_key`);
+            const applies = shape(
+                Reflect.get(rule, "applies_to"),
+                [
+                    "type",
+                ],
+                `${ruleContext}.applies_to`,
+            );
+            return {
+                name,
+                statuses,
+                code: {
+                    at,
+                    value: expectString(Reflect.get(code, "value"), `${ruleContext}.code.value`),
+                },
+                restriction_key,
+                applies_to: {
+                    type: choice(
+                        Reflect.get(applies, "type"),
+                        [
+                            "all_models",
+                            "requested_model",
+                        ],
+                        `${ruleContext}.applies_to.type`,
+                    ),
+                },
+            };
+        },
+    );
+    if (rules.length === 0) invalid(`${context}.rules`);
+    return {
+        rules,
+    };
 }
 
 /** A frontend-safe integer, optionally positive. */
@@ -335,6 +557,7 @@ export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaR
                     "key",
                     "label",
                     "scope",
+                    "routing",
                     "window",
                     "measurement",
                     "reset",
@@ -350,6 +573,7 @@ export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaR
                 key,
                 label: text(Reflect.get(record, "label"), `${context}.label`),
                 scope: scope(Reflect.get(record, "scope"), `${context}.scope`),
+                routing: parseQuotaRouting(Reflect.get(record, "routing"), `${context}.routing`),
                 window: window(Reflect.get(record, "window"), `${context}.window`),
                 measurement: measurement(
                     Reflect.get(record, "measurement"),
@@ -399,7 +623,12 @@ function field(value: unknown, context: string, canUseEntry = true): QuotaField 
 }
 
 /** A text mapping; map keys exist only in map collections. */
-function textSource(value: unknown, context: string, isMap: boolean): QuotaTextSource {
+function textSource(
+    value: unknown,
+    context: string,
+    isMap: boolean,
+    canUseEntry = false,
+): QuotaTextSource {
     const record = expectRecord(value, context);
     switch (Reflect.get(record, "type")) {
         case "literal":
@@ -427,7 +656,7 @@ function textSource(value: unknown, context: string, isMap: boolean): QuotaTextS
             );
             return {
                 type: "field",
-                field: field(Reflect.get(record, "field"), `${context}.field`, false),
+                field: field(Reflect.get(record, "field"), `${context}.field`, canUseEntry),
                 encoding: choice(
                     Reflect.get(record, "encoding"),
                     [
@@ -664,7 +893,7 @@ function resetSource(value: unknown, context: string): QuotaResetSource {
 }
 
 /** An entry's complete mapping, including explicit unlimited precedence. */
-function extraction(value: unknown, context: string): QuotaEntryExtraction {
+function extraction(value: unknown, context: string, isMap: boolean): QuotaEntryExtraction {
     const record = shape(
         value,
         [
@@ -676,6 +905,7 @@ function extraction(value: unknown, context: string): QuotaEntryExtraction {
             "measurement",
             "reset",
             "is_unlimited",
+            "routing",
         ],
         context,
     );
@@ -690,6 +920,7 @@ function extraction(value: unknown, context: string): QuotaEntryExtraction {
             `${context}.measurement`,
         ),
         reset: resetSource(Reflect.get(record, "reset"), `${context}.reset`),
+        routing: routingSource(Reflect.get(record, "routing"), `${context}.routing`, isMap),
     };
     if (
         Reflect.get(record, "is_unlimited") !== undefined &&
@@ -773,7 +1004,8 @@ export function parseQuotaDescriptor(
                 ),
                 entries: unique(
                     expectArray(Reflect.get(record, "entries"), `${contextPath}.entries`).map(
-                        (value, index) => extraction(value, `${contextPath}.entries[${index}]`),
+                        (value, index) =>
+                            extraction(value, `${contextPath}.entries[${index}]`, type === "map"),
                     ),
                     `${contextPath}.entries`,
                 ),

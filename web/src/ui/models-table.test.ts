@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import type { BadgeTone } from "/src/ui/feedback";
-import { modelCompactionBadges, modelServingBadge } from "/src/ui/models-table";
+import { modelCompactionBadges, modelInventoryBadge } from "/src/ui/models-table";
 
 const enabledProvider: ProviderResponse = {
+    model_prefix: "",
     type: "api_key",
     id: 4,
     name: "local",
-    model_prefix: "local-",
     is_enabled: true,
     provider_definition_name: "generic-openai-chat-completions",
     provider_definition_version: 1,
@@ -26,8 +26,7 @@ function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
         provider_id: 4,
         provider: "local",
         upstream_id: "qwen3:32b",
-        public_id: "local-qwen3-32b",
-        id_override: null,
+
         is_enabled: true,
         discovery_state: "discovered",
         thinking_levels: null,
@@ -59,7 +58,7 @@ const LADDER: ReadonlyArray<{
         model: model(),
         provider: enabledProvider,
         tone: "ok",
-        label: "Serving",
+        label: "Ready",
     },
     {
         name: "a manual row with both switches on serves",
@@ -68,7 +67,7 @@ const LADDER: ReadonlyArray<{
         }),
         provider: enabledProvider,
         tone: "ok",
-        label: "Serving",
+        label: "Ready",
     },
     {
         name: "the row's own switch reads Off over an enabled provider",
@@ -159,10 +158,10 @@ const LADDER: ReadonlyArray<{
     },
 ];
 
-describe("modelServingBadge", () => {
+describe("modelInventoryBadge", () => {
     it("walks the precedence ladder one rung per cause", () => {
         for (const rung of LADDER) {
-            expect(modelServingBadge(rung.model, rung.provider), rung.name).toEqual({
+            expect(modelInventoryBadge(rung.model, rung.provider), rung.name).toEqual({
                 tone: rung.tone,
                 label: rung.label,
             });

@@ -11,10 +11,7 @@ use crate::{
     compaction::support_facts::CompactionSupportFacts,
     database::{Database, Transaction, params},
     ir::IrReasoningLevel,
-    provider::{
-        DiscoveredModel, DiscoveryState, Model, ModelRouting,
-        definition::compaction::CompactionSection,
-    },
+    provider::{DiscoveredModel, DiscoveryState, Model},
 };
 
 /// One model row with the provider identity needed for listing.
@@ -30,20 +27,13 @@ pub(crate) struct ModelEntry {
     pub(crate) model: Model,
 }
 
-/// One `models:create` insertion about to be applied transactionally: the row's natural key plus
-/// its complete desired initial state (README §7.1) — every writable field total, `id_override`
-/// and the capability overrides mirroring their nullable storage columns as `None` for "no
-/// override". The capability base columns are not the request's to state: a manual row starts
-/// unknown (`NULL`, README §3).
+/// A physical model's complete initial administrator-owned state. Manual base facts start unknown.
 pub(crate) struct ModelCreate<'a> {
     /// Owning provider's id, part of the lookup key.
     pub(crate) provider_id: i64,
 
     /// Exact upstream model identifier, the other half of the lookup key.
     pub(crate) upstream_id: &'a str,
-
-    /// Public ID override; `None` composes the ID from the provider's prefix.
-    pub(crate) id_override: Option<&'a str>,
 
     /// Serving state.
     pub(crate) is_enabled: bool,
@@ -63,17 +53,11 @@ pub(crate) struct ModelCreate<'a> {
     pub(crate) compaction_support_override: Option<&'a CompactionSupportFacts>,
 }
 
-/// One `models:update` rewrite about to be applied transactionally: addressed by the row
-/// identifier, carrying the route's writable columns (README §7.1) — `id_override` and the
-/// capability overrides mirroring their nullable storage columns as `None` for "no override".
-/// The update never writes `discovery_state` or the capability base columns, so it cannot
-/// restore a vanished row.
+/// A row-addressed rewrite of the physical serving switch and capability overrides.
+/// State and discovered base facts are never changed, so an update cannot restore a vanished row.
 pub(crate) struct ModelUpdate<'a> {
     /// Addressed model row identifier.
     pub(crate) model_id: i64,
-
-    /// Public ID override; `None` composes the ID from the provider's prefix.
-    pub(crate) id_override: Option<&'a str>,
 
     /// Serving state.
     pub(crate) is_enabled: bool,
@@ -116,60 +100,6 @@ pub(crate) struct EnabledModel {
     /// Effective compaction support facts, only known mechanisms; `None` when no mechanism is
     /// known.
     pub(crate) compaction: Option<CompactionSupportFacts>,
-}
-
-/// Resolves a public model ID to its provider and model row.
-///
-/// Resolution is zero-special-casing: a `vanished` row is looked up exactly like any other, and
-/// its `is_effectively_enabled` — the three-input definition — decides whether routing serves it
-/// (README §6.5).
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or a row is malformed.
-pub(crate) async fn find_routing(
-    database: &Database,
-    public_id: &str,
-) -> Result<Option<ModelRouting>, Error> {
-    let sql = format!(
-        "SELECT {}, {} {} WHERE m.public_id = ?1",
-        super::PROVIDER_COLUMNS,
-        super::MODEL_COLUMNS_JOINED,
-        super::PROVIDER_JOINED_FROM_MODELS
-    );
-
-    let rows = database.query(sql, params![public_id]).await?;
-
-    rows.first()
-        .map(|row| {
-            super::provider_model_from_row(row).map(|joined| ModelRouting {
-                is_effectively_enabled: joined
-                    .model
-                    .is_effectively_enabled(joined.provider.is_enabled),
-                provider: joined.provider,
-                model: joined.model,
-            })
-        })
-        .transpose()
-}
-
-/// Fetches every model row of one provider inside a transaction, ordered by upstream identifier.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or a row is malformed.
-pub(super) async fn find_models_in_transaction(
-    transaction: &mut Transaction,
-    provider_id: i64,
-) -> Result<Vec<Model>, Error> {
-    let sql = format!(
-        "SELECT {} FROM models WHERE provider_id = ?1 ORDER BY upstream_id",
-        super::MODEL_COLUMNS
-    );
-
-    let rows = transaction.query(sql, params![provider_id]).await?;
-
-    rows.iter().map(super::model_from_row).collect()
 }
 
 /// Fetches one model row of a provider by its natural key inside a transaction.
@@ -270,9 +200,9 @@ async fn find_model_entry_in_transaction(
 
 /// Lists the stored models with their provider identity, narrowed to one provider's rows when
 /// `provider_id` is `Some`; an unknown provider yields an empty list, because a filter addresses no
-/// row (README §7.1). Every row is listed — `vanished` included — ordered by public ID; the row's
-/// own inputs let the caller derive the three-input status (rule 7), which tells serving rows
-/// apart.
+/// row (README §7.1). Every row is listed — `vanished` included — ordered by provider ID and
+/// upstream ID; the row's own inputs let the caller derive the three-input status (rule 7), which
+/// tells serving rows apart.
 ///
 /// # Errors
 ///
@@ -283,13 +213,13 @@ pub(crate) async fn list_model_entries(
 ) -> Result<Vec<ModelEntry>, Error> {
     let sql = match provider_id {
         None => format!(
-            "SELECT {} {} ORDER BY m.public_id",
+            "SELECT {} {} ORDER BY m.provider_id, m.upstream_id",
             super::MODEL_ENTRY_COLUMNS,
             super::MODELS_JOINED_PROVIDERS
         ),
 
         Some(_) => format!(
-            "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.public_id",
+            "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id",
             super::MODEL_ENTRY_COLUMNS,
             super::MODELS_JOINED_PROVIDERS
         ),
@@ -309,16 +239,14 @@ pub(crate) async fn list_model_entries(
     Ok(entries)
 }
 
-/// Lists the effectively enabled models with their effective capability declarations — the
-/// source of every outward `GET …/models` listing (README §6.5).
+/// Lists effectively enabled explicit public routes with their capability declarations.
 ///
-/// A model is effectively enabled if and only if the one three-input definition holds
-/// (README §3/§6.5): the owning provider is enabled, the model itself is enabled, and the row is
-/// not `vanished`. Each entry's capability values are the effective `override ?? base`
-/// composition — the declaration a listing renders, with `None` (unknown) omitted by the
-/// renderer, never fabricated. The compaction facts resolve against the row's own definition
-/// version's compaction section (joined and carried by the query), so a declared mechanism
-/// default renders for every row of that definition.
+/// Discovery alone never publishes a model. Direct routes use their physical model's resolved
+/// facts; pools combine all structural candidates independently of quota. Unknown facts remain
+/// unknown, numerical limits use the minimum, and reasoning levels use intersection. Per-mechanism
+/// compaction support is supported only when every candidate supports it, unsupported when any
+/// candidate rejects it, and otherwise omitted. Empty or disabled pools produce no listing entry.
+/// All route, membership, provider, and model reads share one coherent transaction snapshot.
 ///
 /// # Errors
 ///
@@ -326,90 +254,20 @@ pub(crate) async fn list_model_entries(
 pub(crate) async fn list_enabled_models_with_owner(
     database: &Database,
 ) -> Result<Vec<EnabledModel>, Error> {
-    let rows = database
-        .query(
-            format!(
-                "SELECT m.public_id, p.name, d.compaction, {} {} WHERE p.is_enabled != 0 AND \
-                 m.is_enabled != 0 AND m.discovery_state != ?1 ORDER BY m.public_id",
-                super::MODEL_COLUMNS_JOINED,
-                super::PROVIDER_JOINED_FROM_MODELS
-            ),
-            params![DiscoveryState::Vanished],
-        )
-        .await?;
-
-    rows.iter()
-        .map(|row| {
-            let model = super::model_from_row_offset(row, 3)?;
-
-            // The definition's compaction section is a nullable descriptor payload written only
-            // through the validated management path, so a payload failing here is drift.
-            let section: Option<CompactionSection> = row
-                .get::<Option<String>>(2)?
-                .map(|json| super::payload_from_json(Some(json), "compaction"))
-                .transpose()?;
-
-            Ok(EnabledModel {
-                public_id: row.get(0)?,
-                provider_name: row.get(1)?,
-                thinking_levels: model
-                    .effective_thinking_levels()
-                    .map(<[IrReasoningLevel]>::to_vec),
-                max_input_tokens: model.effective_max_input_tokens(),
-                max_output_tokens: model.effective_max_output_tokens(),
-                compaction: CompactionSupportFacts::from_pairs(
-                    model.effective_mechanism_support(section.as_ref()),
-                ),
-            })
-        })
-        .collect()
+    super::route_listing::list_public_models(database).await
 }
 
-/// Applies a freshly discovered model set to one provider's rows inside a single transaction —
-/// mark plus upsert — returning all of the provider's rows as the transaction left them, ordered
-/// by public ID.
+/// Applies one account's complete nonempty discovery result in a short transaction.
 ///
-/// The algorithm, in order:
-/// 1. Re-read the provider row (unknown provider is 404); the composed public IDs use its current
-///    prefix even when a concurrent `providers:update` changed it after the caller's outer read.
-/// 2. Mark every `discovered` row of the provider `vanished` — including rows about to return; they
-///    are flipped back by the upsert below, so the blanket mark avoids excluding them one by one. A
-///    `manual` row is never marked.
-/// 3. Upsert each incoming model: an existing row — of any state — has its `discovery_state`
-///    flipped to `discovered` and its capability base columns rewritten to this refresh's extracted
-///    facts (README §5.5; a listed `manual` row flips and rewrites too), every other column left
-///    untouched; an absent row is inserted fresh: `discovered`, `is_enabled = 1`, no override, the
-///    extracted capability bases (`NULL` when nothing was extracted), `public_id = model_prefix +
-///    upstream_id`.
-/// 4. A freshly composed public ID is collision-checked against every row of the table — `vanished`
-///    and `manual` holders and `id_override` holders alike reserve their IDs — and a collision
-///    rejects the whole refresh with 409, writing nothing. Batch-internal pairwise checks are
-///    unnecessary: new rows carry no override, and the incoming identifiers are distinct, so
-///    composed IDs cannot converge within one batch. `providers:update` keeps its pairwise check.
-///
-/// The write-permission invariant holds by construction (README §3): for existing rows discovery
-/// writes only `discovery_state` and the capability base columns — never `is_enabled`,
-/// `id_override`, `id`, `public_id`, or a capability override — and never deletes a row; the entire
-/// carry-over machinery is gone because untouched rows simply keep their state. The vanished rows'
-/// "service suspended" effect derives from the three-input effective status, not from any switch
-/// being written.
-///
-/// `discovered` must be non-empty: rejecting an empty discovered set is the caller's
-/// precondition, enforced by the management surface with a 502 before this function is reached
-/// (README §7.1). This function performs no emptiness check — an empty set would mark the whole
-/// provider's rows `vanished` and return them all as such — because an upstream that legitimately
-/// reports no models, a fresh pre-onboarded account, or an outage answering 200 with an empty
-/// payload must fail loudly instead.
-///
-/// The transaction runs under the storage tier's `in_retryable_transaction` bounded
-/// stale-snapshot retry: a concurrent commit that invalidates the snapshot between the re-read
-/// and the first write re-runs the whole mark-plus-upsert against the newer state instead of
-/// surfacing the refusal.
+/// Previously discovered rows are marked vanished, then each exact upstream ID is upserted.
+/// Existing rows retain identity, serving switch, and administrator overrides; discovery rewrites
+/// only state and capability base facts. Absent rows are inserted enabled and discovered. Unlisted
+/// manual rows remain untouched. No row is deleted; every model receives its automatically managed
+/// prefixed direct route. The caller rejects empty discovery results before this write boundary.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an unknown provider, failed statements, or a composed public ID
-/// collision.
+/// Returns errors for an unknown account or failed statements.
 pub(crate) async fn apply_discovered_models(
     database: &Database,
     provider_id: i64,
@@ -438,17 +296,6 @@ pub(crate) async fn apply_discovered_models(
             )
             .await?;
 
-        // One routed snapshot serves every collision check of the loop below. A check consults
-        // the map only by the candidate's public ID, and nothing the loop writes between
-        // iterations can enter that set: the state flips and capability rewrites touch no routing
-        // column, and a fresh insert composes `model_prefix + upstream_id`, which equals a later
-        // candidate's composed ID only for the same upstream identifier — but that occurrence
-        // finds the just-inserted row through `find_model_in_transaction` and never reaches the
-        // check. Batch-internal convergence is impossible anyway (distinct upstream identifiers,
-        // new rows carry no override — step 4 of the doc above), so the pre-loop snapshot is exact,
-        // not an approximation.
-        let routed = super::read_routed_holders_in_transaction(&mut transaction).await?;
-
         for model in discovered {
             if let Some(existing) =
                 find_model_in_transaction(&mut transaction, provider.id, &model.upstream_id).await?
@@ -476,29 +323,16 @@ pub(crate) async fn apply_discovered_models(
                 continue;
             }
 
-            // The row is new: compose its public ID and reject a collision against any holder —
-            // `vanished`/`manual` rows and `id_override` holders reserve their IDs — before
-            // inserting.
-            let public_id = Model::public_id(&provider.model_prefix, &model.upstream_id, None);
-
-            super::ensure_id_routable_against(
-                &routed,
-                provider.id,
-                &public_id,
-                &model.upstream_id,
-            )?;
-
             transaction
                 .execute(
                     "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
-                     public_id, id_override, thinking_levels, max_input_tokens, \
+                     thinking_levels, max_input_tokens, \
                      max_output_tokens, compaction_support) \
-                     VALUES (?1, ?2, 1, ?3, ?4, NULL, ?5, ?6, ?7, ?8)",
+                     VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
                     params![
                         provider.id,
                         model.upstream_id.clone(),
                         DiscoveryState::Discovered,
-                        public_id,
                         super::levels_into_value(model.thinking_levels.as_deref())?,
                         model.max_input_tokens,
                         model.max_output_tokens,
@@ -508,11 +342,13 @@ pub(crate) async fn apply_discovered_models(
                 .await?;
         }
 
+        super::automatic_routes::synchronize(&mut transaction).await?;
+
         // The response carries every row of the provider as this transaction left them.
         let rows = transaction
             .query(
                 format!(
-                    "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.public_id",
+                    "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id",
                     super::MODEL_ENTRY_COLUMNS,
                     super::MODELS_JOINED_PROVIDERS
                 ),
@@ -530,32 +366,16 @@ pub(crate) async fn apply_discovered_models(
     })
 }
 
-/// Inserts one manually created model row — or claims a vanished one — and returns the applied row
-/// with its provider facts, inside a single transaction.
+/// Creates a physical manual row or claims an existing vanished row by its account-local key.
 ///
-/// Three outcomes, addressed by the natural key `(provider_id, upstream_id)`:
-/// - **Absent** → a brand-new `manual` row: the requested state applies, the capability base
-///   columns store `NULL` — a manual row starts unknown (README §3) — and the public ID composes
-///   from the provider's current prefix (the provider row is re-read inside the transaction, so a
-///   concurrent `providers:update` cannot be written through).
-/// - **`vanished` row** → claimed (README §7.1): the row identity (`id`) is kept, the requested
-///   `id_override`/`is_enabled`/capability overrides apply while the capability base columns keep
-///   the last discovery's real facts, the public ID recomposes from the requested values, the state
-///   becomes `manual`. This is one of the two manual recovery paths for a vanished row.
-/// - **`discovered` or `manual` row** → 409, nothing written.
-///
-/// The public ID collision check matches [`update_model_overrides_checked`]'s quality tier: an ID
-/// already routed by any other model row yields a 409 naming the holder, and nothing is written.
-/// An unknown provider yields 404. The table's unique constraints are the concurrent backstop
-/// behind both checked conflicts. The transaction runs under the storage tier's
-/// `in_retryable_transaction` bounded stale-snapshot retry: a concurrent commit that invalidates
-/// the snapshot between the reads and the write re-runs the whole read-then-write against the
-/// newer state instead of surfacing the refusal.
+/// A fresh row has unknown capability base facts. A claim preserves identity and the last
+/// discovered base facts while applying the requested switch and overrides and becoming manual.
+/// Existing manual or discovered rows conflict. Automatically managed direct routes are
+/// synchronized in the same transaction.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an unknown provider, an already-listed model, failed statements, or a
-/// public ID collision.
+/// Returns errors for an unknown account, an already-listed natural key, or failed statements.
 pub(crate) async fn insert_model_checked(
     database: &Database,
     create: ModelCreate<'_>,
@@ -575,39 +395,23 @@ pub(crate) async fn insert_model_checked(
         let stored =
             find_model_in_transaction(&mut transaction, provider.id, create.upstream_id).await?;
 
-        let public_id = Model::public_id(
-            &provider.model_prefix,
-            create.upstream_id,
-            create.id_override,
-        );
-
         match stored {
             None => {
-                super::ensure_id_routable_in_transaction(
-                    &mut transaction,
-                    provider.id,
-                    &public_id,
-                    create.upstream_id,
-                )
-                .await?;
-
                 // A fresh manual row starts unknown: every capability base column stores `NULL`
                 // (README §3) while the requested overrides apply.
                 transaction
                     .execute(
                         "INSERT INTO models (provider_id, upstream_id, is_enabled, \
-                         discovery_state, public_id, id_override, thinking_levels, \
+                         discovery_state, thinking_levels, \
                          max_input_tokens, max_output_tokens, thinking_levels_override, \
                          max_input_tokens_override, max_output_tokens_override, \
                          compaction_support, compaction_support_override) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8, ?9, NULL, ?10)",
+                         VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5, ?6, ?7, NULL, ?8)",
                         params![
                             provider.id,
                             create.upstream_id,
                             i64::from(create.is_enabled),
                             DiscoveryState::Manual,
-                            public_id,
-                            create.id_override,
                             super::levels_into_value(create.thinking_levels_override)?,
                             create.max_input_tokens_override,
                             create.max_output_tokens_override,
@@ -618,27 +422,17 @@ pub(crate) async fn insert_model_checked(
             }
 
             Some(existing) if existing.discovery_state == DiscoveryState::Vanished => {
-                super::ensure_id_routable_in_transaction(
-                    &mut transaction,
-                    provider.id,
-                    &public_id,
-                    create.upstream_id,
-                )
-                .await?;
-
                 // The claim writes the administrator-owned columns only: the capability base
                 // columns keep the last discovery's facts, whatever they were (README §3).
                 transaction
                     .execute(
-                        "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3, \
-                         discovery_state = ?4, thinking_levels_override = ?5, \
-                         max_input_tokens_override = ?6, max_output_tokens_override = ?7, \
-                         compaction_support_override = ?8 \
-                         WHERE id = ?9",
+                        "UPDATE models SET is_enabled = ?1, \
+                         discovery_state = ?2, thinking_levels_override = ?3, \
+                         max_input_tokens_override = ?4, max_output_tokens_override = ?5, \
+                         compaction_support_override = ?6 \
+                         WHERE id = ?7",
                         params![
-                            create.id_override,
                             i64::from(create.is_enabled),
-                            public_id,
                             DiscoveryState::Manual,
                             super::levels_into_value(create.thinking_levels_override)?,
                             create.max_input_tokens_override,
@@ -662,6 +456,8 @@ pub(crate) async fn insert_model_checked(
 
         // The read-back entry carries the provider facts the response renders, observed on the
         // write's own snapshot.
+        super::automatic_routes::synchronize(&mut transaction).await?;
+
         let entry =
             find_model_entry_in_transaction(&mut transaction, provider.id, create.upstream_id)
                 .await?
@@ -673,31 +469,18 @@ pub(crate) async fn insert_model_checked(
     })
 }
 
-/// Rewrites one model row's administrator-owned columns — `id_override`, `is_enabled`, and the
-/// capability overrides — and recomputes its public ID inside a single transaction, returning
-/// the updated row with its provider facts.
-///
-/// The row is addressed by its `model_id`; the provider row it joins supplies the prefix, re-read
-/// inside the transaction so the recomposed public ID uses the current prefix even when a
-/// concurrent `providers:update` changed it after the caller's outer read. Only the
-/// administrator-owned columns are written — `discovery_state` and the capability base columns
-/// are never touched, so this route cannot restore a vanished row and cannot smuggle a capability
-/// fact past the ownership boundary (README §7.1). The collision check matches
-/// [`super::providers::update_provider`]'s quality tier: an ID already routed by another model row
-/// yields a 409 naming the holder, and nothing is written. An unknown row yields 404. The
-/// transaction runs under the storage tier's `in_retryable_transaction` bounded stale-snapshot
-/// retry: a concurrent commit that invalidates the snapshot between the read and the write
-/// re-runs the whole read-then-write against the newer state instead of surfacing the refusal.
+/// Rewrites a physical model's serving switch and capability overrides in one short transaction.
+/// Discovery state and base facts are preserved, including for a vanished model.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an unknown row, failed statements, or a public ID collision.
+/// Returns errors for an unknown physical row or failed statements.
 pub(crate) async fn update_model_overrides_checked(
     database: &Database,
     update: ModelUpdate<'_>,
 ) -> Result<ModelEntry, Error> {
     in_retryable_transaction!(database, transaction, async {
-        let Some(joined) =
+        let Some(_joined) =
             find_provider_model_in_transaction(&mut transaction, update.model_id).await?
         else {
             return Err(Error::NotFound {
@@ -705,30 +488,14 @@ pub(crate) async fn update_model_overrides_checked(
             });
         };
 
-        let public_id = Model::public_id(
-            &joined.provider.model_prefix,
-            &joined.model.upstream_id,
-            update.id_override,
-        );
-
-        super::ensure_id_routable_in_transaction(
-            &mut transaction,
-            joined.provider.id,
-            &public_id,
-            &joined.model.upstream_id,
-        )
-        .await?;
-
         transaction
             .execute(
-                "UPDATE models SET id_override = ?1, is_enabled = ?2, public_id = ?3, \
-                 thinking_levels_override = ?4, max_input_tokens_override = ?5, \
-                 max_output_tokens_override = ?6, compaction_support_override = ?7 \
-                 WHERE id = ?8",
+                "UPDATE models SET is_enabled = ?1, \
+                 thinking_levels_override = ?2, max_input_tokens_override = ?3, \
+                 max_output_tokens_override = ?4, compaction_support_override = ?5 \
+                 WHERE id = ?6",
                 params![
-                    update.id_override,
                     i64::from(update.is_enabled),
-                    public_id,
                     super::levels_into_value(update.thinking_levels_override)?,
                     update.max_input_tokens_override,
                     update.max_output_tokens_override,
@@ -772,6 +539,7 @@ pub(crate) async fn delete_model_checked(database: &Database, model_id: i64) -> 
         });
     }
 
+    super::automatic_routes::synchronize(&mut transaction).await?;
     transaction.commit().await?;
 
     Ok(())
@@ -819,7 +587,7 @@ mod tests {
     use super::{
         CompactionSupportFacts, DiscoveryState, Error, IrReasoningLevel, ModelCreate, ModelUpdate,
         apply_discovered_models, delete_model_checked, discovered, discovered_with_capabilities,
-        find_routing, insert_model_checked, list_enabled_models_with_owner, list_model_entries,
+        insert_model_checked, list_enabled_models_with_owner, list_model_entries,
         update_model_overrides_checked,
     };
     use crate::{
@@ -830,9 +598,10 @@ mod tests {
     use std::error::Error as StdError;
 
     /// Verifies the manual-row creation rules: an absent identifier becomes a `manual` row with a
-    /// prefix-composed ID, a natural-key duplicate and a routed-ID collision each conflict without
-    /// writing, an unknown provider is not found — and discovery never touches an unlisted manual
-    /// row while listing it flips the row to `discovered` with its curation and identity intact.
+    /// manual state, a natural-key duplicate conflicts without
+    /// writing, other accounts may store the same upstream ID, and an unknown provider is not found
+    /// — and discovery never touches an unlisted manual row while listing it flips the row to
+    /// `discovered` with its curation and identity intact.
     ///
     /// # Panics
     ///
@@ -840,14 +609,13 @@ mod tests {
     #[tokio::test]
     async fn creates_manual_rows_discovery_never_prunes() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+        let provider_id = insert_test_provider(&database, "provider-1").await?;
 
         let created = insert_model_checked(
             &database,
             ModelCreate {
                 provider_id,
                 upstream_id: "manual-1",
-                id_override: None,
                 is_enabled: false,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -856,8 +624,6 @@ mod tests {
             },
         )
         .await?;
-
-        assert_eq!(created.model.public_id, "p1-manual-1");
         assert_eq!(created.model.discovery_state, DiscoveryState::Manual);
         assert!(!created.model.is_enabled);
 
@@ -866,7 +632,6 @@ mod tests {
             ModelCreate {
                 provider_id,
                 upstream_id: "manual-1",
-                id_override: Some("other-id"),
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -885,14 +650,13 @@ mod tests {
             1
         );
 
-        let other_provider_id = insert_test_provider(&database, "provider-2", "p2-").await?;
+        let other_provider_id = insert_test_provider(&database, "provider-2").await?;
 
         let colliding = insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: other_provider_id,
                 upstream_id: "manual-1",
-                id_override: Some("p1-manual-1"),
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -902,11 +666,12 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(colliding, Err(Error::Conflict { .. })));
+        assert!(colliding.is_ok());
         assert!(
             list_model_entries(&database, Some(other_provider_id))
                 .await?
-                .is_empty()
+                .len()
+                == 1
         );
 
         let missing = insert_model_checked(
@@ -914,7 +679,6 @@ mod tests {
             ModelCreate {
                 provider_id: other_provider_id + 1000,
                 upstream_id: "ghost",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -936,7 +700,6 @@ mod tests {
 
         assert_eq!(manual.model.discovery_state, DiscoveryState::Manual);
         assert!(!manual.model.is_enabled);
-        assert_eq!(manual.model.public_id, "p1-manual-1");
 
         let fresh = entry(&entries, "fresh-1");
 
@@ -958,7 +721,6 @@ mod tests {
         assert_eq!(manual.model.id, manual_id);
         assert_eq!(manual.model.discovery_state, DiscoveryState::Discovered);
         assert!(!manual.model.is_enabled);
-        assert_eq!(manual.model.public_id, "p1-manual-1");
 
         Ok(())
     }
@@ -973,7 +735,7 @@ mod tests {
     async fn marks_vanished_rows_and_restores_them_by_state_flip_only()
     -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+        let provider_id = insert_test_provider(&database, "provider-1").await?;
 
         apply_discovered_models(
             &database,
@@ -984,12 +746,22 @@ mod tests {
 
         let entries = list_model_entries(&database, None).await?;
         let a_id = entry(&entries, "a").model.id;
+        for public in ["a", "b", "c"] {
+            super::super::routing::create_route(
+                &database,
+                &format!("p1-{public}"),
+                true,
+                &crate::routing::ModelRouteTarget::Direct {
+                    model_id: entry(&entries, public).model.id,
+                },
+            )
+            .await?;
+        }
 
         update_model_overrides_checked(
             &database,
             ModelUpdate {
                 model_id: a_id,
-                id_override: Some("custom-a"),
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -1007,25 +779,18 @@ mod tests {
 
         assert_eq!(a.model.id, a_id);
         assert_eq!(a.model.discovery_state, DiscoveryState::Discovered);
-        assert_eq!(a.model.public_id, "custom-a");
 
         assert_eq!(c.model.discovery_state, DiscoveryState::Vanished);
         assert!(c.model.is_enabled);
-        assert_eq!(c.model.public_id, "p1-c");
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "p1-c")
-            .await?
-            .expect("a vanished row is still resolved by its public ID");
-
-        assert!(!routing.is_effectively_enabled);
+        assert!(matches!(
+            crate::gateway::resolve_routing(&database, "p1-c").await,
+            Err(crate::gateway::Error::ModelNotFound { .. })
+        ));
 
         let enabled_models = list_enabled_models_with_owner(&database).await?;
 
-        assert_eq!(enabled_models.len(), 1);
+        assert_eq!(enabled_models.len(), 2);
 
         apply_discovered_models(
             &database,
@@ -1040,15 +805,8 @@ mod tests {
         assert_eq!(c.model.discovery_state, DiscoveryState::Discovered);
         assert!(c.model.is_enabled);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "p1-c")
-            .await?
-            .expect("the restored row routes");
-
-        assert!(routing.is_effectively_enabled);
+        let routing = crate::gateway::resolve_routing(&database, "p1-c").await?;
+        assert_eq!(routing.model.id, c.model.id);
 
         Ok(())
     }
@@ -1062,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn updates_and_deletes_models_by_row_id() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+        let provider_id = insert_test_provider(&database, "provider-1").await?;
 
         apply_discovered_models(&database, provider_id, &[discovered("a"), discovered("b")])
             .await?;
@@ -1121,7 +879,7 @@ mod tests {
     async fn applies_capability_declarations_with_their_ownership_rules()
     -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = test_support::create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+        let provider_id = insert_test_provider(&database, "provider-1").await?;
 
         // The discovered compaction facts the fixture carries, and the administrator override
         // the test writes over them: an explicit `unknown` on the discovered on-demand fact and
@@ -1162,6 +920,17 @@ mod tests {
         .await?;
 
         let entries = list_model_entries(&database, None).await?;
+        for public in ["a", "b"] {
+            super::super::routing::create_route(
+                &database,
+                &format!("p1-{public}"),
+                true,
+                &crate::routing::ModelRouteTarget::Direct {
+                    model_id: entry(&entries, public).model.id,
+                },
+            )
+            .await?;
+        }
         let a = entry(&entries, "a");
 
         assert_eq!(
@@ -1182,7 +951,6 @@ mod tests {
             &database,
             ModelUpdate {
                 model_id: a_id,
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: Some(&[IrReasoningLevel::Max]),
                 max_input_tokens_override: None,
@@ -1296,7 +1064,6 @@ mod tests {
             ModelCreate {
                 provider_id,
                 upstream_id: "a",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: Some(&[IrReasoningLevel::None]),
                 max_input_tokens_override: Some(1_000_000),
@@ -1326,7 +1093,6 @@ mod tests {
             ModelCreate {
                 provider_id,
                 upstream_id: "manual-x",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: Some(8_192),
@@ -1410,7 +1176,6 @@ mod tests {
             &database,
             &definition,
             "provider-c",
-            "pc-",
             None,
             StoredCredentials::ApiKey {
                 api_key: "secret".to_string(),
@@ -1431,10 +1196,19 @@ mod tests {
         let applied = rows.first().expect("the refresh applied one row");
 
         assert_eq!(applied.model.compaction_support, None);
+        super::super::routing::create_route(
+            &database,
+            "pc-m",
+            true,
+            &crate::routing::ModelRouteTarget::Direct {
+                model_id: applied.model.id,
+            },
+        )
+        .await?;
 
         let listed = list_enabled_models_with_owner(&database).await?;
 
-        assert_eq!(listed.len(), 1);
+        assert_eq!(listed.len(), 2);
 
         #[expect(
             clippy::expect_used,

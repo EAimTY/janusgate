@@ -61,6 +61,8 @@ route! {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct StartProviderOauthRequest {
+    /// Prefix prepended to each automatically exposed upstream model ID; empty is allowed.
+    pub model_prefix: String,
     /// The definition name the flow authorizes against.
     pub provider_definition_name: String,
 
@@ -69,10 +71,6 @@ pub(super) struct StartProviderOauthRequest {
 
     /// Name of the provider being created; must be non-empty.
     pub name: String,
-
-    /// Public model name prefix of the provider being created; may be empty, otherwise
-    /// routing-safe.
-    pub model_prefix: String,
 
     /// The instance's initial base URL; required when the definition addresses the base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -762,7 +760,6 @@ mod tests {
             &database,
             &static_definition,
             "static-provider",
-            "s-",
             None,
             StoredCredentials::ApiKey {
                 api_key: "sk".to_string(),
@@ -810,7 +807,6 @@ mod tests {
             &database,
             &oauth_definition,
             "oauth-provider",
-            "o-",
             Some("https://upstream.example"),
             StoredCredentials::OAuth {
                 access_token: "old".to_string(),
@@ -867,7 +863,6 @@ mod tests {
             &database,
             &static_definition,
             "taken",
-            "t-",
             None,
             StoredCredentials::ApiKey {
                 api_key: "sk".to_string(),
@@ -883,10 +878,10 @@ mod tests {
             &database,
             &crate::http_client::control_plane(),
             StartProviderOauthRequest {
+                model_prefix: String::new(),
                 provider_definition_name: oauth_definition.name.clone(),
                 provider_definition_version: oauth_definition.version.get(),
                 name: "taken".to_string(),
-                model_prefix: String::new(),
                 base_url: Some("https://upstream.example".to_string()),
             },
         )
@@ -921,10 +916,10 @@ mod tests {
             &database,
             &crate::http_client::control_plane(),
             StartProviderOauthRequest {
+                model_prefix: String::new(),
                 provider_definition_name: definition.name.clone(),
                 provider_definition_version: definition.version.get(),
                 name: "created".to_string(),
-                model_prefix: String::new(),
                 base_url: None,
             },
         )
@@ -962,7 +957,6 @@ mod tests {
             &database,
             &definition,
             "oauth-provider",
-            "o-",
             None,
             StoredCredentials::OAuth {
                 access_token: "old".to_string(),
@@ -1084,12 +1078,12 @@ mod tests {
         insert_flow(
             &database,
             NewFlow {
+                model_prefix: Some(String::new()),
                 definition_name: definition.name.clone(),
                 definition_version: definition.version,
                 state_token: "state-token".to_string(),
                 purpose: FlowPurpose::Create,
                 provider_name: Some("created".to_string()),
-                model_prefix: Some(String::new()),
                 base_url: None,
                 target_provider_id: None,
                 grant_type: FlowGrant::AuthorizationCode,
@@ -1181,7 +1175,6 @@ mod tests {
             &database,
             &static_definition,
             "taken",
-            "t-",
             None,
             StoredCredentials::ApiKey {
                 api_key: "sk".to_string(),
@@ -1229,12 +1222,12 @@ mod tests {
         insert_flow(
             &database,
             NewFlow {
+                model_prefix: Some(String::new()),
                 definition_name: definition.name.clone(),
                 definition_version: definition.version,
                 state_token: "state-token".to_string(),
                 purpose: FlowPurpose::Create,
                 provider_name: Some("taken".to_string()),
-                model_prefix: Some(String::new()),
                 base_url: None,
                 target_provider_id: None,
                 grant_type: FlowGrant::AuthorizationCode,

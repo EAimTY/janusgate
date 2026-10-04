@@ -61,7 +61,6 @@ export function toUpdateProviderRequest(
  * knowledge.
  */
 type ModelOverrides = {
-    readonly id_override?: string | null;
     readonly is_enabled?: boolean;
     /**
      * The thinking-level override; `null` keeps the discovered value, an
@@ -85,7 +84,7 @@ type ModelOverrides = {
 /**
  * Builds one `models:update` request from a listed row and the changed
  * columns. The row is addressed by its never-recycled row identifier; its
- * natural key and its derived public ID are never part of a request.
+ * natural key is never part of an update request.
  */
 export function toUpdateModelRequest(
     model: ModelResponse,
@@ -93,7 +92,6 @@ export function toUpdateModelRequest(
 ): UpdateModelRequest {
     return {
         model_id: model.id,
-        id_override: edits.id_override === undefined ? model.id_override : edits.id_override,
         is_enabled: edits.is_enabled ?? model.is_enabled,
         thinking_levels_override:
             edits.thinking_levels_override === undefined
@@ -154,7 +152,6 @@ export function toCreateModelRequest(
     return {
         provider_id: providerId,
         upstream_id: upstreamId,
-        id_override: overrides.id_override ?? null,
         is_enabled: overrides.is_enabled ?? true,
         thinking_levels_override: overrides.thinking_levels_override ?? null,
         max_input_tokens_override: overrides.max_input_tokens_override ?? null,

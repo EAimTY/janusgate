@@ -17,28 +17,75 @@ const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 /// Maximum number of characters an upstream body excerpt carries in an error message.
 const EXCERPT_MAX_CHARS: usize = 400;
 
-/// Reads at most [`MAX_ERROR_BODY_BYTES`] bytes of an upstream response body into a lossy UTF-8
-/// string. The full body is never buffered; a read that fails partway keeps the bytes delivered so
-/// far, because a partial excerpt still serves the error message the read exists for.
-pub(crate) async fn read_error_body(response: Response) -> String {
-    let mut stream = response.bytes_stream();
+/// A bounded foreign error body with explicit proof of complete input.
+pub(crate) struct ErrorBody {
+    /// At most the configured error-body limit of original bytes.
+    bytes: Vec<u8>,
+    /// Whether the body ended successfully within the limit, including exact-limit input.
+    pub(crate) is_complete: bool,
+}
 
-    let mut bytes: Vec<u8> = Vec::new();
-
-    while bytes.len() < MAX_ERROR_BODY_BYTES {
-        match stream.next().await {
-            Some(Ok(chunk)) => bytes.extend_from_slice(&chunk),
-            Some(Err(_)) | None => break,
-        }
+impl ErrorBody {
+    /// Decodes complete valid foreign JSON; partial, failed, and malformed input cannot classify.
+    pub(crate) fn complete_json(&self) -> Option<serde_json::Value> {
+        self.is_complete
+            .then(|| serde_json::from_slice(&self.bytes).ok())
+            .flatten()
     }
 
-    // The loop condition checks the budget only before each extend, so one chunk larger than the
-    // cap overshoots it; the bound is enforced here, after accumulation.
-    bytes.truncate(MAX_ERROR_BODY_BYTES);
+    /// Renders human-facing text without treating lossy UTF-8 as classification evidence.
+    pub(crate) fn lossy_text(&self) -> String {
+        String::from_utf8_lossy(&self.bytes).into_owned()
+    }
+}
 
-    // A chunk boundary can split a multi-byte character; the excerpt is human-facing, so a
-    // replacement character is acceptable.
-    String::from_utf8_lossy(&bytes).into_owned()
+/// Reads one bounded upstream error body while preserving proof of complete input.
+/// The original bytes never exceed the cap. Exact-cap input requires an EOF observation; any
+/// subsequent byte or transport failure prevents classification even when the prefix is JSON.
+pub(crate) async fn read_bounded_error_body(response: Response) -> ErrorBody {
+    read_error_stream(response.bytes_stream()).await
+}
+
+/// Reads one body for legacy human-facing control errors using the same bounded read contract.
+pub(crate) async fn read_error_body(response: Response) -> String {
+    read_bounded_error_body(response).await.lossy_text()
+}
+
+/// Consumes a foreign byte stream once, retaining at most the bound and confirming its EOF.
+async fn read_error_stream<S, B, E>(stream: S) -> ErrorBody
+where
+    S: tokio_stream::Stream<Item = Result<B, E>>,
+    B: AsRef<[u8]>,
+{
+    let mut stream = Box::pin(stream);
+    let mut bytes = Vec::new();
+    loop {
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                let chunk = chunk.as_ref();
+                let remaining = MAX_ERROR_BODY_BYTES - bytes.len();
+                bytes.extend_from_slice(chunk.get(..remaining).unwrap_or(chunk));
+                if chunk.len() > remaining {
+                    return ErrorBody {
+                        bytes,
+                        is_complete: false,
+                    };
+                }
+            }
+            Some(Err(_)) => {
+                return ErrorBody {
+                    bytes,
+                    is_complete: false,
+                };
+            }
+            None => {
+                return ErrorBody {
+                    bytes,
+                    is_complete: true,
+                };
+            }
+        }
+    }
 }
 
 /// Truncates an upstream body to [`EXCERPT_MAX_CHARS`] characters for inclusion in an error
@@ -51,5 +98,45 @@ pub(crate) fn truncate_excerpt(body: &str) -> String {
         let excerpt: String = body.chars().take(EXCERPT_MAX_CHARS).collect();
 
         format!("{excerpt}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Complete input at the cap remains classifiable; overflow and failed reads never do.
+    /// A valid JSON prefix cannot disguise trailing bytes or a failed remainder.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the reader buffers beyond its cap or mistakes partial input for complete JSON.
+    #[tokio::test]
+    async fn bounded_reads_require_a_confirmed_complete_body() {
+        let mut exact = br#"{"error":{"code":"quota"}}"#.to_vec();
+        exact.resize(MAX_ERROR_BODY_BYTES, b' ');
+        let complete =
+            read_error_stream(tokio_stream::iter(vec![Ok::<_, ()>(exact.clone())])).await;
+        assert!(complete.is_complete);
+        assert!(complete.complete_json().is_some());
+        let overflow = read_error_stream(tokio_stream::iter(vec![
+            Ok::<_, ()>(exact.clone()),
+            Ok(vec![b'x']),
+        ]))
+        .await;
+        assert!(!overflow.is_complete);
+        assert_eq!(overflow.bytes.len(), MAX_ERROR_BODY_BYTES);
+        assert!(overflow.complete_json().is_none());
+        let failed = read_error_stream(tokio_stream::iter(vec![Ok(exact.clone()), Err(())])).await;
+        assert!(!failed.is_complete);
+        assert!(failed.complete_json().is_none());
+        exact.push(b'x');
+        let oversized_chunk = read_error_stream(tokio_stream::iter(vec![Ok::<_, ()>(exact)])).await;
+        assert!(!oversized_chunk.is_complete);
+        assert_eq!(oversized_chunk.bytes.len(), MAX_ERROR_BODY_BYTES);
+        let invalid_utf8 =
+            read_error_stream(tokio_stream::iter(vec![Ok::<_, ()>(vec![b'"', 255, b'"'])])).await;
+        assert!(invalid_utf8.is_complete);
+        assert!(invalid_utf8.complete_json().is_none());
     }
 }

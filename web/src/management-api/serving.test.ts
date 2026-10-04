@@ -2,21 +2,22 @@ import { describe, expect, it } from "vitest";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { indexRowsById } from "/src/row-index";
 import {
+    automaticModelNames,
     capabilitySource,
     effectiveCompactionFacts,
     effectiveMaxInputTokens,
     effectiveMaxOutputTokens,
     effectiveThinkingLevels,
-    isModelEffectivelyServing,
+    isModelInventoryReady,
     modelCountsByProvider,
-    servingModelCountsByProvider,
+    readyInventoryCountsByProvider,
 } from "./serving";
 
 const provider: ProviderResponse = {
+    model_prefix: "",
     type: "api_key",
     id: 4,
     name: "local",
-    model_prefix: "local-",
     is_enabled: true,
     provider_definition_name: "generic-openai-chat-completions",
     provider_definition_version: 1,
@@ -35,8 +36,7 @@ function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
         provider_id: 4,
         provider: "local",
         upstream_id: "qwen3:32b",
-        public_id: "local-qwen3-32b",
-        id_override: null,
+
         is_enabled: true,
         discovery_state: "discovered",
         thinking_levels: null,
@@ -51,14 +51,14 @@ function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
     };
 }
 
-describe("isModelEffectivelyServing", () => {
+describe("isModelInventoryReady", () => {
     it("serves only when the provider, the row, and discovery all agree", () => {
-        expect(isModelEffectivelyServing(model(), provider)).toBe(true);
+        expect(isModelInventoryReady(model(), provider)).toBe(true);
     });
 
     it("is false when the row's own switch is off", () => {
         expect(
-            isModelEffectivelyServing(
+            isModelInventoryReady(
                 model({
                     is_enabled: false,
                 }),
@@ -68,12 +68,12 @@ describe("isModelEffectivelyServing", () => {
     });
 
     it("is false when the provider is off, without touching the row", () => {
-        expect(isModelEffectivelyServing(model(), disabledProvider)).toBe(false);
+        expect(isModelInventoryReady(model(), disabledProvider)).toBe(false);
     });
 
     it("is false for a vanished row even with both switches on", () => {
         expect(
-            isModelEffectivelyServing(
+            isModelInventoryReady(
                 model({
                     discovery_state: "vanished",
                 }),
@@ -84,7 +84,7 @@ describe("isModelEffectivelyServing", () => {
 
     it("holds for a manual row with both switches on", () => {
         expect(
-            isModelEffectivelyServing(
+            isModelInventoryReady(
                 model({
                     discovery_state: "manual",
                 }),
@@ -94,7 +94,7 @@ describe("isModelEffectivelyServing", () => {
     });
 
     it("is false when the provider row is not at hand", () => {
-        expect(isModelEffectivelyServing(model(), undefined)).toBe(false);
+        expect(isModelInventoryReady(model(), undefined)).toBe(false);
     });
 });
 
@@ -122,9 +122,9 @@ describe("modelCountsByProvider", () => {
     });
 });
 
-describe("servingModelCountsByProvider", () => {
+describe("readyInventoryCountsByProvider", () => {
     it("counts only the rows that serve under the three-input rule", () => {
-        const counts = servingModelCountsByProvider(
+        const counts = readyInventoryCountsByProvider(
             [
                 model(),
                 model({
@@ -151,7 +151,7 @@ describe("servingModelCountsByProvider", () => {
         // provider absent from the map has nothing counted, which is the
         // same answer a provider with only non-serving rows gets — the
         // caller states the attention, not the map.
-        const counts = servingModelCountsByProvider(
+        const counts = readyInventoryCountsByProvider(
             [
                 model(),
                 model({
@@ -168,7 +168,7 @@ describe("servingModelCountsByProvider", () => {
     });
 
     it("excludes rows whose provider is not at hand", () => {
-        const counts = servingModelCountsByProvider(
+        const counts = readyInventoryCountsByProvider(
             [
                 model(),
             ],
@@ -297,5 +297,107 @@ describe("effectiveCompactionFacts", () => {
             support: "unknown",
             source: "unknown",
         });
+    });
+});
+
+describe("automatic model exposure", () => {
+    it("matches exact pool membership and upstream IDs without exposing unrelated pools or aliases", () => {
+        const physical = model({
+            upstream_id: "M",
+        });
+        const pools = [
+            {
+                id: 1,
+                name: "owner",
+                model_prefix: "owner-",
+                is_enabled: false,
+                members: [
+                    {
+                        provider_id: 4,
+                        priority: 0,
+                    },
+                ],
+            },
+            {
+                id: 2,
+                name: "other",
+                model_prefix: "other-",
+                is_enabled: true,
+                members: [
+                    {
+                        provider_id: 8,
+                        priority: 0,
+                    },
+                ],
+            },
+        ];
+        const routes = [
+            {
+                id: 1,
+                public_id: "owner-M",
+                is_automatic: true,
+                is_enabled: true,
+                target: {
+                    type: "pool" as const,
+                    pool_id: 1,
+                    upstream_id: "M",
+                },
+            },
+            {
+                id: 2,
+                public_id: "other-M",
+                is_automatic: true,
+                is_enabled: true,
+                target: {
+                    type: "pool" as const,
+                    pool_id: 2,
+                    upstream_id: "M",
+                },
+            },
+            {
+                id: 3,
+                public_id: "owner-N",
+                is_automatic: true,
+                is_enabled: true,
+                target: {
+                    type: "pool" as const,
+                    pool_id: 1,
+                    upstream_id: "N",
+                },
+            },
+            {
+                id: 4,
+                public_id: "authored",
+                is_automatic: false,
+                is_enabled: true,
+                target: {
+                    type: "direct" as const,
+                    model_id: 9,
+                },
+            },
+        ];
+        expect(automaticModelNames(physical, routes, pools)).toEqual([
+            "owner-M",
+        ]);
+        expect(
+            automaticModelNames(
+                physical,
+                [
+                    {
+                        id: 5,
+                        public_id: "local-M",
+                        is_automatic: true,
+                        is_enabled: true,
+                        target: {
+                            type: "direct",
+                            model_id: 9,
+                        },
+                    },
+                ],
+                [],
+            ),
+        ).toEqual([
+            "local-M",
+        ]);
     });
 });

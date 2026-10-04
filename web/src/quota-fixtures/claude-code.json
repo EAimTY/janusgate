@@ -206,6 +206,9 @@
             "reset": {
                 "type": "at",
                 "at": 1893456000123456
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -229,6 +232,9 @@
             "reset": {
                 "type": "at",
                 "at": 1893974400000000
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -251,6 +257,9 @@
             },
             "reset": {
                 "type": "unknown"
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         }
     ],

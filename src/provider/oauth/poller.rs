@@ -748,7 +748,6 @@ mod tests {
             &database,
             &static_definition,
             "taken",
-            "t-",
             None,
             StoredCredentials::ApiKey {
                 api_key: "sk".to_string(),
@@ -875,7 +874,6 @@ mod tests {
                     &database,
                     &static_definition,
                     "created",
-                    "c-",
                     None,
                     StoredCredentials::ApiKey {
                         api_key: "sk".to_string(),
@@ -1625,7 +1623,6 @@ mod tests {
             FlowFixtureDelta {
                 purpose: Some(FlowPurpose::Reauthorize),
                 provider_name: Some(None),
-                model_prefix: Some(None),
                 // A target id no provider row holds: the concurrent `providers:delete` has
                 // already won by the time the rebind runs.
                 target_provider_id: Some(424242),
@@ -1779,7 +1776,6 @@ mod tests {
             FlowFixtureDelta {
                 purpose: Some(FlowPurpose::Reauthorize),
                 provider_name: Some(None),
-                model_prefix: Some(None),
                 target_provider_id: Some(1),
                 ..FlowFixtureDelta::default()
             },

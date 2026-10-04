@@ -29,7 +29,6 @@ import {
     providerRow,
     settle,
     stubManagementApi,
-    switchWithLabel,
     typeInto,
 } from "./screen-test-support";
 
@@ -91,10 +90,10 @@ function screenApi(
             sent.push(request);
             return Promise.resolve({
                 provider: {
+                    model_prefix: "",
                     type: "api_key",
                     id: 1,
                     name: request.name,
-                    model_prefix: request.model_prefix,
                     is_enabled: true,
                     provider_definition_name: request.provider_definition_name,
                     provider_definition_version: request.provider_definition_version,
@@ -214,29 +213,6 @@ function presetById(id: string): ProviderPreset {
 
 describe("ProviderNewScreen creation", () => {
     const disposes = createDisposals();
-
-    it("sends a typed custom prefix byte-for-byte in the create request", async () => {
-        const sent: CreateProviderRequest[] = [];
-        disposes.push(render(() => <ProviderNewScreen api={screenApi(sent)} />, document.body));
-        await settle();
-
-        // The typed prefix carries its own trailing dash, and the field
-        // promises it is used exactly as typed (gateway README §7 stores the
-        // prefix verbatim and recomposes every unoverridden public ID from
-        // exactly what the write states) — creation must match the edit
-        // path's byte-for-byte rule.
-        switchWithLabel("Custom model prefix").click();
-        await settle();
-        typeInto(labeledInput("Model prefix"), "beta-");
-        typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
-        typeInto(labeledInput("Upstream API key"), "sk-test");
-        await settle();
-        buttonWithText("Create provider").click();
-        await settle();
-
-        expect(sent).toHaveLength(1);
-        expect(sent[0]?.model_prefix).toBe("beta-");
-    });
 
     it("states the base-URL error only after the field was typed in", async () => {
         disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
@@ -954,9 +930,9 @@ describe("ProviderNewScreen preset switching over an edited recipe", () => {
 /** A provider row of the given name, as the listing answers it. */
 function providerRowNamed(name: string): ProviderResponse {
     return providerRow({
+        model_prefix: "",
         id: 1,
         name,
-        model_prefix: `${name}-`,
         provider_definition_name: "generic-openai-responses",
         format: "openai_response",
         base_url: null,
@@ -1240,11 +1216,11 @@ function deviceFlow(expiresAtMicros: number): Extract<
 
 /** The provider row a succeeded completion answers with. */
 const createdProvider = providerRow({
+    model_prefix: "",
     type: "oauth",
     expires_at: 1_700_000_100_000_000,
     id: 7,
     name: "kimi",
-    model_prefix: "kimi-",
     provider_definition_name: "kimi-code",
     format: "openai_chat_completion",
     base_url: null,
@@ -1498,10 +1474,8 @@ describe("ProviderNewScreen OAuth flow", () => {
         await flush();
 
         // Without a live flow everything is open.
-        switchWithLabel("Custom model prefix").click();
         await flush();
         expect(labeledInput("Name").disabled).toBe(false);
-        expect(labeledInput("Model prefix").disabled).toBe(false);
         expect(definitionEditor().disabled).toBe(false);
 
         buttonWithText("Claude Code").click();
@@ -1516,8 +1490,6 @@ describe("ProviderNewScreen OAuth flow", () => {
         // accepted and do nothing. Everything the start sent locks, like the
         // preset picker.
         expect(labeledInput("Name").disabled).toBe(true);
-        expect(switchWithLabel("Custom model prefix").disabled).toBe(true);
-        expect(labeledInput("Model prefix").disabled).toBe(true);
         expect(definitionEditor().disabled).toBe(true);
     });
 
@@ -1597,9 +1569,10 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(flowLockLines()).toBe(4);
     });
 
-    it("keeps the flow start disabled while the model prefix is invalid, sending nothing", async () => {
+    it("starts authorization with a free-form account label independent of model routing", async () => {
         vi.useFakeTimers();
         const calls: string[] = [];
+        const sent: StartProviderOauthRequest[] = [];
         mountScreen(
             stubManagementApi({
                 listProviderDefinitions: () =>
@@ -1616,7 +1589,8 @@ describe("ProviderNewScreen OAuth flow", () => {
                     Promise.resolve({
                         providers: [],
                     }),
-                startProviderOauth: () => {
+                startProviderOauth: (request) => {
+                    sent.push(request);
                     calls.push("start");
                     return Promise.resolve(authorizationFlow);
                 },
@@ -1626,33 +1600,16 @@ describe("ProviderNewScreen OAuth flow", () => {
         buttonWithText("Claude Code").click();
         await flush();
 
-        // The contrast half of the gate: a valid prefix over a valid
-        // definition leaves Start open — the state every dead-flow recovery
-        // re-enters with, so a fresh flow can always begin again.
+        typeInto(labeledInput("Name"), "我的账户 / personal");
+        await flush();
         expect(buttonWithText("Start the authorization").disabled).toBe(false);
-
-        // An invalid custom prefix names itself inline and closes Start…
-        switchWithLabel("Custom model prefix").click();
-        await flush();
-        typeInto(labeledInput("Model prefix"), "has space");
-        await flush();
-        expect(document.body.textContent).toContain(
-            'Model prefix accepts letters, numbers, and symbols only — no spaces, non-ASCII text, "/", or ":".',
-        );
-        expect(buttonWithText("Start the authorization").disabled).toBe(true);
-
-        // …and the gate keeps the rejection in the browser: the click issues
-        // neither the definition write nor the flow begin, so the gateway
-        // never answers 400 and no immutable definition version registers as
-        // a side effect of a refused start.
         buttonWithText("Start the authorization").click();
         await flush();
-        expect(calls).toEqual([]);
-
-        // Repairing the prefix reopens Start — the gate is live, not a latch.
-        typeInto(labeledInput("Model prefix"), "repaired-");
-        await flush();
-        expect(buttonWithText("Start the authorization").disabled).toBe(false);
+        expect(calls).toEqual([
+            "definition",
+            "start",
+        ]);
+        expect(sent[0]?.name).toBe("我的账户 / personal");
     });
 
     it("holds the flow start while the recipe references the base with none entered", async () => {

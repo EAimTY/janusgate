@@ -5,6 +5,7 @@ import type {
     ListUsageRequest,
     ListUsageResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
     QueryUsageRequest,
     QueryUsageResponse,
@@ -22,6 +23,7 @@ export type UsageEntities = {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
     readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
+    readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
 };
 
 /** The entity listings before a read lands: every list empty. */
@@ -29,31 +31,36 @@ export const EMPTY_USAGE_ENTITIES: UsageEntities = {
     providers: [],
     models: [],
     apiKeys: [],
+    modelRoutes: [],
 };
 
 /**
- * The three entity listings a screen reads to name entities — the usage
+ * The four entity listings a screen reads to name entities — the usage
  * screens alongside their rows, the overview for its health counts — as one
  * read call: the listings run in parallel under the cycle's signal and answer
- * as the whole `UsageEntities` triple, so every cycle that ends successfully
+ * as the whole `UsageEntities` snapshot, so every cycle that ends successfully
  * leaves the labels' resolution lists loaded.
  */
 export function readUsageEntities(
-    api: Pick<ManagementApi, "listProviders" | "listModels" | "listApiKeys">,
+    api: Pick<ManagementApi, "listProviders" | "listModels" | "listApiKeys" | "listModelRoutes">,
 ): ReadCall<UsageEntities> {
     return {
         run: async (signal) => {
-            const [providersResult, modelsResult, apiKeysResult] = await readAll(
+            const [providersResult, modelsResult, apiKeysResult, modelRoutesResult] = await readAll(
                 signal,
                 readProviders(api),
                 readModels(api, {}),
                 readApiKeys(api),
+                {
+                    run: (signal) => api.listModelRoutes(signal),
+                },
             );
 
             return {
                 providers: providersResult.providers,
                 models: modelsResult.models,
                 apiKeys: apiKeysResult.api_keys,
+                modelRoutes: modelRoutesResult.model_routes,
             };
         },
     };

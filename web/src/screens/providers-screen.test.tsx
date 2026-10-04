@@ -39,7 +39,6 @@ describe("ProvidersScreen search", () => {
                                 providerRow({
                                     id: 4,
                                     name: "mix-ops",
-                                    model_prefix: "mix-",
                                 }),
                             ],
                             models: [],

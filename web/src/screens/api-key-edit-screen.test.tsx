@@ -32,6 +32,10 @@ function screenApi(
     sent: UpdateApiKeyRequest[] = [],
 ): ManagementApi {
     return stubManagementApi({
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [],
+            }),
         listApiKeys: (signal) => {
             signal?.throwIfAborted();
             return Promise.resolve({
@@ -368,6 +372,10 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
         }> = [];
         const api: ManagementApi = {
             ...screenApi(holder),
+            listModelRoutes: () =>
+                Promise.resolve({
+                    model_routes: [],
+                }),
             listApiKeys: (signal) => {
                 signal?.throwIfAborted();
                 const gate = gated<{

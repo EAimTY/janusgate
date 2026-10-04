@@ -45,6 +45,9 @@ function ratioEntry(
         label,
         at,
         is_required: false,
+        routing: {
+            type: "monitoring_only",
+        },
         window,
         measurement: {
             type: "ratio",
@@ -495,6 +498,9 @@ export const PRESET_QUOTAS: Readonly<
                 entries: [
                     {
                         key: "allowance",
+                        routing: {
+                            type: "monitoring_only",
+                        },
                         label: "Allowance",
                         at: [],
                         is_required: true,
@@ -588,6 +594,9 @@ export const PRESET_QUOTAS: Readonly<
                 entries: [
                     {
                         key: "usage",
+                        routing: {
+                            type: "monitoring_only",
+                        },
                         label: "Model allowance",
                         at: [
                             "quotaInfo",

@@ -251,6 +251,14 @@ describe("EntityUsageCard doors", () => {
         }> = [
             {
                 filter: {
+                    model_route_id: 17,
+                },
+                subjectKind: "public route",
+                streamHref: "/usage?route=17",
+                aggregatesHref: "/usage/query?route=17",
+            },
+            {
+                filter: {
                     provider_id: 1,
                 },
                 subjectKind: "provider",

@@ -24,6 +24,7 @@ pub(crate) mod definition;
 pub(crate) mod discovery;
 pub(crate) mod oauth;
 pub(crate) mod quota;
+pub(crate) mod quota_rejection;
 
 pub(crate) use definition::{DefinitionPayload, ProviderDefinition};
 
@@ -294,7 +295,7 @@ pub(crate) struct Provider {
     /// Unique, renameable label; the immutable `id` is the provider's public identifier.
     pub(crate) name: String,
 
-    /// Prefix prepended to every public model name.
+    /// Prefix of automatically exposed direct model names.
     pub(crate) model_prefix: String,
 
     /// Upstream base URL; the only persisted instance URL after creation. Definitions whose URLs
@@ -307,6 +308,11 @@ pub(crate) struct Provider {
 
     /// Whether the provider serves traffic.
     pub(crate) is_enabled: bool,
+
+    /// Administrator changes to this account's quota interpretation.
+    pub(crate) quota_generation: i64,
+    /// Derived evidence ordering within the current interpretation.
+    pub(crate) quota_revision: i64,
 
     /// The exact definition version the provider's requests are interpreted against.
     pub(crate) definition: ProviderDefinition,
@@ -329,13 +335,6 @@ pub(crate) struct Model {
 
     /// Exact upstream model identifier.
     pub(crate) upstream_id: String,
-
-    /// Public routing ID, maintained at write time.
-    pub(crate) public_id: String,
-
-    /// Non-`None` explicitly sets the public routing ID directly, bypassing the provider's
-    /// `model_prefix`.
-    pub(crate) id_override: Option<String>,
 
     /// Whether the model is enabled to serve traffic under its provider.
     pub(crate) is_enabled: bool,
@@ -405,30 +404,21 @@ pub(crate) struct DiscoveredModel {
 /// A provider row joined with the model row a public ID resolved to.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelRouting {
+    /// Stable explicit public route identity.
+    pub(crate) model_route_id: i64,
+    /// Public model name requested by the client, separate from physical inventory.
+    pub(crate) public_id: String,
+    /// Pool selected by this route; direct routes have no pool.
+    pub(crate) provider_pool_id: Option<i64>,
+
     /// Owning provider.
     pub(crate) provider: Provider,
 
     /// Resolved model row.
     pub(crate) model: Model,
-
-    /// Whether the model effectively serves traffic ([`Model::is_effectively_enabled`]).
-    pub(crate) is_effectively_enabled: bool,
 }
 
 impl Model {
-    /// The public routing ID the model carries: an explicit override directly replaces the ID
-    /// without prefix, else `model_prefix + upstream_id`.
-    pub(crate) fn public_id(
-        model_prefix: &str,
-        upstream_id: &str,
-        id_override: Option<&str>,
-    ) -> String {
-        match id_override {
-            Some(id) => id.to_string(),
-            None => format!("{model_prefix}{upstream_id}"),
-        }
-    }
-
     /// The model's effective serving status — the one definition routing and the enabled-model
     /// listing share, and the definition a management client derives from the row's exposed
     /// inputs rather than reading it off the wire: true if and only if the owning provider is

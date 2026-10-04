@@ -2,7 +2,12 @@ import type { JSX } from "@solidjs/web";
 import { type Accessor, createMemo, createSignal, onCleanup, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type {
+    ModelResponse,
+    ModelRouteResponse,
+    ProviderPoolResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { lapsedCredentialStanding } from "/src/management-api/serving";
 import {
@@ -11,6 +16,7 @@ import {
     UPSTREAM_FORMAT,
 } from "/src/management-api/vocabulary";
 import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
+import { requestRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { indexRowsById } from "/src/row-index";
 import {
@@ -18,7 +24,7 @@ import {
     createScreenRead,
     isSameProviderRow,
     readOne,
-    readProviderCatalog,
+    readPublishedInventory,
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screens/read";
@@ -31,6 +37,7 @@ import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 import { credentialBadge, OAUTH_NEVER_FRESH_SENTENCE } from "/src/ui/providers-table";
+import { AccountAvailabilityRow } from "./pool-availability-card";
 import { ProviderQuotaCard } from "./provider-quota-card";
 import { createProviderQuotaView } from "./quota-view";
 import { StatedNotice } from "./read-notice";
@@ -48,6 +55,8 @@ export function ProviderDetailScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [modelRoutes, setModelRoutes] = createSignal<ReadonlyArray<ModelRouteResponse>>([]);
+    const [pools, setPools] = createSignal<ReadonlyArray<ProviderPoolResponse>>([]);
     const [isDiscovering, setIsDiscovering] = createSignal(false);
     // The discovery's progress and outcome are stated where the action was
     // taken — on the Models card — never in the read-level notice above the
@@ -71,10 +80,15 @@ export function ProviderDetailScreen(props: {
     // outcome lives on the Models card and survives reads untouched.
     const read = createScreenRead({
         load: async (signal) => {
-            const catalog = await readOne(signal, readProviderCatalog(props.api, props.providerId));
+            const catalog = await readOne(
+                signal,
+                readPublishedInventory(props.api, props.providerId),
+            );
 
             setProviders(catalog.providers);
             setModels(catalog.models);
+            setModelRoutes(catalog.modelRoutes);
+            setPools(catalog.pools);
 
             if (!catalog.providers.some((candidate) => candidate.id === props.providerId)) {
                 // The subject row is gone: the not-found state takes over,
@@ -157,16 +171,7 @@ export function ProviderDetailScreen(props: {
         const vanished = rows.filter((row) => row.discovery_state === "vanished").length;
         const manual = rows.filter((row) => row.discovery_state === "manual").length;
 
-        // Discovery never writes `id_override`, so every override in the
-        // answer is a pre-existing custom name the refresh kept — a first
-        // discovery that inserts only fresh rows keeps none.
-        const keptNames = rows.filter((row) => row.id_override !== null).length;
-
         const facts: string[] = [];
-
-        if (keptNames > 0) {
-            facts.push(`${keptNames} custom ${keptNames === 1 ? "name was" : "names were"} kept.`);
-        }
 
         if (manual > 0) {
             facts.push(`${manual} added by hand ${manual === 1 ? "was" : "were"} left untouched.`);
@@ -202,6 +207,7 @@ export function ProviderDetailScreen(props: {
 
     const providersById = createMemo(() => indexRowsById(providers()));
     const quota = createProviderQuotaView({
+        onQuotaReadComplete: requestRefresh,
         api: () => props.api,
         provider,
     });
@@ -232,7 +238,7 @@ export function ProviderDetailScreen(props: {
                 <>
                     <PageHeader
                         title={row.name}
-                        description={`${UPSTREAM_FORMAT.label(row.format)} · ${CREDENTIAL_KIND.label(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
+                        description={`${UPSTREAM_FORMAT.label(row.format)} · ${CREDENTIAL_KIND.label(row.type)}`}
                         backHref={hrefs.providers()}
                         backLabel="Providers"
                     >
@@ -297,12 +303,32 @@ export function ProviderDetailScreen(props: {
                     <ModelsCard
                         provider={row}
                         models={models()}
+                        modelRoutes={modelRoutes()}
+                        pools={pools()}
                         providersById={providersById()}
                         isDiscovering={isDiscovering()}
                         notice={discoveryNotice}
                         onDiscover={() => void discover(row, models())}
                     />
 
+                    <Card>
+                        <CardHeader
+                            title="Stored availability"
+                            description="All observed restrictions on this account. Reset clears restrictions and installs refresh grace; it does not reset upstream quota."
+                        />
+                        <ul class="mt-4">
+                            <AccountAvailabilityRow
+                                api={props.api}
+                                providerId={row.id}
+                                provider={row}
+                                models={models()}
+                                isPoolEnabled={true}
+                                upstreamId={null}
+                                isAccountInspection={true}
+                                canRefreshQuota={false}
+                            />
+                        </ul>
+                    </Card>
                     <ProviderQuotaCard view={quota} />
 
                     <EntityUsageCard
@@ -349,6 +375,15 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
             <CardHeader title="Details" />
             <FactList>
                 <Fact
+                    label="Model prefix"
+                    value={
+                        props.provider.model_prefix === ""
+                            ? "None — exact upstream IDs"
+                            : props.provider.model_prefix
+                    }
+                    isTabular
+                />
+                <Fact
                     label="Type"
                     value={UPSTREAM_FORMAT.label(props.provider.format)}
                 />
@@ -368,14 +403,6 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                                 </>
                             )}
                         </Show>
-                    }
-                    isTabular
-                    class="break-all"
-                />
-                <Fact
-                    label="Model prefix"
-                    value={
-                        props.provider.model_prefix === "" ? "(empty)" : props.provider.model_prefix
                     }
                     isTabular
                     class="break-all"
@@ -425,6 +452,8 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
 function ModelsCard(props: {
     readonly provider: ProviderResponse;
     readonly models: ReadonlyArray<ModelResponse>;
+    readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
+    readonly pools: ReadonlyArray<ProviderPoolResponse>;
     readonly providersById: ReadonlyMap<number, ProviderResponse>;
     readonly isDiscovering: boolean;
     readonly notice: Accessor<ScreenNotice | null>;
@@ -477,6 +506,8 @@ function ModelsCard(props: {
                 >
                     <ModelList
                         models={props.models}
+                        modelRoutes={props.modelRoutes}
+                        pools={props.pools}
                         providersById={props.providersById}
                     />
                 </Show>

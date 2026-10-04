@@ -123,6 +123,13 @@ impl CompactionLedger {
         totals
     }
 
+    /// Returns accounting facts only when a dispatched stage actually reported usage.
+    /// An explicit zero report remains present; protocol-required zero totals for an empty
+    /// ledger are not upstream measurements and must not become recorded token facts.
+    pub(crate) fn reported_billed_totals(&self) -> Option<IrUsage> {
+        (!self.iterations.is_empty()).then(|| self.billed_totals())
+    }
+
     /// The usage of the last recorded message iteration — the top-level view a
     /// Messages response renders: the non-compaction iteration the caller's
     /// answer consumed, excluding compaction work.

@@ -3,6 +3,7 @@ import { createMemo } from "solid-js";
 import type {
     ApiKeyResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { API_LOG_ENDPOINT_TYPE, API_LOG_OUTCOME } from "/src/management-api/vocabulary";
@@ -69,6 +70,7 @@ export function UsageFilterControls(props: {
     readonly fields: UsageFilterFields;
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
+    readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
     readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
     /** Whether the screen has read the entity listings at least once — the point from which an unlisted id is a stated absence. */
     readonly hasEntityListings: boolean;
@@ -81,8 +83,12 @@ export function UsageFilterControls(props: {
         entitySelectOptions(props.providers, (row) => row.name, "All providers"),
     );
 
+    const routeOptions = createMemo(() =>
+        entitySelectOptions(props.modelRoutes, (row) => row.public_id, "All public routes"),
+    );
+
     const modelOptions = createMemo(() =>
-        entitySelectOptions(props.models, (row) => row.public_id, "All models"),
+        entitySelectOptions(props.models, (row) => row.upstream_id, "All physical models"),
     );
 
     const apiKeyOptions = createMemo(() =>
@@ -91,6 +97,18 @@ export function UsageFilterControls(props: {
 
     return (
         <>
+            <SelectField
+                label="Public route"
+                value={props.fields.modelRouteId}
+                options={routeOptions()}
+                absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
+                onChange={(modelRouteId) =>
+                    props.onEdit({
+                        modelRouteId,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
             <SelectField
                 label="Provider"
                 value={props.fields.providerId}
@@ -104,7 +122,7 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="Model"
+                label="Physical model"
                 value={props.fields.modelId}
                 options={modelOptions()}
                 absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}

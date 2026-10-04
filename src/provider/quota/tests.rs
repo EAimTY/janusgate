@@ -563,9 +563,12 @@ fn definition_validation_covers_contexts_and_all_request_leaves() {
         json!([]),
         json!([{"type":"literal","value":"constant"}]),
         json!([{"type":"map_key"}]),
-        json!([{"type":"field","field":{"base":"root","path":["id"],"is_required":true},"encoding":"string"}]),
-        json!([{"type":"field","field":{"base":"item","path":["id"],"is_required":false},"encoding":"string"}]),
-        json!([{"type":"field","field":{"base":"entry","path":["id"],"is_required":true},"encoding":"string"}]),
+        json!([{"type":"field","field":{"base":"root","path":["id"],"is_required":true},
+                "encoding":"string"}]),
+        json!([{"type":"field","field":{"base":"item","path":["id"],"is_required":false},
+                "encoding":"string"}]),
+        json!([{"type":"field","field":{"base":"entry","path":["id"],"is_required":true},
+                "encoding":"string"}]),
     ] {
         payload.quota = Some(serde_json::from_value(json!({
             "request":{"method":"GET","url":[{"type":"literal","value":"https://example.test"}]},
@@ -686,4 +689,120 @@ fn researched_preset_shapes_normalize_without_product_branches() {
             "{name}"
         );
     }
+}
+
+/// Exact applicability resolves in all authored contexts without borrowing presentation scope.
+/// A malformed selector invalidates the complete observation, including earlier valid entries.
+///
+/// # Panics
+///
+/// Panics if the fixture or the atomic selector contract fails.
+#[test]
+fn routing_applicability_uses_exact_sorted_contextual_model_ids() {
+    let mut configured = serde_json::to_value(descriptor()).unwrap();
+    configured
+        .pointer_mut("/sources/0/entries/0")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "routing".into(),
+            json!({
+                "type":"models", "upstream_ids":[
+                    {"type":"literal","value":"M"},
+                    {"type":"map_key"},
+                    {"type":"field","field":{"base":"root","path":["model"],"is_required":true},
+                        "encoding":"string"},
+                    {"type":"field","field":{"base":"item","path":["model"],"is_required":true},
+                        "encoding":"string"},
+                    {"type":"field","field":{"base":"entry","path":["model"],"is_required":true},
+                        "encoding":"string"}
+                ]
+            }),
+        );
+    let descriptor: QuotaDescriptor = serde_json::from_value(configured).unwrap();
+    let body = json!({"model":"Z", "pools":{"B":{"model":"M"},"A":{"model":"C"}}});
+    let entries = serde_json::to_value(extract(&body, &descriptor).unwrap()).unwrap();
+    assert_eq!(
+        *entries.pointer("/0/key").unwrap(),
+        json!(["pools", "A", "primary"])
+    );
+    assert_eq!(
+        *entries.pointer("/0/routing").unwrap(),
+        json!({"type":"models","upstream_ids":["A","C","M","Z"]})
+    );
+    assert_eq!(
+        *entries.pointer("/1/routing").unwrap(),
+        json!({"type":"models","upstream_ids":["B","M","Z"]})
+    );
+    for malformed in [
+        json!(null),
+        json!(false),
+        json!(7),
+        json!(""),
+        json!("M/N"),
+        json!("M:N"),
+        json!("M N"),
+    ] {
+        let mut invalid = body.clone();
+        *invalid.pointer_mut("/pools/B/model").unwrap() = malformed;
+        assert!(extract(&invalid, &descriptor).is_err());
+    }
+    let mut omitted = body;
+    omitted
+        .pointer_mut("/pools/B")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("model");
+    assert!(extract(&omitted, &descriptor).is_err());
+}
+
+/// Selector recipes cannot silently broaden routing when an authored source is unresolved.
+/// Empty sets, optional fields, and map-key sources outside map contexts fail at the write
+/// boundary.
+///
+/// # Panics
+///
+/// Panics if any invalid descriptor is accepted or a valid contextual recipe is rejected.
+#[test]
+fn routing_selector_validation_rejects_unresolved_authored_contracts() {
+    let payload = crate::test_support::static_key_definition_payload(
+        crate::format::UpstreamFormat::OpenAiResponse,
+    );
+    for selectors in [
+        json!([]),
+        json!([{"type":"literal","value":"M/N"}]),
+        json!([{"type":"field","field":{"base":"entry","path":["id"],"is_required":false},
+                "encoding":"string"}]),
+    ] {
+        let mut descriptor = serde_json::to_value(descriptor()).unwrap();
+        descriptor
+            .pointer_mut("/sources/0/entries/0")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "routing".into(),
+                json!({"type":"models","upstream_ids":selectors}),
+            );
+        let mut payload = payload.clone();
+        payload.quota = Some(serde_json::from_value(descriptor).unwrap());
+        assert!(payload.validate().is_err());
+    }
+    let mut descriptor = serde_json::to_value(descriptor()).unwrap();
+    *descriptor.pointer_mut("/sources/0/type").unwrap() = json!("object");
+    *descriptor.pointer_mut("/sources/0/scope").unwrap() = json!({"type":"unknown"});
+    descriptor
+        .pointer_mut("/sources/0/entries/0")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "routing".into(),
+            json!({"type":"models","upstream_ids":[{"type":"map_key"}]}),
+        );
+    let mut payload = payload;
+    payload.quota = Some(serde_json::from_value(descriptor).unwrap());
+    assert!(payload.validate().is_err());
 }

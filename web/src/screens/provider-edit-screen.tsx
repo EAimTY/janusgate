@@ -9,7 +9,8 @@ import {
     bearerSecretError,
     isBaseUrl,
     isBearerSecret,
-    modelPrefixError,
+    isRoutingToken,
+    routingTokenError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { lapsedCredentialStanding } from "/src/management-api/serving";
@@ -38,7 +39,6 @@ import { NO_STORED_EXPIRY_SENTENCE } from "/src/ui/providers-table";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { createOauthFlow, type OauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
-import { defaultModelPrefix } from "./provider-defaults";
 import { RowNotFound } from "./row-not-found";
 
 /**
@@ -152,7 +152,6 @@ export function ProviderEditScreen(props: {
                     <DetailsCard
                         api={props.api}
                         provider={row}
-                        models={models()}
                         read={read}
                         onDirtyChange={edit.reportFormDirty}
                         onSaved={edit.reportSaved}
@@ -191,19 +190,13 @@ export function ProviderEditScreen(props: {
 function seedFrom(row: ProviderResponse): {
     readonly isEnabled: boolean;
     readonly name: string;
-    readonly isCustomPrefix: boolean;
-    readonly customPrefix: string;
+    readonly modelPrefix: string;
     readonly baseUrl: string | null;
 } {
-    // A stored prefix equal to the default is the default, so the switch
-    // opens off; anything else is a hand-set value worth keeping.
-    const isCustomPrefix = row.model_prefix !== defaultModelPrefix(row.name);
-
     return {
         isEnabled: row.is_enabled,
         name: row.name,
-        isCustomPrefix,
-        customPrefix: isCustomPrefix ? row.model_prefix : "",
+        modelPrefix: row.model_prefix,
         // The row's stored base URL seeds the field whatever kind minted it
         // — an OAuth row carries the same nullable column — but this form
         // exposes no base-URL editor for an OAuth row, so its seed is the
@@ -255,28 +248,11 @@ const EMPTY_BASE_URL_ERROR =
     "This provider's definition evaluates requests against a base URL — restore one, or Revert.";
 
 /**
- * The models whose public ID saving the given prefix would rewrite: the
- * unoverridden rows whose stored public ID differs from the ID the prefix
- * composes over their upstream ID — exactly the rows the gateway recomposes
- * on the write (gateway README §7). The pre-save warning counts the rows
- * with this one predicate and the save notice answers whether it recomposes
- * anything with it, so the operator is warned about precisely what the
- * write's outcome later states, never a near-copy that can drift.
- */
-function countRecomposedPublicIds(models: ReadonlyArray<ModelResponse>, prefix: string): number {
-    return models.filter(
-        (model) =>
-            model.id_override === null && model.public_id !== `${prefix}${model.upstream_id}`,
-    ).length;
-}
-
-/**
  * The provider's editable settings. Saving writes the complete readable state.
  */
 function DetailsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
-    readonly models: ReadonlyArray<ModelResponse>;
     readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;
     readonly onSaved: () => void;
@@ -289,51 +265,11 @@ function DetailsCard(props: {
     const seed = seedFrom(props.provider);
     const [isEnabled, setIsEnabled] = createSignal(seed.isEnabled);
     const [name, setName] = createSignal(seed.name);
-    const [isCustomPrefix, setIsCustomPrefix] = createSignal(seed.isCustomPrefix);
-    const [customPrefix, setCustomPrefix] = createSignal(seed.customPrefix);
+    const [modelPrefix, setModelPrefix] = createSignal(seed.modelPrefix);
     const [baseUrl, setBaseUrl] = createSignal(seed.baseUrl);
     const [apiKey, setApiKey] = createSignal("");
 
     const isStatic = (): boolean => !isOAuthProviderRow(baseline());
-
-    // The typed prefix is the value on the wire, byte-for-byte: the gateway
-    // stores `model_prefix` verbatim and recomposes every unoverridden
-    // public ID from exactly what the write states (gateway README §7), and
-    // the field promises it is used exactly as typed — normalizing here
-    // would silently rewrite the clients' routing and mark the form dirty
-    // against its own baseline. Composition is guarded below, where it is
-    // typed.
-    const effectivePrefix = createMemo(() =>
-        isCustomPrefix() ? customPrefix() : defaultModelPrefix(name()),
-    );
-
-    // The pre-save warning's gate and count: a prefix off the row the form
-    // opens on (a clause of `isDirty` itself, so a changed prefix never
-    // stands on a pristine form). The count reads the same rows the save
-    // notice will measure — the listing as the gateway holds it now, which a
-    // held row can leave behind — and it is always computable here: this
-    // form renders only once the read cycle that fills both listings has
-    // answered, so the rows are never an unlanded read.
-    const prefixRecompositionCount = createMemo(() => {
-        const prefix = effectivePrefix();
-
-        return prefix === baseline().model_prefix
-            ? null
-            : countRecomposedPublicIds(props.models, prefix);
-    });
-
-    /** The blast radius of saving the changed prefix, stated before the
-     * write in one line: the count of the public IDs it would rewrite.
-     * Nothing stands over a count of zero — the line would name a
-     * consequence that does not exist, the same rule the deletion
-     * confirmation's cascade phrase follows. */
-    const prefixChangeWarning = (): string | null => {
-        const count = prefixRecompositionCount();
-
-        return count === null || count === 0
-            ? null
-            : `Saving recomposes ${count} model ${pluralNoun(count, "ID", "IDs")} — clients calling the old IDs will 404 until updated.`;
-    };
 
     const trimmedBaseUrl = (): string => (baseUrl() ?? "").trim();
 
@@ -355,7 +291,6 @@ function DetailsCard(props: {
     };
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
-    const prefixError = (): string | null => modelPrefixError(effectivePrefix());
 
     /**
      * The inline error the field states where the value was typed: a cleared
@@ -386,7 +321,7 @@ function DetailsCard(props: {
         return (
             isEnabled() !== baselineRow.is_enabled ||
             name() !== baselineRow.name ||
-            effectivePrefix() !== baselineRow.model_prefix ||
+            modelPrefix() !== baselineRow.model_prefix ||
             (isStatic() && (trimmedBaseUrl() !== (baselineRow.base_url ?? "") || apiKey() !== ""))
         );
     };
@@ -398,15 +333,17 @@ function DetailsCard(props: {
     const isNamePresent = (): boolean => name() !== "";
 
     const canSave = (): boolean =>
-        isDirty() && isNamePresent() && prefixError() === null && isConnectionValid();
+        isDirty() &&
+        isNamePresent() &&
+        (modelPrefix() === "" || isRoutingToken(modelPrefix())) &&
+        isConnectionValid();
 
     const revert = (): void => {
         const seed = seedFrom(baseline());
 
         setIsEnabled(seed.isEnabled);
         setName(seed.name);
-        setIsCustomPrefix(seed.isCustomPrefix);
-        setCustomPrefix(seed.customPrefix);
+        setModelPrefix(seed.modelPrefix);
         setBaseUrl(seed.baseUrl);
         setApiKey("");
         // Reverting resolves a held row onto the gateway's current version.
@@ -422,7 +359,7 @@ function DetailsCard(props: {
             props.api.updateProvider(
                 toUpdateProviderRequest(props.provider, {
                     name: name(),
-                    model_prefix: effectivePrefix(),
+                    model_prefix: modelPrefix(),
                     is_enabled: isEnabled(),
                     ...(isStatic()
                         ? {
@@ -437,15 +374,6 @@ function DetailsCard(props: {
                 }),
             ),
         onSucceeded: () => {
-            // The warning states a recomposition only when the save actually
-            // recomposes one: the submitted prefix is measured against the
-            // rows the gateway holds now — never against this form's
-            // first-read baseline, which a held row can leave behind what
-            // the gateway holds now — through the same predicate the
-            // pre-save warning counted.
-            const recomposesPublicIds =
-                countRecomposedPublicIds(props.models, effectivePrefix()) > 0;
-
             // The replacement is read before the field is emptied below:
             // empty means the stored secret stands, typed means this save
             // replaced it — and the write-only field can never show that
@@ -457,7 +385,7 @@ function DetailsCard(props: {
             setBaseline(
                 withEdits(baseline(), {
                     name: name(),
-                    modelPrefix: effectivePrefix(),
+                    modelPrefix: modelPrefix(),
                     isEnabled: isEnabled(),
                     baseUrl: resolvedBaseUrl(),
                 }),
@@ -468,11 +396,6 @@ function DetailsCard(props: {
             // edit's save composes its own: one line per consequence this
             // save actually carries, joined where more than one stands.
             const consequences: string[] = [];
-            if (recomposesPublicIds) {
-                consequences.push(
-                    "The new prefix recomposes the public ID of every model without an override.",
-                );
-            }
             if (isApiKeyReplaced) {
                 consequences.push("The upstream API key was replaced.");
             }
@@ -504,15 +427,11 @@ function DetailsCard(props: {
                 <ProviderIdentityFields
                     name={name()}
                     namePlaceholder={props.provider.name}
+                    modelPrefix={modelPrefix()}
+                    onModelPrefixInput={setModelPrefix}
+                    prefixError={routingTokenError(modelPrefix(), "Model prefix")}
                     onNameInput={setName}
                     nameError={isNamePresent() ? null : "A provider needs a name."}
-                    isCustomPrefix={isCustomPrefix()}
-                    onCustomPrefixToggle={setIsCustomPrefix}
-                    customPrefix={customPrefix()}
-                    onCustomPrefixInput={setCustomPrefix}
-                    defaultPrefix={defaultModelPrefix(name())}
-                    prefixError={prefixError()}
-                    prefixChangeWarning={prefixChangeWarning()}
                     isDisabled={form.isSaving()}
                 />
 
@@ -658,8 +577,8 @@ function DangerCard(props: {
         onDeleted: () => navigate(hrefs.providers()),
     });
 
-    // A provider with no models cascades nothing: the count phrase and the
-    // clients' 404s name consequences that do not exist and must not fire.
+    // Physical deletion removes direct routes; pooled routes retain their
+    // authored targets and may continue through their remaining accounts.
     // The wording reads the props inline, so the reads land in the card's
     // tracking scope instead of this component's setup.
     return (
@@ -667,14 +586,10 @@ function DangerCard(props: {
             title="Delete this provider"
             description={
                 props.modelCount === 0
-                    ? "Deleting removes the provider. It has no models, so nothing else is removed."
-                    : `Deleting removes the provider and, by cascade, its ${props.modelCount} ${pluralNoun(props.modelCount, "model")}.`
+                    ? "Deleting removes the account and its pool memberships. It has no physical models."
+                    : `Deleting removes the account, its pool memberships, and its ${props.modelCount} physical ${pluralNoun(props.modelCount, "model")} with their direct routes. Pool routes remain stored.`
             }
-            question={
-                props.modelCount === 0
-                    ? `Delete ${props.provider.name}?`
-                    : `Delete ${props.provider.name}? Clients calling those public IDs will start getting 404s.`
-            }
+            question={`Delete ${props.provider.name}?`}
             onConfirm={confirmDelete}
         />
     );

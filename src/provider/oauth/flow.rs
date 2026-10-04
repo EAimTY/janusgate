@@ -95,8 +95,7 @@ pub(crate) enum BeginPurpose {
     Create {
         /// The new provider's name.
         provider_name: String,
-
-        /// The new provider's public model name prefix.
+        /// Prefix for the new provider's automatically exposed model IDs.
         model_prefix: String,
     },
 
@@ -225,7 +224,6 @@ pub(crate) async fn begin_flow(
             Some(model_prefix),
             None,
         ),
-
         BeginPurpose::Reauthorize { target_provider_id } => (
             FlowPurpose::Reauthorize,
             None,
@@ -779,8 +777,8 @@ mod tests {
             &crate::http_client::control_plane(),
             &definition,
             BeginPurpose::Create {
-                provider_name: "created".to_string(),
                 model_prefix: String::new(),
+                provider_name: "created".to_string(),
             },
             Some("https://upstream.example".to_string()),
             BTreeMap::new(),
@@ -834,7 +832,6 @@ mod tests {
             crate::storage::oauth_flows::FlowPurpose::Create
         );
         assert_eq!(stored.provider_name.as_deref(), Some("created"));
-        assert_eq!(stored.model_prefix.as_deref(), Some(""));
         assert_eq!(stored.base_url.as_deref(), Some("https://upstream.example"));
     }
 

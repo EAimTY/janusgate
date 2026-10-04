@@ -83,6 +83,14 @@
         // Retention of the api-log files in whole days: when a new file is
         // created, older files are deleted file-and-all. Defaults to 90.
         "retention_days": 90
+    },
+
+    // Positive runtime limits, defaulted as a whole and field by field.
+    "pooling": {
+        "quota_refresh_interval_seconds": 60,
+        "sticky_idle_timeout_seconds": 86400,
+        "sticky_retry_timeout_seconds": 60,
+        "sticky_maximum_entries": 100000
     }
 
     // Remote-compaction sealing keys (README §6.8). The presence of this

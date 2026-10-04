@@ -12,6 +12,37 @@ function match(target: string) {
 }
 
 describe("matchAppRoute", () => {
+    it("distinguishes routing administration and validates inventory publication prefills", () => {
+        expect(match("/pools/new")).toEqual({
+            name: "providerPoolNew",
+        });
+        expect(match("/pools/3/edit/")).toEqual({
+            name: "providerPoolEdit",
+            poolId: 3,
+        });
+        expect(match("/routes/new?model=9")).toEqual({
+            name: "modelRouteNew",
+            initialModelId: 9,
+        });
+        expect(match("/routes/new?model=9007199254740992")).toEqual({
+            name: "modelRouteNew",
+            initialModelId: null,
+        });
+        expect(match("/routes/7/edit")).toEqual({
+            name: "modelRouteEdit",
+            routeId: 7,
+        });
+        for (const address of [
+            "/pools/abc/edit",
+            "/routes/-1/edit",
+            "/routes/7/extra",
+        ]) {
+            expect(match(address)).toEqual({
+                name: "notFound",
+            });
+        }
+    });
+
     it("addresses the overview at the root", () => {
         expect(match("/")).toEqual({
             name: "home",
@@ -211,6 +242,7 @@ describe("matchAppRoute", () => {
             window: "24h",
             providerId: "3",
             modelId: "",
+            modelRouteId: "",
             apiKeyId: "",
             endpointType: "",
             outcome: "failures",
@@ -225,6 +257,20 @@ describe("matchAppRoute", () => {
     });
 
     it("carries the aggregates link's subject through its route", () => {
+        expect(
+            match(
+                hrefs.usageQuery({
+                    dimension: "model_route",
+                    id: 17,
+                }),
+            ),
+        ).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "model_route",
+                id: 17,
+            },
+        });
         expect(match("/usage/query?provider=7")).toEqual({
             name: "usageQuery",
             subject: {
@@ -362,6 +408,7 @@ describe("matchAppRoute", () => {
                 window: "all",
                 providerId: "",
                 modelId: "",
+                modelRouteId: "",
                 apiKeyId: "",
                 endpointType: "",
                 outcome: "",

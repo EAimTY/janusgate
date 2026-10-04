@@ -54,6 +54,10 @@ pub struct Inference {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope: Option<TemplateNode>,
 
+    /// Optional ordered exact quota rejection classifier for generation/native compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_exhaustion: Option<super::quota_exhaustion::QuotaExhaustion>,
+
     /// The optional object-member name the codec's parser unwraps before ingesting a response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_unwrap: Option<String>,

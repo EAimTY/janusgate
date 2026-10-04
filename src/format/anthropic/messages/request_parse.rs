@@ -1265,6 +1265,10 @@ pub(super) fn parse_inbound_request(
     };
 
     Ok(ParsedRequest {
+        affinity: crate::format::affinity::Sources::from_wire_messages(
+            crate::format::UpstreamFormat::AnthropicMessages,
+            &messages,
+        ),
         ir: IrRequest {
             state_items: compaction_state.state_items,
             model: request.model,

@@ -23,6 +23,15 @@ pub(crate) enum MockAction {
     /// Answers nothing and closes: the transport-failure shape the gateway maps to 502.
     Close,
 
+    /// Waits for an explicit fixture release before writing a complete response; an empty
+    /// response closes the connection without answering.
+    RespondAfterSignal {
+        /// Complete HTTP response, including its status line and body.
+        response: String,
+        /// Barrier retaining a notification even when the fixture releases before this wait.
+        release: Arc<tokio::sync::Notify>,
+    },
+
     /// Writes `head` verbatim, then repeats `frame` every `interval` until a write against the
     /// departed client fails.
     StreamForever {
@@ -451,6 +460,11 @@ async fn serve_action(socket: &mut TcpStream, action: MockAction) {
         }
 
         MockAction::Close => {}
+
+        MockAction::RespondAfterSignal { response, release } => {
+            release.notified().await;
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
 
         MockAction::StreamForever {
             head,

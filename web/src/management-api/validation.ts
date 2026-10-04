@@ -192,6 +192,10 @@ const BUCKET_KEY_FIELDS: ReadonlyArray<BucketKeyField> = [
         narrow: expectInteger,
     },
     {
+        name: "model_route_id",
+        narrow: expectInteger,
+    },
+    {
         name: "provider_id",
         narrow: expectInteger,
     },
@@ -451,11 +455,6 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
         provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
         provider: expectString(Reflect.get(record, "provider"), `${context}.provider`),
         upstream_id: expectString(Reflect.get(record, "upstream_id"), `${context}.upstream_id`),
-        public_id: expectString(Reflect.get(record, "public_id"), `${context}.public_id`),
-        id_override: expectNullableString(
-            Reflect.get(record, "id_override"),
-            `${context}.id_override`,
-        ),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
         discovery_state: DISCOVERY_STATE.parse(
             Reflect.get(record, "discovery_state"),
@@ -497,7 +496,7 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
 }
 
 /**
- * One accounting row, verbatim: the row's own fourteen published columns,
+ * One accounting row, verbatim: the row's published accounting columns,
  * stamps and numeric facts only — no row id, no name rides along (rule 7).
  */
 function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
@@ -508,6 +507,14 @@ function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
         api_key_id: expectInteger(Reflect.get(record, "api_key_id"), `${context}.api_key_id`),
         provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
         model_id: expectInteger(Reflect.get(record, "model_id"), `${context}.model_id`),
+        model_route_id: expectInteger(
+            Reflect.get(record, "model_route_id"),
+            `${context}.model_route_id`,
+        ),
+        upstream_http_status: expectNullableInteger(
+            Reflect.get(record, "upstream_http_status"),
+            `${context}.upstream_http_status`,
+        ),
         endpoint_type: API_LOG_ENDPOINT_TYPE.parse(
             Reflect.get(record, "endpoint_type"),
             `${context}.endpoint_type`,

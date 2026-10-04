@@ -491,22 +491,22 @@ describe("createScreenRead", () => {
 
 describe("row-identity predicates", () => {
     const staticProvider = providerRow({
+        model_prefix: "",
         provider_definition_name: "generic-openai-responses",
         format: "openai_response",
         id: 3,
         name: "alpha",
-        model_prefix: "alpha-",
         base_url: "https://alpha.example",
     });
 
     const oauthProvider = providerRow({
+        model_prefix: "",
         type: "oauth",
         provider_definition_name: "codex",
         format: "openai_response",
         base_url: null,
         id: 4,
         name: "codex",
-        model_prefix: "codex-",
         expires_at: 1_700_000_000_000_000,
     });
 
@@ -515,7 +515,6 @@ describe("row-identity predicates", () => {
         provider_id: 3,
         provider: "alpha",
         upstream_id: "gpt-x",
-        public_id: "alpha-gpt-x",
     });
 
     const identityApiKeyRow = apiKeyRow();
@@ -545,12 +544,6 @@ describe("row-identity predicates", () => {
             isSameProviderRow(staticProvider, {
                 ...staticProvider,
                 name: "beta",
-            }),
-        ).toBe(false);
-        expect(
-            isSameProviderRow(staticProvider, {
-                ...staticProvider,
-                model_prefix: "beta-",
             }),
         ).toBe(false);
         expect(
@@ -617,18 +610,6 @@ describe("row-identity predicates", () => {
             isSameModelRow(identityModelRow, {
                 ...identityModelRow,
                 upstream_id: "gpt-y",
-            }),
-        ).toBe(false);
-        expect(
-            isSameModelRow(identityModelRow, {
-                ...identityModelRow,
-                public_id: "beta-gpt-x",
-            }),
-        ).toBe(false);
-        expect(
-            isSameModelRow(identityModelRow, {
-                ...identityModelRow,
-                id_override: "beta-gpt-x",
             }),
         ).toBe(false);
         expect(
@@ -981,11 +962,11 @@ describe("createPinnedRow", () => {
     }
 
     const provider = providerRow({
+        model_prefix: "",
         provider_definition_name: "generic-openai-responses",
         format: "openai_response",
         id: 3,
         name: "alpha",
-        model_prefix: "alpha-",
         base_url: "https://alpha.example",
     });
 

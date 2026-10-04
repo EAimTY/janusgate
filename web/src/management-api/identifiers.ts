@@ -1,13 +1,13 @@
 /**
  * Composition rules for machine-consumed management fields (gateway README
- * §7): routing identifiers, model prefixes, bearer secrets, and base URLs.
+ * §7): routing identifiers, bearer secrets, and base URLs.
  * Every predicate mirrors the gateway's boundary validation alone, so the
  * app rejects exactly what the gateway would reject — before the round
  * trip, with the field named.
  *
  * The shared rule is printable ASCII without whitespace (`U+0021–U+007E`):
  * no spaces, no control characters, no non-ASCII text such as CJK. Routing
- * tokens — upstream IDs, present overrides, and model prefixes — additionally
+ * tokens — upstream IDs and public route IDs — additionally
  * reject `/` and `:` (the Gemini URL path cannot address them). Human
  * labels (provider and serving-key names) stay free-form and are not
  * covered here.
@@ -17,20 +17,12 @@
 const COMPOSITION_PATTERN = /^[!-~]+$/u;
 
 /**
- * Whether the value is a routing token: an upstream ID or a present override —
+ * Whether the value is a routing token: an upstream ID or a public route ID —
  * non-empty printable ASCII without whitespace and without `/` or `:` (the Gemini
  * URL path cannot address them).
  */
 export function isRoutingToken(value: string): boolean {
     return COMPOSITION_PATTERN.test(value) && !value.includes("/") && !value.includes(":");
-}
-
-/**
- * Whether the value is a valid model prefix: empty means no prefix,
- * otherwise a routing token (`isRoutingToken`).
- */
-export function isModelPrefix(value: string): boolean {
-    return value === "" || isRoutingToken(value);
 }
 
 /**
@@ -86,18 +78,11 @@ export function bearerSecretError(value: string, label: string): string | null {
 }
 
 /**
- * The inline error for a routing token — an upstream ID or a present public
- * ID override — shown where it was typed. `null` and the empty string are
- * allowed: an override's absence keeps the composed ID, and an empty upstream
- * ID is the form's not-yet-typed state, named by the submit gate instead.
+ * The inline error for an upstream or public route ID. Empty input is the
+ * form's not-yet-typed state, named by the submit gate instead.
  */
 export function routingTokenError(value: string | null, label: string): string | null {
     return value === null || value === "" || isRoutingToken(value)
         ? null
         : routingTokenMessage(label);
-}
-
-/** The inline error for a model prefix, shown where it was typed. Empty means no prefix. */
-export function modelPrefixError(value: string): string | null {
-    return isModelPrefix(value) ? null : routingTokenMessage("Model prefix");
 }

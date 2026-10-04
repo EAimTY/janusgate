@@ -168,6 +168,7 @@ export function ProviderQuotaCard(props: { readonly view: ProviderQuotaView }): 
     const isBusy = (): boolean => {
         const current = props.view.state();
         return (
+            current.type === "checking" ||
             current.type === "loading" ||
             (current.type === "ready" && current.refresh.type === "loading")
         );
@@ -201,6 +202,19 @@ export function ProviderQuotaCard(props: { readonly view: ProviderQuotaView }): 
             <Show when={props.view.state().type === "unsupported"}>
                 <p class="mt-4 text-ink-dim">
                     This provider definition does not declare quota viewing.
+                </p>
+            </Show>
+            <Show when={props.view.state().type === "checking"}>
+                <p
+                    role="status"
+                    class="mt-4 text-ink-dim"
+                >
+                    Checking whether this definition supports quota reads…
+                </p>
+            </Show>
+            <Show when={props.view.state().type === "unobserved"}>
+                <p class="mt-4 text-ink-dim">
+                    Quota not observed. Refresh explicitly queries the upstream account.
                 </p>
             </Show>
             <Show when={props.view.state().type === "loading"}>

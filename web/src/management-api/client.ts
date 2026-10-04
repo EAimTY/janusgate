@@ -16,23 +16,35 @@ import {
     type CompleteProviderOauthResponse,
     type CreateApiKeyRequest,
     type CreateModelRequest,
+    type CreateModelRouteRequest,
+    type CreateModelRouteResponse,
     type CreateProviderDefinitionRequest,
+    type CreateProviderPoolRequest,
+    type CreateProviderPoolResponse,
     type CreateProviderRequest,
     type DefinitionEnvelope,
     type DeleteApiKeyRequest,
     type DeleteModelRequest,
+    type DeleteModelRouteRequest,
+    type DeleteProviderPoolRequest,
     type DeleteProviderRequest,
     type DiscoverModelsRequest,
     type DiscoverModelsResponse,
     ErrorCode,
+    type GetProviderAvailabilityRequest,
+    type GetProviderAvailabilityResponse,
     type GetProviderQuotaRequest,
     type GetProviderQuotaResponse,
     type ListApiKeysRequest,
     type ListApiKeysResponse,
+    type ListModelRoutesRequest,
+    type ListModelRoutesResponse,
     type ListModelsRequest,
     type ListModelsResponse,
     type ListProviderDefinitionsRequest,
     type ListProviderDefinitionsResponse,
+    type ListProviderPoolsRequest,
+    type ListProviderPoolsResponse,
     type ListProvidersRequest,
     type ListProvidersResponse,
     type ListUsageRequest,
@@ -43,14 +55,24 @@ import {
     type QueryUsageRequest,
     type QueryUsageResponse,
     type ReauthorizeProviderRequest,
+    type ResetProviderAvailabilityRequest,
     type StartProviderOauthRequest,
     type StartProviderOauthResponse,
     type UpdateApiKeyRequest,
     type UpdateModelRequest,
+    type UpdateModelRouteRequest,
     type UpdateProviderDefinitionRequest,
+    type UpdateProviderPoolRequest,
     type UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
 import { parseGetProviderQuotaResponse } from "/src/management-api/quota";
+import {
+    parseCreateModelRouteResponse,
+    parseCreateProviderPoolResponse,
+    parseGetProviderAvailabilityResponse,
+    parseListModelRoutesResponse,
+    parseListProviderPoolsResponse,
+} from "/src/management-api/routing";
 import {
     parseApiKeyEnvelope,
     parseCompleteProviderOauthResponse,
@@ -94,6 +116,41 @@ const MANAGEMENT_API_PATH = "/management-api/v0";
  * reaction, and an `AbortSignal` cancels the call at the transport.
  */
 export type ManagementApi = {
+    readonly listProviderPools: (signal?: AbortSignal) => Promise<ListProviderPoolsResponse>;
+    readonly createProviderPool: (
+        request: CreateProviderPoolRequest,
+        signal?: AbortSignal,
+    ) => Promise<CreateProviderPoolResponse>;
+    readonly updateProviderPool: (
+        request: UpdateProviderPoolRequest,
+        signal?: AbortSignal,
+    ) => Promise<void>;
+    readonly deleteProviderPool: (
+        request: DeleteProviderPoolRequest,
+        signal?: AbortSignal,
+    ) => Promise<void>;
+    readonly listModelRoutes: (signal?: AbortSignal) => Promise<ListModelRoutesResponse>;
+    readonly createModelRoute: (
+        request: CreateModelRouteRequest,
+        signal?: AbortSignal,
+    ) => Promise<CreateModelRouteResponse>;
+    readonly updateModelRoute: (
+        request: UpdateModelRouteRequest,
+        signal?: AbortSignal,
+    ) => Promise<void>;
+    readonly deleteModelRoute: (
+        request: DeleteModelRouteRequest,
+        signal?: AbortSignal,
+    ) => Promise<void>;
+    readonly getProviderAvailability: (
+        request: GetProviderAvailabilityRequest,
+        signal?: AbortSignal,
+    ) => Promise<GetProviderAvailabilityResponse>;
+    readonly resetProviderAvailability: (
+        request: ResetProviderAvailabilityRequest,
+        signal?: AbortSignal,
+    ) => Promise<void>;
+
     readonly listProviderDefinitions: (
         signal?: AbortSignal,
     ) => Promise<ListProviderDefinitionsResponse>;
@@ -185,6 +242,8 @@ const emptyApiKeysRequest: ListApiKeysRequest = {};
 
 /** The definitions listing's empty request body. */
 const emptyDefinitionsRequest: ListProviderDefinitionsRequest = {};
+const emptyPoolsRequest: ListProviderPoolsRequest = {};
+const emptyRoutesRequest: ListModelRoutesRequest = {};
 
 const isJsonBody = (
     bodyText: string,
@@ -332,6 +391,55 @@ export function createManagementApi(
     }
 
     return {
+        listProviderPools: async (signal) =>
+            decodeResponse(
+                await post("/provider-pools:list", emptyPoolsRequest, signal),
+                parseListProviderPoolsResponse,
+            ),
+        createProviderPool: async (request, signal) =>
+            decodeResponse(
+                await post("/provider-pools:create", request, signal),
+                parseCreateProviderPoolResponse,
+            ),
+        updateProviderPool: async (request, signal) => {
+            decodeResponse(
+                await post("/provider-pools:update", request, signal),
+                parseEmptyResponse,
+            );
+        },
+        deleteProviderPool: async (request, signal) => {
+            decodeResponse(
+                await post("/provider-pools:delete", request, signal),
+                parseEmptyResponse,
+            );
+        },
+        listModelRoutes: async (signal) =>
+            decodeResponse(
+                await post("/model-routes:list", emptyRoutesRequest, signal),
+                parseListModelRoutesResponse,
+            ),
+        createModelRoute: async (request, signal) =>
+            decodeResponse(
+                await post("/model-routes:create", request, signal),
+                parseCreateModelRouteResponse,
+            ),
+        updateModelRoute: async (request, signal) => {
+            decodeResponse(await post("/model-routes:update", request, signal), parseEmptyResponse);
+        },
+        deleteModelRoute: async (request, signal) => {
+            decodeResponse(await post("/model-routes:delete", request, signal), parseEmptyResponse);
+        },
+        getProviderAvailability: async (request, signal) =>
+            decodeResponse(
+                await post("/providers:availability", request, signal),
+                parseGetProviderAvailabilityResponse,
+            ),
+        resetProviderAvailability: async (request, signal) => {
+            decodeResponse(
+                await post("/providers:reset-availability", request, signal),
+                parseEmptyResponse,
+            );
+        },
         listProviderDefinitions: async (signal) =>
             decodeResponse(
                 await post("/provider-definitions:list", emptyDefinitionsRequest, signal),

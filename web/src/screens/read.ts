@@ -22,6 +22,8 @@ import type {
     ListProviderDefinitionsResponse,
     ListProvidersResponse,
     ModelResponse,
+    ModelRouteResponse,
+    ProviderPoolResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { type ManagementCallOutcome, performManagementCall } from "/src/management-api/outcome";
@@ -283,6 +285,40 @@ export function readProviderCatalog(
             return {
                 providers: providersResult.providers,
                 models: modelsResult.models,
+            };
+        },
+    };
+}
+
+/** Reads physical inventory and its authored direct routes without upstream I/O. */
+export function readPublishedInventory(
+    api: Pick<
+        ManagementApi,
+        "listProviders" | "listModels" | "listModelRoutes" | "listProviderPools"
+    >,
+    providerId: number | null,
+): ReadCall<
+    ProviderCatalog & {
+        readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
+        readonly pools: ReadonlyArray<ProviderPoolResponse>;
+    }
+> {
+    return {
+        run: async (signal) => {
+            const [inventory, routes, pools] = await readAll(
+                signal,
+                readProviderCatalog(api, providerId),
+                {
+                    run: (signal) => api.listModelRoutes(signal),
+                },
+                {
+                    run: (signal) => api.listProviderPools(signal),
+                },
+            );
+            return {
+                ...inventory,
+                modelRoutes: routes.model_routes,
+                pools: pools.provider_pools,
             };
         },
     };

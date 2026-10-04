@@ -1,8 +1,8 @@
-//! Schema version 2: nullable quota recipes without changing existing provider bindings.
+//! Main schema with automatic pool model exposure and pool-owned naming prefixes.
 
 use super::Schema;
 
-/// Complete quota-aware schema and its foreign-key-safe additive migration.
+/// Complete main database layout, applied only to a fresh database.
 pub(super) const SCHEMA: Schema = Schema {
     version: 2,
     schema: r###"
@@ -36,7 +36,9 @@ CREATE TABLE providers (
     provider_definition_name TEXT NOT NULL,
     provider_definition_version INTEGER NOT NULL,
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-    model_prefix TEXT NOT NULL,
+    quota_generation INTEGER NOT NULL DEFAULT 0 CHECK (quota_generation >= 0),
+    quota_revision INTEGER NOT NULL DEFAULT 0 CHECK (quota_revision >= 0),
+    model_prefix TEXT NOT NULL DEFAULT '',
     base_url TEXT NULL,
     credentials TEXT NOT NULL CHECK (json_valid(credentials)),
     FOREIGN KEY (provider_definition_name, provider_definition_version)
@@ -51,8 +53,6 @@ CREATE TABLE models (
     discovery_state TEXT NOT NULL CHECK (
         discovery_state IN ('discovered', 'vanished', 'manual')
     ),
-    public_id TEXT NOT NULL UNIQUE,
-    id_override TEXT NULL,
     thinking_levels TEXT NULL CHECK (thinking_levels IS NULL OR json_valid(thinking_levels)),
     max_input_tokens INTEGER NULL CHECK (max_input_tokens IS NULL OR max_input_tokens > 0),
     max_output_tokens INTEGER NULL CHECK (max_output_tokens IS NULL OR max_output_tokens > 0),
@@ -72,6 +72,57 @@ CREATE TABLE models (
         compaction_support_override IS NULL OR json_valid(compaction_support_override)
     ),
     UNIQUE (provider_id, upstream_id)
+) STRICT;
+
+
+CREATE TABLE provider_pools (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+    model_prefix TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE TABLE provider_pool_members (
+    pool_id INTEGER NOT NULL REFERENCES provider_pools (id) ON DELETE CASCADE,
+    provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
+    priority INTEGER NOT NULL CHECK (priority >= 0),
+    PRIMARY KEY (pool_id, provider_id),
+    UNIQUE (pool_id, priority)
+) STRICT;
+
+CREATE TABLE model_routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    public_id TEXT NOT NULL UNIQUE,
+    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+    is_automatic INTEGER NOT NULL DEFAULT 0 CHECK (is_automatic IN (0, 1)),
+    model_id INTEGER NULL REFERENCES models (id) ON DELETE CASCADE,
+    pool_id INTEGER NULL REFERENCES provider_pools (id) ON DELETE RESTRICT,
+    upstream_id TEXT NULL,
+    CHECK (
+        (model_id IS NOT NULL AND pool_id IS NULL AND upstream_id IS NULL)
+        OR
+        (model_id IS NULL AND pool_id IS NOT NULL AND upstream_id IS NOT NULL)
+    )
+) STRICT;
+
+CREATE UNIQUE INDEX idx_model_routes_automatic_model_id
+    ON model_routes (model_id) WHERE is_automatic = 1 AND model_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_model_routes_automatic_pool_model
+    ON model_routes (pool_id, upstream_id) WHERE is_automatic = 1 AND pool_id IS NOT NULL;
+
+CREATE INDEX idx_model_routes_model_id ON model_routes (model_id);
+CREATE INDEX idx_model_routes_pool_id ON model_routes (pool_id);
+CREATE INDEX idx_provider_pool_members_provider_id ON provider_pool_members (provider_id);
+
+CREATE TABLE provider_quota_blocks (
+    provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
+    restriction_key TEXT NOT NULL CHECK (json_valid(restriction_key)),
+    applies_to TEXT NOT NULL CHECK (json_valid(applies_to)),
+    observed_at INTEGER NOT NULL,
+    blocked_until INTEGER NULL,
+    PRIMARY KEY (provider_id, restriction_key),
+    CHECK (blocked_until IS NULL OR blocked_until > observed_at)
 ) STRICT;
 
 CREATE TABLE ongoing_oauth_flows (
@@ -157,6 +208,54 @@ CREATE TABLE api_keys (
     created_at INTEGER NOT NULL
 ) STRICT;
 "###,
-    migration: "ALTER TABLE provider_definitions ADD COLUMN quota TEXT NULL \
-                CHECK (quota IS NULL OR json_valid(quota));",
+    migration: r###"
+ALTER TABLE provider_pools ADD COLUMN model_prefix TEXT NOT NULL DEFAULT '';
+UPDATE provider_pools SET model_prefix = 'pool-' || id || '-';
+CREATE TEMP TABLE model_route_sequence (previous_sequence INTEGER NOT NULL) STRICT;
+INSERT INTO model_route_sequence SELECT seq FROM sqlite_sequence WHERE name = 'model_routes';
+CREATE TABLE model_routes_next (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    public_id TEXT NOT NULL UNIQUE,
+    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+    is_automatic INTEGER NOT NULL DEFAULT 0 CHECK (is_automatic IN (0, 1)),
+    model_id INTEGER NULL REFERENCES models (id) ON DELETE CASCADE,
+    pool_id INTEGER NULL REFERENCES provider_pools (id) ON DELETE RESTRICT,
+    upstream_id TEXT NULL,
+    CHECK (
+        (model_id IS NOT NULL AND pool_id IS NULL AND upstream_id IS NULL)
+        OR
+        (model_id IS NULL AND pool_id IS NOT NULL AND upstream_id IS NOT NULL)
+    )
+) STRICT;
+
+
+INSERT INTO model_routes_next SELECT * FROM model_routes;
+DROP TABLE model_routes;
+ALTER TABLE model_routes_next RENAME TO model_routes;
+UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT previous_sequence FROM
+model_route_sequence), 0)) WHERE name = 'model_routes';
+DROP TABLE model_route_sequence;
+CREATE UNIQUE INDEX idx_model_routes_automatic_model_id
+    ON model_routes (model_id) WHERE is_automatic = 1 AND model_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_model_routes_automatic_pool_model
+    ON model_routes (pool_id, upstream_id) WHERE is_automatic = 1 AND pool_id IS NOT NULL;
+
+CREATE INDEX idx_model_routes_model_id ON model_routes (model_id);
+CREATE INDEX idx_model_routes_pool_id ON model_routes (pool_id);
+
+DELETE FROM model_routes WHERE is_automatic = 1 AND model_id IN (SELECT model.id FROM models
+model JOIN provider_pool_members member ON member.provider_id = model.provider_id);
+INSERT INTO model_routes (public_id, model_id, is_automatic)
+SELECT provider.model_prefix || model.upstream_id, model.id, 1 FROM models model JOIN
+providers provider ON provider.id = model.provider_id
+WHERE NOT EXISTS (SELECT 1 FROM provider_pool_members member WHERE member.provider_id =
+provider.id)
+AND NOT EXISTS (SELECT 1 FROM model_routes route WHERE route.model_id = model.id AND
+route.is_automatic = 1);
+INSERT INTO model_routes (public_id, pool_id, upstream_id, is_automatic)
+SELECT DISTINCT pool.model_prefix || model.upstream_id, pool.id, model.upstream_id, 1 FROM
+provider_pools pool JOIN provider_pool_members member ON member.pool_id = pool.id JOIN models
+model ON model.provider_id = member.provider_id;
+"###,
 };

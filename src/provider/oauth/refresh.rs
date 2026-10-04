@@ -695,9 +695,11 @@ mod tests {
         .await;
 
         let provider = Provider {
+            model_prefix: String::new(),
+            quota_generation: 0,
+            quota_revision: 0,
             id: 1,
             name: "reprovisioned".to_string(),
-            model_prefix: String::new(),
             base_url: None,
             is_enabled: true,
             credentials: StoredCredentials::OAuth {
@@ -849,7 +851,6 @@ mod tests {
             &database,
             &definition,
             "rotated",
-            "r-",
             None,
             StoredCredentials::OAuth {
                 access_token: "elapsed".to_string(),
@@ -958,7 +959,6 @@ mod tests {
             &database,
             &definition,
             "pinned",
-            "p-",
             None,
             StoredCredentials::OAuth {
                 access_token: "elapsed".to_string(),
@@ -974,7 +974,6 @@ mod tests {
             &database,
             &definition,
             "unpinned",
-            "u-",
             None,
             StoredCredentials::OAuth {
                 access_token: "elapsed".to_string(),
@@ -1086,7 +1085,6 @@ mod tests {
             &database,
             &definition,
             "based",
-            "b-",
             Some("https://acquire-time.example"),
             StoredCredentials::OAuth {
                 access_token: "elapsed".to_string(),
@@ -1124,8 +1122,8 @@ mod tests {
             &database,
             provider.id,
             storage::providers::ProviderUpdate {
+                model_prefix: "",
                 name: provider.name.as_str(),
-                model_prefix: provider.model_prefix.as_str(),
                 base_url: Some("https://concurrent.example"),
                 is_enabled: true,
                 definition: None,
@@ -1264,7 +1262,6 @@ mod tests {
             &database,
             &definition,
             "renewed",
-            "r-",
             None,
             StoredCredentials::OAuth {
                 access_token: "elapsed".to_string(),
@@ -1430,7 +1427,6 @@ mod tests {
             &database,
             &definition,
             "unscheduled",
-            "u-",
             None,
             StoredCredentials::OAuth {
                 access_token: "elapsed".to_string(),
@@ -1513,9 +1509,11 @@ mod tests {
         let http = http_client::control_plane();
 
         let provider = Provider {
+            model_prefix: String::new(),
+            quota_generation: 0,
+            quota_revision: 0,
             id: 1,
             name: "renewal-fold".to_string(),
-            model_prefix: String::new(),
             base_url: None,
             is_enabled: true,
             credentials: StoredCredentials::OAuth {
@@ -1588,9 +1586,11 @@ mod tests {
     #[test]
     fn a_provider_whose_definition_lost_the_oauth_recipe_is_not_renewable() {
         let provider = Provider {
+            model_prefix: String::new(),
+            quota_generation: 0,
+            quota_revision: 0,
             id: 1,
             name: "drifted".to_string(),
-            model_prefix: String::new(),
             base_url: None,
             is_enabled: true,
             credentials: StoredCredentials::OAuth {

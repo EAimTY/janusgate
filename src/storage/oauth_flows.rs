@@ -21,11 +21,11 @@ use std::{collections::BTreeMap, num::NonZeroI64};
 
 /// The column order of flow selects, consumed positionally by [`flow_from_row`].
 const FLOW_COLUMNS: &str = "id, provider_definition_name, provider_definition_version, \
-     state_token, purpose, provider_name, model_prefix, base_url, target_provider_id, \
+     state_token, purpose, provider_name, base_url, target_provider_id, \
      grant_type, slots, code_verifier, device_code, device_user_code, \
      device_verification_uri, device_verification_uri_complete, device_poll_interval_seconds, \
      device_next_poll_at, device_poll_started_at, device_exchange_checkpoint, outcome, \
-     result_provider_id, failure_code, failure_message, expires_at";
+     result_provider_id, failure_code, failure_message, expires_at, model_prefix";
 
 /// What a flow is for: creating a new provider, or reauthorizing (and optionally rebinding) one
 /// existing provider.
@@ -158,7 +158,7 @@ pub(crate) struct OngoingFlow {
     /// The new provider's name, for a create flow.
     pub(crate) provider_name: Option<String>,
 
-    /// The new provider's model prefix, for a create flow.
+    /// Direct-model prefix for a create flow; absent for reauthorization.
     pub(crate) model_prefix: Option<String>,
 
     /// The working base URL: the creation's initial instance URL, or the target provider's
@@ -245,25 +245,19 @@ impl OngoingFlow {
             .expect("a create flow names its new provider")
     }
 
-    /// The new provider's model prefix of a create flow.
-    ///
-    /// The schema's cross-column `CHECK`s pin `model_prefix` non-null exactly while `purpose`
-    /// is `create` (README §3), so only a create flow reads it; any other read is storage drift
-    /// and fails fast instead of completing a flow under an empty prefix.
+    /// Reads the prefix guaranteed present by the create-flow schema invariant.
     ///
     /// # Panics
     ///
-    /// Panics when a non-create flow reads the prefix — the stored state the `CHECK`s make
-    /// unrepresentable.
-    #[must_use]
+    /// Panics if a create flow violates its durable field-presence invariant.
     pub(crate) fn create_model_prefix(&self) -> &str {
         #[expect(
             clippy::expect_used,
-            reason = "the schema's cross-column checks pin a create flow's model prefix non-null"
+            reason = "create flows require a durable model prefix"
         )]
         self.model_prefix
             .as_deref()
-            .expect("a create flow names its model prefix")
+            .expect("create flow has a model prefix")
     }
 
     /// The target provider row of a reauthorize flow.
@@ -360,7 +354,7 @@ pub(crate) struct NewFlow {
     /// The new provider's name, for a create flow.
     pub(crate) provider_name: Option<String>,
 
-    /// The new provider's model prefix, for a create flow.
+    /// Direct-model prefix for a create flow; absent for reauthorization.
     pub(crate) model_prefix: Option<String>,
 
     /// The working base URL.
@@ -411,11 +405,11 @@ fn flow_from_row(row: &crate::database::Row) -> Result<OngoingFlow, Error> {
         message: "flow purpose column carries an unknown value".to_string(),
     })?;
 
-    let grant_type = FlowGrant::parse(&text(row, 9)?).ok_or_else(|| Error::Drift {
+    let grant_type = FlowGrant::parse(&text(row, 8)?).ok_or_else(|| Error::Drift {
         message: "flow grant_type column carries an unknown value".to_string(),
     })?;
 
-    let slots: String = row.get(10)?;
+    let slots: String = row.get(9)?;
 
     Ok(OngoingFlow {
         id: row.get(0)?,
@@ -426,32 +420,32 @@ fn flow_from_row(row: &crate::database::Row) -> Result<OngoingFlow, Error> {
         state_token: text(row, 3)?,
         purpose,
         provider_name: row.get(5)?,
-        model_prefix: row.get(6)?,
-        base_url: row.get(7)?,
-        target_provider_id: row.get(8)?,
+        model_prefix: row.get(24)?,
+        base_url: row.get(6)?,
+        target_provider_id: row.get(7)?,
         grant_type,
         slots: serde_json::from_str(&slots).map_err(|error| Error::Drift {
             message: format!("flow slots column carries a malformed payload: {error}"),
         })?,
-        code_verifier: row.get(11)?,
-        device_code: row.get(12)?,
-        device_user_code: row.get(13)?,
-        device_verification_uri: row.get(14)?,
-        device_verification_uri_complete: row.get(15)?,
-        device_poll_interval_seconds: row.get(16)?,
-        device_next_poll_at: row.get(17)?,
-        device_poll_started_at: row.get(18)?,
-        device_exchange_checkpoint: row.get(19)?,
-        outcome: match row.get::<Option<String>>(20)? {
+        code_verifier: row.get(10)?,
+        device_code: row.get(11)?,
+        device_user_code: row.get(12)?,
+        device_verification_uri: row.get(13)?,
+        device_verification_uri_complete: row.get(14)?,
+        device_poll_interval_seconds: row.get(15)?,
+        device_next_poll_at: row.get(16)?,
+        device_poll_started_at: row.get(17)?,
+        device_exchange_checkpoint: row.get(18)?,
+        outcome: match row.get::<Option<String>>(19)? {
             Some(text) => Some(FlowOutcome::parse(&text).ok_or_else(|| Error::Drift {
                 message: "flow outcome column carries an unknown value".to_string(),
             })?),
             None => None,
         },
-        result_provider_id: row.get(21)?,
-        failure_code: row.get(22)?,
-        failure_message: row.get(23)?,
-        expires_at: row.get(24)?,
+        result_provider_id: row.get(20)?,
+        failure_code: row.get(21)?,
+        failure_message: row.get(22)?,
+        expires_at: row.get(23)?,
     })
 }
 
@@ -489,19 +483,18 @@ pub(crate) async fn insert_flow(database: &Database, flow: NewFlow) -> Result<On
     let rows = database
         .query(
             "INSERT INTO ongoing_oauth_flows (provider_definition_name, \
-             provider_definition_version, state_token, purpose, provider_name, model_prefix, \
+             provider_definition_version, state_token, purpose, provider_name, \
              base_url, target_provider_id, grant_type, slots, code_verifier, device_code, \
              device_user_code, device_verification_uri, device_verification_uri_complete, \
-             device_poll_interval_seconds, device_next_poll_at, expires_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-             ?18) RETURNING id",
+             device_poll_interval_seconds, device_next_poll_at, expires_at, model_prefix) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+             ?16, ?17, ?18) RETURNING id",
             params![
                 definition_name.clone(),
                 definition_version.get(),
                 state_token.clone(),
                 purpose.as_str(),
                 provider_name.clone(),
-                model_prefix.clone(),
                 base_url.clone(),
                 target_provider_id,
                 grant_type.as_str(),
@@ -514,6 +507,7 @@ pub(crate) async fn insert_flow(database: &Database, flow: NewFlow) -> Result<On
                 device_poll_interval_seconds,
                 device_next_poll_at,
                 expires_at,
+                model_prefix.clone(),
             ],
         )
         .await?;
@@ -886,7 +880,6 @@ mod tests {
             state_token: Some("st-device-1".to_string()),
             purpose: Some(FlowPurpose::Reauthorize),
             provider_name: Some(None),
-            model_prefix: Some(None),
             target_provider_id: Some(1),
             device_code: Some("dc".to_string()),
             device_user_code: Some("uc".to_string()),
@@ -967,7 +960,7 @@ mod tests {
         assert_eq!(rescheduled.device_poll_started_at, None);
 
         // The success commits the provider write and the terminal outcome in one transaction.
-        let target = insert_test_provider(&database, "oauth-target", "ot-").await?;
+        let target = insert_test_provider(&database, "oauth-target").await?;
 
         let mut transaction = database.transaction().await?;
 
@@ -1021,12 +1014,12 @@ mod tests {
         let auth_flow = insert_flow(
             &database,
             NewFlow {
+                model_prefix: Some(String::new()),
                 definition_name: definition.name.clone(),
                 definition_version: definition.version,
                 state_token: "st-auth-1".to_string(),
                 purpose: FlowPurpose::Create,
                 provider_name: Some("new-provider".to_string()),
-                model_prefix: Some("np-".to_string()),
                 base_url: None,
                 target_provider_id: None,
                 grant_type: FlowGrant::AuthorizationCode,

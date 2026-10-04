@@ -23,6 +23,31 @@ import {
  */
 export type AppRoute =
     | {
+          readonly name: "bulkPublication";
+          readonly providerFilter: number | null;
+      }
+    | {
+          readonly name: "providerPools";
+      }
+    | {
+          readonly name: "providerPoolNew";
+      }
+    | {
+          readonly name: "providerPoolEdit";
+          readonly poolId: number;
+      }
+    | {
+          readonly name: "modelRoutes";
+      }
+    | {
+          readonly name: "modelRouteNew";
+          readonly initialModelId: number | null;
+      }
+    | {
+          readonly name: "modelRouteEdit";
+          readonly routeId: number;
+      }
+    | {
           readonly name: "home";
       }
     | {
@@ -131,6 +156,15 @@ function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
 /** Builders for every link the app renders, so no href is written twice. */
 export const hrefs = {
     home: (): string => "/",
+    bulkPublication: (providerId: number | null): string =>
+        providerId === null ? "/routes/publish" : `/routes/publish?provider=${providerId}`,
+    providerPools: (): string => "/pools",
+    providerPoolNew: (): string => "/pools/new",
+    providerPoolEdit: (id: number): string => `/pools/${id}/edit`,
+    modelRoutes: (): string => "/routes",
+    modelRouteNew: (modelId?: number): string =>
+        modelId === undefined ? "/routes/new" : `/routes/new?model=${modelId}`,
+    modelRouteEdit: (id: number): string => `/routes/${id}/edit`,
     providers: (): string => "/providers",
     providerNew: (): string => "/providers/new",
     providerDetail: (providerId: number): string => `/providers/${providerId}`,
@@ -188,6 +222,20 @@ export const hrefs = {
  */
 function routeScreenName(route: AppRoute): string {
     switch (route.name) {
+        case "bulkPublication":
+            return "Publish inventory";
+        case "providerPools":
+            return "Pools";
+        case "providerPoolNew":
+            return "Create pool";
+        case "providerPoolEdit":
+            return `Edit pool #${route.poolId}`;
+        case "modelRoutes":
+            return "Public routes";
+        case "modelRouteNew":
+            return "Create public route";
+        case "modelRouteEdit":
+            return `Edit public route #${route.routeId}`;
         case "home":
             return "Overview";
         case "providers":
@@ -287,6 +335,55 @@ function normalizePathname(pathname: string): string {
 
 export function matchAppRoute(pathname: string, search: string): AppRoute {
     const normalizedPath = normalizePathname(pathname);
+
+    if (normalizedPath === "/pools")
+        return {
+            name: "providerPools",
+        };
+    if (normalizedPath === "/pools/new")
+        return {
+            name: "providerPoolNew",
+        };
+    if (normalizedPath === "/routes")
+        return {
+            name: "modelRoutes",
+        };
+    if (normalizedPath === "/routes/new")
+        return {
+            name: "modelRouteNew",
+            initialModelId: parseRowIdentifier(readQueryParameter(search, "model")),
+        };
+    const poolRoute = matchEntityRoute(
+        normalizedPath,
+        /^\/pools\/([^/]+)(\/edit)?$/,
+        (poolId) => ({
+            name: "providerPoolEdit",
+            poolId,
+        }),
+        (poolId) => ({
+            name: "providerPoolEdit",
+            poolId,
+        }),
+    );
+    if (poolRoute !== null) return poolRoute;
+    if (normalizedPath === "/routes/publish")
+        return {
+            name: "bulkPublication",
+            providerFilter: parseRowIdentifier(readQueryParameter(search, "provider")),
+        };
+    const publicRoute = matchEntityRoute(
+        normalizedPath,
+        /^\/routes\/([^/]+)(\/edit)?$/,
+        (routeId) => ({
+            name: "modelRouteEdit",
+            routeId,
+        }),
+        (routeId) => ({
+            name: "modelRouteEdit",
+            routeId,
+        }),
+    );
+    if (publicRoute !== null) return publicRoute;
 
     if (normalizedPath === "/") {
         return {

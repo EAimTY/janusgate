@@ -33,6 +33,7 @@ describe("parseUsageFilterDraft", () => {
             window: "7d",
             providerId: "3",
             modelId: "9",
+            modelRouteId: "17",
             apiKeyId: "7",
             endpointType: "anthropic_messages",
             outcome: "failures",
@@ -56,7 +57,7 @@ describe("parseUsageFilterDraft", () => {
     it("reads a value outside its vocabulary as absent", () => {
         expect(
             parseUsageFilterDraft(
-                "?window=99d&provider=abc&model=-1&endpoint=openai_embeddings&stream=maybe&key=7",
+                "?window=99d&provider=abc&model=-1&route=-1&endpoint=openai_embeddings&stream=maybe&key=7",
             ),
         ).toEqual({
             ...EMPTY_USAGE_FILTER_DRAFT,
@@ -68,7 +69,9 @@ describe("parseUsageFilterDraft", () => {
         // A digit string past `Number.isSafeInteger` names no row the gateway
         // could hold, and its `Number` would distort the value put on the wire.
         expect(
-            parseUsageFilterDraft("?provider=99999999999999999999999&model=9007199254740992"),
+            parseUsageFilterDraft(
+                "?provider=99999999999999999999999&model=9007199254740992&route=9007199254740992",
+            ),
         ).toEqual(EMPTY_USAGE_FILTER_DRAFT);
 
         // The largest safe integer is still an addressable row identifier.
@@ -105,6 +108,7 @@ describe("buildUsageFilter", () => {
             buildUsageFilter({
                 providerId: "3",
                 modelId: "9",
+                modelRouteId: "17",
                 apiKeyId: "7",
                 endpointType: "gemini_interactions",
                 outcome: "failures",
@@ -114,6 +118,9 @@ describe("buildUsageFilter", () => {
         ).toEqual({
             provider_id: [
                 3,
+            ],
+            model_route_id: [
+                17,
             ],
             model_id: [
                 9,

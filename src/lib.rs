@@ -13,6 +13,7 @@ use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::{ffi::OsString, path::PathBuf};
 
 mod accounting;
+mod affinity;
 mod api;
 mod compaction;
 mod config;
@@ -27,6 +28,7 @@ mod ir;
 mod logging;
 mod management_api;
 mod provider;
+mod routing;
 mod routing_text;
 mod security;
 mod serde_helpers;
@@ -98,9 +100,14 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     // context handlers' and the device poller's alike — shares its connection pool (README §4).
     let control_plane = http_client::control_plane();
 
+    crate::affinity::initialize_key();
     let context = Context {
         database: database.clone(),
         api_log_store,
+        affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+        quota_coordinator: std::sync::Arc::new(
+            crate::provider::quota::coordinator::Coordinator::default(),
+        ),
         data_plane: http_client::data_plane(),
         control_plane: control_plane.clone(),
     };

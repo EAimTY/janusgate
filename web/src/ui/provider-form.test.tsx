@@ -1,7 +1,6 @@
 import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
-import { modelPrefixError } from "/src/management-api/identifiers";
-import { CompatibleConnectionFields, ProviderIdentityFields } from "/src/ui/provider-form";
+import { CompatibleConnectionFields, ProviderEnabledSwitch } from "/src/ui/provider-form";
 import {
     createDisposals,
     labeledCheckbox,
@@ -30,62 +29,24 @@ function mountFields(): void {
     );
 }
 
-/** Mounts the identity fields holding the given prefix verdict. */
-function mountIdentityFields(props: {
-    readonly name: string;
-    readonly isCustomPrefix: boolean;
-    readonly prefixError: string | null;
+/** Mounts the account serving switch with its label interaction. */
+function mountEnabledSwitch(props: {
     readonly isDisabled?: boolean;
-    readonly onCustomPrefixToggle?: (isCustom: boolean) => void;
+    readonly onToggle: (isEnabled: boolean) => void;
 }): void {
     disposes.push(
         render(
             () => (
-                <ProviderIdentityFields
-                    name={props.name}
-                    namePlaceholder=""
-                    onNameInput={() => undefined}
-                    isCustomPrefix={props.isCustomPrefix}
-                    onCustomPrefixToggle={props.onCustomPrefixToggle ?? (() => undefined)}
-                    customPrefix=""
-                    onCustomPrefixInput={() => undefined}
-                    defaultPrefix={`${props.name}-`}
-                    prefixError={props.prefixError}
+                <ProviderEnabledSwitch
+                    isEnabled={false}
                     isDisabled={props.isDisabled ?? false}
+                    onToggle={props.onToggle}
                 />
             ),
             document.body,
         ),
     );
 }
-
-describe("ProviderIdentityFields derived-prefix error", () => {
-    it("names the derivation and its escapes while the custom field stays hidden", async () => {
-        // The default prefix is the free-form name's shadow (`${name}-`), so
-        // a name holding a space closes every submit gate while no prefix
-        // input is mounted to state why (README §4.5): with the toggle off
-        // the alert must carry the derivation and both escapes — the rule's
-        // own field is not on the page, so the field-naming message would
-        // name a control the operator never opened. The toggle — not the
-        // error — stays the only thing that exposes the custom field.
-        mountIdentityFields({
-            name: "has space",
-            isCustomPrefix: false,
-            prefixError: modelPrefixError("has space-"),
-        });
-        await settle();
-
-        expect(document.body.textContent).toContain(
-            `The default prefix is the provider's name plus a dash, and the name's characters make it unroutable — a prefix accepts letters, numbers, and symbols only, with no spaces, non-ASCII text, "/", or ":". Rename the provider without them, or turn on Custom model prefix and set one.`,
-        );
-        expect(document.body.textContent).not.toContain("Model prefix accepts letters");
-        expect(
-            Array.from(document.querySelectorAll("label")).find(
-                (candidate) => candidate.textContent === "Model prefix",
-            ),
-        ).toBeUndefined();
-    });
-});
 
 describe("CompatibleConnectionFields upstream key reveal", () => {
     it("masks the upstream key and pairs it with an unchecked reveal toggle", () => {
@@ -117,17 +78,14 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
     });
 });
 
-describe("ProviderIdentityFields switch label", () => {
+describe("ProviderEnabledSwitch label", () => {
     it("toggles the switch when its visible label is clicked", () => {
         const toggles: boolean[] = [];
-        mountIdentityFields({
-            name: "upstream",
-            isCustomPrefix: false,
-            prefixError: null,
-            onCustomPrefixToggle: (isCustom) => toggles.push(isCustom),
+        mountEnabledSwitch({
+            onToggle: (isEnabled) => toggles.push(isEnabled),
         });
 
-        switchLabel("Custom model prefix").click();
+        switchLabel("Enabled").click();
 
         expect(toggles).toEqual([
             true,
@@ -136,15 +94,12 @@ describe("ProviderIdentityFields switch label", () => {
 
     it("does not toggle the switch through its label while the switch is disabled", () => {
         const toggles: boolean[] = [];
-        mountIdentityFields({
-            name: "upstream",
-            isCustomPrefix: false,
-            prefixError: null,
+        mountEnabledSwitch({
             isDisabled: true,
-            onCustomPrefixToggle: (isCustom) => toggles.push(isCustom),
+            onToggle: (isEnabled) => toggles.push(isEnabled),
         });
 
-        switchLabel("Custom model prefix").click();
+        switchLabel("Enabled").click();
 
         expect(toggles).toEqual([]);
     });

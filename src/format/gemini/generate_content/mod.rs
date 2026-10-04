@@ -62,6 +62,13 @@ impl ClientFormat for Format {
         client_render::render_json_response(public_id, aggregation)
     }
 
+    fn project_json_response(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        client_render::project_json_response(response, projector)
+    }
+
     fn render_json_response_with_prefix(
         _public_id: &str,
         aggregation: &IrAggregation,

@@ -2,9 +2,9 @@
 //! compaction operations (README §6.8's decision order).
 //!
 //! One entry point per client surface, each resolving the decision order for
-//! its request: validate and restore the active window first, then resolve the
-//! active state's compatibility with the target, then — for a carrying control
-//! — prefer the exact native mechanism, then a compatible native adapter, and
+//! its request: consume the boundary authenticated before account selection, check its
+//! compatibility with the selected target and restore the active window, then — for a carrying
+//! control — prefer the exact native mechanism, then a compatible native adapter, and
 //! finally gateway summary inference. A dispatched native operation that
 //! reports a positively classified unsupported boundary before any artifact is
 //! committed falls back to summary inference exactly once; every other error
@@ -72,21 +72,6 @@ const DEFAULT_RETENTION_BUDGET_TOKENS: u64 = 8192;
 /// gateway domain in its own single place.
 fn api_error(error: CompactionError) -> ApiError {
     ApiError::from(GatewayError::from(error))
-}
-
-/// Renders one rendered wire body into its JSON value: a first-party serde type
-/// whose serialization is total.
-///
-/// # Panics
-///
-/// Panics if the rendered body fails to serialize, which cannot occur for a
-/// first-party rendered wire type.
-fn body_value<T: serde::Serialize>(body: &T) -> Value {
-    #[expect(
-        clippy::expect_used,
-        reason = "a first-party rendered body always serializes"
-    )]
-    serde_json::to_value(body).expect("a rendered compaction body serializes")
 }
 
 /// The vendor-shaped `compaction_trigger` control item the native trigger
@@ -324,13 +309,25 @@ fn compaction_iteration_values(ledger: &CompactionLedger) -> Vec<Value> {
         .collect()
 }
 
+/// One completed gateway checkpoint and the metadata already authenticated during sealing.
+struct GatewaySummaryCheckpoint {
+    /// Exact retained-window and instruction-overlap plan.
+    plan: GatewayCheckpointPlan,
+    /// Complete validated summary used by normal response/continuation rendering.
+    summary_text: String,
+    /// Actual sealed outward carrier.
+    carrier: String,
+    /// Existing authenticated envelope identity, never an added routing token.
+    artifact_id: String,
+}
+
 /// Runs the gateway summary flow end to end: plans the checkpoint from the
 /// restored window, dispatches one internal summary inference, validates the
 /// summary, and seals the checkpoint envelope into its carrier. The summary
 /// call's usage rides the ledger under the compaction iteration kind.
 ///
 /// Returns the plan (the continuation's building block), the summary text (the
-/// Messages carrier's visible content), and the sealed carrier.
+/// Messages carrier's visible content), the sealed carrier, and its authenticated artifact ID.
 ///
 /// # Errors
 ///
@@ -353,7 +350,8 @@ async fn run_gateway_summary(
     binds_visible_content: bool,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
-) -> Result<(GatewayCheckpointPlan, String, String), CompactionError> {
+    ownership: Option<&mut crate::affinity::Ownership>,
+) -> Result<GatewaySummaryCheckpoint, CompactionError> {
     let plan = history::plan_gateway_checkpoint(
         restored,
         instruction_items,
@@ -370,24 +368,32 @@ async fn run_gateway_summary(
         ledger,
         IterationKind::Compaction,
         log,
+        ownership,
     )
     .await
     .map_err(CompactionError::Upstream)?;
 
     let summary_text = summary::validate_summary(&aggregation)?;
 
-    let (_envelope, carrier) = seal_gateway_checkpoint(
+    let (envelope, carrier) = seal_gateway_checkpoint(
         &plan,
         summary_text.clone(),
         replacement,
         binds_visible_content.then_some(summary_text.as_str()),
     )?;
 
-    Ok((plan, summary_text, carrier))
+    Ok(GatewaySummaryCheckpoint {
+        plan,
+        summary_text,
+        carrier,
+        artifact_id: envelope.artifact_id,
+    })
 }
 
 /// A native threshold adapter result: checkpoint carrier and the prepared continuation.
 struct NativeCheckpoint {
+    /// Authenticated identity captured when the outward carrier is sealed.
+    artifact_id: String,
     /// Authenticated outward transport state.
     carrier: String,
     /// Visible Messages carrier content, bound to the envelope.
@@ -415,6 +421,7 @@ async fn native_threshold_checkpoint(
     is_messages_surface: bool,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<Option<NativeCheckpoint>, CompactionError> {
     let definition = &routing.provider.definition.payload;
     let section = definition.compaction.as_ref();
@@ -462,11 +469,19 @@ async fn native_threshold_checkpoint(
                 reason = "selection requires the standalone operation"
             )]
             let operation = standalone.expect("selected standalone operation");
-            native::responses_standalone(context, routing, operation, &prefix, ledger, log)
-                .await
-                .map(|native| NativeReplayWindow::ResponsesWindow {
-                    items: native.output,
-                })
+            native::responses_standalone(
+                context,
+                routing,
+                operation,
+                &prefix,
+                ledger,
+                log,
+                ownership.as_deref_mut(),
+            )
+            .await
+            .map(|native| NativeReplayWindow::ResponsesWindow {
+                items: native.output,
+            })
         }
         Mechanism::ResponsesExplicitTrigger => {
             prefix.state_items.push(StateItem {
@@ -481,6 +496,7 @@ async fn native_threshold_checkpoint(
                 ledger,
                 IterationKind::Compaction,
                 log,
+                ownership.as_deref_mut(),
             )
             .await
             {
@@ -532,6 +548,7 @@ async fn native_threshold_checkpoint(
                 summary_output_limit(section, None),
                 ledger,
                 log,
+                ownership,
             )
             .await
             {
@@ -576,12 +593,13 @@ async fn native_threshold_checkpoint(
         .collect();
     let continuation = history::native_continuation(ir, &payload)?;
     let visible_content = is_messages_surface.then(|| GATEWAY_CARRIER_DESCRIPTION.to_string());
-    let (_, carrier) = seal_native_window(
+    let (envelope, carrier) = seal_native_window(
         payload,
         ReplacementMode::HistoricalCheckpoint,
         visible_content.as_deref(),
     )?;
     Ok(Some(NativeCheckpoint {
+        artifact_id: envelope.artifact_id,
         carrier,
         visible_content,
         continuation,
@@ -642,6 +660,9 @@ pub(crate) enum ResponsesOuterOutcome {
         /// The compaction output items, in output order.
         items: Vec<Value>,
 
+        /// Sealer-proven identity of the newly emitted gateway carrier, never serialized.
+        artifact_id: String,
+
         /// The billed usage of the participating calls.
         usage: IrUsage,
 
@@ -666,6 +687,9 @@ pub(crate) enum ResponsesOuterOutcome {
     ContinueWithCheckpoint {
         /// The checkpoint items rendering ahead of the answer.
         prefix_items: Vec<Value>,
+
+        /// Sealer-proven identity of the newly emitted checkpoint.
+        artifact_id: String,
 
         /// The continuation request.
         ir: IrRequest,
@@ -704,6 +728,9 @@ pub(crate) enum MessagesOuterOutcome {
         /// The compaction block.
         block: Value,
 
+        /// Sealer-authenticated identity for gateway carriers; absent for raw native blocks.
+        artifact_id: Option<String>,
+
         /// The vendor-shaped `usage.iterations` entries to render.
         iterations: Vec<Value>,
 
@@ -729,6 +756,9 @@ pub(crate) enum MessagesOuterOutcome {
     ContinueWithCheckpoint {
         /// The checkpoint blocks rendering ahead of the answer.
         prefix_blocks: Vec<Value>,
+
+        /// Sealer-proven identity of the newly emitted checkpoint.
+        artifact_id: String,
 
         /// The continuation request.
         ir: IrRequest,
@@ -759,8 +789,10 @@ pub(crate) async fn execute_responses_compact(
     context: &Context,
     routing: &ModelRouting,
     parsed: &ParsedRequest,
+    preparation: &history::BoundaryPreparation,
     log: &mut ApiLogDraft,
-) -> Result<Value, ApiError> {
+    mut ownership: Option<&mut crate::affinity::Ownership>,
+) -> Result<crate::format::openai::response::CompactedResponseBody, ApiError> {
     let compaction = parsed.compaction.as_ref().ok_or_else(|| {
         ApiError::from(GatewayError::Internal {
             message: "the compact route's parsed request carries no compaction facts".to_string(),
@@ -771,7 +803,7 @@ pub(crate) async fn execute_responses_compact(
 
     let mut ir = parsed.ir.clone();
 
-    history::prepare_for_target(&mut ir, compaction, routing).map_err(api_error)?;
+    history::prepare_for_target(&mut ir, compaction, routing, preparation).map_err(api_error)?;
 
     let section = routing.provider.definition.payload.compaction.as_ref();
 
@@ -790,12 +822,21 @@ pub(crate) async fn execute_responses_compact(
         && let Some(operation) = operation
         && format == UpstreamFormat::OpenAiResponse
     {
-        match native::responses_standalone(context, routing, operation, &ir, &mut ledger, log).await
+        match native::responses_standalone(
+            context,
+            routing,
+            operation,
+            &ir,
+            &mut ledger,
+            log,
+            ownership.as_deref_mut(),
+        )
+        .await
         {
             Ok(native) => {
-                log.stamp_billed_usage(ledger.billed_totals());
+                log.stamp_billed_usage(ledger.reported_billed_totals());
 
-                return Ok(body_value(&render_compacted_response(native)));
+                return Ok(render_compacted_response(native));
             }
 
             Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
@@ -814,7 +855,11 @@ pub(crate) async fn execute_responses_compact(
     // Gateway summary: the strategy's own choice, the unknown-support path, or
     // the single classifier-positive fallback. Compact-only: a final user turn
     // may be summarized, and the compact body carries no output cap.
-    let (_plan, _summary_text, carrier) = run_gateway_summary(
+    let GatewaySummaryCheckpoint {
+        carrier,
+        artifact_id,
+        ..
+    } = run_gateway_summary(
         context,
         routing,
         &ir,
@@ -826,17 +871,20 @@ pub(crate) async fn execute_responses_compact(
         false,
         &mut ledger,
         log,
+        ownership,
     )
     .await
     .map_err(api_error)?;
 
     let totals = ledger.billed_totals();
 
-    log.stamp_billed_usage(totals);
+    log.stamp_billed_usage(ledger.reported_billed_totals());
 
-    Ok(body_value(&render_gateway_compacted_response(
-        carrier, totals,
-    )))
+    Ok(render_gateway_compacted_response(
+        carrier,
+        artifact_id,
+        totals,
+    ))
 }
 
 /// Executes a Responses completion request's compaction decision order and
@@ -852,7 +900,9 @@ pub(crate) async fn execute_responses_request(
     context: &Context,
     routing: &ModelRouting,
     parsed: &ParsedRequest,
+    preparation: &history::BoundaryPreparation,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<ResponsesOuterOutcome, ApiError> {
     let format = routing.provider.definition.payload.format;
 
@@ -866,7 +916,8 @@ pub(crate) async fn execute_responses_request(
 
     let mut ir = parsed.ir.clone();
 
-    let restored = history::prepare_for_target(&mut ir, compaction, routing).map_err(api_error)?;
+    let restored = history::prepare_for_target(&mut ir, compaction, routing, preparation)
+        .map_err(api_error)?;
 
     let replay_overlay = replay_overlay_headers(
         routing.provider.definition.payload.compaction.as_ref(),
@@ -892,11 +943,17 @@ pub(crate) async fn execute_responses_request(
                 .to_string(),
         })),
 
-        CompactionControl::ResponsesTrigger => {
-            responses_trigger_flow(context, routing, &ir, compaction, &mut ledger, log)
-                .await
-                .map_err(api_error)
-        }
+        CompactionControl::ResponsesTrigger => responses_trigger_flow(
+            context,
+            routing,
+            &ir,
+            compaction,
+            &mut ledger,
+            log,
+            ownership.as_deref_mut(),
+        )
+        .await
+        .map_err(api_error),
 
         CompactionControl::ResponsesAutomatic { entries } => responses_automatic_flow(
             context,
@@ -907,6 +964,7 @@ pub(crate) async fn execute_responses_request(
             replay_overlay,
             &mut ledger,
             log,
+            ownership,
         )
         .await
         .map_err(api_error),
@@ -930,6 +988,7 @@ async fn responses_trigger_flow(
     compaction: &ParsedCompaction,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<ResponsesOuterOutcome, CompactionError> {
     let definition = &routing.provider.definition.payload;
 
@@ -961,6 +1020,7 @@ async fn responses_trigger_flow(
             ledger,
             IterationKind::Compaction,
             log,
+            ownership.as_deref_mut(),
         )
         .await;
 
@@ -992,7 +1052,7 @@ async fn responses_trigger_flow(
                 ));
             }
 
-            log.stamp_billed_usage(ledger.billed_totals());
+            log.stamp_billed_usage(ledger.reported_billed_totals());
 
             return Ok(ResponsesOuterOutcome::NativeLifecycle {
                 aggregation,
@@ -1013,9 +1073,19 @@ async fn responses_trigger_flow(
         && let Some(operation) = operation
         && definition.format == UpstreamFormat::OpenAiResponse
     {
-        match native::responses_standalone(context, routing, operation, ir, ledger, log).await {
+        match native::responses_standalone(
+            context,
+            routing,
+            operation,
+            ir,
+            ledger,
+            log,
+            ownership.as_deref_mut(),
+        )
+        .await
+        {
             Ok(native) => {
-                let (_envelope, carrier) = seal_native_window(
+                let (envelope, carrier) = seal_native_window(
                     native_window_payload(
                         routing,
                         Mechanism::ResponsesStandaloneCompact,
@@ -1028,10 +1098,11 @@ async fn responses_trigger_flow(
                     None,
                 )?;
 
-                log.stamp_billed_usage(ledger.billed_totals());
+                log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(ResponsesOuterOutcome::CompactionOnly {
                     items: vec![compaction_item_json(None, carrier, None)],
+                    artifact_id: envelope.artifact_id,
                     usage: ledger.billed_totals(),
                     ledger: std::mem::take(ledger),
                 });
@@ -1078,11 +1149,12 @@ async fn responses_trigger_flow(
             max_tokens,
             ledger,
             log,
+            ownership.as_deref_mut(),
         )
         .await
         {
             Ok(native::OnDemandOutcome::Success { block, .. }) => {
-                let (_envelope, carrier) = seal_native_window(
+                let (envelope, carrier) = seal_native_window(
                     native_window_payload(
                         routing,
                         Mechanism::MessagesOnDemandCompaction,
@@ -1093,10 +1165,11 @@ async fn responses_trigger_flow(
                     None,
                 )?;
 
-                log.stamp_billed_usage(ledger.billed_totals());
+                log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(ResponsesOuterOutcome::CompactionOnly {
                     items: vec![compaction_item_json(None, carrier, None)],
+                    artifact_id: envelope.artifact_id,
                     usage: ledger.billed_totals(),
                     ledger: std::mem::take(ledger),
                 });
@@ -1129,7 +1202,11 @@ async fn responses_trigger_flow(
     // Gateway summary: unknown support, the strategy's own choice, or the
     // single classifier-positive fallback. The trigger is compact-only, so the
     // caller's output limit caps the summary.
-    let (_plan, _summary_text, carrier) = run_gateway_summary(
+    let GatewaySummaryCheckpoint {
+        carrier,
+        artifact_id,
+        ..
+    } = run_gateway_summary(
         context,
         routing,
         ir,
@@ -1141,13 +1218,15 @@ async fn responses_trigger_flow(
         false,
         ledger,
         log,
+        ownership,
     )
     .await?;
 
-    log.stamp_billed_usage(ledger.billed_totals());
+    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(ResponsesOuterOutcome::CompactionOnly {
         items: vec![compaction_item_json(None, carrier, None)],
+        artifact_id,
         usage: ledger.billed_totals(),
         ledger: std::mem::take(ledger),
     })
@@ -1157,6 +1236,10 @@ async fn responses_trigger_flow(
 /// passthrough, else the gateway-emulated threshold workflow — measure once at
 /// the request boundary over the restored window, compact at or above the
 /// threshold, and continue on the compacted window.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one same-account stage keeps its protocol controls, billing, and binding together"
+)]
 async fn responses_automatic_flow(
     context: &Context,
     routing: &ModelRouting,
@@ -1166,6 +1249,7 @@ async fn responses_automatic_flow(
     replay_overlay: Vec<ParamRow>,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<ResponsesOuterOutcome, CompactionError> {
     let definition = &routing.provider.definition.payload;
 
@@ -1194,12 +1278,21 @@ async fn responses_automatic_flow(
         Some(threshold) => threshold,
 
         None => responses_gateway_default_threshold(
-            &routing.model.public_id,
+            &routing.public_id,
             effective_input_capacity(routing),
         )?,
     };
 
-    let measured = measure_active_tokens(context, routing, section, ir, ledger, log).await?;
+    let measured = measure_active_tokens(
+        context,
+        routing,
+        section,
+        ir,
+        ledger,
+        log,
+        ownership.as_deref_mut(),
+    )
+    .await?;
 
     if measured < threshold {
         return Ok(ResponsesOuterOutcome::Ordinary {
@@ -1209,12 +1302,22 @@ async fn responses_automatic_flow(
         });
     }
 
-    if let Some(checkpoint) =
-        native_threshold_checkpoint(context, routing, ir, compaction, None, false, ledger, log)
-            .await?
+    if let Some(checkpoint) = native_threshold_checkpoint(
+        context,
+        routing,
+        ir,
+        compaction,
+        None,
+        false,
+        ledger,
+        log,
+        ownership.as_deref_mut(),
+    )
+    .await?
     {
         return Ok(ResponsesOuterOutcome::ContinueWithCheckpoint {
             prefix_items: vec![compaction_item_json(None, checkpoint.carrier, None)],
+            artifact_id: checkpoint.artifact_id,
             ir: checkpoint.continuation,
             overlay_headers: checkpoint.overlay_headers,
             ledger: std::mem::take(ledger),
@@ -1225,7 +1328,13 @@ async fn responses_automatic_flow(
     // pending user turn's unit is mandatory retained state, and the answer
     // keeps its own output budget — the summary rides the configured budget
     // alone.
-    let (plan, summary_text, carrier) = run_gateway_summary(
+    let GatewaySummaryCheckpoint {
+        plan,
+        summary_text,
+        carrier,
+        artifact_id,
+        ..
+    } = run_gateway_summary(
         context,
         routing,
         ir,
@@ -1237,13 +1346,15 @@ async fn responses_automatic_flow(
         false,
         ledger,
         log,
+        ownership,
     )
     .await?;
 
-    log.stamp_billed_usage(ledger.billed_totals());
+    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(ResponsesOuterOutcome::ContinueWithCheckpoint {
         prefix_items: vec![compaction_item_json(None, carrier, None)],
+        artifact_id,
         ir: continuation_request(ir, &summary_text, &plan),
         overlay_headers: replay_overlay,
         ledger: std::mem::take(ledger),
@@ -1271,6 +1382,7 @@ async fn measure_active_tokens(
     ir: &IrRequest,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<u64, CompactionError> {
     let counter = section
         .and_then(|section| section.count_tokens.as_ref())
@@ -1280,7 +1392,7 @@ async fn measure_active_tokens(
 
     if let Some(operation) = counter {
         if let Ok(measured) =
-            native::count_tokens(context, routing, operation, ir, ledger, log).await
+            native::count_tokens(context, routing, operation, ir, ledger, log, ownership).await
         {
             return Ok(measured);
         }
@@ -1311,7 +1423,9 @@ pub(crate) async fn execute_messages_request(
     context: &Context,
     routing: &ModelRouting,
     parsed: &ParsedRequest,
+    preparation: &history::BoundaryPreparation,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<MessagesOuterOutcome, ApiError> {
     let format = routing.provider.definition.payload.format;
 
@@ -1325,7 +1439,8 @@ pub(crate) async fn execute_messages_request(
 
     let mut ir = parsed.ir.clone();
 
-    let restored = history::prepare_for_target(&mut ir, compaction, routing).map_err(api_error)?;
+    let restored = history::prepare_for_target(&mut ir, compaction, routing, preparation)
+        .map_err(api_error)?;
 
     let replay_overlay = replay_overlay_headers(
         routing.provider.definition.payload.compaction.as_ref(),
@@ -1352,6 +1467,7 @@ pub(crate) async fn execute_messages_request(
             instructions,
             &mut ledger,
             log,
+            ownership.as_deref_mut(),
         )
         .await
         .map_err(api_error),
@@ -1365,6 +1481,7 @@ pub(crate) async fn execute_messages_request(
             replay_overlay,
             &mut ledger,
             log,
+            ownership,
         )
         .await
         .map_err(api_error),
@@ -1387,6 +1504,10 @@ pub(crate) async fn execute_messages_request(
     reason = "the adapter chain is one decision order; splitting it would scatter the order \
               across helpers without reducing the whole"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one same-account stage keeps its protocol controls, billing, and binding together"
+)]
 async fn messages_on_demand_flow(
     context: &Context,
     routing: &ModelRouting,
@@ -1395,6 +1516,7 @@ async fn messages_on_demand_flow(
     instructions: Option<String>,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<MessagesOuterOutcome, CompactionError> {
     let definition = &routing.provider.definition.payload;
 
@@ -1430,14 +1552,16 @@ async fn messages_on_demand_flow(
             max_tokens,
             ledger,
             log,
+            ownership.as_deref_mut(),
         )
         .await
         {
             Ok(native::OnDemandOutcome::Success { block, iterations }) => {
-                log.stamp_billed_usage(ledger.billed_totals());
+                log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(MessagesOuterOutcome::CompactionOnly {
                     block,
+                    artifact_id: None,
                     iterations,
                     ledger: std::mem::take(ledger),
                 });
@@ -1446,7 +1570,7 @@ async fn messages_on_demand_flow(
             // The documented native no-summary outcome: original history
             // stands; the consumed response renders with its own semantics.
             Ok(native::OnDemandOutcome::NoSummary { aggregation }) => {
-                log.stamp_billed_usage(ledger.billed_totals());
+                log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(MessagesOuterOutcome::NativeNoSummary {
                     aggregation,
@@ -1480,9 +1604,19 @@ async fn messages_on_demand_flow(
         && let Some(operation) = operation
         && definition.format == UpstreamFormat::OpenAiResponse
     {
-        match native::responses_standalone(context, routing, operation, ir, ledger, log).await {
+        match native::responses_standalone(
+            context,
+            routing,
+            operation,
+            ir,
+            ledger,
+            log,
+            ownership.as_deref_mut(),
+        )
+        .await
+        {
             Ok(native) => {
-                let (_envelope, carrier) = seal_native_window(
+                let (envelope, carrier) = seal_native_window(
                     native_window_payload(
                         routing,
                         Mechanism::ResponsesStandaloneCompact,
@@ -1495,10 +1629,11 @@ async fn messages_on_demand_flow(
                     Some(GATEWAY_CARRIER_DESCRIPTION),
                 )?;
 
-                log.stamp_billed_usage(ledger.billed_totals());
+                log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(MessagesOuterOutcome::CompactionOnly {
                     block: gateway_carrier_block(None, &carrier),
+                    artifact_id: Some(envelope.artifact_id),
                     iterations: compaction_iteration_values(ledger),
                     ledger: std::mem::take(ledger),
                 });
@@ -1519,7 +1654,12 @@ async fn messages_on_demand_flow(
 
     // Gateway summary. Compact-only: a final user turn may be summarized, and
     // the caller's output limit caps the summary.
-    let (_plan, summary_text, carrier) = run_gateway_summary(
+    let GatewaySummaryCheckpoint {
+        summary_text,
+        carrier,
+        artifact_id,
+        ..
+    } = run_gateway_summary(
         context,
         routing,
         ir,
@@ -1531,13 +1671,15 @@ async fn messages_on_demand_flow(
         true,
         ledger,
         log,
+        ownership,
     )
     .await?;
 
-    log.stamp_billed_usage(ledger.billed_totals());
+    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(MessagesOuterOutcome::CompactionOnly {
         block: gateway_carrier_block(Some(&summary_text), &carrier),
+        artifact_id: Some(artifact_id),
         iterations: compaction_iteration_values(ledger),
         ledger: std::mem::take(ledger),
     })
@@ -1564,6 +1706,7 @@ async fn messages_threshold_flow(
     replay_overlay: Vec<ParamRow>,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<MessagesOuterOutcome, CompactionError> {
     let definition = &routing.provider.definition.payload;
 
@@ -1598,7 +1741,16 @@ async fn messages_threshold_flow(
         .and_then(|edit| edit.trigger)
         .unwrap_or_else(messages_default_threshold);
 
-    let measured = measure_active_tokens(context, routing, section, ir, ledger, log).await?;
+    let measured = measure_active_tokens(
+        context,
+        routing,
+        section,
+        ir,
+        ledger,
+        log,
+        ownership.as_deref_mut(),
+    )
+    .await?;
 
     if measured < threshold {
         return Ok(MessagesOuterOutcome::Ordinary {
@@ -1622,6 +1774,7 @@ async fn messages_threshold_flow(
         true,
         ledger,
         log,
+        ownership.as_deref_mut(),
     )
     .await?
     {
@@ -1631,12 +1784,14 @@ async fn messages_threshold_flow(
         if first_edit.is_some_and(|edit| edit.pause_after_compaction) {
             return Ok(MessagesOuterOutcome::CompactionOnly {
                 block,
+                artifact_id: Some(checkpoint.artifact_id),
                 iterations,
                 ledger: std::mem::take(ledger),
             });
         }
         return Ok(MessagesOuterOutcome::ContinueWithCheckpoint {
             prefix_blocks: vec![block],
+            artifact_id: checkpoint.artifact_id,
             ir: checkpoint.continuation,
             overlay_headers: checkpoint.overlay_headers,
             iterations,
@@ -1644,7 +1799,13 @@ async fn messages_threshold_flow(
         });
     }
 
-    let (plan, summary_text, carrier) = run_gateway_summary(
+    let GatewaySummaryCheckpoint {
+        plan,
+        summary_text,
+        carrier,
+        artifact_id,
+        ..
+    } = run_gateway_summary(
         context,
         routing,
         ir,
@@ -1656,6 +1817,7 @@ async fn messages_threshold_flow(
         true,
         ledger,
         log,
+        ownership,
     )
     .await?;
 
@@ -1663,11 +1825,12 @@ async fn messages_threshold_flow(
 
     let iterations = compaction_iteration_values(ledger);
 
-    log.stamp_billed_usage(ledger.billed_totals());
+    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     if first_edit.is_some_and(|edit| edit.pause_after_compaction) {
         return Ok(MessagesOuterOutcome::CompactionOnly {
             block,
+            artifact_id: Some(artifact_id),
             iterations,
             ledger: std::mem::take(ledger),
         });
@@ -1675,6 +1838,7 @@ async fn messages_threshold_flow(
 
     Ok(MessagesOuterOutcome::ContinueWithCheckpoint {
         prefix_blocks: vec![block],
+        artifact_id,
         ir: continuation_request(ir, &summary_text, &plan),
         overlay_headers: replay_overlay,
         iterations,
@@ -1698,7 +1862,7 @@ mod tests {
     )]
 
     use super::{
-        api_error, body_value, continuation_request, effective_support, execute_responses_compact,
+        api_error, continuation_request, effective_support, execute_responses_compact,
         summary_output_limit, trigger_item_json,
     };
     use crate::{
@@ -1784,9 +1948,11 @@ mod tests {
     /// positive literal prevents.
     fn routing_at(base: &str, section: Option<CompactionSection>) -> ModelRouting {
         let provider = Provider {
+            model_prefix: String::new(),
+            quota_generation: 0,
+            quota_revision: 0,
             id: 7,
             name: String::from("test"),
-            model_prefix: String::new(),
             base_url: None,
             credentials: StoredCredentials::ApiKey {
                 api_key: String::from("key"),
@@ -1806,6 +1972,7 @@ mod tests {
                         render_options: vec![],
                         envelope: None,
                         response_unwrap: None,
+                        quota_exhaustion: None,
                     },
                     credential: CredentialAcquisition::ApiKey,
                     provisioning: None,
@@ -1818,12 +1985,13 @@ mod tests {
         };
 
         ModelRouting {
+            model_route_id: 1,
+            public_id: String::from("m"),
+            provider_pool_id: None,
             provider,
             model: Model {
                 id: 1,
                 upstream_id: String::from("m"),
-                public_id: String::from("public-m"),
-                id_override: None,
                 is_enabled: true,
                 discovery_state: crate::provider::DiscoveryState::Manual,
                 thinking_levels: None,
@@ -1835,7 +2003,6 @@ mod tests {
                 compaction_support: None,
                 compaction_support_override: None,
             },
-            is_effectively_enabled: true,
         }
     }
 
@@ -2220,25 +2387,6 @@ mod tests {
         assert_eq!(item.text, "new developer context");
     }
 
-    /// The rendered wire body conversion produces a JSON value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn body_values_render_as_json() {
-        #[derive(serde::Serialize)]
-        struct Probe {
-            /// A member.
-            value: u32,
-        }
-
-        assert_eq!(
-            body_value(&Probe { value: 3 }),
-            serde_json::json!({"value": 3})
-        );
-    }
-
     /// A compact request through an unknown-support definition (no compaction
     /// section) takes the gateway-summary path: one internal summary dispatch
     /// on the routed provider, and the rendered `response.compaction` body
@@ -2269,6 +2417,10 @@ mod tests {
         let context = crate::context::Context {
             database: crate::test_support::create_test_database().await.0,
             api_log_store: None,
+            affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+            quota_coordinator: std::sync::Arc::new(
+                crate::provider::quota::coordinator::Coordinator::default(),
+            ),
             data_plane: reqwest::Client::new(),
             control_plane: reqwest::Client::new(),
         };
@@ -2278,6 +2430,9 @@ mod tests {
             api_key_id: 1,
             provider_id: routing.provider.id,
             model_id: routing.model.id,
+            model_route_id: routing.model_route_id,
+            upstream_http_status: None,
+            progress: crate::storage::api_logs::AttemptProgress::default(),
             endpoint_type: crate::accounting::ApiLogEndpointType::OpenaiResponsesCompact,
             is_stream: false,
             billed_usage: None,
@@ -2285,9 +2440,15 @@ mod tests {
 
         let parsed = compact_parsed();
 
-        let body = execute_responses_compact(&context, &routing, &parsed, &mut log)
-            .await
-            .expect("the compact flow succeeds");
+        let preparation = crate::compaction::history::BoundaryPreparation::authenticate(
+            parsed.compaction.as_ref().expect("compact control"),
+        )
+        .expect("authenticated fixture state");
+        let body =
+            execute_responses_compact(&context, &routing, &parsed, &preparation, &mut log, None)
+                .await
+                .expect("the compact flow succeeds");
+        let body = serde_json::to_value(body).expect("the concrete compact body serializes");
 
         // One dispatch: the internal summary call on the inference URL.
         assert_eq!(
@@ -2375,6 +2536,10 @@ mod tests {
         let context = crate::context::Context {
             database: crate::test_support::create_test_database().await.0,
             api_log_store: None,
+            affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+            quota_coordinator: std::sync::Arc::new(
+                crate::provider::quota::coordinator::Coordinator::default(),
+            ),
             data_plane: reqwest::Client::new(),
             control_plane: reqwest::Client::new(),
         };
@@ -2384,6 +2549,9 @@ mod tests {
             api_key_id: 1,
             provider_id: routing.provider.id,
             model_id: routing.model.id,
+            model_route_id: routing.model_route_id,
+            upstream_http_status: None,
+            progress: crate::storage::api_logs::AttemptProgress::default(),
             endpoint_type: crate::accounting::ApiLogEndpointType::OpenaiResponsesCompact,
             is_stream: false,
             billed_usage: None,
@@ -2391,9 +2559,15 @@ mod tests {
 
         let parsed = compact_parsed();
 
-        let body = execute_responses_compact(&context, &routing, &parsed, &mut log)
-            .await
-            .expect("the native compact flow succeeds");
+        let preparation = crate::compaction::history::BoundaryPreparation::authenticate(
+            parsed.compaction.as_ref().expect("compact control"),
+        )
+        .expect("authenticated fixture state");
+        let body =
+            execute_responses_compact(&context, &routing, &parsed, &preparation, &mut log, None)
+                .await
+                .expect("the native compact flow succeeds");
+        let body = serde_json::to_value(body).expect("the concrete compact body serializes");
 
         // One dispatch, at the operation's URL.
         let recorded = recorded.lock().expect("the recorder reads");
@@ -2470,6 +2644,10 @@ mod tests {
         let context = crate::context::Context {
             database: crate::test_support::create_test_database().await.0,
             api_log_store: None,
+            affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+            quota_coordinator: std::sync::Arc::new(
+                crate::provider::quota::coordinator::Coordinator::default(),
+            ),
             data_plane: reqwest::Client::new(),
             control_plane: reqwest::Client::new(),
         };
@@ -2479,6 +2657,9 @@ mod tests {
             api_key_id: 1,
             provider_id: routing.provider.id,
             model_id: routing.model.id,
+            model_route_id: routing.model_route_id,
+            upstream_http_status: None,
+            progress: crate::storage::api_logs::AttemptProgress::default(),
             endpoint_type: crate::accounting::ApiLogEndpointType::OpenaiResponsesCompact,
             is_stream: false,
             billed_usage: None,
@@ -2486,9 +2667,15 @@ mod tests {
 
         let parsed = compact_parsed();
 
-        let body = execute_responses_compact(&context, &routing, &parsed, &mut log)
-            .await
-            .expect("the fallback flow succeeds");
+        let preparation = crate::compaction::history::BoundaryPreparation::authenticate(
+            parsed.compaction.as_ref().expect("compact control"),
+        )
+        .expect("authenticated fixture state");
+        let body =
+            execute_responses_compact(&context, &routing, &parsed, &preparation, &mut log, None)
+                .await
+                .expect("the fallback flow succeeds");
+        let body = serde_json::to_value(body).expect("the concrete compact body serializes");
 
         // Two dispatches in order: the classified native attempt, then the one
         // summary fallback.

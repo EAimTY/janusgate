@@ -252,6 +252,30 @@ fn text(
     }
 }
 
+/// Resolves an authored exact model set without widening unresolved selectors.
+fn routing_value(
+    source: &QuotaRoutingSource,
+    context: &Context<'_>,
+) -> Result<QuotaRouting, ExtractionReason> {
+    match source {
+        QuotaRoutingSource::MonitoringOnly => Ok(QuotaRouting::MonitoringOnly),
+        QuotaRoutingSource::AllModels => Ok(QuotaRouting::AllModels),
+        QuotaRoutingSource::Models { upstream_ids } => {
+            let mut models = BTreeSet::new();
+            for source in upstream_ids {
+                let model = text(source, context)?.ok_or(ExtractionReason::Missing)?;
+                if !crate::routing_text::is_routing_safe_token(&model) {
+                    return Err(ExtractionReason::Text);
+                }
+                models.insert(model);
+            }
+            Ok(QuotaRouting::Models {
+                upstream_ids: models.into_iter().collect(),
+            })
+        }
+    }
+}
+
 /// Resolves scope independently of an entry's restriction label.
 fn scope_value(
     source: &QuotaScopeSource,
@@ -528,6 +552,7 @@ fn extract_entry(
         key,
         label: configured.label.clone(),
         scope: scope.clone(),
+        routing: routing_value(&configured.routing, &context)?,
         window,
         measurement,
         reset,

@@ -448,6 +448,7 @@ export function UsageQueryScreen(props: {
                             fields={fields()}
                             providers={entities().providers}
                             models={entities().models}
+                            modelRoutes={entities().modelRoutes}
                             apiKeys={entities().apiKeys}
                             hasEntityListings={hasEntityListings()}
                             statusError={statusError(fields().statusInput)}

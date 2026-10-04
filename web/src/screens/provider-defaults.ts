@@ -16,13 +16,3 @@ export function suggestProviderName(base: string, takenNames: ReadonlySet<string
 
     return `${base}-${suffix}`;
 }
-
-/**
- * The default model prefix: the provider's name with one trailing dash, so
- * an unoverridden model reads as `name-upstream-id`. Empty while there is no
- * name to derive from. A slash is never used: it is a routing token, and the
- * Gemini URL path cannot address one.
- */
-export function defaultModelPrefix(name: string): string {
-    return name === "" ? "" : `${name}-`;
-}

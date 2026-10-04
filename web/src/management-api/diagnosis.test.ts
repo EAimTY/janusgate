@@ -51,9 +51,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toBe(
-            "Choose a provider name no other row holds; a changed model prefix can also collide with an existing model ID.",
-        );
+        expect(diagnosis.fix).toBe("Choose a provider name no other row holds.");
     });
 
     it("points a creation flow's completion conflict at Start over, the one control the live flow leaves reachable", () => {
@@ -67,7 +65,7 @@ describe("diagnoseFailure", () => {
 
         expect(diagnosis.kind).toBe("conflict");
         expect(diagnosis.fix).toBe(
-            "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name and prefix; then create again with a name no other row holds.",
+            "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name; then create again with a name no other row holds.",
         );
     });
 
@@ -86,7 +84,7 @@ describe("diagnoseFailure", () => {
         );
     });
 
-    it("names the colliding public ID for a model creation conflict", () => {
+    it("names the existing physical inventory for a model creation conflict", () => {
         const diagnosis = diagnoseFailure(
             gatewayFailure("public id taken", ErrorCode.Conflict, 400),
             {
@@ -96,7 +94,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toContain("public ID");
+        expect(diagnosis.fix).toContain("exact upstream model");
     });
 
     it("points a taken key secret at generating a fresh one", () => {

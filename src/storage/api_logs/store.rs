@@ -546,8 +546,9 @@ async fn insert_api_log(database: &Database, write: ApiLogWrite) -> Result<(), E
         .execute(
             "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
              endpoint_type, is_stream, http_status, outcome, duration, input_tokens, \
-             output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, \
+             model_route_id, upstream_http_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 write.started_at,
                 write.api_key_id,
@@ -563,6 +564,8 @@ async fn insert_api_log(database: &Database, write: ApiLogWrite) -> Result<(), E
                 write.cached_tokens,
                 write.cache_write_tokens,
                 write.reasoning_tokens,
+                write.model_route_id,
+                write.upstream_http_status,
             ],
         )
         .await?;
@@ -655,6 +658,8 @@ mod tests {
             api_key_id: 3,
             provider_id: 5,
             model_id: 7,
+            model_route_id: 7,
+            upstream_http_status: Some(200),
             endpoint_type: ApiLogEndpointType::OpenaiResponses,
             is_stream: true,
             http_status: Some(200),
@@ -780,6 +785,8 @@ mod tests {
             api_key_id: 1,
             provider_id: 1,
             model_id: 1,
+            model_route_id: 1,
+            upstream_http_status: Some(200),
             endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
             is_stream: false,
             http_status: None,
@@ -886,7 +893,8 @@ mod tests {
         let database = test_support::open_day_file(&store, ApiLogDay::of_started_at(1)).await;
 
         let base = "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
-                    endpoint_type, is_stream, outcome, duration) VALUES (1, 1, 1, 1, ";
+                    model_route_id, endpoint_type, is_stream, outcome, duration) \
+                    VALUES (1, 1, 1, 1, 1, ";
 
         let rejected = [
             format!("{base}'grpc', 0, 'completed', 1);"),
@@ -951,7 +959,6 @@ mod tests {
             &database,
             &definition,
             "acme",
-            "acme-",
             Some("http://upstream.example"),
             crate::provider::StoredCredentials::ApiKey {
                 api_key: "secret".to_string(),
@@ -964,7 +971,6 @@ mod tests {
             ModelCreate {
                 provider_id: provider.id,
                 upstream_id: "gpt-4",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -981,6 +987,9 @@ mod tests {
                 api_key_id: api_key.id,
                 provider_id: provider.id,
                 model_id: model.model.id,
+                model_route_id: model.model.id,
+                upstream_http_status: None,
+                progress: crate::storage::api_logs::AttemptProgress::default(),
                 endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
                 is_stream: false,
                 billed_usage: None,
@@ -1054,6 +1063,9 @@ mod tests {
             api_key_id: 3,
             provider_id: 5,
             model_id: 7,
+            model_route_id: 7,
+            upstream_http_status: None,
+            progress: crate::storage::api_logs::AttemptProgress::default(),
             endpoint_type: ApiLogEndpointType::OpenaiResponses,
             is_stream: false,
             billed_usage: None,
@@ -1163,6 +1175,9 @@ mod tests {
                 api_key_id: 3,
                 provider_id: 5,
                 model_id: 7,
+                model_route_id: 7,
+                upstream_http_status: None,
+                progress: crate::storage::api_logs::AttemptProgress::default(),
                 endpoint_type: ApiLogEndpointType::OpenaiResponses,
                 is_stream: false,
                 billed_usage: None,

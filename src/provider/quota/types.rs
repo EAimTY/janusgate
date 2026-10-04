@@ -108,12 +108,77 @@ pub struct QuotaEntry {
     pub label: String,
     /// Account, pool, or model scope.
     pub scope: QuotaScope,
+    /// Resolved dispatch applicability, independent of presentation scope.
+    pub routing: QuotaRouting,
     /// Observed allowance period.
     pub window: QuotaWindow,
     /// Observed normalized usage or remaining amount.
     pub measurement: QuotaMeasurement,
     /// Reset metadata without inferred alignment.
     pub reset: QuotaReset,
+}
+
+/// Concrete dispatch applicability of a normalized quota entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuotaRouting {
+    /// No effect on account availability.
+    MonitoringOnly,
+    /// Restricts every exact model on this account.
+    AllModels,
+    /// Restricts only the resolved exact model IDs, sorted and deduplicated.
+    Models {
+        /// Nonempty canonical model set.
+        upstream_ids: Vec<String>,
+    },
+}
+
+/// Persistent applicability of an exhausted restriction; monitoring-only cannot inhabit it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuotaApplicability {
+    /// Restricts every model on the account.
+    AllModels,
+    /// Restricts a canonical nonempty set of exact upstream IDs.
+    Models {
+        /// Exact model IDs in lexicographic order without duplicates.
+        upstream_ids: Vec<String>,
+    },
+}
+
+impl QuotaApplicability {
+    /// Retains applicable observations and excludes monitoring-only measurements.
+    pub(crate) fn from_routing(routing: &QuotaRouting) -> Option<Self> {
+        match routing {
+            QuotaRouting::MonitoringOnly => None,
+            QuotaRouting::AllModels => Some(Self::AllModels),
+            QuotaRouting::Models { upstream_ids } => Some(
+                Self::Models {
+                    upstream_ids: upstream_ids.clone(),
+                }
+                .canonicalized(),
+            ),
+        }
+    }
+
+    /// Canonicalizes an exact model set without changing the restriction's scope.
+    pub(crate) fn canonicalized(mut self) -> Self {
+        if let Self::Models { upstream_ids } = &mut self {
+            upstream_ids.sort();
+            upstream_ids.dedup();
+        }
+        self
+    }
+
+    /// Whether the restriction applies to the requested exact physical upstream model.
+    pub(crate) fn is_applicable_to(&self, upstream_id: &str) -> bool {
+        match self {
+            Self::AllModels => true,
+            Self::Models { upstream_ids } => upstream_ids.iter().any(|id| id == upstream_id),
+        }
+    }
 }
 
 /// Scope of the independently reported pool.
@@ -179,6 +244,19 @@ pub enum QuotaMeasurement {
     },
     /// Explicit upstream unlimited flag.
     Unlimited,
+}
+
+impl QuotaMeasurement {
+    /// Positive availability evidence, exhaustion evidence, or unknown evidence.
+    pub(crate) fn is_exhausted(&self) -> Option<bool> {
+        match self {
+            Self::Unknown => None,
+            Self::Unlimited => Some(false),
+            Self::Ratio { used_fraction } => Some(f64::from(*used_fraction) >= 1.0),
+            Self::Counter { used, limit, .. } => Some(f64::from(*used) >= f64::from(*limit)),
+            Self::Remaining { remaining, .. } => Some(f64::from(*remaining) == 0.0),
+        }
+    }
 }
 
 /// Reset information, independent of the allowance measurement.

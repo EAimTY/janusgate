@@ -70,6 +70,8 @@ pub(super) fn write(
         api_key_id,
         provider_id,
         model_id,
+        model_route_id: model_id,
+        upstream_http_status: Some(200),
         endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
         is_stream: false,
         http_status: Some(200),

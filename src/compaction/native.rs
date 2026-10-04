@@ -163,8 +163,9 @@ pub(crate) async fn classify_failure(
 ///
 /// On success the parsed native result — the complete ordered output window
 /// beside its usage — is returned, with the reported usage recorded into the
-/// ledger. A non-2xx answer is classified first: a positively classified
-/// unsupported boundary reports [`NativeAttemptFailure::ClassifiedUnsupported`],
+/// ledger. A non-2xx answer first records positively classified quota evidence, which propagates
+/// without a summary fallback. Otherwise a positively classified unsupported boundary reports
+/// [`NativeAttemptFailure::ClassifiedUnsupported`],
 /// every other rejection propagates as its existing upstream error.
 ///
 /// # Errors
@@ -184,6 +185,7 @@ pub(crate) async fn responses_standalone(
     ir: &IrRequest,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<CompactedResponseNative, NativeAttemptFailure> {
     let provider = crate::provider::oauth::ensure_fresh_token(
         &context.database,
@@ -223,9 +225,27 @@ pub(crate) async fn responses_standalone(
         })?;
 
     let status = response.status();
+    log.observe_response(status);
+    if status.is_success()
+        && let Some(ownership) = ownership
+    {
+        ownership.accept(routing.provider.id);
+    }
 
     if !status.is_success() {
-        let detail = crate::http_body::read_error_body(response).await;
+        let body = crate::http_body::read_bounded_error_body(response).await;
+        if let Some(error) = gateway::quota_error_of(
+            context,
+            &provider,
+            &routing.model.upstream_id,
+            status,
+            &body,
+        )
+        .await?
+        {
+            return Err(NativeAttemptFailure::Failed(error));
+        }
+        let detail = body.lossy_text();
         let excerpt = crate::http_body::truncate_excerpt(&detail);
 
         if let Some(classification) =
@@ -281,7 +301,7 @@ pub(crate) async fn responses_standalone(
             report.usage.as_ref().map(usage_to_ir),
         );
         if report.usage.is_some() {
-            log.stamp_billed_usage(ledger.billed_totals());
+            log.stamp_billed_usage(ledger.reported_billed_totals());
         }
     }
     let native = parse_compact_response(value).map_err(GatewayError::from)?;
@@ -313,6 +333,7 @@ pub(crate) async fn count_tokens(
     ir: &IrRequest,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<u64, GatewayError> {
     let provider = crate::provider::oauth::ensure_fresh_token(
         &context.database,
@@ -353,6 +374,12 @@ pub(crate) async fn count_tokens(
         })?;
 
     let status = response.status();
+    log.observe_response(status);
+    if status.is_success()
+        && let Some(ownership) = ownership
+    {
+        ownership.accept(routing.provider.id);
+    }
 
     if !status.is_success() {
         let detail = crate::http_body::read_error_body(response).await;
@@ -460,6 +487,7 @@ pub(crate) async fn messages_on_demand(
     max_tokens: u64,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
+    ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<OnDemandOutcome, NativeAttemptFailure> {
     let provider = crate::provider::oauth::ensure_fresh_token(
         &context.database,
@@ -509,9 +537,27 @@ pub(crate) async fn messages_on_demand(
         })?;
 
     let status = response.status();
+    log.observe_response(status);
+    if status.is_success()
+        && let Some(ownership) = ownership
+    {
+        ownership.accept(routing.provider.id);
+    }
 
     if !status.is_success() {
-        let detail = crate::http_body::read_error_body(response).await;
+        let body = crate::http_body::read_bounded_error_body(response).await;
+        if let Some(error) = gateway::quota_error_of(
+            context,
+            &provider,
+            &routing.model.upstream_id,
+            status,
+            &body,
+        )
+        .await?
+        {
+            return Err(NativeAttemptFailure::Failed(error));
+        }
+        let detail = body.lossy_text();
         let excerpt = crate::http_body::truncate_excerpt(&detail);
 
         if let Some(classification) = classify_failure(classifier, status, &detail).await {

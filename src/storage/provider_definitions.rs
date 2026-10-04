@@ -344,7 +344,6 @@ mod tests {
             &database,
             &definition,
             "bound",
-            "b-",
             Some("http://localhost:8080"),
             StoredCredentials::ApiKey {
                 api_key: "k".to_string(),
@@ -567,7 +566,6 @@ mod tests {
             &database,
             stored_row,
             "bound",
-            "",
             Some("https://upstream.example"),
             StoredCredentials::ApiKey {
                 api_key: "secret".into(),

@@ -40,7 +40,11 @@ import type {
     UpstreamStreaming,
     ValueExpr,
 } from "/src/management-api/generated/v0";
-import { parseQuotaDescriptor, validateQuotaRequest } from "/src/management-api/quota";
+import {
+    parseQuotaDescriptor,
+    parseQuotaExhaustion,
+    validateQuotaRequest,
+} from "/src/management-api/quota";
 
 import {
     expectArray,
@@ -445,6 +449,7 @@ function expectInference(value: unknown, context: string): Inference {
             "render_options",
             "envelope",
             "response_unwrap",
+            "quota_exhaustion",
         ],
         context,
     );
@@ -487,6 +492,14 @@ function expectInference(value: unknown, context: string): Inference {
 
     if (isPresentValue(responseUnwrap)) {
         inference.response_unwrap = expectString(responseUnwrap, `${context}.response_unwrap`);
+    }
+
+    const quotaExhaustion = Reflect.get(record, "quota_exhaustion");
+    if (isPresentValue(quotaExhaustion)) {
+        inference.quota_exhaustion = parseQuotaExhaustion(
+            quotaExhaustion,
+            `${context}.quota_exhaustion`,
+        );
     }
 
     return inference;

@@ -5,28 +5,10 @@ import {
     compositionMessage,
     isBaseUrl,
     isBearerSecret,
-    isModelPrefix,
     isRoutingToken,
-    modelPrefixError,
     routingTokenError,
     routingTokenMessage,
 } from "./identifiers";
-
-describe("isModelPrefix", () => {
-    it("accepts empty as no prefix and the usual prefix shapes", () => {
-        expect(isModelPrefix("")).toBe(true);
-        expect(isModelPrefix("codex-")).toBe(true);
-        expect(isModelPrefix("agy-")).toBe(true);
-    });
-
-    it("rejects whitespace, non-ASCII text, slashes, and colons in a set prefix", () => {
-        expect(isModelPrefix("codex /")).toBe(false);
-        expect(isModelPrefix("前缀-")).toBe(false);
-        expect(isModelPrefix("codex/")).toBe(false);
-        expect(isModelPrefix("agy/")).toBe(false);
-        expect(isModelPrefix("qwen:32b")).toBe(false);
-    });
-});
 
 describe("isRoutingToken", () => {
     it("accepts plain routing tokens", () => {
@@ -114,16 +96,5 @@ describe("routingTokenError", () => {
         expect(routingTokenError("meta-llama/Llama-3.1-8B", "Upstream ID")).toBe(
             routingTokenMessage("Upstream ID"),
         );
-    });
-});
-
-describe("modelPrefixError", () => {
-    it("reads an empty prefix as no prefix", () => {
-        expect(modelPrefixError("")).toBeNull();
-    });
-
-    it("accepts a prefix and rejects the rest", () => {
-        expect(modelPrefixError("codex-")).toBeNull();
-        expect(modelPrefixError("qwen:32b")).toBe(routingTokenMessage("Model prefix"));
     });
 });

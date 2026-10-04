@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
     ApiKeyResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
     UsageBucket,
     UsageBucketKey,
@@ -12,18 +13,19 @@ import {
     usageApiKeyLabel,
     usageDimensionLabel,
     usageModelLabel,
+    usageModelRouteLabel,
     usageProviderLabel,
 } from "./usage-labels";
 
 const providers: ReadonlyArray<ProviderResponse> = [
     {
+        model_prefix: "",
         type: "api_key",
         provider_definition_name: "generic-openai-chat-completions",
         provider_definition_version: 1,
         format: "openai_chat_completion",
         id: 1,
         name: "local",
-        model_prefix: "local-",
         is_enabled: true,
         base_url: "https://upstream.example.com/v1",
     },
@@ -35,8 +37,7 @@ const models: ReadonlyArray<ModelResponse> = [
         provider_id: 1,
         provider: "local",
         upstream_id: "qwen3:32b",
-        public_id: "local-qwen3-32b",
-        id_override: null,
+
         is_enabled: true,
         discovery_state: "discovered",
         thinking_levels: null,
@@ -60,18 +61,36 @@ const apiKeys: ReadonlyArray<ApiKeyResponse> = [
     },
 ];
 
+const modelRoutes: ReadonlyArray<ModelRouteResponse> = [
+    {
+        is_automatic: false,
+        id: 17,
+        public_id: "coding",
+        is_enabled: true,
+        target: {
+            type: "direct",
+            model_id: 9,
+        },
+    },
+];
+
 const entities = {
     providers,
     models,
     apiKeys,
+    modelRoutes,
 };
 
 const index = indexUsageEntities(entities);
 
 describe("usage labels", () => {
     it("resolves a listed id through the entity lists", () => {
+        expect(usageModelRouteLabel(index.modelRoutesById, 17)).toEqual({
+            text: "coding",
+            isListed: true,
+        });
         expect(usageModelLabel(index.modelsById, 9)).toEqual({
-            text: "local-qwen3-32b",
+            text: "qwen3:32b",
             isListed: true,
         });
         expect(usageProviderLabel(index.providersById, 1)).toEqual({
@@ -85,6 +104,10 @@ describe("usage labels", () => {
     });
 
     it("names a deleted row by its kind, never by a guessed name or number", () => {
+        expect(usageModelRouteLabel(index.modelRoutesById, 18)).toEqual({
+            text: "Deleted route",
+            isListed: false,
+        });
         expect(usageModelLabel(index.modelsById, 11)).toEqual({
             text: "Deleted model",
             isListed: false,
@@ -103,6 +126,7 @@ describe("usage labels", () => {
         const key: UsageBucketKey = {
             day: "2026-09-01",
             model_id: 9,
+            model_route_id: 17,
             provider_id: 1,
             api_key_id: 7,
             endpoint_type: "openai_responses",
@@ -112,7 +136,8 @@ describe("usage labels", () => {
         };
 
         expect(usageDimensionLabel("day", key, index)).toBe("2026-09-01");
-        expect(usageDimensionLabel("model", key, index)).toBe("local-qwen3-32b");
+        expect(usageDimensionLabel("model_route", key, index)).toBe("coding");
+        expect(usageDimensionLabel("model", key, index)).toBe("qwen3:32b");
         expect(usageDimensionLabel("provider", key, index)).toBe("local");
         expect(usageDimensionLabel("api_key", key, index)).toBe("service-a");
         expect(usageDimensionLabel("endpoint_type", key, index)).toBe("Responses");

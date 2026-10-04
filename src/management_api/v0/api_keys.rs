@@ -231,11 +231,31 @@ pub(super) async fn update(
 }
 
 /// Handles `POST /api-keys:delete`.
+/// The detached mutation invalidates affinity handles after committing even if its caller leaves.
+///
+/// # Panics
+///
+/// Panics if the mutation task fails to hand off its result, a fail-fast task invariant.
 pub(super) async fn delete(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<DeleteApiKeyRequest>, Error>,
 ) -> Result<Json<EmptyResponse>, Error> {
-    if !api_keys::delete_api_key(&context.database, request.api_key_id).await? {
+    let database = context.database.clone();
+    let cache = context.affinity_cache.clone();
+    let api_key_id = request.api_key_id;
+    let deletion = tokio::spawn(async move {
+        let is_deleted = api_keys::delete_api_key(&database, api_key_id).await?;
+        if is_deleted {
+            cache.remove_api_key(api_key_id);
+        }
+        Ok::<_, crate::storage::Error>(is_deleted)
+    });
+    #[expect(
+        clippy::expect_used,
+        reason = "the mutation task always hands its result to the handler"
+    )]
+    let is_deleted = deletion.await.expect("API-key deletion task completes")?;
+    if !is_deleted {
         return Err(Error::ApiKeyNotFound {
             id: request.api_key_id,
         });

@@ -358,7 +358,9 @@ pub(super) fn parse_request(
     reject_top_level_controls(&request)?;
 
     let instructions = parse_system_instruction(request.system_instruction.as_ref())?;
-    let messages = parse_contents(&request.contents)?;
+    let mut affinity =
+        crate::format::affinity::Sources::new(crate::format::UpstreamFormat::GeminiGenerateContent);
+    let messages = parse_contents(&request.contents, &mut affinity)?;
     let tools = parse_tools(request.tools.as_deref())?;
     let tool_choice = parse_tool_config(request.tool_config.as_ref(), tools.is_empty())?;
     let (temperature, top_p, max_output_tokens, reasoning_effort, response_format) =
@@ -367,6 +369,7 @@ pub(super) fn parse_request(
     crate::format::validate_sampling_ranges(temperature, top_p)?;
 
     Ok(ParsedRequest {
+        affinity,
         ir: IrRequest {
             state_items: Vec::new(),
             model: public_id,
@@ -494,7 +497,10 @@ fn parse_system_instruction(
 }
 
 /// Parses conversation contents into IR messages.
-fn parse_contents(contents: &[ContentIn]) -> Result<Vec<IrMessage>, InvalidRequest> {
+fn parse_contents(
+    contents: &[ContentIn],
+    affinity: &mut crate::format::affinity::Sources,
+) -> Result<Vec<IrMessage>, InvalidRequest> {
     if contents.is_empty() {
         return Err(InvalidRequest::field(
             "contents",
@@ -510,8 +516,8 @@ fn parse_contents(contents: &[ContentIn]) -> Result<Vec<IrMessage>, InvalidReque
 
     for content in contents {
         match content.role.as_str() {
-            "user" => parse_user_content(content, &mut messages, &mut call_registry)?,
-            "model" => parse_model_content(content, &mut messages, &mut call_registry)?,
+            "user" => parse_user_content(content, &mut messages, &mut call_registry, affinity)?,
+            "model" => parse_model_content(content, &mut messages, &mut call_registry, affinity)?,
             other => {
                 return Err(InvalidRequest::field(
                     "contents",
@@ -542,6 +548,7 @@ fn parse_user_content(
     content: &ContentIn,
     messages: &mut Vec<IrMessage>,
     call_registry: &mut [CallRecord],
+    affinity: &mut crate::format::affinity::Sources,
 ) -> Result<(), InvalidRequest> {
     let mut has_function_call = false;
     let mut has_function_response = false;
@@ -576,11 +583,13 @@ fn parse_user_content(
     }
 
     let mut text_parts: Vec<IrPart> = Vec::new();
+    let mut pending_parts = Vec::new();
 
     for part in &content.parts {
         validate_part_shape(part)?;
 
         if let Some(shared) = parse_shared_payload(part)? {
+            pending_parts.push(affinity.defer_part(text_parts.len()));
             text_parts.push(shared);
         } else if let Some(response) = part.function_response.as_ref() {
             // `parts` is the official media channel on tool results; the IR tool output has
@@ -593,7 +602,17 @@ fn parse_user_content(
             }
 
             let call_id = resolve_response_call_id(response, call_registry);
+            let shape = match &response.response {
+                Value::String(_) => crate::format::affinity::ResultShape::Text,
+                Value::Null => crate::format::affinity::ResultShape::JsonNull,
+                _ => crate::format::affinity::ResultShape::Json,
+            };
+            affinity.result(
+                response.id.as_deref().is_some_and(|id| !id.is_empty()),
+                shape,
+            );
 
+            affinity.part(messages.len(), 0);
             messages.push(IrMessage {
                 role: IrRole::Tool,
                 parts: vec![IrPart::ToolOutput {
@@ -611,6 +630,7 @@ fn parse_user_content(
     }
 
     if !text_parts.is_empty() {
+        affinity.resolve_parts(&pending_parts, messages.len());
         messages.push(IrMessage {
             role: IrRole::User,
             parts: text_parts,
@@ -625,6 +645,7 @@ fn parse_model_content(
     content: &ContentIn,
     messages: &mut Vec<IrMessage>,
     call_registry: &mut Vec<CallRecord>,
+    affinity: &mut crate::format::affinity::Sources,
 ) -> Result<(), InvalidRequest> {
     let mut parts: Vec<IrPart> = Vec::new();
 
@@ -632,6 +653,7 @@ fn parse_model_content(
         validate_part_shape(part)?;
 
         if let Some(shared) = parse_shared_payload(part)? {
+            affinity.part(messages.len(), parts.len());
             parts.push(shared);
         } else if let Some(call) = part.function_call.as_ref() {
             if part.function_response.is_some() {
@@ -659,12 +681,14 @@ fn parse_model_content(
                 _ => format!("call_{}", crate::ids::new_uuid()),
             };
 
+            affinity.call(call.id.as_deref().is_some_and(|id| !id.is_empty()));
             call_registry.push(CallRecord {
                 name: call.name.clone(),
                 call_id: call_id.clone(),
                 is_matched: false,
             });
 
+            affinity.part(messages.len(), parts.len());
             parts.push(IrPart::ToolCall {
                 call_id,
                 name: call.name.clone(),

@@ -41,7 +41,12 @@ describe("researched quota definition round trips", () => {
             const fixture: unknown = JSON.parse(document ?? "");
             if (typeof fixture !== "object" || fixture === null)
                 throw new Error("fixture must be an object");
-            expect(preset.payload.quota).toEqual(Reflect.get(fixture, "descriptor"));
+            const fixtureDefinition = validateDefinitionPayload({
+                ...preset.payload,
+                quota: Reflect.get(fixture, "descriptor"),
+            });
+            if ("error" in fixtureDefinition) throw new Error(fixtureDefinition.error);
+            expect(preset.payload.quota).toEqual(fixtureDefinition.payload.quota);
             const edited = validateDefinitionPayload({
                 ...preset.payload,
                 inference: {

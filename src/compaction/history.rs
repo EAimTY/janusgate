@@ -72,154 +72,311 @@ const fn is_null_no_op(boundary: &CompactionBoundary) -> bool {
     )
 }
 
-/// Prepares one parsed request's history for execution: decodes and verifies
-/// every gateway carrier, applies the latest usable boundary's replacement
-/// semantics to the request's messages and instructions, and removes every
-/// gateway state item — after a successful preparation none remains, so no
-/// render can ever forward one upstream.
-///
-/// The unseal binding of a Messages carrier is the hex SHA-256 of the visible
-/// content the block presented; an envelope that binds content the carrier did
-/// not present, or whose digest mismatches, is an explicit client-state error.
-///
-/// Returns the active boundary the window was restored from, or [`None`] when
-/// the history carries no compaction boundary at all.
+/// Target-independent authentication and latest usable boundary selection for one request.
+/// It performs no account lookup, upstream I/O, or history materialization.
+#[derive(Default)]
+pub(crate) struct BoundaryPreparation {
+    /// Latest authenticated non-no-op boundary; superseded decoded content is discarded.
+    active: Option<PreparedBoundary>,
+    /// Original boundary position, distinguishing multiple artifacts at one message offset.
+    active_index: Option<usize>,
+}
+
+/// Content-free client-visible routing evidence prepared before account selection.
+pub(crate) struct RoutingPreparation {
+    /// Accepted active history, retaining its open tail for actual outward rendering.
+    pub(crate) projector: crate::affinity::fingerprint::Projector,
+    /// Latest authenticated carrier identity or exact canonical raw artifact identity.
+    pub(crate) artifact: Option<crate::affinity::Digest>,
+}
+
+/// State discriminator used only to pair parsed boundary facts with their original state slots.
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StateDiscriminator {
+    /// Gateway or native compaction artifact.
+    Compaction,
+    /// Other opaque state, such as replayable encrypted reasoning.
+    #[serde(other)]
+    Other,
+}
+
+/// One validated active boundary, retaining only what subsequent restoration needs.
+enum PreparedBoundary {
+    /// Authenticated gateway checkpoint at its original conversation offset.
+    Gateway {
+        /// Number of accepted conversation messages before this carrier.
+        offset: usize,
+        /// Already authenticated envelope, never unsealed again during this request.
+        envelope: Box<EnvelopeV1>,
+    },
+    /// Raw producer-native state whose compatibility remains target-dependent.
+    Native {
+        /// Original conversation offset.
+        offset: usize,
+        /// Parsed native placement and no-op facts.
+        artifact: NativeArtifact,
+    },
+}
+
+impl BoundaryPreparation {
+    /// Projects the validated client-visible active replay window without restoring hidden text.
+    /// The latest carrier supersedes covered messages/state; no-op blocks establish no history
+    /// unit or artifact hint. Original source records remain aligned with uncovered tool parts.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid gateway state if an active boundary sits beyond the accepted history.
+    ///
+    /// # Panics
+    ///
+    /// Panics if parser state slots disagree with their recorded boundary facts.
+    pub(crate) fn routing_preparation(
+        &self,
+        parsed: &crate::format::ParsedRequest,
+    ) -> Result<RoutingPreparation, CompactionError> {
+        let mut projector = crate::affinity::fingerprint::Projector::new();
+        let compaction = parsed.compaction.as_ref();
+        let slots: Vec<_> = parsed
+            .ir
+            .state_items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "accepted codec state has a typed discriminator"
+                )]
+                let discriminator: StateDiscriminator =
+                    StateDiscriminator::deserialize(&state.item)
+                        .expect("accepted state has a type");
+                matches!(discriminator, StateDiscriminator::Compaction).then_some(index)
+            })
+            .collect();
+        let first_message = match self.active.as_ref() {
+            Some(
+                PreparedBoundary::Gateway { offset, .. } | PreparedBoundary::Native { offset, .. },
+            ) => *offset,
+            None => 0,
+        };
+        if first_message > parsed.ir.messages.len() {
+            return Err(CompactionError::invalid_gateway_state(
+                "the active checkpoint's boundary sits beyond the request's history",
+            ));
+        }
+        let active_slot = self.active_index.map(|index| {
+            #[expect(
+                clippy::expect_used,
+                reason = "the parser records each compaction state slot"
+            )]
+            *slots
+                .get(index)
+                .expect("the active boundary has a state slot")
+        });
+        let artifact = match self.active.as_ref() {
+            Some(PreparedBoundary::Gateway { envelope, .. }) => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "an active gateway boundary was authenticated from this request"
+                )]
+                let boundary = compaction
+                    .and_then(|parsed| {
+                        self.active_index
+                            .and_then(|index| parsed.boundaries.get(index))
+                    })
+                    .expect("the authenticated gateway boundary exists");
+                #[expect(
+                    clippy::unreachable,
+                    reason = "the retained preparation matches its original boundary"
+                )]
+                let CompactionBoundary::Gateway { carrier, .. } = boundary else {
+                    unreachable!("the active gateway preparation has a gateway carrier");
+                };
+                let family = match parsed.affinity.client_format() {
+                    UpstreamFormat::AnthropicMessages => {
+                        crate::affinity::fingerprint::StateFamily::Messages
+                    }
+                    UpstreamFormat::OpenAiResponse => {
+                        crate::affinity::fingerprint::StateFamily::Responses
+                    }
+                    #[expect(
+                        clippy::unreachable,
+                        reason = "only Responses and Messages parse gateway carriers"
+                    )]
+                    _ => unreachable!("gateway carriers belong to a state-bearing client codec"),
+                };
+                projector.gateway_state(family, carrier);
+                Some(projector.gateway_artifact(&envelope.artifact_id))
+            }
+            Some(PreparedBoundary::Native { .. }) => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the active native boundary has a recorded state slot"
+                )]
+                let state = active_slot
+                    .and_then(|index| parsed.ir.state_items.get(index))
+                    .expect("native state exists");
+                Some(projector.native_artifact(&state.item))
+            }
+            None => None,
+        };
+        let states = parsed
+            .ir
+            .state_items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| {
+                if active_slot.is_some_and(|active| index < active) || state.is_gateway {
+                    return None;
+                }
+                if let Ok(boundary_index) = slots.binary_search(&index)
+                    && compaction
+                        .and_then(|parsed| parsed.boundaries.get(boundary_index))
+                        .is_some_and(is_null_no_op)
+                {
+                    return None;
+                }
+                Some(state)
+            });
+        parsed
+            .affinity
+            .append_window(&parsed.ir.messages, states, first_message, &mut projector);
+        Ok(RoutingPreparation {
+            projector,
+            artifact,
+        })
+    }
+
+    /// Returns the authenticated producer requirement of the latest active native window.
+    /// Portable summaries and unverified raw native artifacts impose no authenticated account.
+    pub(crate) fn native_requirement(&self) -> Option<&NativeWindowPayload> {
+        match self.active.as_ref()? {
+            PreparedBoundary::Gateway { envelope, .. } => match &envelope.payload {
+                EnvelopePayload::NativeWindow(payload) => Some(payload),
+                EnvelopePayload::GatewaySummary(_) => None,
+            },
+            PreparedBoundary::Native { .. } => None,
+        }
+    }
+
+    /// Authenticates every recognizable carrier in history order before choosing a target.
+    /// A later usable checkpoint supersedes older state; native null blocks create no boundary.
+    /// Messages visible content must exactly match its authenticated envelope binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns a carrier authentication, unknown-key, or visible-content binding failure even
+    /// when a later checkpoint would supersede the damaged carrier.
+    pub(crate) fn authenticate(parsed: &ParsedCompaction) -> Result<Self, CompactionError> {
+        let mut preparation = Self::default();
+        for (index, boundary) in parsed.boundaries.iter().enumerate() {
+            match boundary {
+                CompactionBoundary::Gateway {
+                    offset,
+                    carrier,
+                    visible_content,
+                } => {
+                    let binding = visible_content
+                        .as_deref()
+                        .map(|content| hex_sha256(content.as_bytes()));
+                    let envelope = sealing::unseal_with_live_config(
+                        carrier,
+                        binding.as_deref().map(str::as_bytes),
+                    )?;
+                    match (&envelope.visible_content_digest, &binding) {
+                        (Some(envelope_digest), Some(carrier_digest))
+                            if envelope_digest == carrier_digest => {}
+                        (None, None) => {}
+                        _ => {
+                            return Err(CompactionError::invalid_gateway_state(
+                                "the gateway carrier's visible content does not match its binding",
+                            ));
+                        }
+                    }
+                    preparation.active_index = Some(index);
+                    preparation.active = Some(PreparedBoundary::Gateway {
+                        offset: *offset,
+                        envelope: Box::new(envelope),
+                    });
+                }
+                CompactionBoundary::Native { offset, artifact } if !is_null_no_op(boundary) => {
+                    preparation.active_index = Some(index);
+                    preparation.active = Some(PreparedBoundary::Native {
+                        offset: *offset,
+                        artifact: *artifact,
+                    });
+                }
+                CompactionBoundary::Native { .. } => {}
+            }
+        }
+        Ok(preparation)
+    }
+}
+
+/// Materializes the already authenticated active boundary using the existing replacement rules.
+/// Superseded gateway carriers are removed without exporting their hidden content.
 ///
 /// # Errors
 ///
-/// Returns [`CompactionError`] for an unverifiable carrier, an incompatible
-/// wrapped native window, or native state a restoration would silently lose.
-///
-/// # Panics
-///
-/// Panics if the active gateway boundary was not decoded by the ordered pass —
-/// impossible, the pass decodes every gateway boundary before selection.
-pub(crate) fn prepare(
+/// Returns an invalid replacement boundary or target-incompatible native-window failure.
+fn restore(
     ir: &mut IrRequest,
     parsed: &ParsedCompaction,
+    preparation: &BoundaryPreparation,
     target_format: UpstreamFormat,
 ) -> Result<Option<RestoredBoundary>, CompactionError> {
-    if parsed.boundaries.is_empty() {
-        return Ok(None);
-    }
-
-    let decoded = decode_gateway_boundaries(parsed)?;
-
-    // The active boundary is the last non-no-op boundary in history order: a
-    // later authenticated usable checkpoint supersedes older state, including
-    // old native blobs, and a null/no-op block establishes no boundary at all.
-    let Some(active) = parsed
-        .boundaries
-        .iter()
-        .rev()
-        .find(|boundary| !is_null_no_op(boundary))
-    else {
-        // Every boundary is a null no-op: no boundary stands, but the decoded
-        // gateway carriers still never ride upstream.
+    let Some(active) = &preparation.active else {
         remove_gateway_state_items(ir);
-
         return Ok(None);
     };
-
     match active {
-        CompactionBoundary::Gateway { offset, .. } => {
-            #[expect(
-                clippy::expect_used,
-                reason = "the ordered decode pass above decoded every gateway boundary, the \
-                          active one included"
-            )]
-            let envelope = decoded
-                .iter()
-                .rev()
-                .find(|(decoded_offset, _)| decoded_offset == offset)
-                .map(|(_offset, envelope)| envelope.clone())
-                .expect("the active gateway boundary was decoded in the ordered pass");
-
+        PreparedBoundary::Gateway { offset, envelope } => {
             match &envelope.payload {
                 EnvelopePayload::GatewaySummary(payload) => {
                     restore_gateway_summary(ir, parsed, *offset, payload)?;
                 }
-
                 EnvelopePayload::NativeWindow(payload) => {
                     restore_native_window(ir, *offset, payload, target_format)?;
                 }
             }
-
             Ok(Some(RestoredBoundary::Gateway {
-                envelope: Box::new(envelope),
+                envelope: envelope.clone(),
             }))
         }
-
-        CompactionBoundary::Native { artifact, .. } => {
-            // Native passthrough: the upstream interprets the state. The
-            // decoded gateway carriers of superseded checkpoints still never
-            // ride upstream.
+        PreparedBoundary::Native { artifact, .. } => {
             remove_gateway_state_items(ir);
-
             Ok(Some(RestoredBoundary::Native(*artifact)))
         }
     }
 }
 
-/// Authenticates every recognizable carrier before selecting a boundary or exporting text.
-fn decode_gateway_boundaries(
+/// Composes target-independent authentication and restoration for domain-level test fixtures.
+///
+/// # Errors
+///
+/// Returns a carrier, boundary, or native-format compatibility failure.
+#[cfg(test)]
+pub(crate) fn prepare(
+    ir: &mut IrRequest,
     parsed: &ParsedCompaction,
-) -> Result<Vec<(usize, EnvelopeV1)>, CompactionError> {
-    // Decode and verify every gateway carrier in history order, before any
-    // selection: a recognizable but damaged marker is an explicit failure, and
-    // its bytes must never reach an upstream in any arm below. The decoded
-    // envelopes stay aligned with the boundary list by offset.
-    let mut decoded: Vec<(usize, EnvelopeV1)> = Vec::new();
-
-    for boundary in &parsed.boundaries {
-        let CompactionBoundary::Gateway {
-            offset,
-            carrier,
-            visible_content,
-        } = boundary
-        else {
-            continue;
-        };
-
-        let binding = visible_content
-            .as_deref()
-            .map(|content| hex_sha256(content.as_bytes()));
-
-        let envelope = sealing::unseal_with_live_config(
-            carrier,
-            binding.as_deref().map(|digest| digest.as_bytes()),
-        )?;
-
-        // An envelope that binds visible content must bind the content the
-        // carrier presented, under the same digest.
-        match (&envelope.visible_content_digest, &binding) {
-            (Some(envelope_digest), Some(carrier_digest)) if envelope_digest == carrier_digest => {}
-
-            // Every other combination — a bound envelope without presented
-            // content, presented content without a bound envelope, or
-            // mismatched digests — is a binding failure.
-            (None, None) => {}
-
-            _ => {
-                return Err(CompactionError::invalid_gateway_state(
-                    "the gateway carrier's visible content does not match its binding",
-                ));
-            }
-        }
-
-        decoded.push((*offset, envelope));
-    }
-
-    Ok(decoded)
+    target_format: UpstreamFormat,
+) -> Result<Option<RestoredBoundary>, CompactionError> {
+    let preparation = BoundaryPreparation::authenticate(parsed)?;
+    restore(ir, parsed, &preparation, target_format)
 }
 
-/// Prepares state against the selected producer, permitting only explicit readable-summary export.
+/// Prepares authenticated state against the selected producer, permitting only explicit
+/// readable-summary export. `preparation` must belong to this same parsed request.
+///
+/// # Errors
+///
+/// Returns a producer, model, format, retained-state, or replacement-boundary incompatibility.
 pub(crate) fn prepare_for_target(
     ir: &mut IrRequest,
     parsed: &ParsedCompaction,
     routing: &crate::provider::ModelRouting,
+    preparation: &BoundaryPreparation,
 ) -> Result<Option<RestoredBoundary>, CompactionError> {
-    let _decoded = decode_gateway_boundaries(parsed)?;
     let target_format = routing.provider.definition.payload.format;
     let can_export = routing
         .provider
@@ -229,26 +386,10 @@ pub(crate) fn prepare_for_target(
         .as_ref()
         .is_some_and(|section| section.can_export_native_summary);
     let mut exported_retained = Vec::new();
-    if let Some(active) = parsed
-        .boundaries
-        .iter()
-        .rev()
-        .find(|boundary| !is_null_no_op(boundary))
-    {
+    if let Some(active) = &preparation.active {
         let mut exported = None;
         match active {
-            CompactionBoundary::Gateway {
-                carrier,
-                visible_content,
-                ..
-            } => {
-                let binding = visible_content
-                    .as_deref()
-                    .map(|content| hex_sha256(content.as_bytes()));
-                let envelope = sealing::unseal_with_live_config(
-                    carrier,
-                    binding.as_deref().map(str::as_bytes),
-                )?;
+            PreparedBoundary::Gateway { envelope, .. } => {
                 if let EnvelopePayload::NativeWindow(payload) = &envelope.payload {
                     let is_compatible = payload.producer_instance_id
                         == format!("provider:{}", routing.provider.id)
@@ -271,7 +412,7 @@ pub(crate) fn prepare_for_target(
                     }
                 }
             }
-            CompactionBoundary::Native {
+            PreparedBoundary::Native {
                 offset,
                 artifact: NativeArtifact::MessagesCompactionBlock { .. },
             } if target_format != UpstreamFormat::AnthropicMessages && can_export => {
@@ -285,8 +426,8 @@ pub(crate) fn prepare_for_target(
         }
         if let Some(summary) = exported {
             let offset = match active {
-                CompactionBoundary::Gateway { offset, .. }
-                | CompactionBoundary::Native { offset, .. } => *offset,
+                PreparedBoundary::Gateway { offset, .. }
+                | PreparedBoundary::Native { offset, .. } => *offset,
             };
             if ir.messages.iter().skip(offset).any(|message| {
                 message
@@ -325,7 +466,7 @@ pub(crate) fn prepare_for_target(
             return Ok(None);
         }
     }
-    prepare(ir, parsed, target_format)
+    restore(ir, parsed, preparation, target_format)
 }
 
 /// Reads only a native block whose entire state can be represented by readable text.

@@ -839,13 +839,13 @@ fn completion_definition(payload: serde_json::Value) -> crate::provider::Provide
 /// Panics when the fixture's version number is zero.
 fn completion_flow(base: String) -> crate::storage::oauth_flows::OngoingFlow {
     crate::storage::oauth_flows::OngoingFlow {
+        model_prefix: Some(String::new()),
         id: 1,
         definition_name: "completion-test".to_string(),
         definition_version: std::num::NonZeroI64::new(1).unwrap(),
         state_token: "state-token".to_string(),
         purpose: crate::storage::oauth_flows::FlowPurpose::Create,
         provider_name: Some("test-provider".to_string()),
-        model_prefix: Some(String::new()),
         base_url: Some(base),
         target_provider_id: None,
         grant_type: crate::storage::oauth_flows::FlowGrant::AuthorizationCode,
@@ -1389,7 +1389,6 @@ fn reauthorize_completion_flow(
 
     flow.purpose = crate::storage::oauth_flows::FlowPurpose::Reauthorize;
     flow.provider_name = None;
-    flow.model_prefix = None;
     flow.target_provider_id = Some(target_provider_id);
 
     flow
@@ -1465,7 +1464,6 @@ async fn a_reauthorization_keeps_a_base_the_row_gained_mid_flow() {
         &database,
         &definition,
         "reauthorized",
-        "r-",
         Some("https://begin.example"),
         oauth_credentials("old-token"),
     )
@@ -1570,7 +1568,6 @@ async fn a_reauthorization_writes_a_derived_base_in_the_rebinds_commit() {
         &database,
         &definition,
         "rebound",
-        "rb-",
         Some("https://stored.example"),
         oauth_credentials("old-token"),
     )

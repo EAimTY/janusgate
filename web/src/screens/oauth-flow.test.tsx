@@ -62,11 +62,11 @@ function deviceFlow(expiresAtMicros: number): Extract<
 
 /** The provider row a succeeded completion answers with. */
 const reauthorizedProvider: ProviderResponse = providerRow({
+    model_prefix: "",
     type: "oauth",
     expires_at: 1_700_000_100_000_000,
     id: 7,
     name: "kimi",
-    model_prefix: "kimi-",
     provider_definition_name: "kimi-code",
     format: "openai_chat_completion",
     base_url: null,

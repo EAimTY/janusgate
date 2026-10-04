@@ -84,6 +84,34 @@ pub(super) fn validate(descriptor: &QuotaDescriptor) -> Result<(), ValidationErr
             if !keys.insert(&entry.key) {
                 return Err(invalid("quota entry keys must be unique within a source"));
             }
+            if let QuotaRoutingSource::Models { upstream_ids } = &entry.routing {
+                if upstream_ids.is_empty() {
+                    return Err(invalid("quota routing model selectors must not be empty"));
+                }
+                for source in upstream_ids {
+                    match source {
+                        QuotaTextSource::Literal { value } => {
+                            if !crate::routing_text::is_routing_safe_token(value) {
+                                return Err(invalid(
+                                    "quota routing model IDs must be exact routing tokens",
+                                ));
+                            }
+                        }
+                        QuotaTextSource::Field {
+                            field: selection, ..
+                        } => {
+                            field(selection, true)?;
+                            if !selection.is_required {
+                                return Err(invalid("quota routing model fields must be required"));
+                            }
+                        }
+                        QuotaTextSource::MapKey if is_map => {}
+                        QuotaTextSource::MapKey => {
+                            return Err(invalid("quota routing map_key requires a map source"));
+                        }
+                    }
+                }
+            }
             if let Some(selection) = &entry.is_unlimited {
                 field(selection, true)?;
             }

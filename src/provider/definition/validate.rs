@@ -259,6 +259,9 @@ impl DefinitionPayload {
         let inference = &self.inference;
 
         require_non_empty_expr(&inference.url, "inference URL")?;
+        if let Some(classifier) = &inference.quota_exhaustion {
+            classifier.validate()?;
+        }
 
         if let Some(stream_url) = &inference.stream_url {
             require_non_empty_expr(stream_url, "inference streaming URL")?;

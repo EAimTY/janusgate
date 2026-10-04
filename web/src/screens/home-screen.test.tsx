@@ -4,6 +4,7 @@ import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiKeyResponse,
     ModelResponse,
+    ModelRouteResponse,
     ProviderResponse,
     QueryUsageRequest,
     QueryUsageResponse,
@@ -28,16 +29,16 @@ const BASE_URL = "https://gateway.example.com";
 const vanishedModelRow: ModelResponse = modelRow({
     id: 10,
     upstream_id: "qwen3:14b",
-    public_id: "local-qwen3-14b",
+
     discovery_state: "vanished",
 });
 
 /** One OAuth provider whose authorization lapsed long ago. */
 const expiredOauthProviderRow: ProviderResponse = providerRow({
+    model_prefix: "",
     type: "oauth",
     id: 2,
     name: "codex",
-    model_prefix: "codex-",
     provider_definition_name: "codex-oauth",
     format: "openai_response",
     base_url: null,
@@ -86,6 +87,7 @@ function overviewApi(
     listing: {
         readonly providers?: ReadonlyArray<ProviderResponse>;
         readonly models?: ReadonlyArray<ModelResponse>;
+        readonly modelRoutes?: ReadonlyArray<ModelRouteResponse>;
         readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
     } = {},
 ): ManagementApi {
@@ -102,6 +104,33 @@ function overviewApi(
                 apiKeyRow(),
             ],
         }),
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [
+                    ...(listing.modelRoutes ?? [
+                        {
+                            is_automatic: false,
+                            id: 17,
+                            public_id: "coding",
+                            is_enabled: true,
+                            target: {
+                                type: "direct",
+                                model_id: 9,
+                            },
+                        },
+                        {
+                            is_automatic: false,
+                            id: 18,
+                            public_id: "paused",
+                            is_enabled: false,
+                            target: {
+                                type: "direct",
+                                model_id: 9,
+                            },
+                        },
+                    ]),
+                ],
+            }),
         queryUsage: (request): Promise<QueryUsageResponse> => {
             requests.push(request);
 
@@ -190,9 +219,12 @@ describe("HomeScreen", () => {
         // three-input status, derived from the rows, never the row count —
         // and the hint names the listed total the figure selects from, so
         // the smaller serving count cannot read as a wrong count.
-        expect(linkTo("/models").textContent).toContain("Models routing");
+        expect(linkTo("/models").textContent).toContain("Inventory ready");
         expect(linkTo("/models").textContent).toContain("1");
-        expect(linkTo("/models").textContent).toContain("serving of 2 listed");
+        expect(linkTo("/models").textContent).toContain("ready of 2 listed");
+        expect(linkTo("/routes").textContent).toContain("Public routes");
+        expect(linkTo("/routes").textContent).toContain("1");
+        expect(linkTo("/routes").textContent).toContain("enabled of 2 stored");
 
         expect(linkTo("/api-keys").textContent).toContain("API keys");
         expect(linkTo("/api-keys").textContent).toContain("1");
@@ -292,16 +324,19 @@ describe("HomeScreen", () => {
         // without a key gets 401s, so issuing the key comes first.
         const body = bodyText();
         const keyStep = body.indexOf("Issue an API key for serving clients");
+        const discoverStep = body.indexOf("Discover its models from upstream");
         const clientStep = body.indexOf("Point a client at an endpoint below");
 
         expect(keyStep).toBeGreaterThanOrEqual(0);
+        expect(discoverStep).toBeGreaterThanOrEqual(0);
+        expect(keyStep).toBeGreaterThan(discoverStep);
         expect(clientStep).toBeGreaterThan(keyStep);
         expect(body).not.toContain("Re-enable the provider");
 
         // The listing answers one key, and keys can exist with no provider
         // standing — the Endpoints card below links them — so the key step
         // reads done however early it was issued.
-        expect(stepRow("Issue an API key for serving clients").textContent).not.toContain("4");
+        expect(stepRow("Issue an API key for serving clients").textContent).not.toContain("5");
     });
 
     it("leaves the key step unchecked while no key stands", async () => {
@@ -335,7 +370,7 @@ describe("HomeScreen", () => {
         await settle();
 
         expect(bodyText()).toContain(
-            "has no models serving — every model is switched off or suspended.",
+            "has no ready inventory — every model is switched off or vanished.",
         );
         expect(linkTo("/models?provider=1").textContent).toContain("Review models");
     });
@@ -359,7 +394,7 @@ describe("HomeScreen", () => {
 
         expect(bodyText()).toContain("has no models yet.");
         expect(bodyText()).not.toContain(
-            "has no models serving — every model is switched off or suspended.",
+            "has no ready inventory — every model is switched off or vanished.",
         );
         expect(linkTo("/providers/2").textContent).toContain("Open and discover");
     });
@@ -381,15 +416,26 @@ describe("HomeScreen", () => {
         );
         await settle();
 
-        expect(bodyText()).toContain("Everything looks healthy.");
+        expect(bodyText()).toContain("Stored settings reviewed.");
         expect(bodyText()).not.toContain("has no models serving yet.");
     });
 
-    it("gives a provider whose models serve no attention line", async () => {
-        mount(overviewApi([]));
+    it("guides discovery when no callable model entries exist", async () => {
+        mount(
+            overviewApi([], {
+                modelRoutes: [],
+            }),
+        );
         await settle();
 
-        expect(bodyText()).toContain("Everything looks healthy.");
+        expect(bodyText()).toContain(
+            "No models are available. Discover models on an enabled provider.",
+        );
+        expect(
+            Array.from(document.querySelectorAll('a[href="/models"]')).some((link) =>
+                link.textContent?.includes("Discover models"),
+            ),
+        ).toBe(true);
         expect(bodyText()).not.toContain("has no models serving yet.");
     });
 });

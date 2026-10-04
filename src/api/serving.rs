@@ -5,8 +5,8 @@
 //! completion pipeline [`run_completion`], the SSE and aggregated response machinery with the
 //! request-accounting finalization rules, the body-extractor rejection, the authentication
 //! middleware, the 404/405 fallbacks, and the body-size constant. This duplication is README
-//! §3's accounting invariant itself — exactly three finalization points (dispatch failure in
-//! [`gateway::execute`], the detached non-streaming aggregation task, the SSE render task), the
+//! §3's accounting invariant itself — one current owner (the account-attempt boundary,
+//! the detached non-streaming aggregation task, or the SSE render task), the
 //! declared-status rule, and the client-abort classification — so it is single-sourced here and
 //! every surface renders through the same code.
 //!
@@ -22,6 +22,7 @@ use crate::{
     compaction::{
         accounting::CompactionLedger,
         executor::{self, MessagesOuterOutcome, ResponsesOuterOutcome},
+        history::BoundaryPreparation,
     },
     context::Context,
     database::Database,
@@ -203,13 +204,39 @@ where
 /// renderer ([`Surface::render_error`]) through the universal JSON response builder
 /// [`json_response`]. Every rejection and handler failure the pipeline produces lands on the wire
 /// here, and each surface's handlers reuse it directly for their own failures (README §6.7).
+///
+/// # Panics
+///
+/// Panics if positive decimal retry seconds cannot form a header, which their type prevents.
 pub(super) fn error_response<S>(error: Error) -> Response
 where
     S: Surface,
 {
     let (status, envelope) = S::render_error(&error);
 
-    json_response(status, &envelope)
+    let mut response = json_response(status, &envelope);
+    if let Error::PoolQuotaExhausted {
+        retry_after: Some(seconds),
+        ..
+    }
+    | Error::BoundAccountQuotaExhausted {
+        retry_after: Some(seconds),
+        ..
+    } = error
+    {
+        #[expect(
+            clippy::expect_used,
+            reason = "positive decimal seconds are a valid header value"
+        )]
+        let value = seconds
+            .to_string()
+            .parse()
+            .expect("decimal Retry-After header");
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
 }
 
 /// Handles unmapped surface paths with the surface's 404, logging the rendered error once at this
@@ -345,8 +372,8 @@ impl OperationKind {
 ///
 /// `api_key_id` — extracted from the authentication middleware's stamp — anchors the request's
 /// accounting draft, which this function builds from the routing facts and hands to
-/// [`gateway::execute`] for the dispatch mark. Exactly one of the three finalization points then
-/// records the row: [`gateway::execute`] itself for a post-dispatch failure, the detached
+/// [`gateway::execute`] for the dispatch mark. Exactly one current finalization owner then
+/// records the row: the owned account-attempt boundary for a post-dispatch failure, the detached
 /// non-streaming aggregation task for a non-streaming response, or the SSE render task for a
 /// streaming one (README §3 *ApiLog*). The non-streaming task outlives this handler — hyper
 /// drops the handler the moment the client departs — so a departure mid-generation finalizes the
@@ -388,29 +415,46 @@ where
         }
     };
 
-    let routing = match gateway::resolve_routing(&context.database, &parsed.ir.model).await {
-        Ok(routing) => routing,
+    if parsed.compaction.is_none() {
+        return run_plain_completion::<TFormat>(
+            context,
+            parsed,
+            api_key_id,
+            operation,
+            endpoint_type,
+        )
+        .await;
+    }
 
-        Err(error) => {
-            let error = Error::from(error);
+    let preparation = prepare_compaction_boundaries(&parsed, operation.as_str())?;
 
-            log_error(
-                &format!("{} for model `{}`", operation.as_str(), parsed.ir.model),
-                &error,
-            );
+    let selection =
+        match gateway::resolve_compaction_routing(context, &parsed, &preparation, api_key_id).await
+        {
+            Ok(routing) => routing,
 
-            return Err(error);
-        }
-    };
+            Err(error) => {
+                let error = Error::from(error);
+
+                log_error(
+                    &format!("{} for model `{}`", operation.as_str(), parsed.ir.model),
+                    &error,
+                );
+
+                return Err(error);
+            }
+        };
+
+    let routing = selection.routing.clone();
 
     let log_context = format!(
         "{} for model `{}` via provider `{}`",
         operation.as_str(),
-        routing.model.public_id,
+        routing.public_id,
         routing.provider.name
     );
 
-    let public_id = routing.model.public_id.clone();
+    let public_id = routing.public_id.clone();
 
     let is_streaming = parsed.is_streaming;
 
@@ -419,11 +463,14 @@ where
     // The accounting draft: every fact known before dispatch, built from the authenticated key,
     // the routing row, and the surface's endpoint type; `gateway::execute` stamps the dispatch
     // instant into it (README §3 *ApiLog*).
-    let mut log = ApiLogDraft {
+    let log = ApiLogDraft {
         started_at: None,
         api_key_id,
         provider_id: routing.provider.id,
         model_id: routing.model.id,
+        model_route_id: routing.model_route_id,
+        upstream_http_status: None,
+        progress: crate::storage::api_logs::AttemptProgress::default(),
         endpoint_type,
         is_stream: is_streaming,
         billed_usage: None,
@@ -433,42 +480,95 @@ where
     // through the compaction pipeline: restore, strategy, and the outcome
     // renderings README §6.8 pins. Every other request runs the ordinary
     // path unchanged.
-    if parsed.compaction.is_some() {
-        let request_model = parsed.ir.model.clone();
+    let request_model = parsed.ir.model.clone();
 
-        let outcome = run_compaction_pipeline::<TFormat>(
-            context,
-            parsed,
-            routing,
-            log,
-            log_context,
-            is_streaming,
-            should_include_usage,
-            public_id,
-            operation,
-        )
-        .await;
+    let outcome = run_compaction_pipeline::<TFormat>(
+        context,
+        parsed,
+        preparation,
+        selection,
+        log,
+        log_context,
+        is_streaming,
+        should_include_usage,
+        public_id,
+        operation,
+    )
+    .await;
 
-        if let Err(error) = &outcome {
-            log_error(
-                &format!("{} for model `{}`", operation.as_str(), request_model),
-                error,
-            );
-        }
-
-        return outcome;
+    if let Err(error) = &outcome {
+        log_error(
+            &format!("{} for model `{}`", operation.as_str(), request_model),
+            error,
+        );
     }
 
-    let outcome = async {
-        let events =
-            gateway::execute(context, routing, parsed.ir, is_streaming, &mut log, None).await?;
+    outcome
+}
 
+/// Executes and renders an ordinary operation after quota-aware account selection.
+/// Its final owner chooses outward error accounting; abandoned attempts are already closed.
+///
+/// # Errors
+///
+/// Returns parsing-independent selection or final account failures.
+///
+/// # Panics
+///
+/// Panics if the detached aggregation task violates its guaranteed outcome handoff.
+async fn run_plain_completion<TFormat>(
+    context: &Context,
+    parsed: ParsedRequest,
+    api_key_id: i64,
+    operation: OperationKind,
+    endpoint_type: ApiLogEndpointType,
+) -> Result<Response, Error>
+where
+    TFormat: ClientFormat + 'static,
+    TFormat::JsonResponse: Serialize,
+{
+    let public_id = parsed.ir.model.clone();
+    let is_streaming = parsed.is_streaming;
+    let should_include_usage = parsed.should_include_usage;
+    let selected =
+        match gateway::execute_selection(context, parsed, api_key_id, endpoint_type).await {
+            Ok(selected) => selected,
+            Err(error) => {
+                let error = Error::from(error);
+                log_error(
+                    &format!("{} for model `{public_id}`", operation.as_str()),
+                    &error,
+                );
+                return Err(error);
+            }
+        };
+    let log_context = format!(
+        "{} for model `{public_id}` via provider `{}`",
+        operation.as_str(),
+        selected.routing.provider.name
+    );
+
+    let outcome = async {
+        let (events, log) = match selected.outcome {
+            gateway::AttemptOutcome::Accepted { events, attempt } => (events, attempt.transfer()),
+            gateway::AttemptOutcome::PredispatchFailure { error, attempt }
+            | gateway::AttemptOutcome::Rejected { error, attempt }
+            | gateway::AttemptOutcome::DispatchedFailure { error, attempt } => {
+                let error = Error::from(error);
+                let (outcome, status) = error.accounting();
+                attempt.finalize(outcome, Some(status)).await;
+                return Err(error);
+            }
+        };
+
+        let affinity = selected.affinity;
         if is_streaming {
             Ok(sse_response(
                 events,
                 TFormat::sse_renderer(should_include_usage, public_id),
                 context.api_log_store.clone(),
                 log,
+                affinity,
             ))
         } else {
             // Finalization point 2: the non-streaming path detaches its aggregation into a task
@@ -486,6 +586,7 @@ where
                 log,
                 log_context.clone(),
                 outcome_sender,
+                affinity,
             ));
 
             // Detaching the handle is the point: the task must outlive this handler, which is
@@ -511,6 +612,29 @@ where
     }
 
     outcome
+}
+
+/// Authenticates the request's carriers before route selection, with no upstream or storage I/O.
+/// The returned proof is retained through compatibility, restoration, and same-account fallback.
+///
+/// # Errors
+///
+/// Returns and logs a carrier authentication or visible-content binding failure.
+fn prepare_compaction_boundaries(
+    parsed: &ParsedRequest,
+    operation: &str,
+) -> Result<BoundaryPreparation, Error> {
+    parsed
+        .compaction
+        .as_ref()
+        .map(BoundaryPreparation::authenticate)
+        .transpose()
+        .map(|preparation| preparation.unwrap_or_default())
+        .map_err(|error| {
+            let error = Error::from(gateway::Error::from(error));
+            log_error(&format!("{operation} request"), &error);
+            error
+        })
 }
 
 /// The kind of outward surface a compaction-carrying request renders through:
@@ -620,9 +744,10 @@ async fn finalize_compaction_failure(context: &Context, log: &ApiLogDraft, error
 async fn run_compaction_pipeline<TFormat>(
     context: &Context,
     parsed: ParsedRequest,
-    routing: crate::provider::ModelRouting,
+    preparation: BoundaryPreparation,
+    mut selection: gateway::CompactionSelection,
     log: ApiLogDraft,
-    log_context: String,
+    mut log_context: String,
     is_streaming: bool,
     should_include_usage: bool,
     public_id: String,
@@ -637,19 +762,43 @@ where
         store: context.api_log_store.clone(),
         has_transferred: false,
     };
-    let outcome = run_compaction_pipeline_inner::<TFormat>(
-        context,
-        parsed,
-        routing,
-        &mut guard.draft,
-        log_context,
-        is_streaming,
-        should_include_usage,
-        public_id,
-        operation,
-        &mut guard.has_transferred,
-    )
-    .await;
+    let outcome = loop {
+        let routing = selection.routing.clone();
+        let outcome = run_compaction_pipeline_inner::<TFormat>(
+            context,
+            parsed.clone(),
+            &preparation,
+            &mut selection,
+            routing,
+            &mut guard.draft,
+            log_context.clone(),
+            is_streaming,
+            should_include_usage,
+            public_id.clone(),
+            operation,
+            &mut guard.has_transferred,
+        )
+        .await;
+        if matches!(outcome, Err(Error::QuotaRejected { .. })) {
+            match selection
+                .advance_after_quota_rejection(context, &mut guard.draft)
+                .await
+            {
+                Ok(true) => {
+                    log_context = format!(
+                        "{} for model `{}` via provider `{}`",
+                        operation.as_str(),
+                        selection.routing.public_id,
+                        selection.routing.provider.name,
+                    );
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => break Err(error.into()),
+            }
+        }
+        break outcome;
+    };
     if !guard.has_transferred {
         guard.has_transferred = true;
         if let Err(error) = &outcome {
@@ -664,6 +813,8 @@ where
 async fn run_compaction_pipeline_inner<TFormat>(
     context: &Context,
     parsed: crate::format::ParsedRequest,
+    preparation: &BoundaryPreparation,
+    selection: &mut gateway::CompactionSelection,
     routing: crate::provider::ModelRouting,
     log: &mut ApiLogDraft,
     log_context: String,
@@ -684,12 +835,20 @@ where
     // it (README §6.8).
     let stamp_billed = |log: &mut ApiLogDraft, ledger: Option<&CompactionLedger>| {
         if let Some(ledger) = ledger {
-            log.stamp_billed_usage(ledger.billed_totals());
+            log.stamp_billed_usage(ledger.reported_billed_totals());
         }
     };
 
     if surface == CompactionSurface::Messages {
-        let outcome = executor::execute_messages_request(context, &routing, &parsed, log).await?;
+        let outcome = executor::execute_messages_request(
+            context,
+            &routing,
+            &parsed,
+            preparation,
+            log,
+            Some(&mut selection.ownership),
+        )
+        .await?;
 
         match outcome {
             MessagesOuterOutcome::Ordinary {
@@ -700,7 +859,6 @@ where
                 let dispatch = CompactionDispatch {
                     threshold_edits,
                     overlay_headers,
-                    should_defer_failure_accounting: true,
                     ..CompactionDispatch::default()
                 };
 
@@ -715,6 +873,8 @@ where
                     public_id.clone(),
                     dispatch,
                     parsed.clone(),
+                    preparation,
+                    selection,
                     operation,
                     has_transferred,
                 )
@@ -723,11 +883,20 @@ where
 
             MessagesOuterOutcome::CompactionOnly {
                 block,
+                artifact_id,
                 iterations,
                 ledger,
             } => {
                 stamp_billed(log, Some(&ledger));
 
+                let affinity = selection.accepted().map(|accepted| {
+                    accepted.completed_prefix(
+                        crate::format::anthropic::messages::completed_compaction_anchors(
+                            &block,
+                            artifact_id.as_deref(),
+                        ),
+                    )
+                });
                 compaction_only_messages_response(
                     context,
                     &public_id,
@@ -741,6 +910,7 @@ where
                         )
                     }),
                     log.clone(),
+                    affinity,
                 )
             }
 
@@ -757,11 +927,13 @@ where
                     is_streaming,
                     should_include_usage,
                     log.clone(),
+                    selection.accepted(),
                 )
             }
 
             MessagesOuterOutcome::ContinueWithCheckpoint {
                 prefix_blocks,
+                artifact_id,
                 ir,
                 overlay_headers,
                 iterations,
@@ -783,12 +955,22 @@ where
                     iterations,
                     overlay_headers,
                     has_transferred,
+                    selection,
+                    artifact_id,
                 )
                 .await
             }
         }
     } else {
-        let outcome = executor::execute_responses_request(context, &routing, &parsed, log).await?;
+        let outcome = executor::execute_responses_request(
+            context,
+            &routing,
+            &parsed,
+            preparation,
+            log,
+            Some(&mut selection.ownership),
+        )
+        .await?;
 
         match outcome {
             ResponsesOuterOutcome::Ordinary {
@@ -799,7 +981,6 @@ where
                 let dispatch = CompactionDispatch {
                     context_management,
                     overlay_headers,
-                    should_defer_failure_accounting: true,
                     ..CompactionDispatch::default()
                 };
 
@@ -814,6 +995,8 @@ where
                     public_id.clone(),
                     dispatch,
                     parsed.clone(),
+                    preparation,
+                    selection,
                     operation,
                     has_transferred,
                 )
@@ -822,19 +1005,22 @@ where
 
             ResponsesOuterOutcome::CompactionOnly {
                 items,
+                artifact_id,
                 usage,
                 ledger,
             } => {
                 stamp_billed(log, Some(&ledger));
 
-                compaction_only_responses_response(
+                let response = compaction_only_responses_response(
                     context,
                     &public_id,
                     &items,
                     usage,
                     is_streaming,
                     log.clone(),
-                )
+                )?;
+                selection.register_gateway_window(&artifact_id, &items);
+                Ok(response)
             }
 
             ResponsesOuterOutcome::NativeLifecycle {
@@ -842,7 +1028,7 @@ where
                 ledger,
             } => {
                 stamp_billed(log, Some(&ledger));
-
+                let affinity = selection.accepted();
                 aggregated_artifact_response(
                     context,
                     &public_id,
@@ -850,11 +1036,13 @@ where
                     is_streaming,
                     should_include_usage,
                     log.clone(),
+                    affinity,
                 )
             }
 
             ResponsesOuterOutcome::ContinueWithCheckpoint {
                 prefix_items,
+                artifact_id,
                 ir,
                 overlay_headers,
                 ledger,
@@ -875,6 +1063,8 @@ where
                     Vec::new(),
                     overlay_headers,
                     has_transferred,
+                    selection,
+                    artifact_id,
                 )
                 .await
             }
@@ -898,6 +1088,8 @@ async fn ordinary_completion<TFormat>(
     public_id: String,
     dispatch: CompactionDispatch,
     fallback_request: ParsedRequest,
+    preparation: &BoundaryPreparation,
+    selection: &mut gateway::CompactionSelection,
     operation: OperationKind,
     has_transferred: &mut bool,
 ) -> Result<Response, Error>
@@ -912,11 +1104,15 @@ where
         is_streaming,
         log,
         Some(&dispatch),
+        Some(&mut selection.ownership),
     )
     .await;
     let events = match events {
         Ok(events) => events,
-        Err(Error::Upstream { status, message }) => {
+        Err(gateway::Error::Upstream {
+            status,
+            detail: message,
+        }) => {
             let section = routing.provider.definition.payload.compaction.as_ref();
             let classifier = if dispatch.context_management.is_some() {
                 section
@@ -942,6 +1138,8 @@ where
                 return Box::pin(run_compaction_pipeline_inner::<TFormat>(
                     context,
                     fallback_request,
+                    preparation,
+                    selection,
                     fallback_routing,
                     log,
                     log_context,
@@ -955,7 +1153,7 @@ where
             }
             return Err(Error::Upstream { status, message });
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
 
     *has_transferred = true;
@@ -982,6 +1180,7 @@ where
             renderer,
             context.api_log_store.clone(),
             log.clone(),
+            selection.accepted(),
         ))
     } else {
         detached_aggregation::<TFormat>(
@@ -993,6 +1192,7 @@ where
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            selection.accepted(),
         )
         .await
     }
@@ -1004,6 +1204,14 @@ where
 /// it — prefix items on the Responses surface, prefix blocks on Messages,
 /// beside the lifecycle's vendor-shaped iteration entries on the Messages
 /// surface (README §6.8).
+///
+/// # Errors
+///
+/// Returns the selected account's continuation dispatch or response failure.
+///
+/// # Panics
+///
+/// Panics if the executor's sealed single checkpoint lacks its replayable wire fields.
 async fn checkpoint_completion<TFormat>(
     context: &Context,
     routing: crate::provider::ModelRouting,
@@ -1018,6 +1226,8 @@ async fn checkpoint_completion<TFormat>(
     iterations: Vec<serde_json::Value>,
     overlay_headers: Vec<crate::provider::definition::template::ParamRow>,
     has_transferred: &mut bool,
+    selection: &mut gateway::CompactionSelection,
+    artifact_id: String,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
@@ -1025,10 +1235,53 @@ where
 {
     let dispatch = CompactionDispatch {
         overlay_headers,
-        should_defer_failure_accounting: true,
         ..CompactionDispatch::default()
     };
-    let events = gateway::execute(context, routing, ir, is_streaming, log, Some(&dispatch)).await?;
+    let events = gateway::execute(
+        context,
+        routing,
+        ir,
+        is_streaming,
+        log,
+        Some(&dispatch),
+        Some(&mut selection.ownership),
+    )
+    .await?;
+
+    let affinity = selection.accepted().map(|accepted| {
+        let (projector, anchors) = if prefix_blocks.is_empty() {
+            #[expect(
+                clippy::expect_used,
+                reason = "the executor emits a sealed replayable checkpoint"
+            )]
+            let projector =
+                crate::format::openai::response::gateway_checkpoint_projection(&prefix_items)
+                    .expect("a prepared Responses checkpoint has a canonical projection");
+            let mut anchors = projector.completed_anchors();
+            anchors.push(crate::affinity::Anchor::Artifact(
+                projector.gateway_artifact(&artifact_id),
+            ));
+            (projector, anchors)
+        } else {
+            #[expect(
+                clippy::expect_used,
+                reason = "the executor emits one sealed Messages checkpoint"
+            )]
+            let block = prefix_blocks
+                .first()
+                .expect("the checkpoint prefix contains its block");
+            #[expect(
+                clippy::expect_used,
+                reason = "the sealed block has accepted replay fields"
+            )]
+            crate::format::anthropic::messages::completed_compaction_projection(
+                block,
+                Some(&artifact_id),
+            )
+            .expect("a prepared Messages checkpoint has a canonical projection")
+        };
+        accepted.completed_checkpoint(projector, anchors)
+    });
 
     *has_transferred = true;
     if is_streaming {
@@ -1043,6 +1296,7 @@ where
             renderer,
             context.api_log_store.clone(),
             log.clone(),
+            affinity,
         ))
     } else {
         detached_aggregation::<TFormat>(
@@ -1054,6 +1308,7 @@ where
             prefix_items,
             prefix_blocks,
             iterations,
+            affinity,
         )
         .await
     }
@@ -1157,6 +1412,10 @@ fn compaction_only_responses_response(
 
 /// Renders the Messages compact-only outcome: one compaction block with
 /// `stop_reason: "compaction"` and the iteration usage (README §6.8).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "delivery owns the prepared account binding"
+)]
 fn compaction_only_messages_response(
     context: &Context,
     public_id: &str,
@@ -1165,6 +1424,7 @@ fn compaction_only_messages_response(
     is_streaming: bool,
     is_threshold_compaction: bool,
     log: ApiLogDraft,
+    mut affinity: Option<crate::affinity::Accepted>,
 ) -> Result<Response, Error> {
     if is_streaming {
         let renderer = crate::format::anthropic::messages::SseRenderer::with_compaction_prefix(
@@ -1188,6 +1448,7 @@ fn compaction_only_messages_response(
             Box::new(renderer),
             context.api_log_store.clone(),
             log,
+            affinity,
         ))
     } else {
         let usage = CompactionOnlyUsage {
@@ -1200,6 +1461,9 @@ fn compaction_only_messages_response(
 
         let body = render_compaction_only_response(public_id, block.clone(), &usage);
 
+        if let Some(affinity) = affinity.as_mut() {
+            affinity.complete_artifacts();
+        }
         Ok(finalize_buffered(context, &log, &body))
     }
 }
@@ -1214,6 +1478,7 @@ fn aggregated_artifact_response(
     is_streaming: bool,
     should_include_usage: bool,
     mut log: ApiLogDraft,
+    mut affinity: Option<crate::affinity::Accepted>,
 ) -> Result<Response, Error> {
     let _ = should_include_usage;
 
@@ -1242,38 +1507,31 @@ fn aggregated_artifact_response(
             renderer,
             context.api_log_store.clone(),
             log,
+            affinity,
         ))
     } else {
         // A validated single-artifact lifecycle carries no checkpoint prefix:
         // the plain aggregated render keeps its native semantics — usage
         // without gateway-fabricated iteration entries.
-        let body = if log.endpoint_type == ApiLogEndpointType::AnthropicMessages {
-            serde_json::to_value(
-                crate::format::anthropic::messages::Format::render_json_response(
-                    public_id,
-                    aggregation,
-                ),
-            )
-            .map_err(|error| {
-                Error::from(crate::gateway::Error::Internal {
-                    message: error.to_string(),
-                })
-            })?
+        if log.endpoint_type == ApiLogEndpointType::AnthropicMessages {
+            let body = crate::format::anthropic::messages::Format::render_json_response(
+                public_id,
+                aggregation,
+            );
+            if let Some(affinity) = &mut affinity {
+                affinity.complete_json::<crate::format::anthropic::messages::Format>(&body);
+            }
+            Ok(finalize_buffered(context, &log, &body))
         } else {
-            serde_json::to_value(
-                crate::format::openai::response::Format::render_json_response(
-                    public_id,
-                    aggregation,
-                ),
-            )
-            .map_err(|error| {
-                Error::from(crate::gateway::Error::Internal {
-                    message: error.to_string(),
-                })
-            })?
-        };
-
-        Ok(finalize_buffered(context, &log, &body))
+            let body = crate::format::openai::response::Format::render_json_response(
+                public_id,
+                aggregation,
+            );
+            if let Some(affinity) = &mut affinity {
+                affinity.complete_json::<crate::format::openai::response::Format>(&body);
+            }
+            Ok(finalize_buffered(context, &log, &body))
+        }
     }
 }
 
@@ -1339,6 +1597,7 @@ async fn detached_aggregation<TFormat>(
     prefix_items: Vec<serde_json::Value>,
     prefix_blocks: Vec<serde_json::Value>,
     iterations: Vec<serde_json::Value>,
+    affinity: Option<crate::affinity::Accepted>,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
@@ -1356,6 +1615,7 @@ where
         prefix_items,
         prefix_blocks,
         iterations,
+        affinity,
     ));
 
     drop(aggregation);
@@ -1391,6 +1651,7 @@ async fn aggregated_with_prefix_task<TFormat>(
     prefix_items: Vec<serde_json::Value>,
     prefix_blocks: Vec<serde_json::Value>,
     iterations: Vec<serde_json::Value>,
+    mut affinity: Option<crate::affinity::Accepted>,
 ) where
     TFormat: ClientFormat,
     TFormat::JsonResponse: Serialize,
@@ -1407,11 +1668,12 @@ async fn aggregated_with_prefix_task<TFormat>(
         let body =
             TFormat::render_json_response_with_prefix(&public_id, aggregation, prefix, &iterations);
 
-        #[expect(
-            clippy::expect_used,
-            reason = "serializing a concrete first-party response body cannot fail"
-        )]
-        serde_json::to_value(&body).expect("the rendered body serializes")
+        if !outcome_sender.is_closed()
+            && let Some(affinity) = affinity.as_mut()
+        {
+            affinity.complete_json::<TFormat>(&body);
+        }
+        body
     })
     .await;
 
@@ -1493,22 +1755,23 @@ pub(super) async fn run_compact(
         }
     };
 
-    let routing = match gateway::resolve_routing(&context.database, &parsed.ir.model).await {
-        Ok(routing) => routing,
+    let preparation = prepare_compaction_boundaries(&parsed, "compact")?;
 
-        Err(error) => {
-            let error = Error::from(error);
+    let mut selection =
+        match gateway::resolve_compaction_routing(context, &parsed, &preparation, api_key_id).await
+        {
+            Ok(routing) => routing,
 
-            log_error(&format!("compact for model `{}`", parsed.ir.model), &error);
+            Err(error) => {
+                let error = Error::from(error);
 
-            return Err(error);
-        }
-    };
+                log_error(&format!("compact for model `{}`", parsed.ir.model), &error);
 
-    let log_context = format!(
-        "compact for model `{}` via provider `{}`",
-        routing.model.public_id, routing.provider.name
-    );
+                return Err(error);
+            }
+        };
+
+    let routing = selection.routing.clone();
 
     // The accounting draft: every fact known before dispatch. The executor
     // stamps the dispatch instant at each internal send and the billed totals
@@ -1520,6 +1783,9 @@ pub(super) async fn run_compact(
         api_key_id,
         provider_id: routing.provider.id,
         model_id: routing.model.id,
+        model_route_id: routing.model_route_id,
+        upstream_http_status: None,
+        progress: crate::storage::api_logs::AttemptProgress::default(),
         endpoint_type: ApiLogEndpointType::OpenaiResponsesCompact,
         is_stream: false,
         billed_usage: None,
@@ -1530,15 +1796,44 @@ pub(super) async fn run_compact(
         store: context.api_log_store.clone(),
         has_transferred: false,
     };
-    let outcome =
-        executor::execute_responses_compact(context, &routing, &parsed, &mut guard.draft).await;
+    let outcome = loop {
+        let outcome = executor::execute_responses_compact(
+            context,
+            &selection.routing,
+            &parsed,
+            &preparation,
+            &mut guard.draft,
+            Some(&mut selection.ownership),
+        )
+        .await;
+        if matches!(outcome, Err(Error::QuotaRejected { .. })) {
+            match selection
+                .advance_after_quota_rejection(context, &mut guard.draft)
+                .await
+            {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => break Err(error.into()),
+            }
+        }
+        break outcome;
+    };
     guard.has_transferred = true;
     match outcome {
-        Ok(body) => Ok(finalize_buffered(context, &guard.draft, &body)),
+        Ok(body) => {
+            selection.register_compacted(&body);
+            Ok(finalize_buffered(context, &guard.draft, &body))
+        }
 
         Err(error) => {
             finalize_compaction_failure(context, &guard.draft, &error).await;
-            log_error(&log_context, &error);
+            log_error(
+                &format!(
+                    "compact for model `{}` via provider `{}`",
+                    selection.routing.public_id, selection.routing.provider.name
+                ),
+                &error,
+            );
 
             Err(error)
         }
@@ -1566,12 +1861,21 @@ async fn aggregated_response_task<TFormat>(
     log: ApiLogDraft,
     log_context: String,
     outcome_sender: tokio::sync::oneshot::Sender<Result<Response, Error>>,
+    mut affinity: Option<crate::affinity::Accepted>,
 ) where
     TFormat: ClientFormat,
     TFormat::JsonResponse: Serialize,
 {
     let aggregation = aggregated_response(events, |aggregation| {
-        TFormat::render_json_response(&public_id, aggregation)
+        let response = TFormat::render_json_response(&public_id, aggregation);
+        // Known handler departure creates no completed output. A later failed terminal handoff
+        // leaves the already-created account hint harmless, without claiming client receipt.
+        if !outcome_sender.is_closed()
+            && let Some(affinity) = affinity.as_mut()
+        {
+            affinity.complete_json::<TFormat>(&response);
+        }
+        response
     })
     .await;
 
@@ -1709,12 +2013,17 @@ fn sse_response(
     mut renderer: Box<dyn ClientSseRenderer + Send>,
     api_log_store: Option<api_logs::ApiLogStore>,
     log: ApiLogDraft,
+    mut affinity: Option<crate::affinity::Accepted>,
 ) -> Response {
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<Bytes, IoError>>(gateway::EVENT_CHANNEL_BUFFER);
 
     tokio::spawn(async move {
         let mut events = events;
+        // The codec receives only accepted client history; the task retains account ownership.
+        if let Some(affinity) = affinity.as_ref() {
+            affinity.begin_projection(renderer.as_mut());
+        }
 
         // Whether any frame reached the client's channel; the first one declares HTTP 200.
         let mut is_status_declared = false;
@@ -1722,6 +2031,8 @@ fn sse_response(
         // The last usage the stream reported, recorded best-effort at finalization.
         let mut usage: Option<IrUsage> = None;
         let mut iteration_usage: Option<IrUsage> = None;
+        // A codec can render no additional terminal frame when usage is absent; EOF completes it.
+        let mut has_completed_output = false;
 
         while let Some(item) = events.next().await {
             match item {
@@ -1734,7 +2045,50 @@ fn sse_response(
                         usage = Some(*reported);
                     }
 
-                    for frame in renderer.render(&event) {
+                    has_completed_output |= matches!(event, IrEvent::Done);
+                    let frames = renderer.render(&event);
+                    let completed_artifact = renderer.take_completed_artifact();
+                    let terminal_index = if matches!(event, IrEvent::Done) {
+                        frames.len().checked_sub(1)
+                    } else {
+                        None
+                    };
+                    let prefix_boundary = renderer.take_prefix_boundary();
+                    let artifact_terminal_index = affinity
+                        .as_ref()
+                        .and_then(|accepted| accepted.prepared_prefix_boundary(prefix_boundary));
+                    for (index, frame) in frames.into_iter().enumerate() {
+                        if completed_artifact
+                            .as_ref()
+                            .is_some_and(|artifact| artifact.terminal_index == index)
+                            && !sender.is_closed()
+                            && let Some(affinity) = affinity.as_ref()
+                            && let Some(artifact) = &completed_artifact
+                        {
+                            affinity.register_released_artifact(&artifact.anchors);
+                        }
+                        // The validated native item or prepared single-block prefix is complete.
+                        // Publish its digest immediately before that item's
+                        // final emitted frame, after its earlier frames
+                        // passed the channel. A later answer failure does
+                        // not erase a completed released checkpoint.
+                        if Some(index) == artifact_terminal_index
+                            && !sender.is_closed()
+                            && let Some(affinity) = affinity.as_mut()
+                        {
+                            affinity.complete_artifacts();
+                        }
+                        // Earlier completion-tail frames still flow normally. Only the actual
+                        // terminal handoff publishes a fully replayable output; a later failed
+                        // handoff leaves a harmless hint, never proof that the client received it.
+                        if Some(index) == terminal_index
+                            && !sender.is_closed()
+                            && let Some(affinity) = affinity.as_mut()
+                        {
+                            if let Some(projector) = renderer.take_projection() {
+                                affinity.complete_projection(projector);
+                            }
+                        }
                         if sender.send(Ok(frame.into())).await.is_err() {
                             // The client's body channel is gone: a client abort, keyed only on
                             // what was actually enqueued before it broke.
@@ -1793,6 +2147,23 @@ fn sse_response(
             }
         }
 
+        if sender.is_closed() {
+            api_logs::finalize_api_log(
+                api_log_store.as_ref(),
+                &log,
+                ApiLogOutcome::ClientAborted,
+                declared_status(is_status_declared),
+                iteration_usage.or(usage),
+            )
+            .await;
+            return;
+        }
+        if has_completed_output && let Some(affinity) = affinity.as_mut() {
+            if let Some(projector) = renderer.take_projection() {
+                affinity.complete_projection(projector);
+            }
+        }
+
         // A clean end of stream: every event rendered and the body closed normally.
         api_logs::finalize_api_log(
             api_log_store.as_ref(),
@@ -1802,6 +2173,7 @@ fn sse_response(
             iteration_usage.or(usage),
         )
         .await;
+        drop(affinity);
     });
 
     #[expect(clippy::expect_used, reason = "SSE responses have known-valid parts")]
@@ -1835,7 +2207,7 @@ fn declared_status(is_status_declared: bool) -> Option<i64> {
 /// Returns the stream's failure beside the usage observed before it.
 async fn aggregated_response<TBody>(
     events: IrEventStream,
-    render_json_fn: impl Fn(&IrAggregation) -> TBody,
+    render_json_fn: impl FnOnce(&IrAggregation) -> TBody,
 ) -> Result<(Response, Option<IrUsage>), (Error, Option<IrUsage>)>
 where
     TBody: Serialize,
@@ -1910,6 +2282,10 @@ mod tests {
         Context {
             database,
             api_log_store: None,
+            affinity_cache: std::sync::Arc::new(crate::affinity::Cache::default()),
+            quota_coordinator: std::sync::Arc::new(
+                crate::provider::quota::coordinator::Coordinator::default(),
+            ),
             data_plane: crate::http_client::data_plane(),
             control_plane: crate::http_client::control_plane(),
         }
@@ -1946,6 +2322,9 @@ mod tests {
             api_key_id: 3,
             provider_id: 5,
             model_id: 7,
+            model_route_id: 7,
+            upstream_http_status: None,
+            progress: crate::storage::api_logs::AttemptProgress::default(),
             endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
             is_stream: false,
             billed_usage: None,
@@ -2113,6 +2492,7 @@ mod tests {
             stamped_draft(),
             log_context(),
             outcome_sender,
+            None,
         );
 
         // The handler departs mid-generation: hyper drops it together with the oneshot receiver.
@@ -2154,6 +2534,7 @@ mod tests {
             stamped_draft(),
             log_context(),
             outcome_sender,
+            None,
         );
 
         send_clean_events(&events_sender).await;
@@ -2223,6 +2604,7 @@ mod tests {
             stamped_draft(),
             log_context(),
             outcome_sender,
+            None,
         );
 
         send_failing_events(&events_sender).await;
@@ -2268,6 +2650,7 @@ mod tests {
             stamped_draft(),
             log_context(),
             departed_outcome_sender,
+            None,
         );
 
         drop(departed_outcome_receiver);
@@ -2312,6 +2695,7 @@ mod tests {
             stamped_draft(),
             log_context(),
             outcome_sender,
+            None,
         );
 
         send_failing_events_with_usage(&events_sender).await;
@@ -2347,7 +2731,6 @@ mod tests {
             &database,
             &definition,
             "mock",
-            "",
             Some("https://mock.test"),
             StoredCredentials::ApiKey {
                 api_key: "upstream-secret".to_string(),
@@ -2356,12 +2739,11 @@ mod tests {
         .await;
 
         #[expect(clippy::expect_used, reason = "the fixture model inserts")]
-        insert_model_checked(
+        let model = insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: provider.id,
                 upstream_id: "test-model",
-                id_override: None,
                 is_enabled: true,
                 thinking_levels_override: None,
                 max_input_tokens_override: None,
@@ -2371,6 +2753,17 @@ mod tests {
         )
         .await
         .expect("the fixture model inserts");
+        #[expect(clippy::expect_used, reason = "the fixture route publishes")]
+        crate::storage::routing::create_route(
+            &database,
+            "test-model",
+            true,
+            &crate::routing::ModelRouteTarget::Direct {
+                model_id: model.model.id,
+            },
+        )
+        .await
+        .expect("fixture route publishes");
 
         (database, guard)
     }
@@ -2497,11 +2890,11 @@ mod tests {
     async fn compaction_cancellation_preserves_billed_work() {
         let (store, _directory) = test_store();
         let mut draft = stamped_draft();
-        draft.stamp_billed_usage(IrUsage {
+        draft.stamp_billed_usage(Some(IrUsage {
             input_tokens: 20,
             output_tokens: 5,
             ..IrUsage::default()
-        });
+        }));
         drop(CompactionLogGuard {
             draft,
             store: Some(store.clone()),
@@ -2554,6 +2947,7 @@ mod tests {
                     )),
                     Some(store.clone()),
                     stamped_draft(),
+                    None,
                 );
                 #[expect(clippy::expect_used, reason = "the healthy fixture stream reads")]
                 let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -2568,6 +2962,7 @@ mod tests {
                     stamped_draft(),
                     log_context(),
                     sender,
+                    None,
                 )
                 .await;
                 #[expect(
@@ -2661,10 +3056,14 @@ mod tests {
                 &RouteContext::empty(),
             )
             .expect("request");
+            #[expect(clippy::expect_used, reason = "the fixture's state authenticates")]
+            let preparation = prepare_compaction_boundaries(&parsed, "completion")
+                .expect("authenticated compaction state");
             let outcome = run_compaction_pipeline::<crate::format::openai::response::Format>(
                 &context,
                 parsed,
-                routing,
+                preparation,
+                gateway::CompactionSelection::direct(routing),
                 stamped_draft(),
                 log_context(),
                 false,
@@ -2679,5 +3078,621 @@ mod tests {
             assert_eq!(row.input_tokens, Some(20));
             assert_eq!(row.output_tokens, Some(5));
         }
+    }
+
+    /// Completed JSON output becomes a history anchor before handoff; known departures and
+    /// failed bodies retain only their request retry hint, never a completed output anchor.
+    /// Namespace deletion fences the detached task's later callback as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns fixture parser, channel, or task failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if result ownership or completion/disconnect anchoring diverges.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "affinity fixtures serialize configuration"
+    )]
+    async fn json_history_registration_obeys_completion_and_owned_task_lifetime()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _configuration = crate::test_support::configuration_lock();
+        crate::test_support::install_global_configuration();
+        for (is_departed, has_failure, is_deleted) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let cache = std::sync::Arc::new(crate::affinity::Cache::default());
+            let namespace = crate::affinity::Namespace {
+                api_key_id: 3,
+                pool_id: 11,
+            };
+            let original = ChatCompletionFormat::parse_request(
+                br#"{
+                "model":"M","messages":[{"role":"user","content":"input"}]}
+                "#,
+                &RouteContext::empty(),
+            )?;
+            let projector = original.affinity.project(&original.ir.messages);
+            let evidence = projector.evidence();
+            #[expect(clippy::panic, reason = "a wrong decision is the test failure report")]
+            let crate::affinity::Decision::Fresh(lease) = cache.acquire(namespace, &evidence)
+            else {
+                panic!("new request establishment");
+            };
+            let affinity = crate::affinity::Accepted::new(lease.commit(5), projector);
+            let (sender, events) = event_channel();
+            let (outcome_sender, outcome_receiver) = oneshot::channel();
+            let task = tokio::spawn(aggregated_response_task::<ChatCompletionFormat>(
+                events,
+                "M".into(),
+                None,
+                stamped_draft(),
+                log_context(),
+                outcome_sender,
+                Some(affinity),
+            ));
+            let outcome_receiver = if is_departed {
+                drop(outcome_receiver);
+                None
+            } else {
+                Some(outcome_receiver)
+            };
+            if is_deleted {
+                cache.remove_api_key(namespace.api_key_id);
+            }
+            if has_failure {
+                send_events(
+                    &sender,
+                    [
+                        Ok(IrEvent::TextDelta("hello".into())),
+                        Err(gateway::Error::Unavailable {
+                            detail: "failed".into(),
+                        }),
+                        Ok(IrEvent::Done),
+                    ],
+                )
+                .await;
+            } else {
+                send_clean_events(&sender).await;
+            }
+            drop(sender);
+            if let Some(receiver) = outcome_receiver {
+                let response = receiver.await?;
+                assert_eq!(response.is_err(), has_failure);
+                if let Ok(response) = response {
+                    let body = axum::body::to_bytes(response.into_body(), 262_144).await?;
+                    let body: serde_json::Value = serde_json::from_slice(&body)?;
+                    assert_eq!(
+                        body.pointer("/choices/0/message/content"),
+                        Some(&serde_json::Value::String("hello".into()))
+                    );
+                }
+            }
+            task.await?;
+            let replay = ChatCompletionFormat::parse_request(
+                br#"{
+                "model":"changed-public-name","messages":[
+                    {"role":"user","content":"input"},
+                    {"role":"assistant","content":"hello"},
+                    {"role":"user","content":"next"}]}
+                "#,
+                &RouteContext::empty(),
+            )?;
+            let replay = replay.affinity.project(&replay.ir.messages).evidence();
+            match cache.acquire(namespace, &replay) {
+                crate::affinity::Decision::Bound(binding) => {
+                    assert!(!is_departed && !has_failure && !is_deleted);
+                    assert_eq!(binding.provider_id(), 5);
+                }
+                crate::affinity::Decision::Fresh(_) => {
+                    assert!(is_departed || has_failure || is_deleted);
+                }
+                #[expect(clippy::panic, reason = "a wrong decision is the test failure report")]
+                _ => panic!("replay is an established completed output or a fresh miss"),
+            }
+            if !is_deleted {
+                #[expect(clippy::panic, reason = "a wrong decision is the test failure report")]
+                let crate::affinity::Decision::Bound(binding) = cache.acquire(namespace, &evidence)
+                else {
+                    panic!("accepted headers retain their independent retry hint");
+                };
+                assert_eq!(binding.provider_id(), 5);
+            }
+        }
+        Ok(())
+    }
+
+    /// Prepared prefixes and live native checkpoints register at their block stop and survive a
+    /// later failure, and suppress hints after an already known departure or namespace
+    /// deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns fixture parser, channel, or response-body failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture lacks its artifact or violates delivery ownership.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "affinity fixtures serialize configuration"
+    )]
+    async fn prepared_checkpoint_registration_obeys_block_delivery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::format::anthropic::messages::SseRenderer as MessagesRenderer;
+        let _configuration = crate::test_support::configuration_lock();
+        crate::test_support::install_global_configuration();
+        for client_format in [
+            "messages",
+            "messages_checkpoint",
+            "responses_checkpoint",
+            "messages_native",
+        ] {
+            for is_threshold in [false, true] {
+                for (has_failure, is_departed, is_deleted) in [
+                    (false, false, false),
+                    (true, false, false),
+                    (false, true, false),
+                    (false, false, true),
+                ] {
+                    let cache = std::sync::Arc::new(crate::affinity::Cache::default());
+                    let namespace = crate::affinity::Namespace {
+                        api_key_id: 3,
+                        pool_id: 11,
+                    };
+                    let original = ChatCompletionFormat::parse_request(
+                        br#"{"model":"M","messages":[{"role":"user","content":"input"}]}"#,
+                        &RouteContext::empty(),
+                    )?;
+                    let projector = original.affinity.project(&original.ir.messages);
+                    #[expect(
+                        clippy::panic,
+                        reason = "unexpected fixture establishment fails the test"
+                    )]
+                    let crate::affinity::Decision::Fresh(lease) =
+                        cache.acquire(namespace, &projector.evidence())
+                    else {
+                        panic!("fresh prefix fixture");
+                    };
+                    let block = if client_format == "responses_checkpoint" {
+                        serde_json::json!({"type":"compaction","encrypted_content":"native state"})
+                    } else {
+                        serde_json::json!({"type":"compaction","content":"summary",
+                        "signature":"native signature","tool_changes":[{"z":2,"a":1}]})
+                    };
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "the fixture uses accepted checkpoint fields"
+                    )]
+                    let (window, anchors) = if client_format == "responses_checkpoint" {
+                        let window =
+                            crate::format::openai::response::gateway_checkpoint_projection(
+                                std::slice::from_ref(&block),
+                            )
+                            .expect("accepted Responses state");
+                        let mut anchors = window.completed_anchors();
+                        anchors.push(crate::affinity::Anchor::Artifact(
+                            window.native_artifact(&block),
+                        ));
+                        (window, anchors)
+                    } else {
+                        crate::format::anthropic::messages::completed_compaction_projection(
+                            &block, None,
+                        )
+                        .expect("accepted Messages state")
+                    };
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "the valid fixture block supplies its artifact"
+                    )]
+                    let artifact = anchors
+                        .iter()
+                        .find_map(|anchor| match anchor {
+                            crate::affinity::Anchor::Artifact(digest) => Some(*digest),
+                            crate::affinity::Anchor::History(_) => None,
+                        })
+                        .expect("native artifact");
+                    let affinity = crate::affinity::Accepted::new(lease.commit(5), projector);
+                    let native_payload = block.clone();
+                    let affinity = if client_format == "messages_native" {
+                        affinity
+                    } else if client_format == "messages" {
+                        affinity.completed_prefix(anchors)
+                    } else {
+                        affinity.completed_checkpoint(window, anchors)
+                    };
+                    let (sender, events) = event_channel();
+                    let renderer: Box<dyn ClientSseRenderer + Send> =
+                        if client_format == "responses_checkpoint" {
+                            Box::new(
+                                crate::format::openai::response::SseRenderer::new("M".into())
+                                    .with_prefix_items(vec![block]),
+                            )
+                        } else if client_format == "messages_native" {
+                            Box::new(
+                                MessagesRenderer::new("M".into())
+                                    .with_threshold_compaction(is_threshold),
+                            )
+                        } else {
+                            Box::new(
+                                MessagesRenderer::with_compaction_prefix(
+                                    "M".into(),
+                                    vec![block],
+                                    Some("compaction".into()),
+                                )
+                                .with_threshold_compaction(is_threshold),
+                            )
+                        };
+                    let response =
+                        sse_response(events, renderer, None, stamped_draft(), Some(affinity));
+                    let mut body = response.into_body().into_data_stream();
+                    if is_deleted {
+                        cache.remove_api_key(namespace.api_key_id);
+                    }
+                    if is_departed {
+                        drop(body);
+                        send_events(
+                            &sender,
+                            [
+                                Ok(IrEvent::MessageStart {
+                                    id: "upstream".into(),
+                                    model: "physical".into(),
+                                }),
+                                Ok(if client_format == "messages_native" {
+                                    IrEvent::CompactionState {
+                                        payload: native_payload.clone(),
+                                    }
+                                } else {
+                                    IrEvent::Done
+                                }),
+                                Ok(IrEvent::Done),
+                            ],
+                        )
+                        .await;
+                        drop(sender);
+                        tokio::task::yield_now().await;
+                    } else {
+                        send_events(
+                            &sender,
+                            [
+                                Ok(IrEvent::MessageStart {
+                                    id: "upstream".into(),
+                                    model: "physical".into(),
+                                }),
+                                Ok(IrEvent::Usage(IrUsage::default())),
+                                Ok(if client_format == "messages_native" {
+                                    IrEvent::CompactionState {
+                                        payload: native_payload.clone(),
+                                    }
+                                } else {
+                                    IrEvent::Usage(IrUsage::default())
+                                }),
+                            ],
+                        )
+                        .await;
+                        loop {
+                            #[expect(
+                                clippy::expect_used,
+                                reason = "the fixture emits a complete prefix"
+                            )]
+                            let frame = body.next().await.expect("prefix frame")?;
+                            let boundary = if client_format == "responses_checkpoint" {
+                                "event: response.output_item.done"
+                            } else {
+                                "event: content_block_stop"
+                            };
+                            if std::str::from_utf8(&frame)?.contains(boundary) {
+                                break;
+                            }
+                        }
+                        if has_failure {
+                            send_events(
+                                &sender,
+                                [Err(gateway::Error::Unavailable {
+                                    detail: "later failure".into(),
+                                })],
+                            )
+                            .await;
+                        } else {
+                            send_events(&sender, [Ok(IrEvent::Done)]).await;
+                        }
+                        drop(sender);
+                        while let Some(frame) = body.next().await {
+                            frame?;
+                        }
+                    }
+                    let evidence = crate::affinity::Evidence {
+                        artifact: Some(artifact),
+                        ..crate::affinity::Evidence::default()
+                    };
+                    match cache.acquire(namespace, &evidence) {
+                        crate::affinity::Decision::Bound(binding) => {
+                            assert!(!is_departed && !is_deleted);
+                            assert_eq!(binding.provider_id(), 5);
+                        }
+                        crate::affinity::Decision::Fresh(_) => assert!(is_departed || is_deleted),
+                        #[expect(
+                            clippy::panic,
+                            reason = "an unexpected fixture decision fails the test"
+                        )]
+                        _ => panic!("unexpected prefix affinity decision"),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Streaming completion registers actual outward history at its terminal frame, while an
+    /// upstream error, known disconnect, or namespace deletion cannot create that output hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns fixture parser, channel, or response-body failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if terminal commitment or known cancellation changes affinity ownership.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "affinity fixtures serialize configuration"
+    )]
+    async fn streamed_history_registration_obeys_terminal_delivery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _configuration = crate::test_support::configuration_lock();
+        crate::test_support::install_global_configuration();
+        for client_format in ["chat", "generate", "responses", "messages", "interactions"] {
+            for (has_failure, is_departed, is_deleted) in [
+                (false, false, false),
+                (true, false, false),
+                (false, true, false),
+                (false, false, true),
+            ] {
+                let (store, _directory) = test_store();
+                let cache = std::sync::Arc::new(crate::affinity::Cache::default());
+                let namespace = crate::affinity::Namespace {
+                    api_key_id: 3,
+                    pool_id: 11,
+                };
+                let original = ChatCompletionFormat::parse_request(
+                    br#"{
+                "model":"M","messages":[{"role":"user","content":"input"}]}"#,
+                    &RouteContext::empty(),
+                )?;
+                let projector = original.affinity.project(&original.ir.messages);
+                let evidence = projector.evidence();
+                #[expect(
+                    clippy::panic,
+                    reason = "an unexpected decision is the test failure report"
+                )]
+                let crate::affinity::Decision::Fresh(lease) = cache.acquire(namespace, &evidence)
+                else {
+                    panic!("new request establishment");
+                };
+                let native_item = serde_json::json!({"type":"compaction","id":"cmp_complete",
+                    "encrypted_content":"native state"});
+                let artifact = projector.native_artifact(&native_item);
+                let affinity = crate::affinity::Accepted::new(lease.commit(5), projector);
+                let (sender, events) = event_channel();
+                let response = sse_response(
+                    events,
+                    match client_format {
+                        "generate" => {
+                            crate::format::gemini::generate_content::Format::sse_renderer(
+                                false,
+                                "M".into(),
+                            )
+                        }
+                        "responses" => {
+                            crate::format::openai::response::Format::sse_renderer(false, "M".into())
+                        }
+                        "messages" => crate::format::anthropic::messages::Format::sse_renderer(
+                            false,
+                            "M".into(),
+                        ),
+                        "interactions" => crate::format::gemini::interaction::Format::sse_renderer(
+                            false,
+                            "M".into(),
+                        ),
+                        _ => ChatCompletionFormat::sse_renderer(true, "M".into()),
+                    },
+                    Some(store.clone()),
+                    stamped_draft(),
+                    Some(affinity),
+                );
+                send_events(
+                    &sender,
+                    [
+                        Ok(IrEvent::MessageStart {
+                            id: "upstream".into(),
+                            model: "physical-model".into(),
+                        }),
+                        Ok(if client_format == "responses" {
+                            IrEvent::Usage(IrUsage::default())
+                        } else {
+                            IrEvent::TextDelta("hello".into())
+                        }),
+                    ],
+                )
+                .await;
+                let mut body = response.into_body().into_data_stream();
+                for _ in 0..match client_format {
+                    "generate" => 1,
+                    "responses" => 2,
+                    "messages" | "interactions" => 3,
+                    _ => 2,
+                } {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "the fixture emits its role and text frames"
+                    )]
+                    body.next().await.expect("intermediate streamed frame")?;
+                }
+                if is_deleted {
+                    cache.remove_api_key(namespace.api_key_id);
+                }
+                if is_departed {
+                    drop(body);
+                    if client_format == "responses" {
+                        send_events(
+                            &sender,
+                            [Ok(IrEvent::CompactionState {
+                                payload: native_item.clone(),
+                            })],
+                        )
+                        .await;
+                    }
+                    send_events(&sender, [Ok(IrEvent::Done)]).await;
+                    drop(sender);
+                    // Let the owned renderer observe its closed client channel and release
+                    // metadata.
+                    tokio::task::yield_now().await;
+                } else {
+                    if client_format == "responses" {
+                        send_events(
+                            &sender,
+                            [
+                                Ok(IrEvent::CompactionState {
+                                    payload: native_item.clone(),
+                                }),
+                                Ok(IrEvent::TextDelta("hello".into())),
+                            ],
+                        )
+                        .await;
+                    }
+                    if has_failure {
+                        send_events(
+                            &sender,
+                            [Err(gateway::Error::Unavailable {
+                                detail: "failed".into(),
+                            })],
+                        )
+                        .await;
+                    } else {
+                        send_events(&sender, [Ok(IrEvent::finish(IrFinishReason::Stop))]).await;
+                    }
+                    send_events(&sender, [Ok(IrEvent::Done)]).await;
+                    drop(sender);
+                    while let Some(frame) = body.next().await {
+                        frame?;
+                    }
+                }
+                let row = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    loop {
+                        if let Some(row) = recorded_rows(&store).await.into_iter().next() {
+                            break row;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
+                assert_eq!(
+                    row.outcome,
+                    if is_departed {
+                        ApiLogOutcome::ClientAborted
+                    } else if has_failure {
+                        ApiLogOutcome::UpstreamError
+                    } else {
+                        ApiLogOutcome::Completed
+                    }
+                );
+                assert_eq!(row.http_status, Some(200));
+                let replay = ChatCompletionFormat::parse_request(
+                    br#"{
+                "model":"renamed","messages":[{"role":"user","content":"input"},
+                    {"role":"assistant","content":"hello"},{"role":"user","content":"next"}]}"#,
+                    &RouteContext::empty(),
+                )?;
+                let replay = if client_format == "responses" {
+                    let replay = crate::format::openai::response::Format::parse_request(
+                        serde_json::json!({"model":"renamed","input":[
+                            native_item,
+                            {"type":"message","role":"assistant","content":"hello"},
+                            {"type":"message","role":"user","content":"next"}
+                        ]})
+                        .to_string()
+                        .as_bytes(),
+                        &RouteContext::empty(),
+                    )?;
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "the fixture contains its native boundary"
+                    )]
+                    let compaction = replay.compaction.as_ref().expect("native replay boundary");
+                    let active =
+                        crate::compaction::history::BoundaryPreparation::authenticate(compaction)?
+                            .routing_preparation(&replay)?;
+                    // Probe only the completed state-plus-answer unit count. The independently
+                    // released checkpoint remains usable after failure, but cannot establish an
+                    // unfinished answer's full window.
+                    crate::affinity::Evidence {
+                        history: active
+                            .projector
+                            .evidence()
+                            .history
+                            .into_iter()
+                            .filter(|prefix| prefix.units.get() == 2)
+                            .collect(),
+                        ..crate::affinity::Evidence::default()
+                    }
+                } else {
+                    replay.affinity.project(&replay.ir.messages).evidence()
+                };
+                match cache.acquire(namespace, &replay) {
+                    crate::affinity::Decision::Bound(binding) => {
+                        assert!(!has_failure && !is_departed && !is_deleted);
+                        assert_eq!(binding.provider_id(), 5);
+                    }
+                    crate::affinity::Decision::Fresh(_) => {
+                        assert!(has_failure || is_departed || is_deleted);
+                    }
+                    #[expect(
+                        clippy::panic,
+                        reason = "an unexpected decision is the test failure report"
+                    )]
+                    _ => panic!("completed output binding or a fresh history miss"),
+                }
+                if client_format == "responses" {
+                    match cache.acquire(
+                        namespace,
+                        &crate::affinity::Evidence {
+                            artifact: Some(artifact),
+                            ..crate::affinity::Evidence::default()
+                        },
+                    ) {
+                        crate::affinity::Decision::Bound(binding) => {
+                            assert!(!is_departed && !is_deleted);
+                            assert_eq!(binding.provider_id(), 5);
+                        }
+                        crate::affinity::Decision::Fresh(_) => assert!(is_departed || is_deleted),
+                        #[expect(
+                            clippy::panic,
+                            reason = "an unexpected decision is the test failure report"
+                        )]
+                        _ => panic!("complete released artifact survives a later stream failure"),
+                    }
+                }
+                if !is_deleted {
+                    #[expect(
+                        clippy::panic,
+                        reason = "an unexpected decision is the test failure report"
+                    )]
+                    let crate::affinity::Decision::Bound(binding) =
+                        cache.acquire(namespace, &evidence)
+                    else {
+                        panic!("accepted headers retain their independent retry hint");
+                    };
+                    assert_eq!(binding.provider_id(), 5);
+                }
+            }
+        }
+        Ok(())
     }
 }

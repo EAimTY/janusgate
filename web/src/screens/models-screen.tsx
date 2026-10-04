@@ -2,10 +2,15 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Show } from "solid-js";
 import { pluralNoun } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type {
+    ModelResponse,
+    ModelRouteResponse,
+    ProviderPoolResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
 import { hrefs, navigate } from "/src/router";
 import { indexRowsById } from "/src/row-index";
-import { createScreenRead, readOne, readProviderCatalog } from "/src/screens/read";
+import { createScreenRead, readOne, readPublishedInventory } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import {
     ButtonLink,
@@ -32,17 +37,21 @@ export function ModelsScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [modelRoutes, setModelRoutes] = createSignal<ReadonlyArray<ModelRouteResponse>>([]);
+    const [pools, setPools] = createSignal<ReadonlyArray<ProviderPoolResponse>>([]);
     const [search, setSearch] = createSignal("");
 
     const read = createScreenRead({
         load: async (signal) => {
             const catalog = await readOne(
                 signal,
-                readProviderCatalog(props.api, props.providerFilter),
+                readPublishedInventory(props.api, props.providerFilter),
             );
 
             setProviders(catalog.providers);
             setModels(catalog.models);
+            setModelRoutes(catalog.modelRoutes);
+            setPools(catalog.pools);
         },
     });
 
@@ -71,7 +80,6 @@ export function ModelsScreen(props: {
             const providerName = providersById().get(model.provider_id)?.name ?? "";
 
             return (
-                model.public_id.toLowerCase().includes(needle) ||
                 model.upstream_id.toLowerCase().includes(needle) ||
                 providerName.toLowerCase().includes(needle)
             );
@@ -132,8 +140,11 @@ export function ModelsScreen(props: {
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Models"
-                description="Every model, everywhere. Open one for its details, settings, and usage."
+                description="Models are automatically exposed through a standalone provider prefix or their owning pool prefixes."
             >
+                <ButtonLink href={hrefs.bulkPublication(props.providerFilter)}>
+                    Create aliases
+                </ButtonLink>
                 <ButtonLink
                     href={hrefs.modelNew(props.providerFilter)}
                     tone="primary"
@@ -179,7 +190,7 @@ export function ModelsScreen(props: {
                     <div class="flex flex-wrap items-end gap-3">
                         <SearchInput
                             label="Search models"
-                            placeholder="Search by public or upstream ID, or provider name"
+                            placeholder="Search by upstream ID or provider name"
                             value={search()}
                             onInput={setSearch}
                             class="min-w-0 flex-1 basis-56 sm:max-w-xs"
@@ -215,6 +226,8 @@ export function ModelsScreen(props: {
                         </p>
                         <ModelList
                             models={visibleModels()}
+                            modelRoutes={modelRoutes()}
+                            pools={pools()}
                             providersById={providersById()}
                             showProvider={props.providerFilter === null}
                         />

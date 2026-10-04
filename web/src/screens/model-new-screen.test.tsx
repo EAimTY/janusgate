@@ -85,7 +85,6 @@ describe("ModelNewScreen creation", () => {
                 providerRow({
                     id: 5,
                     name: "solo",
-                    model_prefix: "solo-",
                 }),
             ]),
         );
@@ -141,7 +140,6 @@ describe("ModelNewScreen creation", () => {
                 providerRow({
                     id: 2,
                     name: "other",
-                    model_prefix: "other-",
                 }),
             ]),
         );
@@ -159,12 +157,10 @@ describe("ModelNewScreen creation", () => {
                 providerRow({
                     id: 3,
                     name: "alpha",
-                    model_prefix: "alpha-",
                 }),
                 providerRow({
                     id: 5,
                     name: "beta",
-                    model_prefix: "beta-",
                 }),
             ]),
             3,
@@ -196,7 +192,6 @@ describe("ModelNewScreen creation", () => {
                 providerRow({
                     id: 2,
                     name: "other",
-                    model_prefix: "other-",
                 }),
             ]),
             null,
@@ -217,7 +212,7 @@ describe("ModelNewScreen creation", () => {
         expect(bodyText()).not.toContain("Sent upstream verbatim");
     });
 
-    it("sends the composed request and lands on the new model's page", async () => {
+    it("creates physical inventory and lands on the new model's page", async () => {
         const sent: CreateModelRequest[] = [];
         mountScreen(
             screenApi(
@@ -225,7 +220,6 @@ describe("ModelNewScreen creation", () => {
                     providerRow({
                         id: 5,
                         name: "solo",
-                        model_prefix: "solo-",
                     }),
                 ],
                 {
@@ -234,7 +228,6 @@ describe("ModelNewScreen creation", () => {
                         provider_id: 5,
                         provider: "solo",
                         upstream_id: "gpt-4o",
-                        public_id: "solo-gpt-4o",
                     }),
                     sent,
                 },
@@ -247,12 +240,11 @@ describe("ModelNewScreen creation", () => {
         await settle();
 
         // The auto-selected provider is the one the write names; the initial
-        // state is enabled with no override, so the composed ID stands.
+        // state is enabled. Publication is a separate explicit route write.
         expect(sent).toEqual([
             {
                 provider_id: 5,
                 upstream_id: "gpt-4o",
-                id_override: null,
                 is_enabled: true,
                 thinking_levels_override: null,
                 max_input_tokens_override: null,
@@ -271,7 +263,6 @@ describe("ModelNewScreen creation", () => {
                     providerRow({
                         id: 5,
                         name: "solo",
-                        model_prefix: "solo-",
                     }),
                 ],
                 {
@@ -308,7 +299,6 @@ describe("ModelNewScreen creation", () => {
             {
                 provider_id: 5,
                 upstream_id: "gpt-4o",
-                id_override: null,
                 is_enabled: true,
                 thinking_levels_override: [
                     "low",
@@ -338,7 +328,6 @@ describe("ModelNewScreen failed first read", () => {
                                 providerRow({
                                     id: 5,
                                     name: "solo",
-                                    model_prefix: "solo-",
                                 }),
                             ],
                             {
@@ -352,7 +341,6 @@ describe("ModelNewScreen failed first read", () => {
                                                   providerRow({
                                                       id: 5,
                                                       name: "solo",
-                                                      model_prefix: "solo-",
                                                   }),
                                               ],
                                           });

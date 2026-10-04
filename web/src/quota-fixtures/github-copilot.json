@@ -138,6 +138,9 @@
             "reset": {
                 "type": "date",
                 "date": "2030-02-01"
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -161,6 +164,9 @@
             "reset": {
                 "type": "date",
                 "date": "2030-02-01"
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -184,6 +190,9 @@
             "reset": {
                 "type": "date",
                 "date": "2030-02-01"
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         }
     ],

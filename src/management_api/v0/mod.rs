@@ -35,11 +35,16 @@ use std::num::NonZeroI64;
 
 mod api_keys;
 mod error;
+mod model_routes;
 mod models;
 mod oauth_flow;
+mod provider_availability;
 mod provider_definitions;
+mod provider_pools;
 mod provider_quota;
 mod providers;
+#[cfg(test)]
+mod routing_tests;
 mod usage;
 
 // The route markers this version's router mounts, plus the error body the bindings export besides
@@ -49,10 +54,15 @@ mod usage;
 use self::error::ErrorResponse;
 use self::{
     api_keys::{CreateApiKey, DeleteApiKey, ListApiKeys, UpdateApiKey},
+    model_routes::{CreateModelRoute, DeleteModelRoute, ListModelRoutes, UpdateModelRoute},
     models::{CreateModel, DeleteModel, DiscoverModels, ListModels, UpdateModel},
     oauth_flow::{CompleteProviderOauth, ReauthorizeProvider, StartProviderOauth},
+    provider_availability::{GetProviderAvailability, ResetProviderAvailability},
     provider_definitions::{
         CreateProviderDefinition, ListProviderDefinitions, UpdateProviderDefinition,
+    },
+    provider_pools::{
+        CreateProviderPool, DeleteProviderPool, ListProviderPools, UpdateProviderPool,
     },
     provider_quota::GetProviderQuota,
     providers::{CreateProvider, DeleteProvider, ListProviders, UpdateProvider},
@@ -152,6 +162,8 @@ pub(super) fn router() -> Router<Context> {
         UpdateProviderDefinition => provider_definitions::update,
         ListProviders => providers::list,
         GetProviderQuota => provider_quota::get,
+        GetProviderAvailability => provider_availability::get,
+        ResetProviderAvailability => provider_availability::reset,
         CreateProvider => providers::create,
         UpdateProvider => providers::update,
         DeleteProvider => providers::delete,
@@ -167,6 +179,14 @@ pub(super) fn router() -> Router<Context> {
         CreateModel => models::create,
         UpdateModel => models::update,
         DeleteModel => models::delete,
+        ListProviderPools => provider_pools::list,
+        CreateProviderPool => provider_pools::create,
+        UpdateProviderPool => provider_pools::update,
+        DeleteProviderPool => provider_pools::delete,
+        ListModelRoutes => model_routes::list,
+        CreateModelRoute => model_routes::create,
+        UpdateModelRoute => model_routes::update,
+        DeleteModelRoute => model_routes::delete,
         ListUsage => usage::list,
         QueryUsage => usage::query,
     }
@@ -260,28 +280,20 @@ fn validate_routing_safe(
     Ok(())
 }
 
-/// Validates a model prefix (README §7): empty means no prefix, otherwise the
-/// routing-token composition — printable ASCII without whitespace and without `/` or `:` (the
-/// Gemini URL path cannot address them).
+/// Validates an optional provider prefix at the management write boundary.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when a non-empty prefix carries a character outside the allowed set.
+/// Returns a validation error for a nonempty prefix outside the routing-safe token contract.
 fn validate_model_prefix(value: &str) -> Result<(), Error> {
     if !value.is_empty() {
         validate_routing_token("model_prefix", value)?;
     }
-
     Ok(())
 }
 
-/// Validates a routing token (README §7): `upstream_id`, a present `id_override`, and
-/// `model_prefix` (empty means no prefix, validated by [`validate_model_prefix`]). The value
-/// must be non-empty printable ASCII without whitespace and without `/` or `:` — the Gemini URL
-/// path (`/models/{model}:generateContent`) cannot address them. An empty value is
-/// [`Error::EmptyIdentifier`], any other composition failure [`Error::InvalidIdentifier`].
-/// Existing stored rows carrying `/` or `:` are left as-is and are simply not addressable through
-/// the Gemini surface.
+/// Validates exact upstream IDs and explicitly authored public route IDs as nonempty printable
+/// ASCII without whitespace, `/`, or `:`. Every outward protocol can address such a token.
 ///
 /// # Errors
 ///
@@ -443,7 +455,7 @@ struct SharedProviderFields {
     /// Unique, renameable label.
     name: String,
 
-    /// Prefix prepended to every public model name.
+    /// Prefix prepended to automatically exposed direct model names.
     model_prefix: String,
 
     /// Whether the provider serves traffic.
@@ -480,7 +492,7 @@ mod tests {
 
     use super::{
         Error as ManagementError, Nullable, ProviderEnvelope, ProviderResponse, absent_keeps,
-        validate_base_url, validate_composition, validate_model_prefix, validate_routing_token,
+        validate_base_url, validate_composition, validate_routing_token,
     };
     use crate::{
         format::UpstreamFormat,
@@ -496,9 +508,11 @@ mod tests {
     /// Panics if the fixture payload does not parse, which cannot occur.
     fn provider(credentials: StoredCredentials, base_url: Option<String>) -> Provider {
         Provider {
+            model_prefix: String::new(),
+            quota_generation: 0,
+            quota_revision: 0,
             id: 7,
             name: "acme".to_string(),
-            model_prefix: "acme-".to_string(),
             base_url,
             is_enabled: true,
             credentials,
@@ -628,7 +642,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<ProviderResponse>(
-                r#"{"type":"bogus","id":1,"name":"x","model_prefix":"",
+                r#"{"type":"bogus","id":1,"name":"x",
                     "is_enabled":true,"provider_definition_name":"d",
                     "provider_definition_version":1,"format":"openai_chat_completion"}"#
             )
@@ -648,7 +662,8 @@ mod tests {
         #[derive(Debug, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Probe {
-            id_override: Nullable<String>,
+            /// Nullable curation value exercised by the wire adapter.
+            capability_override: Nullable<String>,
 
             #[serde(default, deserialize_with = "absent_keeps::deserialize")]
             api_key: Option<String>,
@@ -658,9 +673,9 @@ mod tests {
             clippy::unwrap_used,
             reason = "the probe payloads are constructed to parse"
         )]
-        let null_override: Probe = serde_json::from_str(r#"{"id_override":null}"#).unwrap();
+        let null_override: Probe = serde_json::from_str(r#"{"capability_override":null}"#).unwrap();
 
-        assert_eq!(null_override.id_override, Nullable(None));
+        assert_eq!(null_override.capability_override, Nullable(None));
         assert_eq!(null_override.api_key, None);
 
         #[expect(
@@ -669,19 +684,21 @@ mod tests {
         )]
         let omitted_override: Probe = serde_json::from_str(r#"{}"#).unwrap();
 
-        assert_eq!(omitted_override.id_override, Nullable(None));
+        assert_eq!(omitted_override.capability_override, Nullable(None));
 
         #[expect(
             clippy::unwrap_used,
             reason = "the probe payloads are constructed to parse"
         )]
-        let valued: Probe = serde_json::from_str(r#"{"id_override":"x","api_key":"sk"}"#).unwrap();
+        let valued: Probe =
+            serde_json::from_str(r#"{"capability_override":"x","api_key":"sk"}"#).unwrap();
 
-        assert_eq!(valued.id_override, Nullable(Some("x".to_string())));
+        assert_eq!(valued.capability_override, Nullable(Some("x".to_string())));
         assert_eq!(valued.api_key, Some("sk".to_string()));
 
         assert!(
-            serde_json::from_str::<Probe>(r#"{"id_override":null,"api_key":null}"#).is_err(),
+            serde_json::from_str::<Probe>(r#"{"capability_override":null,"api_key":null}"#)
+                .is_err(),
             "an absent-keeps field never accepts null"
         );
     }
@@ -738,34 +755,8 @@ line",
         }
     }
 
-    /// Verifies the model prefix composition: empty means no prefix, otherwise the routing-token
-    /// composition — printable ASCII without whitespace and without `/` or `:` (the Gemini URL
-    /// path cannot address them).
-    ///
-    /// # Panics
-    ///
-    /// Panics if a prefix parses or rejects outside its contract.
-    #[test]
-    fn enforces_the_model_prefix_composition() {
-        assert!(validate_model_prefix("").is_ok());
-        assert!(validate_model_prefix("codex-").is_ok());
-        assert!(validate_model_prefix("agy-").is_ok());
-
-        for invalid in ["codex /", "前缀/", "codex/", "agy/", "a:b"] {
-            assert!(
-                matches!(
-                    validate_model_prefix(invalid),
-                    Err(ManagementError::InvalidIdentifier {
-                        param: "model_prefix"
-                    })
-                ),
-                "prefix accepted: {invalid:?}"
-            );
-        }
-    }
-
-    /// Verifies the routing-token composition: `upstream_id` and a present `id_override` reject
-    /// `/` and `:` beside the generic composition.
+    /// Verifies the routing-token composition: `upstream_id` and a present `capability_override`
+    /// reject `/` and `:` beside the generic composition.
     ///
     /// # Panics
     ///
@@ -773,7 +764,7 @@ line",
     #[test]
     fn enforces_the_routing_token_composition() {
         assert!(validate_routing_token("upstream_id", "gpt-4o").is_ok());
-        assert!(validate_routing_token("id_override", "custom-model_1.2").is_ok());
+        assert!(validate_routing_token("capability_override", "custom-model_1.2").is_ok());
 
         for invalid in ["codex/", "a:b", "a/b", "has space", "模型", ""] {
             assert!(

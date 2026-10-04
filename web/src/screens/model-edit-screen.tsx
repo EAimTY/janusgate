@@ -3,7 +3,6 @@ import { createMemo, createSignal } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { routingTokenError } from "/src/management-api/identifiers";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -24,12 +23,9 @@ import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import {
     CompactionSupportOverrideFields,
     compactionOverrideSelection,
-    composedPublicId,
     isSameCompactionOverride,
     isSameLevelSet,
-    ModelIdOverrideFields,
     normalizedCompactionOverride,
-    normalizedPublicIdOverride,
     normalizedThinkingLevelsOverride,
     normalizedTokenCapOverride,
     ThinkingLevelsOverrideFields,
@@ -39,17 +35,7 @@ import {
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { RowNotFound } from "./row-not-found";
 
-/**
- * One model's edit page: its settings and its deletion. The form opens
- * prefilled, tracks dirt, and saves the complete settings back — saving
- * installs the model the gateway returns, because the public ID is
- * recomposed inside that write. Reading the model — its facts and its usage
- * — lives on the detail page. A vanished row's suspension is stated under
- * the header with the detail page's two recovery paths, and the save
- * notice's routing line speaks only where service is true — silent for a
- * vanished row, and naming the provider's re-enable where the owning
- * provider is disabled.
- */
+/** Edits physical inventory settings without changing public route identities. */
 export function ModelEditScreen(props: {
     readonly api: ManagementApi;
     readonly modelId: number;
@@ -117,7 +103,7 @@ export function ModelEditScreen(props: {
             {(row) => (
                 <>
                     <PageHeader
-                        title={`Edit ${row.public_id}`}
+                        title={`Edit ${row.upstream_id}`}
                         backHref={hrefs.modelDetail(row.id)}
                         backLabel="Model"
                     />
@@ -166,14 +152,11 @@ function ModelSettingsForm(props: {
     readonly onDirtyChange: (isDirty: boolean) => void;
     readonly onSaved: () => void;
 }): JSX.Element {
-    // The settings as the gateway last returned them; a save re-baselines
-    // them onto the write's answer, because the public ID is recomposed
-    // inside that write. The initial fields seed from the props directly, so
+    // A save re-baselines the capability settings onto the returned row.
+    // The initial fields seed from the props directly, so
     // the setup reads stay out of the `current` signal's tracking contract.
     const [current, setCurrent] = createSignal(props.initialModel);
     const [isEnabled, setIsEnabled] = createSignal(props.initialModel.is_enabled);
-    const [hasIdOverride, setHasIdOverride] = createSignal(props.initialModel.id_override !== null);
-    const [idOverride, setIdOverride] = createSignal(props.initialModel.id_override ?? "");
     const [hasLevelsOverride, setHasLevelsOverride] = createSignal(
         props.initialModel.thinking_levels_override !== null,
     );
@@ -198,23 +181,6 @@ function ModelSettingsForm(props: {
     const [selectedCompaction, setSelectedCompaction] = createSignal(
         compactionOverrideSelection(props.initialModel.compaction_support_override),
     );
-
-    // Both derivations run through the shared toggle-aware helpers, so the
-    // off-hint always names the ID the write produces — even with stale text
-    // left in the override field after the switch goes off.
-    const normalizedOverride = (): string | null =>
-        normalizedPublicIdOverride(hasIdOverride(), idOverride());
-
-    const composedId = (): string =>
-        composedPublicId(
-            props.provider?.model_prefix ?? "",
-            current().upstream_id,
-            normalizedOverride(),
-        );
-
-    /** Inline composition error for the override, shown where it was typed. */
-    const overrideError = (): string | null =>
-        routingTokenError(normalizedOverride(), "Public ID override");
 
     /** Inline errors for the token-cap overrides, shown where each was typed. */
     const maxInputError = (): string | null =>
@@ -241,22 +207,17 @@ function ModelSettingsForm(props: {
 
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled ||
-        normalizedOverride() !== current().id_override ||
         !isSameLevelSet(normalizedLevels(), current().thinking_levels_override) ||
         normalizedMaxInput() !== current().max_input_tokens_override ||
         normalizedMaxOutput() !== current().max_output_tokens_override ||
         !isSameCompactionOverride(normalizedCompaction(), current().compaction_support_override);
 
     const canSave = (): boolean =>
-        isDirty() &&
-        overrideError() === null &&
-        maxInputError() === null &&
-        maxOutputError() === null;
+        isDirty() && maxInputError() === null && maxOutputError() === null;
 
     const revert = (): void => {
         setIsEnabled(current().is_enabled);
-        setHasIdOverride(current().id_override !== null);
-        setIdOverride(current().id_override ?? "");
+
         setHasLevelsOverride(current().thinking_levels_override !== null);
         setSelectedLevels(current().thinking_levels_override ?? []);
         setHasMaxInputOverride(current().max_input_tokens_override !== null);
@@ -277,7 +238,6 @@ function ModelSettingsForm(props: {
         perform: () =>
             props.api.updateModel(
                 toUpdateModelRequest(current(), {
-                    id_override: normalizedOverride(),
                     is_enabled: isEnabled(),
                     thinking_levels_override: normalizedLevels(),
                     max_input_tokens_override: normalizedMaxInput(),
@@ -287,13 +247,10 @@ function ModelSettingsForm(props: {
             ),
         onSucceeded: (envelope) => {
             const saved = envelope.model;
-            // Re-baseline every signal from the write's answer explicitly: the
-            // public ID is recomposed inside the write, so the returned model is
-            // the form's new truth.
+            // The returned inventory row is the form's new baseline.
             setCurrent(saved);
             setIsEnabled(saved.is_enabled);
-            setHasIdOverride(saved.id_override !== null);
-            setIdOverride(saved.id_override ?? "");
+
             setHasLevelsOverride(saved.thinking_levels_override !== null);
             setSelectedLevels(saved.thinking_levels_override ?? []);
             setHasMaxInputOverride(saved.max_input_tokens_override !== null);
@@ -303,27 +260,10 @@ function ModelSettingsForm(props: {
             setHasCompactionOverride(saved.compaction_support_override !== null);
             setSelectedCompaction(compactionOverrideSelection(saved.compaction_support_override));
 
-            // The routing line speaks only where clients calling the composed
-            // ID actually reach the gateway. A vanished row stays suspended
-            // whatever its settings say — `models:update` never touches
-            // `discovery_state` — and its silence is carried by the standing
-            // suspension notice under the header. Under a disabled provider
-            // the row answers nothing either, but nothing else on this page
-            // states that hold, so the line states it instead of promising
-            // service: what waits is the provider's switch, not this save.
-            let routingLine: string | null;
-            if (saved.discovery_state === "vanished") {
-                routingLine = null;
-            } else if (props.provider !== null && !props.provider.is_enabled) {
-                routingLine = `Clients will call it ${saved.public_id} once the provider is re-enabled.`;
-            } else {
-                routingLine = `Clients now call it ${saved.public_id}.`;
-            }
-
             return {
                 tone: "ok",
                 title: "Model saved.",
-                detail: routingLine,
+                detail: null,
             };
         },
         onDirtyChange: props.onDirtyChange,
@@ -343,16 +283,6 @@ function ModelSettingsForm(props: {
                     isOn={isEnabled()}
                     isDisabled={form.isSaving()}
                     onToggle={setIsEnabled}
-                />
-
-                <ModelIdOverrideFields
-                    hasIdOverride={hasIdOverride()}
-                    onHasIdOverrideToggle={setHasIdOverride}
-                    idOverride={idOverride()}
-                    onIdOverrideInput={setIdOverride}
-                    composedId={composedId()}
-                    idOverrideError={overrideError()}
-                    isDisabled={form.isSaving()}
                 />
 
                 <ThinkingLevelsOverrideFields
@@ -427,8 +357,8 @@ function DeleteCard(props: {
     return (
         <ConfirmDeleteCard
             title="Delete this model"
-            description="Deleting removes the model at once. Clients calling its public ID start getting 404s."
-            question={`Delete ${props.model.public_id}? Clients calling it 404 until it exists again — a discovered model returns as new on the next discovery (without a custom public ID); a manual one can be re-added from the Create model page as a new row.`}
+            description="Deleting removes this physical model and its direct routes. Pool routes remain stored."
+            question={`Delete ${props.model.upstream_id}? Its direct routes are deleted too. Pool routes remain stored. Rediscovery or manual creation produces a new physical row and does not restore deleted routes.`}
             onConfirm={confirmDelete}
         />
     );

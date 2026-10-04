@@ -88,7 +88,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod affinity;
 mod client_render;
+mod json_affinity;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
@@ -115,6 +117,13 @@ impl ClientFormat for Format {
 
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
+    }
+
+    fn project_json_response(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        client_render::project_json_response(response, projector)
     }
 
     fn render_json_response_with_prefix(

@@ -30,6 +30,7 @@ export function missingBucketKeyFieldMessage(field: string): string {
 export const DIMENSION_KEY_FIELD = {
     day: "day",
     model: "model_id",
+    model_route: "model_route_id",
     provider: "provider_id",
     api_key: "api_key_id",
     endpoint_type: "endpoint_type",

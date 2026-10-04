@@ -254,20 +254,39 @@ pub(super) struct ReasoningItem {
     pub(super) encrypted_content: Option<String>,
 }
 
+/// Optional native replay text whose wire absence differs from an explicitly supplied null.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum OptionalReplayText {
+    /// No member occurred on the client wire.
+    #[default]
+    #[serde(skip)]
+    Missing,
+    /// Exact accepted string or an explicitly supplied null.
+    Present(Option<String>),
+}
+
+impl OptionalReplayText {
+    /// Whether serialization must omit this absent member entirely.
+    pub(super) const fn is_absent(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+
 /// A replayed compaction item's members.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CompactionItemIn {
     /// Gateway- or provider-minted item identifier, replayed verbatim.
-    #[serde(default)]
-    pub(super) id: Option<String>,
+    #[serde(default, skip_serializing_if = "OptionalReplayText::is_absent")]
+    pub(super) id: OptionalReplayText,
 
     /// The opaque replay state: a namespaced gateway carrier or native
     /// ciphertext.
     pub(super) encrypted_content: String,
     /// Authoring provenance retained across native replay.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) created_by: Option<String>,
+    #[serde(default, skip_serializing_if = "OptionalReplayText::is_absent")]
+    pub(super) created_by: OptionalReplayText,
 }
 
 /// One `context_management` entry of the request envelope.
@@ -649,7 +668,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
             ItemIn::Compaction(compaction_item) => {
                 let offset = conversion.messages.len();
 
-                let item = compaction::compaction_item_json(
+                let item = compaction::replayed_compaction_item_json(
                     compaction_item.id,
                     compaction_item.encrypted_content.clone(),
                     compaction_item.created_by,
@@ -876,6 +895,10 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         .transpose()?;
 
     Ok(ParsedRequest {
+        affinity: crate::format::affinity::Sources::from_wire_messages(
+            crate::format::UpstreamFormat::OpenAiResponse,
+            &converted.messages,
+        ),
         ir: IrRequest {
             state_items: converted.state_items,
             model: request.model,

@@ -27,7 +27,6 @@ use std::error::Error as StdError;
 pub(crate) async fn insert_test_provider(
     database: &Database,
     name: &str,
-    model_prefix: &str,
 ) -> Result<i64, Box<dyn StdError>> {
     let definition = test_support::insert_static_key_definition(
         database,
@@ -40,7 +39,6 @@ pub(crate) async fn insert_test_provider(
         database,
         &definition,
         name,
-        model_prefix,
         Some("http://localhost:8080"),
         StoredCredentials::ApiKey {
             api_key: "test-secret".to_string(),

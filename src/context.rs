@@ -2,9 +2,10 @@
 
 use super::{database::Database, storage::api_logs::ApiLogStore};
 use reqwest::Client;
+use std::sync::Arc;
 
-/// State shared by every router handler: the database handle, the api-log store, and the
-/// two upstream HTTP clients, one per traffic class.
+/// State shared by every router handler: persistence, accounting, per-traffic-class HTTP clients,
+/// and the process-local quota and affinity coordinators.
 #[derive(Clone)]
 pub(crate) struct Context {
     /// Database handle all handlers execute against.
@@ -21,4 +22,10 @@ pub(crate) struct Context {
     /// Control-plane upstream client for short upstream round-trips (OAuth token exchange and
     /// refresh, model discovery, project onboarding).
     pub(crate) control_plane: Client,
+
+    /// Shared cancellation-resistant quota checks and current-generation refresh metadata.
+    pub(crate) quota_coordinator: Arc<crate::provider::quota::coordinator::Coordinator>,
+
+    /// One shared bounded digest cache and cancellation-safe account-establishment lifecycle.
+    pub(crate) affinity_cache: Arc<crate::affinity::Cache>,
 }

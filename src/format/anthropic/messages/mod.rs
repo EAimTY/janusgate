@@ -21,8 +21,11 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod affinity;
 mod client_render;
 mod compaction;
+mod compaction_affinity;
+mod json_affinity;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
@@ -30,6 +33,7 @@ mod upstream_render;
 pub(crate) use self::{
     client_render::{CompactionOnlyUsage, render_compaction_only_response},
     compaction::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block, overlay_header_rows},
+    compaction_affinity::completed_anchors as completed_compaction_anchors,
     upstream_parse::UpstreamParser,
     upstream_render::{
         render_count_tokens_request, render_on_demand_body, render_request_body,
@@ -57,6 +61,24 @@ impl ClientFormat for Format {
 
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
+    }
+
+    fn project_json_response(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        client_render::project_json_response(response, projector)
+    }
+
+    fn completed_json_artifacts(response: &Self::JsonResponse) -> Vec<crate::affinity::Anchor> {
+        client_render::completed_json_artifacts(response)
+    }
+
+    fn project_json_checkpoint(
+        response: &Self::JsonResponse,
+        projector: &mut crate::affinity::fingerprint::Projector,
+    ) -> bool {
+        client_render::project_json_after_prefix(response, projector, 1)
     }
 
     fn render_json_response_with_prefix(
@@ -275,3 +297,6 @@ mod tests {
         })));
     }
 }
+
+/// Digest-only actual checkpoint state beside its completed artifact/window anchors.
+pub(crate) use compaction_affinity::completed_projection as completed_compaction_projection;

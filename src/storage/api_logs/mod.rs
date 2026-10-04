@@ -1,11 +1,11 @@
 //! Request accounting: the `api_logs` store — its write path and read paths (README §3
 //! *ApiLog Store*).
 //!
-//! One row is one dispatched inference request — the instant the upstream HTTP request was issued
-//! (`send()`). Everything before that instant (authentication, routing, token refresh, upstream
-//! payload rendering) is never recorded, and no content — prompt, completion, headers, upstream
-//! error bodies — ever reaches the table. The rows live outside the main database: one SQLite
-//! (Turso) file per UTC calendar day of `started_at`, created lazily on first write, written
+//! One row is one dispatched physical-account attempt — the instant the upstream HTTP request was
+//! issued (`send()`). Everything before that instant (authentication, routing, token refresh,
+//! upstream payload rendering) is never recorded, and no content — prompt, completion, headers,
+//! upstream error bodies — ever reaches the table. The rows live outside the main database: one
+//! SQLite (Turso) file per UTC calendar day of `started_at`, created lazily on first write, written
 //! through a hot-file connection cache, and expired by whole-file deletion.
 //!
 //! The module splits by direction: [`store`] is the api-log store itself — the day mapping,
@@ -48,9 +48,31 @@ use crate::{
 };
 use log::error;
 
+#[cfg(test)]
+mod attempt_tests;
+
+/// Data-plane progress for one account attempt, independent of log recording.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum AttemptProgress {
+    /// No data-plane stage has been sent on this account.
+    #[default]
+    Predispatch,
+    /// One or more stages have been sent; successful headers permanently commit the account.
+    Dispatched {
+        /// Positive number of data-plane dispatches in this attempt.
+        count: std::num::NonZeroU32,
+        /// Whether any stage received accepted headers.
+        has_accepted: bool,
+    },
+}
+
 /// One accounting row about to be inserted: every column but the server-assigned `id`.
 #[derive(Debug, Clone)]
 struct ApiLogWrite {
+    /// Stable requested route identity, independent of the current physical target.
+    model_route_id: i64,
+    /// First data-plane header status; null means no response headers were received.
+    upstream_http_status: Option<i64>,
     /// Dispatch-start instant in UTC microseconds; stamped the moment `send()` is called.
     started_at: i64,
 
@@ -96,7 +118,8 @@ struct ApiLogWrite {
 }
 
 /// One dispatched request's accounting draft: every fact known before dispatch, carried through
-/// [`crate::gateway::execute`] and closed by exactly one of the three finalization points.
+/// [`crate::gateway::execute`] and closed exactly once by its current attempt or response-task
+/// owner.
 ///
 /// The module's single invariant: **`started_at` is stamped ⇔ the request was dispatched with
 /// accounting enabled**. Who stamps, who finalizes, and whether a row is written are all decided
@@ -104,6 +127,12 @@ struct ApiLogWrite {
 /// configuration section, and [`finalize_api_log`] writes if and only if a stamp is present.
 #[derive(Debug, Clone)]
 pub(crate) struct ApiLogDraft {
+    /// Stable requested public route identity.
+    pub(crate) model_route_id: i64,
+    /// First data-plane header status, preserved through same-account stage continuation.
+    pub(crate) upstream_http_status: Option<i64>,
+    /// Typed attempt commitment; recording disabled does not disable this state.
+    pub(crate) progress: AttemptProgress,
     /// Dispatch-start instant in UTC microseconds; `None` until [`ApiLogDraft::stamp`] runs at the
     /// `send()` call, and permanently `None` when accounting is disabled.
     pub(crate) started_at: Option<i64>,
@@ -132,29 +161,68 @@ pub(crate) struct ApiLogDraft {
 }
 
 impl ApiLogDraft {
-    /// Marks the dispatch instant, called the moment before the upstream `send()` leaves: stamps
-    /// `started_at` from the database clock when the `api_logs` configuration section is present,
-    /// read live from the global configuration so a reload applies to the very next dispatch.
-    /// With the section absent the draft stays unstamped and no row is ever written for this
-    /// request — this one call is the whole switch.
+    /// Advances data-plane progress immediately before `send()`. The first stage fixes duration
+    /// origin and the live recording switch: `started_at` is stamped only when `api_logs` is
+    /// present then. Later stages preserve that origin and switch, including across reloads.
+    /// Progress remains active when recording is disabled.
     pub(crate) fn stamp(&mut self) {
-        if crate::CONFIG.api_logs.is_some() && self.started_at.is_none() {
+        let is_first_dispatch = matches!(self.progress, AttemptProgress::Predispatch);
+        self.progress = match self.progress {
+            AttemptProgress::Predispatch => AttemptProgress::Dispatched {
+                count: std::num::NonZeroU32::MIN,
+                has_accepted: false,
+            },
+            AttemptProgress::Dispatched {
+                count,
+                has_accepted,
+            } => AttemptProgress::Dispatched {
+                count: count.saturating_add(1),
+                has_accepted,
+            },
+        };
+        if is_first_dispatch && crate::CONFIG.api_logs.is_some() {
             self.started_at = Some(unix_time::unix_now_micros());
         }
+    }
+
+    /// Records the first data-plane headers and commits on any successful response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a response is observed before its data-plane dispatch was stamped.
+    pub(crate) fn observe_response(&mut self, status: reqwest::StatusCode) {
+        match &mut self.progress {
+            AttemptProgress::Dispatched { has_accepted, .. } => {
+                *has_accepted |= status.is_success();
+            }
+            #[expect(clippy::unreachable, reason = "headers require an already sent stage")]
+            AttemptProgress::Predispatch => {
+                unreachable!("response headers require a dispatched account attempt");
+            }
+        }
+        self.upstream_http_status
+            .get_or_insert(i64::from(status.as_u16()));
+    }
+
+    /// Whether a positively classified rejection came from this attempt's first unaccepted stage.
+    pub(crate) fn can_abandon_quota_rejection(&self) -> bool {
+        matches!(self.progress, AttemptProgress::Dispatched { count, has_accepted: false }
+            if count.get() == 1)
     }
 
     /// Stamps the billed totals the row must record: the accounting the
     /// compaction executor computed over the request's compaction calls,
     /// which no single upstream usage observation carries. The finalization
-    /// adds these totals to its own usage observation.
-    pub(crate) fn stamp_billed_usage(&mut self, usage: IrUsage) {
-        self.billed_usage = Some(usage);
+    /// adds these totals to its own usage observation. Absence preserves unknown token facts,
+    /// while an explicit zero measurement remains a reported total.
+    pub(crate) fn stamp_billed_usage(&mut self, usage: Option<IrUsage>) {
+        self.billed_usage = usage;
     }
 }
 
 /// Closes one dispatched request's accounting: builds the terminal write from `draft` plus the
 /// finalization facts and inserts it into the draft's own day's file. Every call site runs at
-/// exactly one of the three mutually exclusive finalization points (README §3 *ApiLog*), so each
+/// the attempt's current exclusive finalization owner (README §3 *ApiLog*), so each
 /// dispatched request is recorded exactly once.
 ///
 /// This function never reports failure outward — an accounting INSERT failure must never enter
@@ -196,6 +264,8 @@ pub(crate) async fn finalize_api_log(
         token_columns(usage);
 
     let write = ApiLogWrite {
+        model_route_id: draft.model_route_id,
+        upstream_http_status: draft.upstream_http_status,
         started_at,
         api_key_id: draft.api_key_id,
         provider_id: draft.provider_id,

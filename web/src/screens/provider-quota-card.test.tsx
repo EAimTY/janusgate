@@ -15,6 +15,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "ratio",
             ],
             label: "Five-hour limit",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "unknown",
             },
@@ -36,6 +39,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "counter",
             ],
             label: "Pool",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "named",
                 name: "chat",
@@ -60,6 +66,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "remaining",
             ],
             label: "Pool",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "named",
                 name: "completion",
@@ -81,6 +90,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "unknown",
             ],
             label: "Unknown pool",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "unknown",
             },
@@ -99,6 +111,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "unlimited",
             ],
             label: "Unlimited pool",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "unknown",
             },
@@ -117,6 +132,9 @@ const snapshot: GetProviderQuotaResponse = {
                 "zero",
             ],
             label: "Weekly limit",
+            routing: {
+                type: "monitoring_only",
+            },
             scope: {
                 type: "unknown",
             },

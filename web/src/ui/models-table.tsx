@@ -1,32 +1,42 @@
 import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { effectiveCompactionFacts, isModelEffectivelyServing } from "/src/management-api/serving";
+import type {
+    ModelResponse,
+    ModelRouteResponse,
+    ProviderPoolResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
+import {
+    automaticModelNames,
+    effectiveCompactionFacts,
+    isModelInventoryReady,
+} from "/src/management-api/serving";
 import {
     COMPACTION_MECHANISM,
     type CompactionMechanism,
     DISCOVERY_STATE,
 } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
+import { ButtonLink } from "/src/ui/controls";
 import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { RowLink } from "/src/ui/row-link";
 
 /**
  * How one model reads at a glance, under the gateway's three-input effective
- * serving definition derived client-side from rows the app already fetches
- * and never read off the wire: `Serving`, or the one cause that keeps it from
+ * inventory availability derived client-side from rows the app already fetches
+ * and never read off the wire: `Ready`, or the one cause that keeps it from
  * serving — the model's own switch (`Off`), the upstream no longer reporting
  * the row (`Suspended`), the provider's switch (`Held by provider`), or a
  * provider row absent from the fetched rows (`Unknown`).
  */
-export function modelServingBadge(
+export function modelInventoryBadge(
     model: ModelResponse,
     provider: ProviderResponse | undefined,
 ): BadgeMark {
-    if (isModelEffectivelyServing(model, provider)) {
+    if (isModelInventoryReady(model, provider)) {
         return {
             tone: "ok",
-            label: "Serving",
+            label: "Ready",
         };
     }
 
@@ -135,70 +145,64 @@ export function modelCompactionBadges(model: ModelResponse): ReadonlyArray<Badge
 }
 
 /**
- * One model's row: its public ID, where it comes from, and its two facts —
- * serving state and discovery state. The row is one link to the model's own
+ * One physical model's upstream identity, inventory availability, and discovery state. The row is one link to the model's own
  * page, where the settings behind those facts are changed.
  */
 function ModelRow(props: {
     readonly model: ModelResponse;
+    readonly directRouteCount: number;
+    readonly automaticNames: ReadonlyArray<string>;
     readonly provider: ProviderResponse | undefined;
     readonly showProvider?: boolean | undefined;
 }): JSX.Element {
-    const serving = (): BadgeMark => modelServingBadge(props.model, props.provider);
+    const serving = (): BadgeMark => modelInventoryBadge(props.model, props.provider);
 
     const discovery = (): BadgeMark => modelDiscoveryBadge(props.model);
 
     const compaction = (): ReadonlyArray<BadgeMark> => modelCompactionBadges(props.model);
 
-    // The provider's name prefixes the upstream id wherever the row's own
-    // provider column is not shown; a hand-set override appends its notice.
-    const subline = (): string => {
-        const origin =
-            props.showProvider === true && props.provider !== undefined
-                ? `${props.provider.name} · ${props.model.upstream_id}`
-                : props.model.upstream_id;
-
-        return props.model.id_override !== null ? `${origin} · Custom public ID` : origin;
-    };
+    const subline = (): string =>
+        `${props.provider === undefined ? "" : `Public ID ${props.automaticNames.length === 0 ? "No automatic entry" : props.automaticNames.join(", ")} · `}${props.showProvider === true ? `${props.model.provider} · ` : ""}${props.directRouteCount === 0 ? "No direct routes" : `${props.directRouteCount} direct routes`}`;
 
     return (
-        <li>
-            <RowLink
-                href={hrefs.modelDetail(props.model.id)}
-                primary={
-                    <span class="tnum block truncate text-[13.5px] font-medium">
-                        {props.model.public_id}
-                    </span>
-                }
-                secondary={subline()}
-                badges={
-                    <>
-                        <Badge
-                            tone={serving().tone}
-                            label={serving().label}
-                        />
-                        <Badge
-                            tone={discovery().tone}
-                            label={discovery().label}
-                        />
-                        <For each={compaction()}>
-                            {(badge) => (
-                                <Badge
-                                    tone={badge.tone}
-                                    label={badge.label}
-                                />
-                            )}
-                        </For>
-                    </>
-                }
-            />
-        </li>
+        <RowLink
+            href={hrefs.modelDetail(props.model.id)}
+            primary={
+                <span class="tnum block truncate text-[13.5px] font-medium">
+                    {props.model.upstream_id}
+                </span>
+            }
+            secondary={subline()}
+            trailing={<ButtonLink href={hrefs.modelRouteNew(props.model.id)}>Add alias</ButtonLink>}
+            badges={
+                <>
+                    <Badge
+                        tone={serving().tone}
+                        label={serving().label}
+                    />
+                    <Badge
+                        tone={discovery().tone}
+                        label={discovery().label}
+                    />
+                    <For each={compaction()}>
+                        {(badge) => (
+                            <Badge
+                                tone={badge.tone}
+                                label={badge.label}
+                            />
+                        )}
+                    </For>
+                </>
+            }
+        />
     );
 }
 
 /** A list of model rows, newest reading first as the gateway orders them. */
 export function ModelList(props: {
     readonly models: ReadonlyArray<ModelResponse>;
+    readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
+    readonly pools: ReadonlyArray<ProviderPoolResponse>;
     readonly providersById: ReadonlyMap<number, ProviderResponse>;
     readonly showProvider?: boolean | undefined;
 }): JSX.Element {
@@ -208,6 +212,14 @@ export function ModelList(props: {
                 {(model) => (
                     <ModelRow
                         model={model}
+                        automaticNames={automaticModelNames(model, props.modelRoutes, props.pools)}
+                        directRouteCount={
+                            props.modelRoutes.filter(
+                                (route) =>
+                                    route.target.type === "direct" &&
+                                    route.target.model_id === model.id,
+                            ).length
+                        }
                         provider={props.providersById.get(model.provider_id)}
                         showProvider={props.showProvider}
                     />

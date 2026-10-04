@@ -28,7 +28,8 @@ use vec1::Vec1;
 /// Column order of api log selects, consumed positionally by [`api_log_from_row`].
 const API_LOG_COLUMNS: &str = "started_at, api_key_id, provider_id, model_id, \
      endpoint_type, is_stream, http_status, outcome, duration, input_tokens, \
-     output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens";
+     output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, \
+     model_route_id, upstream_http_status";
 
 /// The fixed api-log file connection pool size for reads: one read query runs per file at a
 /// time.
@@ -346,6 +347,18 @@ pub struct UsageFilter {
     )]
     pub(crate) model_id: Option<Vec1<i64>>,
 
+    /// Stable public route identities a row may carry; absent lists every route.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<number>", optional)
+    )]
+    pub(crate) model_route_id: Option<Vec1<i64>>,
+
     /// Outward completion endpoints a row may carry; absent lists every endpoint.
     #[serde(
         default,
@@ -423,6 +436,12 @@ fn filter_conditions(filter: &UsageFilter) -> (Vec<String>, Vec<Value>) {
 
     if let Some(ids) = &filter.model_id {
         push_in_condition(&mut conditions, &mut values, "model_id", ids, |id| {
+            Value::Integer(*id)
+        });
+    }
+
+    if let Some(ids) = &filter.model_route_id {
+        push_in_condition(&mut conditions, &mut values, "model_route_id", ids, |id| {
             Value::Integer(*id)
         });
     }
@@ -528,6 +547,8 @@ fn api_log_from_row(row: &Row) -> Result<ApiLog, Error> {
         cached_tokens: row.get(11)?,
         cache_write_tokens: row.get(12)?,
         reasoning_tokens: row.get(13)?,
+        model_route_id: row.get(14)?,
+        upstream_http_status: row.get(15)?,
     })
 }
 
@@ -609,11 +630,15 @@ fn text_enum_column<T>(
     }
 }
 
-/// One stored accounting row: the fourteen published columns exactly as stored — the row the
+/// One stored accounting row: the sixteen published columns exactly as stored — the row the
 /// management read surface mirrors (README §3 *ApiLog*). The rowid stays internal: it never
 /// appears here, serving only as the per-file tie-break of the list ordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApiLog {
+    /// Stable requested public route identity.
+    pub(crate) model_route_id: i64,
+    /// First upstream header status; null means no response headers were received.
+    pub(crate) upstream_http_status: Option<i64>,
     /// Dispatch-start instant in UTC microseconds.
     pub(crate) started_at: i64,
 
@@ -664,6 +689,8 @@ pub(crate) struct ApiLog {
 /// dimensions and renders that bucket as `null`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub(crate) struct UsageBucketKey {
+    /// Grouped public route identity.
+    pub(crate) model_route_id: Option<i64>,
     /// The UTC day of `started_at`, `YYYY-MM-DD`.
     pub(crate) day: Option<String>,
 
@@ -775,6 +802,7 @@ fn key_part(key: &UsageBucketKey, dimension: UsageGroupBy) -> Option<KeyPart<'_>
     match dimension {
         UsageGroupBy::Day => key.day.as_deref().map(KeyPart::Text),
         UsageGroupBy::Model => key.model_id.map(KeyPart::Id),
+        UsageGroupBy::ModelRoute => key.model_route_id.map(KeyPart::Id),
         UsageGroupBy::Provider => key.provider_id.map(KeyPart::Id),
         UsageGroupBy::ApiKey => key.api_key_id.map(KeyPart::Id),
         UsageGroupBy::EndpointType => key
@@ -801,6 +829,7 @@ fn key_expression(dimension: UsageGroupBy) -> Option<&'static str> {
     match dimension {
         UsageGroupBy::Day => None,
         UsageGroupBy::Model => Some("model_id"),
+        UsageGroupBy::ModelRoute => Some("model_route_id"),
         UsageGroupBy::Provider => Some("provider_id"),
         UsageGroupBy::ApiKey => Some("api_key_id"),
         UsageGroupBy::EndpointType => Some("endpoint_type"),
@@ -824,6 +853,7 @@ fn read_key_part(
     match dimension {
         UsageGroupBy::Day => {}
         UsageGroupBy::Model => key.model_id = Some(row.get(column)?),
+        UsageGroupBy::ModelRoute => key.model_route_id = Some(row.get(column)?),
         UsageGroupBy::Provider => key.provider_id = Some(row.get(column)?),
         UsageGroupBy::ApiKey => key.api_key_id = Some(row.get(column)?),
         UsageGroupBy::EndpointType => {
@@ -1012,6 +1042,80 @@ mod tests {
         Ok(())
     }
 
+    /// A public route groups attempts across real physical targets and day files. Abandoned
+    /// attempts retain their upstream status and NULL outward status, while successful attempts
+    /// carry both facts independently; exact route filters select both accounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage or query failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if attribution, cross-file aggregation, filtering, or status separation diverges.
+    #[tokio::test]
+    async fn route_attribution_spans_accounts_and_preserves_attempt_statuses()
+    -> Result<(), Box<dyn StdError>> {
+        let (store, _guard) = create_test_store(90);
+        let now = unix_time::unix_now_micros();
+        for (offset, route, provider, model, outward, upstream) in [
+            (-86_400_000_000, 9, 1, 10, None, 429),
+            (0, 9, 2, 20, Some(200), 200),
+            (1, 8, 1, 10, Some(502), 403),
+        ] {
+            let mut row = write(now + offset, 1, provider, model, [None; 5]);
+            row.model_route_id = route;
+            row.http_status = outward;
+            row.upstream_http_status = Some(upstream);
+            row.outcome = if outward == Some(200) {
+                ApiLogOutcome::Completed
+            } else {
+                ApiLogOutcome::UpstreamError
+            };
+            store.record(row).await?;
+        }
+        let filter = UsageFilter {
+            model_route_id: Some(list1(&[9])),
+            ..UsageFilter::default()
+        };
+        let rows = list_api_logs(Some(&store), 100, None, &filter).await?;
+        assert_eq!(
+            rows.iter()
+                .map(|row| (
+                    row.model_route_id,
+                    row.provider_id,
+                    row.model_id,
+                    row.http_status,
+                    row.upstream_http_status
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (9, 2, 20, Some(200), Some(200)),
+                (9, 1, 10, None, Some(429))
+            ]
+        );
+        let buckets = query_usage(
+            Some(&store),
+            &UsageSelection {
+                group_by: vec![UsageGroupBy::ModelRoute],
+                filter,
+            },
+        )
+        .await?;
+        assert_eq!(
+            buckets,
+            [UsageAggregate {
+                key: UsageBucketKey {
+                    model_route_id: Some(9),
+                    ..UsageBucketKey::default()
+                },
+                requests: 2,
+                ..UsageAggregate::default()
+            }]
+        );
+        Ok(())
+    }
+
     /// Verifies `usage:query` end to end over a hand-checked fixture spanning two files
     /// (README §7.1): every dimension buckets and orders by its own key, dimension sets compose
     /// the key and the ordering in request order, the empty set aggregates one total bucket —
@@ -1115,6 +1219,8 @@ mod tests {
                     api_key_id,
                     provider_id,
                     model_id,
+                    model_route_id: model_id,
+                    upstream_http_status: http_status,
                     endpoint_type,
                     is_stream,
                     http_status,
@@ -1603,7 +1709,8 @@ mod tests {
             let database = open_day_file(&store, ApiLogDay::of_started_at(day)).await;
             let mut fixture = String::from(
                 "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
-                 endpoint_type, is_stream, http_status, outcome, duration, input_tokens, \
+                 model_route_id, endpoint_type, is_stream, http_status, outcome, duration, \
+                 input_tokens, \
                  output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens) VALUES ",
             );
 
@@ -1621,7 +1728,7 @@ mod tests {
                 }
 
                 fixture.push_str(&format!(
-                    "({}, 9, 9, {}, 'openai_chat_completions', 0, 200, 'completed', 5, {}, {}, \
+                    "({}, 9, 9, {}, 1, 'openai_chat_completions', 0, 200, 'completed', 5, {}, {}, \
                      NULL, NULL, NULL)",
                     day + index,
                     model_id,

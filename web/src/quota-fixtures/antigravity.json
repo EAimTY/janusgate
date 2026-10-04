@@ -138,6 +138,9 @@
             "reset": {
                 "type": "at",
                 "at": 946684800000000
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -159,6 +162,9 @@
             },
             "reset": {
                 "type": "unknown"
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         }
     ],

@@ -19,6 +19,7 @@ import { parseRowIdentifier } from "./row-id";
 export type UsageFilterFields = {
     readonly providerId: string;
     readonly modelId: string;
+    readonly modelRouteId: string;
     readonly apiKeyId: string;
     readonly endpointType: "" | ApiLogEndpointType;
     readonly outcome: UsageOutcomeChoice;
@@ -57,6 +58,7 @@ export const USAGE_OUTCOME_FAILURES: ReadonlyArray<ApiLogOutcome> = [
 export const EMPTY_USAGE_FILTER_FIELDS: UsageFilterFields = {
     providerId: "",
     modelId: "",
+    modelRouteId: "",
     apiKeyId: "",
     endpointType: "",
     outcome: "",
@@ -207,6 +209,7 @@ export function parseUsageFilterDraft(search: string): UsageFilterDraft {
         window: routeWindow(parameters.get("window")),
         providerId: routeRowId(parameters, "provider"),
         modelId: routeRowId(parameters, "model"),
+        modelRouteId: routeRowId(parameters, "route"),
         apiKeyId: routeRowId(parameters, "key"),
         endpointType: API_LOG_ENDPOINT_TYPE.find(parameters.get("endpoint")) ?? "",
         outcome: routeOutcome(parameters.get("outcome")),
@@ -237,6 +240,8 @@ export function serializeUsageFilterDraft(draft: UsageFilterDraft): string {
     if (draft.providerId !== "") {
         parameters.set("provider", draft.providerId);
     }
+
+    if (draft.modelRouteId !== "") parameters.set("route", draft.modelRouteId);
 
     if (draft.modelId !== "") {
         parameters.set("model", draft.modelId);
@@ -274,6 +279,7 @@ export function serializeUsageFilterDraft(draft: UsageFilterDraft): string {
 const USAGE_FILTER_FIELD_NAMES: ReadonlyArray<keyof UsageFilterFields> = [
     "providerId",
     "modelId",
+    "modelRouteId",
     "apiKeyId",
     "endpointType",
     "outcome",
@@ -398,6 +404,13 @@ export function buildUsageFilter(
                       Number(fields.providerId),
                   ],
               }),
+        ...(fields.modelRouteId === ""
+            ? {}
+            : {
+                  model_route_id: [
+                      Number(fields.modelRouteId),
+                  ],
+              }),
         ...(fields.modelId === ""
             ? {}
             : {
@@ -450,7 +463,10 @@ export function draftUsageFilter(draft: UsageFilterDraft, nowMicros: number): Us
  * The entity dimensions an aggregates subject can name: the `usage:query`
  * grouping dimensions that have a filter field of their own.
  */
-export type UsageQuerySubjectDimension = Extract<UsageGroupBy, "provider" | "model" | "api_key">;
+export type UsageQuerySubjectDimension = Extract<
+    UsageGroupBy,
+    "provider" | "model" | "model_route" | "api_key"
+>;
 
 /** The subject an aggregates link carries: one entity dimension and the row to preselect there. */
 export type UsageQuerySubject = {
@@ -462,6 +478,7 @@ export type UsageQuerySubject = {
 const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
     "provider",
     "model",
+    "model_route",
     "api_key",
 ];
 
@@ -485,6 +502,11 @@ type UsageQuerySubjectFieldNames = {
  * three spellings can never drift apart.
  */
 export const USAGE_QUERY_SUBJECT_FIELDS = {
+    model_route: {
+        draftField: "modelRouteId",
+        routeParameter: "route",
+        wireField: "model_route_id",
+    },
     provider: {
         draftField: "providerId",
         routeParameter: "provider",

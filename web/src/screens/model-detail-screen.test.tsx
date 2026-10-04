@@ -25,6 +25,14 @@ const model = modelRow({
 /** A management API whose entity listings answer the fixtures; usage answers empty. */
 function screenApi(provider: ProviderResponse | null, model: ModelResponse): ManagementApi {
     return stubManagementApi({
+        listProviderPools: () =>
+            Promise.resolve({
+                provider_pools: [],
+            }),
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [],
+            }),
         listProviders: () =>
             Promise.resolve({
                 providers:

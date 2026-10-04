@@ -12,10 +12,10 @@ import {
 } from "./adapters";
 
 const compatible: ProviderResponse = {
+    model_prefix: "",
     type: "api_key",
     id: 4,
     name: "local",
-    model_prefix: "local-",
     is_enabled: true,
     provider_definition_name: "generic-openai-chat-completions",
     provider_definition_version: 1,
@@ -24,10 +24,10 @@ const compatible: ProviderResponse = {
 };
 
 const codexOauth: ProviderResponse = {
+    model_prefix: "",
     type: "oauth",
     id: 5,
     name: "chatgpt",
-    model_prefix: "gpt-",
     is_enabled: false,
     provider_definition_name: "codex",
     provider_definition_version: 1,
@@ -37,10 +37,10 @@ const codexOauth: ProviderResponse = {
 };
 
 const antigravityOauth: ProviderResponse = {
+    model_prefix: "",
     type: "oauth",
     id: 6,
     name: "antigravity",
-    model_prefix: "",
     is_enabled: true,
     provider_definition_name: "antigravity",
     provider_definition_version: 1,
@@ -54,8 +54,7 @@ const model: ModelResponse = {
     provider_id: 4,
     provider: "local",
     upstream_id: "qwen3:32b",
-    public_id: "local-qwen3-32b",
-    id_override: null,
+
     is_enabled: true,
     discovery_state: "discovered",
     thinking_levels: null,
@@ -73,9 +72,9 @@ describe("toUpdateProviderRequest", () => {
         const request = toUpdateProviderRequest(compatible);
 
         expect(request).toEqual({
+            model_prefix: "",
             provider_id: 4,
             name: "local",
-            model_prefix: "local-",
             is_enabled: true,
             base_url: "https://upstream.example.com/v1",
         });
@@ -93,9 +92,9 @@ describe("toUpdateProviderRequest", () => {
         });
 
         expect(request).toEqual({
+            model_prefix: "",
             provider_id: 4,
             name: "renamed",
-            model_prefix: "local-",
             is_enabled: false,
             base_url: "https://other.example.com",
         });
@@ -112,18 +111,6 @@ describe("toUpdateProviderRequest", () => {
         });
 
         expect(request.base_url).toBe(null);
-    });
-
-    it("restates a typed prefix byte-for-byte, trailing dash included", () => {
-        // The gateway stores `model_prefix` verbatim and recomposes every
-        // unoverridden public ID from exactly what the request states
-        // (gateway README §7) — a prefix trimmed here would rewrite every
-        // client's routing, so no edit value may ever be normalized.
-        const request = toUpdateProviderRequest(compatible, {
-            model_prefix: "q-",
-        });
-
-        expect(request.model_prefix).toBe("q-");
     });
 
     it("omits the write-only api_key when the secret is kept", () => {
@@ -147,14 +134,13 @@ describe("toUpdateProviderRequest", () => {
 
     it("restates the nullable base URL and never carries the expiry", () => {
         const openAiRequest = toUpdateProviderRequest(codexOauth, {
-            model_prefix: "acct-",
             is_enabled: true,
         });
 
         expect(openAiRequest).toEqual({
+            model_prefix: "",
             provider_id: 5,
             name: "chatgpt",
-            model_prefix: "acct-",
             is_enabled: true,
             base_url: null,
         });
@@ -168,9 +154,9 @@ describe("toUpdateProviderRequest", () => {
         });
 
         expect(antigravityRequest).toEqual({
+            model_prefix: "",
             provider_id: 6,
             name: "google",
-            model_prefix: "",
             is_enabled: true,
             base_url: null,
         });
@@ -183,7 +169,7 @@ describe("toUpdateModelRequest", () => {
     it("restates the row's writable columns and addresses it by model_id", () => {
         expect(toUpdateModelRequest(model)).toEqual({
             model_id: 9,
-            id_override: null,
+
             is_enabled: true,
             thinking_levels_override: null,
             max_input_tokens_override: null,
@@ -199,7 +185,7 @@ describe("toUpdateModelRequest", () => {
             }),
         ).toEqual({
             model_id: 9,
-            id_override: null,
+
             is_enabled: false,
             thinking_levels_override: null,
             max_input_tokens_override: null,
@@ -229,7 +215,7 @@ describe("toUpdateModelRequest", () => {
             }),
         ).toEqual({
             model_id: 9,
-            id_override: null,
+
             is_enabled: true,
             thinking_levels_override: [
                 "low",
@@ -249,7 +235,7 @@ describe("toUpdateModelRequest", () => {
             }),
         ).toEqual({
             model_id: 9,
-            id_override: null,
+
             is_enabled: true,
             thinking_levels_override: null,
             max_input_tokens_override: null,
@@ -297,31 +283,8 @@ describe("toUpdateModelRequest", () => {
         ).toBe(null);
     });
 
-    it("keeps an explicit null as the no-override state", () => {
-        const overridden: ModelResponse = {
-            ...model,
-            id_override: "public-id",
-        };
-
-        expect(
-            toUpdateModelRequest(overridden, {
-                id_override: null,
-            }),
-        ).toEqual({
-            model_id: 9,
-            id_override: null,
-            is_enabled: true,
-            thinking_levels_override: null,
-            max_input_tokens_override: null,
-            max_output_tokens_override: null,
-            compaction_support_override: null,
-        });
-    });
-
     it("never addresses the row by its natural key or its public routing id", () => {
-        const request = toUpdateModelRequest(model, {
-            id_override: "renamed-id",
-        });
+        const request = toUpdateModelRequest(model, {});
 
         expect(request.model_id).toBe(9);
         expect("provider_id" in request).toBe(false);
@@ -374,7 +337,7 @@ describe("toCreateModelRequest", () => {
         expect(toCreateModelRequest(4, "gpt-4o")).toEqual({
             provider_id: 4,
             upstream_id: "gpt-4o",
-            id_override: null,
+
             is_enabled: true,
             thinking_levels_override: null,
             max_input_tokens_override: null,
@@ -386,7 +349,6 @@ describe("toCreateModelRequest", () => {
     it("carries the writable columns explicitly", () => {
         expect(
             toCreateModelRequest(4, "gpt-4o", {
-                id_override: "custom",
                 is_enabled: false,
                 thinking_levels_override: [
                     "low",
@@ -400,7 +362,7 @@ describe("toCreateModelRequest", () => {
         ).toEqual({
             provider_id: 4,
             upstream_id: "gpt-4o",
-            id_override: "custom",
+
             is_enabled: false,
             thinking_levels_override: [
                 "low",

@@ -16,6 +16,12 @@ export type Reachability = "reached" | "unreached" | "unknown";
 /** The management action whose failure is being explained. */
 export type ActionName =
     | "connect"
+    | "create-pool"
+    | "update-pool"
+    | "delete-pool"
+    | "create-route"
+    | "update-route"
+    | "delete-route"
     | "ensure-definition"
     | "create-provider"
     | "update-provider"
@@ -130,7 +136,16 @@ function conflictFix(action: ActionName | undefined): string {
     switch (action) {
         case "create-model":
         case "update-model":
-            return "Another model already routes that public ID.";
+            return "This account already holds that exact upstream model. Open its existing inventory row.";
+
+        case "create-route":
+        case "update-route":
+            return "Another public route holds that public ID. Choose an explicit different name or edit the existing route.";
+        case "create-pool":
+        case "update-pool":
+            return "Another pool holds that name. Choose a different pool name.";
+        case "delete-pool":
+            return "Public routes still reference this pool. Change or delete those routes before deleting the pool.";
 
         case "create-api-key":
         case "update-api-key":
@@ -146,21 +161,20 @@ function conflictFix(action: ActionName | undefined): string {
 
         case "create-provider":
         case "update-provider":
-            return "Choose a provider name no other row holds; a changed model prefix can also collide with an existing model ID.";
+            return "Choose a provider name no other row holds.";
 
         // A creation flow's completion conflicts only on the name the flow
         // was started under, and the gateway consumes the flow on the
         // completion attempt even when it answers that conflict (root README
-        // §7.1): the page keeps the flow live — and with it the name and
-        // prefix locked — while the state is already spent, so no field a
+        // §7.1): the page keeps the flow live — and with it the name locked — while the state is already spent, so no field a
         // rename could point at is editable. The one in-page escape is the
         // step's own "Start over" control, which ends the flow and unlocks
-        // both fields for the fresh creation's rename. A reauthorize
+        // the name for the fresh creation's rename. A reauthorize
         // completion can never answer this conflict: it replaces an existing
         // row's credentials and touches no unique column, so it stays on the
         // shared arms' behalf alone.
         case "complete-oauth":
-            return "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name and prefix; then create again with a name no other row holds.";
+            return "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name; then create again with a name no other row holds.";
 
         default:
             return "Choose an identifier no other row holds.";

@@ -650,8 +650,8 @@ mod tests {
              \"upstream_error\" | \"internal\";"
         ));
         assert!(first.contains(
-            "export type UsageGroupBy = \"day\" | \"model\" | \"provider\" | \"api_key\" | \
-             \"endpoint_type\" | \"outcome\" | \"is_stream\" | \"http_status\";"
+            "export type UsageGroupBy = \"day\" | \"model\" | \"model_route\" | \"provider\" | \
+             \"api_key\" | \"endpoint_type\" | \"outcome\" | \"is_stream\" | \"http_status\";"
         ));
 
         assert!(first.contains("export type ErrorResponse"));

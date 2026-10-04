@@ -82,6 +82,45 @@ pub(crate) enum Error {
         model: String,
     },
 
+    /// An enabled pool route has no structurally eligible exact physical target.
+    #[error("The model `{model}` has no available account in its pool.")]
+    PoolUnavailable {
+        /// Requested public model name.
+        model: String,
+    },
+
+    /// All structural pooled targets were blocked or positively rejected for quota.
+    #[error("The model `{model}` has exhausted quota on every account in its pool.")]
+    PoolQuotaExhausted {
+        /// Requested public model alias.
+        model: String,
+        /// Optional proven recheck delay in positive whole seconds.
+        retry_after: Option<std::num::NonZeroU64>,
+    },
+
+    /// The established account cannot serve the requested public model in this pool.
+    #[error("The model `{model}` cannot use its required account.")]
+    BoundAccountUnavailable {
+        /// Requested public model alias.
+        model: String,
+    },
+
+    /// The established account has an applicable quota restriction; switching is forbidden.
+    #[error("The model `{model}` has exhausted quota on its required account.")]
+    BoundAccountQuotaExhausted {
+        /// Requested public model alias.
+        model: String,
+        /// Positive whole seconds until every applicable restriction has a known future reset.
+        retry_after: Option<std::num::NonZeroU64>,
+    },
+
+    /// Active authoritative/artifact routing evidence conflicts with a single live binding.
+    #[error("The model `{model}` has conflicting routing requirements.")]
+    RoutingStateConflict {
+        /// Requested public model alias.
+        model: String,
+    },
+
     /// The upstream answered a non-2xx status, mirrored verbatim. The status is carried as a
     /// [`StatusCode`] taken verbatim from the upstream response, so the mirror needs no
     /// conversion.
@@ -91,6 +130,15 @@ pub(crate) enum Error {
         status: StatusCode,
 
         /// Truncated upstream body excerpt.
+        message: String,
+    },
+
+    /// A positively classified quota rejection retained until account-attempt selection.
+    #[error("Upstream request failed: {message}")]
+    QuotaRejected {
+        /// Original rejected status, mirrored if switching is ineligible.
+        status: StatusCode,
+        /// Bounded upstream excerpt, with the already-persisted restriction omitted.
         message: String,
     },
 
@@ -120,11 +168,20 @@ impl Error {
 
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
 
-            Self::MalformedRequest { .. } => StatusCode::BAD_REQUEST,
+            Self::MalformedRequest { .. } | Self::RoutingStateConflict { .. } => {
+                StatusCode::BAD_REQUEST
+            }
 
-            Self::Upstream { status, .. } => *status,
+            Self::Upstream { status, .. } | Self::QuotaRejected { status, .. } => *status,
 
             Self::UpstreamUnavailable { .. } => StatusCode::BAD_GATEWAY,
+
+            Self::PoolUnavailable { .. } | Self::BoundAccountUnavailable { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            Self::PoolQuotaExhausted { .. } | Self::BoundAccountQuotaExhausted { .. } => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
 
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -144,13 +201,21 @@ impl Error {
     /// and swallowed — nothing else would flag it.
     pub(crate) fn accounting(&self) -> (ApiLogOutcome, i64) {
         match self {
-            Self::Upstream { status, .. } => {
+            Self::Upstream { status, .. } | Self::QuotaRejected { status, .. } => {
                 (ApiLogOutcome::UpstreamError, i64::from(status.as_u16()))
             }
 
             Self::UpstreamUnavailable { .. } => (
                 ApiLogOutcome::UpstreamError,
                 i64::from(StatusCode::BAD_GATEWAY.as_u16()),
+            ),
+
+            Self::PoolUnavailable { .. }
+            | Self::PoolQuotaExhausted { .. }
+            | Self::BoundAccountUnavailable { .. }
+            | Self::BoundAccountQuotaExhausted { .. } => (
+                ApiLogOutcome::UpstreamError,
+                i64::from(self.http_status().as_u16()),
             ),
 
             Self::Internal => (
@@ -165,6 +230,7 @@ impl Error {
             | Self::MethodNotAllowed
             | Self::PayloadTooLarge
             | Self::MalformedRequest { .. }
+            | Self::RoutingStateConflict { .. }
             | Self::ModelNotFound { .. } => (
                 ApiLogOutcome::Completed,
                 i64::from(self.http_status().as_u16()),
@@ -190,6 +256,8 @@ impl Error {
 pub(crate) fn log_error(operation: &str, error: &Error) {
     if error.is_client_fault() {
         debug!("{operation} rejected: {error}");
+    } else if let Error::Upstream { status, .. } | Error::QuotaRejected { status, .. } = error {
+        error!("{operation} failed: upstream responded with status {status}");
     } else {
         error!("{operation} failed: {error}");
     }
@@ -238,27 +306,62 @@ impl From<ProviderError> for Error {
 
 impl From<GatewayError> for Error {
     fn from(error: GatewayError) -> Self {
+        Self::from(&error)
+    }
+}
+
+impl From<&GatewayError> for Error {
+    fn from(error: &GatewayError) -> Self {
         match error {
             GatewayError::InvalidRequest(error) => {
                 let message = error.to_string();
 
                 Self::MalformedRequest {
-                    param: error.param,
+                    param: error.param.clone(),
                     message,
                 }
             }
 
-            GatewayError::ModelNotFound { model } => Self::ModelNotFound { model },
-
-            GatewayError::Upstream { status, detail } => Self::Upstream {
-                status,
-                message: detail,
+            GatewayError::ModelNotFound { model } => Self::ModelNotFound {
+                model: model.clone(),
+            },
+            GatewayError::PoolUnavailable { model } => Self::PoolUnavailable {
+                model: model.clone(),
             },
 
-            GatewayError::Unavailable { detail } => Self::UpstreamUnavailable { message: detail },
+            GatewayError::PoolQuotaExhausted { model, retry_after } => Self::PoolQuotaExhausted {
+                model: model.clone(),
+                retry_after: *retry_after,
+            },
+
+            GatewayError::BoundAccountUnavailable { model } => Self::BoundAccountUnavailable {
+                model: model.clone(),
+            },
+            GatewayError::BoundAccountQuotaExhausted { model, retry_after } => {
+                Self::BoundAccountQuotaExhausted {
+                    model: model.clone(),
+                    retry_after: *retry_after,
+                }
+            }
+            GatewayError::RoutingStateConflict { model } => Self::RoutingStateConflict {
+                model: model.clone(),
+            },
+
+            GatewayError::Upstream { status, detail } => Self::Upstream {
+                status: *status,
+                message: detail.clone(),
+            },
+            GatewayError::QuotaRejected { status, detail, .. } => Self::QuotaRejected {
+                status: *status,
+                message: detail.clone(),
+            },
+
+            GatewayError::Unavailable { detail } => Self::UpstreamUnavailable {
+                message: detail.clone(),
+            },
 
             // The provider-failure classification lives once, in `From<ProviderError>`.
-            GatewayError::Provider(error) => Self::from(error),
+            GatewayError::Provider(error) => Self::from(error.clone()),
 
             GatewayError::Storage(_) | GatewayError::Internal { .. } => Self::Internal,
         }

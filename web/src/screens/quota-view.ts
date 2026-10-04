@@ -7,6 +7,12 @@ import { type ScreenNotice, screenFailureNotice } from "./read";
 /** One mounted identity's whole observation and independently owned failure. */
 export type QuotaViewState =
     | {
+          readonly type: "checking";
+      }
+    | {
+          readonly type: "unobserved";
+      }
+    | {
           readonly type: "unsupported";
       }
     | {
@@ -55,13 +61,14 @@ function isSameIdentity(before: Identity, after: Identity): boolean {
     );
 }
 
-/** Resolves exact-version capability and reads once; only a manual action repeats the upstream read. */
+/** Resolves exact-version capability without upstream I/O; every quota query is explicit. */
 export function createProviderQuotaView(props: {
     readonly api: Accessor<ManagementApi>;
     readonly provider: Accessor<ProviderResponse | null>;
+    readonly onQuotaReadComplete?: () => void;
 }): ProviderQuotaView {
     const [state, setState] = createSignal<QuotaViewState>({
-        type: "loading",
+        type: "checking",
     });
     let identity: Identity | null = null;
     let controller: AbortController | null = null;
@@ -70,7 +77,7 @@ export function createProviderQuotaView(props: {
     let isDisposed = false;
     let hasResolvedCapability = false;
 
-    const run = async (): Promise<void> => {
+    const run = async (shouldReadQuota: boolean): Promise<void> => {
         if (identity === null || isBusy || isDisposed) return;
         const current = identity;
         const currentGeneration = generation;
@@ -82,7 +89,7 @@ export function createProviderQuotaView(props: {
         setState(
             snapshot === null
                 ? {
-                      type: "loading",
+                      type: shouldReadQuota ? "loading" : "checking",
                   }
                 : {
                       type: "ready",
@@ -108,6 +115,7 @@ export function createProviderQuotaView(props: {
                 // This immutable version's capability can be reused by manual refreshes.
                 hasResolvedCapability = true;
             }
+            if (!shouldReadQuota) return undefined;
             return current.api.getProviderQuota(
                 {
                     provider_id: current.provider.id,
@@ -143,15 +151,20 @@ export function createProviderQuotaView(props: {
                     ? {
                           type: "unsupported",
                       }
-                    : {
-                          type: "ready",
-                          snapshot: outcome.result,
-                          refresh: {
-                              type: "idle",
-                          },
-                      },
+                    : outcome.result === undefined
+                      ? {
+                            type: "unobserved",
+                        }
+                      : {
+                            type: "ready",
+                            snapshot: outcome.result,
+                            refresh: {
+                                type: "idle",
+                            },
+                        },
             );
         }
+        if (shouldReadQuota && hasResolvedCapability) props.onQuotaReadComplete?.();
     };
 
     createEffect(
@@ -181,9 +194,9 @@ export function createProviderQuotaView(props: {
                           provider: next.provider,
                       };
             setState({
-                type: "loading",
+                type: "checking",
             });
-            void run();
+            void run(false);
         },
     );
     onCleanup(() => {
@@ -194,7 +207,7 @@ export function createProviderQuotaView(props: {
     return {
         state,
         refresh: () => {
-            if (state().type !== "unsupported") void run();
+            if (state().type !== "unsupported") void run(true);
         },
     };
 }

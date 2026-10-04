@@ -61,10 +61,30 @@ pub(crate) fn render_body(error: &Error) -> GeminiErrorBody {
             }
         }
 
-        Error::Upstream { status, .. } => GeminiErrorBody {
+        Error::Upstream { status, .. } | Error::QuotaRejected { status, .. } => GeminiErrorBody {
             code: status.as_u16(),
             message: error.to_string(),
             status: canonical_status_name(*status),
+        },
+
+        Error::PoolUnavailable { .. } | Error::BoundAccountUnavailable { .. } => GeminiErrorBody {
+            code: error.http_status().as_u16(),
+            message: error.to_string(),
+            status: "UNAVAILABLE",
+        },
+
+        Error::PoolQuotaExhausted { .. } | Error::BoundAccountQuotaExhausted { .. } => {
+            GeminiErrorBody {
+                code: error.http_status().as_u16(),
+                message: error.to_string(),
+                status: "RESOURCE_EXHAUSTED",
+            }
+        }
+
+        Error::RoutingStateConflict { .. } => GeminiErrorBody {
+            code: error.http_status().as_u16(),
+            message: error.to_string(),
+            status: "INVALID_ARGUMENT",
         },
 
         Error::UpstreamUnavailable { .. } => GeminiErrorBody {

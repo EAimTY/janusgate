@@ -15,13 +15,13 @@ import {
 } from "../screens/screen-test-support";
 
 const providerRow: ProviderResponse = {
+    model_prefix: "",
     type: "api_key",
     provider_definition_name: "generic-openai-responses",
     provider_definition_version: 1,
     format: "openai_response",
     id: 3,
     name: "alpha",
-    model_prefix: "alpha-",
     is_enabled: true,
     base_url: "https://alpha.example",
 };
@@ -31,8 +31,7 @@ const modelRow: ModelResponse = {
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
-    public_id: "alpha-gpt-x",
-    id_override: null,
+
     is_enabled: true,
     discovery_state: "discovered",
     thinking_levels: null,
@@ -74,6 +73,18 @@ function mountControls(
             () => (
                 <UsageFilterControls
                     fields={fields}
+                    modelRoutes={[
+                        {
+                            is_automatic: false,
+                            id: 18,
+                            public_id: "coding",
+                            is_enabled: true,
+                            target: {
+                                type: "direct",
+                                model_id: 9,
+                            },
+                        },
+                    ]}
                     providers={[
                         providerRow,
                     ]}
@@ -127,11 +138,13 @@ describe("UsageFilterControls listing-backed options", () => {
         mountControls({
             ...EMPTY_USAGE_FILTER_FIELDS,
             providerId: "3",
+            modelRouteId: "18",
         });
 
         for (const label of [
             "Provider",
-            "Model",
+            "Public route",
+            "Physical model",
             "API key",
         ]) {
             const options = Array.from(labeledSelect(label).options).map(optionRepr);
@@ -139,6 +152,11 @@ describe("UsageFilterControls listing-backed options", () => {
             expect(options.some((option) => option.label.includes("no longer listed"))).toBe(false);
         }
 
+        expect(Array.from(labeledSelect("Public route").options).map(optionRepr)).toContainEqual({
+            value: "18",
+            label: "coding",
+            isSelected: true,
+        });
         expect(Array.from(labeledSelect("Provider").options).map(optionRepr)).toContainEqual({
             value: "3",
             label: "alpha",
@@ -146,16 +164,21 @@ describe("UsageFilterControls listing-backed options", () => {
         });
     });
 
-    it("wires the same treatment into the model and key selects", () => {
+    it("keeps deleted public-route, physical-model, and key choices as independent filters", () => {
         mountControls({
             ...EMPTY_USAGE_FILTER_FIELDS,
             modelId: "12",
+            modelRouteId: "17",
             apiKeyId: "8",
         });
 
         for (const [label, id] of [
             [
-                "Model",
+                "Public route",
+                "17",
+            ],
+            [
+                "Physical model",
                 "12",
             ],
             [

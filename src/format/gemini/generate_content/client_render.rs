@@ -270,7 +270,6 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
 }
 
 /// Streaming renderer producing native GenerateContent SSE frames.
-#[derive(Debug)]
 pub(super) struct SseRenderer {
     /// Public model id echoed as `modelVersion`.
     model: String,
@@ -289,6 +288,8 @@ pub(super) struct SseRenderer {
     /// Verbatim upstream prompt-block reason of a prompt-level block finish; rendered on the
     /// terminal chunk (README §6.3).
     prompt_block_reason: Option<String>,
+    /// Actual emitted part continuation, enabled only for accepted pooled streaming results.
+    projection: Option<crate::affinity::fingerprint::Projector>,
 }
 
 impl SseRenderer {
@@ -300,6 +301,7 @@ impl SseRenderer {
             is_reasoning_streamed: false,
             usage: None,
             prompt_block_reason: None,
+            projection: None,
         }
     }
 
@@ -322,7 +324,12 @@ impl SseRenderer {
     }
 
     /// Formats one content chunk carrying the given parts.
-    fn parts_frame(&self, parts: Vec<PartOut>) -> String {
+    fn parts_frame(&mut self, parts: Vec<PartOut>) -> String {
+        if let Some(projector) = self.projection.as_mut() {
+            for part in &parts {
+                project_part(part, projector);
+            }
+        }
         self.chunk_frame(
             vec![StreamCandidate {
                 content: ContentOut {
@@ -339,6 +346,14 @@ impl SseRenderer {
 }
 
 impl ClientSseRenderer for SseRenderer {
+    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.projection = Some(projector);
+    }
+
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        self.projection.take()
+    }
+
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
         match event {
@@ -755,5 +770,64 @@ mod tests {
         assert!(usage_frame.contains(r#""promptTokenCount":10"#));
         assert!(usage_frame.contains(r#""candidatesTokenCount":5"#));
         assert!(usage_frame.contains(r#""totalTokenCount":16"#));
+    }
+}
+
+/// Projects actual candidate parts, following accepted thought replay and the emitted invocation
+/// IDs.
+///
+/// # Panics
+///
+/// Panics if a gateway-rendered invocation lacks its mandatory emitted ID.
+pub(super) fn project_json_response(
+    response: &JsonResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    for candidate in &response.candidates {
+        for part in &candidate.content.parts {
+            project_part(part, projector);
+        }
+    }
+    true
+}
+
+/// Projects one actual emitted part with the same identity semantics as GenerateContent replay.
+/// Empty emitted IDs are id-less, and their fresh resolver IDs never enter canonical units.
+///
+/// # Panics
+///
+/// Panics if a gateway-rendered invocation lacks its mandatory emitted ID field.
+fn project_part(part: &PartOut, projector: &mut crate::affinity::fingerprint::Projector) {
+    use crate::affinity::fingerprint::{Identity, Role};
+    match part {
+        // The accepted thought flag does not change this parser's plain-text replay semantics.
+        PartOut::Text { text, .. } => projector.text(Role::Assistant, text.as_bytes()),
+        PartOut::FunctionCall {
+            function_call,
+            thought_signature,
+        } => {
+            #[expect(
+                clippy::expect_used,
+                reason = "the gateway emits every invocation's ID field"
+            )]
+            let id = function_call
+                .id
+                .as_deref()
+                .expect("emitted invocation has an ID field");
+            let synthesized;
+            let identity = if id.is_empty() {
+                synthesized = crate::ids::new_uuid();
+                Identity::Synthetic(&synthesized)
+            } else {
+                Identity::Wire(id)
+            };
+            projector.call(
+                Role::Assistant,
+                identity,
+                &function_call.name,
+                &Value::Object(function_call.args.clone()),
+                thought_signature.as_deref(),
+            );
+        }
     }
 }

@@ -4,18 +4,8 @@ import type { ProviderPreset } from "/src/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
 import { requiredHint } from "./required-hint";
 import { SecretRevealToggle } from "./secret-reveal";
-
-/**
- * The alert beside the prefix switch while the derived prefix is invalid. No
- * prefix field stands, and the failure is not the operator's — the free-form
- * name's shadow failed the routing-safe rule — so the wording states the
- * derivation, the rule itself (covering spaces, non-ASCII text, "/", and ":"
- * alike, per the composition vocabulary), and both escapes.
- */
-const DERIVED_PREFIX_ERROR = `The default prefix is the provider's name plus a dash, and the name's characters make it unroutable — a prefix accepts letters, numbers, and symbols only, with no spaces, non-ASCII text, "/", or ":". Rename the provider without them, or turn on Custom model prefix and set one.`;
 
 /**
  * The preset picker: one card per catalog entry, the static-key compatible
@@ -72,35 +62,15 @@ export function ProviderPresetPicker(props: {
     );
 }
 
-/**
- * Name and model prefix: the two fields every provider carries. The prefix
- * defaults to the provider's name plus one trailing dash, so an unoverridden
- * model reads as `name-upstream-id`; flipping the switch on exposes the field
- * for a hand-set value — including an empty one — which is then used exactly
- * as typed. A prefix never holds a slash or a colon: it is a routing token,
- * and the Gemini URL path cannot address either. With the switch on the
- * error is the field's own inline statement; with it off the default is the
- * free-form name's shadow and no prefix input stands, so the alert beside
- * the switch carries the derivation and both escapes instead of the field's
- * message, which would name a control that is not on the page. An edit
- * screen holding a changed prefix states its blast radius before the save
- * through `prefixChangeWarning` — the consequence line under the prefix
- * area, standing in both switch states since the derived prefix moves with
- * the name too; creation passes nothing, because a first write recomposes
- * nothing.
- */
+/** The account's free-form management label, independent of public model routes. */
 export function ProviderIdentityFields(props: {
     readonly name: string;
     readonly namePlaceholder: string;
+    readonly modelPrefix: string;
+    readonly onModelPrefixInput: (value: string) => void;
+    readonly prefixError?: string | null | undefined;
     readonly onNameInput: (value: string) => void;
     readonly nameError?: string | null | undefined;
-    readonly isCustomPrefix: boolean;
-    readonly onCustomPrefixToggle: (isCustom: boolean) => void;
-    readonly customPrefix: string;
-    readonly onCustomPrefixInput: (value: string) => void;
-    readonly defaultPrefix: string;
-    readonly prefixError?: string | null | undefined;
-    readonly prefixChangeWarning?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     return (
@@ -114,65 +84,14 @@ export function ProviderIdentityFields(props: {
                 isData={false}
                 error={props.nameError}
             />
-            <Switch
-                label="Custom model prefix"
-                hint={
-                    props.isCustomPrefix
-                        ? "Models are served under the custom prefix below."
-                        : `Models are served as ${props.defaultPrefix === "" ? "upstream-id" : `${props.defaultPrefix}upstream-id`}.`
-                }
-                isOn={props.isCustomPrefix}
+            <TextField
+                label="Model prefix"
+                value={props.modelPrefix}
+                onInput={props.onModelPrefixInput}
                 isDisabled={props.isDisabled ?? false}
-                onToggle={props.onCustomPrefixToggle}
+                error={props.prefixError}
+                hint="Outside pools, models are callable as this prefix + upstream ID. Members use their pool prefixes. Leave empty to use upstream IDs directly. Changing the prefix changes existing automatic model names."
             />
-            <Show
-                when={props.isCustomPrefix}
-                // The toggle governs editing only: an invalid derived prefix
-                // has no input to state itself in, and its field is not on
-                // the page, so the alert beside the switch names the
-                // derivation and the escapes rather than the field's rule.
-                fallback={
-                    <Show when={props.prefixError !== null && props.prefixError !== undefined}>
-                        <p
-                            class="flex items-start gap-1.5 text-[13px] text-bad"
-                            role="alert"
-                        >
-                            <Glyph
-                                name="alert"
-                                class="mt-0.5 shrink-0"
-                            />
-                            {DERIVED_PREFIX_ERROR}
-                        </p>
-                    </Show>
-                }
-            >
-                <TextField
-                    label="Model prefix"
-                    value={props.customPrefix}
-                    onInput={props.onCustomPrefixInput}
-                    placeholder="Empty for none"
-                    isDisabled={props.isDisabled ?? false}
-                    error={props.prefixError}
-                    hint="Used exactly as typed — no separator is added."
-                />
-            </Show>
-            <Show
-                when={props.prefixChangeWarning !== null && props.prefixChangeWarning !== undefined}
-            >
-                {/* The consequence of saving the changed prefix, stated
-                    before the write in the warn voice the form's own status
-                    line uses — never an error, since nothing is wrong yet. */}
-                <p
-                    class="flex items-start gap-1.5 text-[13px] text-warn"
-                    role="status"
-                >
-                    <Glyph
-                        name="alert"
-                        class="mt-0.5 shrink-0"
-                    />
-                    {props.prefixChangeWarning}
-                </p>
-            </Show>
         </div>
     );
 }

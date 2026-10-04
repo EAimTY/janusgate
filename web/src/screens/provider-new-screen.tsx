@@ -13,7 +13,8 @@ import {
     bearerSecretError,
     isBaseUrl,
     isBearerSecret,
-    modelPrefixError,
+    isRoutingToken,
+    routingTokenError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import {
@@ -38,7 +39,7 @@ import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
-import { defaultModelPrefix, suggestProviderName } from "./provider-defaults";
+import { suggestProviderName } from "./provider-defaults";
 import {
     createStandingNotice,
     ReadCallFailure,
@@ -89,10 +90,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      */
     const [isStoredKnown, setIsStoredKnown] = createSignal(false);
     const [name, setName] = createSignal("");
+    const [modelPrefix, setModelPrefix] = createSignal<string | null>(null);
+    const resolvedPrefix = (): string =>
+        modelPrefix() ?? `${isRoutingToken(resolvedName()) ? resolvedName() : suggestion()}-`;
     const [isNameTouched, setIsNameTouched] = createSignal(false);
     const [takenNames, setTakenNames] = createSignal<ReadonlySet<string>>(new Set());
-    const [isCustomPrefix, setIsCustomPrefix] = createSignal(false);
-    const [customPrefix, setCustomPrefix] = createSignal("");
     const [baseUrl, setBaseUrl] = createSignal("");
     // The base URL's error is stated only once the operator has typed into
     // the field — a pristine form is not an error, a required-but-empty field
@@ -274,17 +276,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     /** The name the request carries: what was typed, or the suggestion when the field stands empty. */
     const resolvedName = createMemo(() => (name().trim() === "" ? suggestion() : name().trim()));
 
-    /**
-     * The prefix the request carries: the default, or the hand-set value.
-     * The typed prefix is the value on the wire, byte-for-byte.
-     */
-    const resolvedPrefix = createMemo(() =>
-        isCustomPrefix() ? customPrefix() : defaultModelPrefix(resolvedName()),
-    );
-
-    /** Inline composition errors, shown where the value was typed. */
-    const prefixError = (): string | null => modelPrefixError(resolvedPrefix());
-
     const trimmedBaseUrl = (): string => baseUrl().trim();
 
     /** Inline error for the base URL, shown where it was typed and only once
@@ -309,13 +300,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     /**
      * An OAuth start or completion is submittable with a valid definition, a
-     * routable prefix, and — when the definition addresses the base — a valid
+     * account name, and — when the definition addresses the base — a valid
      * base URL, so the gateway's 400 naming `base_url` never has a chance to
      * leave the browser.
      */
     const canComplete = (): boolean =>
+        (resolvedPrefix() === "" || isRoutingToken(resolvedPrefix())) &&
         definitionError() === null &&
-        prefixError() === null &&
         (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl()));
 
     /** A static-key creation is submittable under the shared gate with a complete connection. */
@@ -728,13 +719,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <ProviderIdentityFields
                         name={name()}
                         namePlaceholder={suggestion()}
+                        modelPrefix={resolvedPrefix()}
+                        onModelPrefixInput={setModelPrefix}
+                        prefixError={routingTokenError(resolvedPrefix(), "Model prefix")}
                         onNameInput={inputName}
-                        isCustomPrefix={isCustomPrefix()}
-                        onCustomPrefixToggle={setIsCustomPrefix}
-                        customPrefix={customPrefix()}
-                        onCustomPrefixInput={setCustomPrefix}
-                        defaultPrefix={defaultModelPrefix(resolvedName())}
-                        prefixError={prefixError()}
                         isDisabled={isBusy() || isFlowLive()}
                     />
                 </div>

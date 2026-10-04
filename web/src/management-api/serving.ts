@@ -2,6 +2,8 @@ import { isCredentialExpired, nowMicros } from "/src/format";
 import type {
     MechanismSupport,
     ModelResponse,
+    ModelRouteResponse,
+    ProviderPoolResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { type CompactionMechanism, isOAuthProviderRow } from "/src/management-api/vocabulary";
@@ -38,31 +40,18 @@ export function modelCountsByProvider(
     return counts;
 }
 
-/**
- * Counts the listed models that are effectively serving (README §3) per
- * provider row id, once per listings change: `modelCountsByProvider` with
- * `isModelEffectivelyServing` as the inclusion predicate. The overview's
- * attention lines read this map: an enabled provider whose count is zero
- * serves nothing — its every row disabled, vanished, or absent — which is the
- * quietest way a provider fails and the one the overview must still name.
- */
-export function servingModelCountsByProvider(
+/** Counts ready physical inventory by account; readiness does not publish a public route. */
+export function readyInventoryCountsByProvider(
     models: ReadonlyArray<ModelResponse>,
     providersById: ReadonlyMap<number, ProviderResponse>,
 ): ReadonlyMap<number, number> {
     return modelCountsByProvider(models, (model) =>
-        isModelEffectivelyServing(model, providersById.get(model.provider_id)),
+        isModelInventoryReady(model, providersById.get(model.provider_id)),
     );
 }
 
-/**
- * The gateway's three-input effective serving definition (README §3),
- * derived client-side from rows the app already fetches and never read off
- * the wire (rule 7): the provider's switch, the row's own switch, and a
- * discovery state that is not `vanished`. A vanished row can carry
- * `is_enabled: true` and still not serve.
- */
-export function isModelEffectivelyServing(
+/** Joins account/model switches and discovery state without claiming public-route or quota availability. */
+export function isModelInventoryReady(
     model: ModelResponse,
     provider: ProviderResponse | undefined,
 ): boolean {
@@ -262,4 +251,28 @@ export function lapsedCredentialStanding(
     const standing = credentialStanding(provider);
 
     return isLapsedCredentialStanding(standing) ? standing : null;
+}
+
+/** Automatic names belong to a standalone physical model or an exact model in its member pools. */
+export function automaticModelNames(
+    model: ModelResponse,
+    routes: ReadonlyArray<ModelRouteResponse>,
+    pools: ReadonlyArray<ProviderPoolResponse>,
+): ReadonlyArray<string> {
+    return routes
+        .filter((route) => {
+            if (!route.is_automatic) return false;
+            const target = route.target;
+            return target.type === "direct"
+                ? target.model_id === model.id
+                : target.upstream_id === model.upstream_id &&
+                      pools.some(
+                          (pool) =>
+                              pool.id === target.pool_id &&
+                              pool.members.some(
+                                  (member) => member.provider_id === model.provider_id,
+                              ),
+                      );
+        })
+        .map((route) => route.public_id);
 }

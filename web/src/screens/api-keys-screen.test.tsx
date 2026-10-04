@@ -38,6 +38,10 @@ const keys: ReadonlyArray<ApiKeyResponse> = [
 /** A management API whose key listing answers from the fixture; every other route rejects. */
 function screenApi(): ManagementApi {
     return stubManagementApi({
+        listModelRoutes: () =>
+            Promise.resolve({
+                model_routes: [],
+            }),
         listApiKeys: () =>
             Promise.resolve({
                 api_keys: [

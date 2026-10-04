@@ -340,6 +340,9 @@
             "reset": {
                 "type": "at",
                 "at": 2000000000000000
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -363,6 +366,9 @@
             "reset": {
                 "type": "at",
                 "at": 2000000001000000
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -387,6 +393,9 @@
             "reset": {
                 "type": "at",
                 "at": 2000000002000000
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         },
         {
@@ -411,6 +420,9 @@
             "reset": {
                 "type": "at",
                 "at": 2000000003000000
+            },
+            "routing": {
+                "type": "monitoring_only"
             }
         }
     ],

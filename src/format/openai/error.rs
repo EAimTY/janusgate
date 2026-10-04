@@ -74,7 +74,42 @@ pub(crate) fn render_body(error: &Error) -> OpenAiErrorBody {
             code: Some("model_not_found".to_string()),
         },
 
-        Error::Upstream { .. } | Error::UpstreamUnavailable { .. } => OpenAiErrorBody {
+        Error::PoolUnavailable { .. } => OpenAiErrorBody {
+            message: error.to_string(),
+            r#type: "api_error",
+            param: None,
+            code: Some("pool_unavailable".to_string()),
+        },
+
+        Error::PoolQuotaExhausted { .. } => OpenAiErrorBody {
+            message: error.to_string(),
+            r#type: "rate_limit_error",
+            param: None,
+            code: Some("pool_quota_exhausted".to_string()),
+        },
+
+        Error::BoundAccountUnavailable { .. } => OpenAiErrorBody {
+            message: error.to_string(),
+            r#type: "api_error",
+            param: None,
+            code: Some("bound_account_unavailable".into()),
+        },
+        Error::BoundAccountQuotaExhausted { .. } => OpenAiErrorBody {
+            message: error.to_string(),
+            r#type: "rate_limit_error",
+            param: None,
+            code: Some("bound_account_quota_exhausted".into()),
+        },
+        Error::RoutingStateConflict { .. } => OpenAiErrorBody {
+            message: error.to_string(),
+            r#type: "invalid_request_error",
+            param: None,
+            code: Some("routing_state_conflict".into()),
+        },
+
+        Error::Upstream { .. }
+        | Error::QuotaRejected { .. }
+        | Error::UpstreamUnavailable { .. } => OpenAiErrorBody {
             message: error.to_string(),
             r#type: "api_error",
             param: None,

@@ -68,7 +68,7 @@ route! {
 
 /// One model listing entry in its management wire shape (README §7.1). `id` is the row identifier
 /// (`AUTOINCREMENT`, never recycled) that every row-addressed write goes through, while
-/// `public_id` is the routing string clients address. The row carries only its own inputs —
+/// the physical account-local model carries its own inputs —
 /// `is_enabled`, `discovery_state` — and never the three-input effective verdict: the caller
 /// derives that from these plus the provider's `is_enabled`, which `providers:list` already
 /// returns (README §7.0 rule 7).
@@ -86,13 +86,6 @@ pub(super) struct ModelResponse {
 
     /// Exact upstream model identifier.
     pub upstream_id: String,
-
-    /// Public routing ID.
-    pub public_id: String,
-
-    /// Explicit public ID override; `null` when the ID is composed from the provider's prefix —
-    /// the nullable mirror column (rule 2).
-    pub id_override: Option<String>,
 
     /// Configured serving switch.
     pub is_enabled: bool,
@@ -148,8 +141,6 @@ impl ModelResponse {
             provider_id: entry.provider_id,
             provider: entry.provider_name.clone(),
             upstream_id: model.upstream_id.clone(),
-            public_id: model.public_id.clone(),
-            id_override: model.id_override.clone(),
             is_enabled: model.is_enabled,
             discovery_state: model.discovery_state,
             thinking_levels: model.thinking_levels.as_ref().map(|levels| {
@@ -197,12 +188,12 @@ pub(super) struct ListModelsRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListModelsResponse {
-    /// Every stored model, ordered by public ID.
+    /// Every stored model, ordered by provider ID and upstream ID.
     pub models: Vec<ModelResponse>,
 }
 
 /// The `models:discover` success body (README §7.1): the provider's complete fresh rows — which
-/// `upstream_id`s appeared, how the public IDs composed, and which rows vanished are
+/// `upstream_id`s appeared, which rows vanished are
 /// transaction-recomputed facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -221,7 +212,7 @@ pub(super) struct DiscoverModelsRequest {
 }
 
 /// Strictly parsed `models:create` request (README §7.1): the complete desired initial state of
-/// one manually added row, every field required (README §7.0 rule 3). `id_override` and the
+/// one manually added row, every field required (README §7.0 rule 3). The
 /// capability overrides are the required-nullable mirror columns (rule 2) — `null` means no
 /// override, exactly like the storage columns. Addressed by the natural key
 /// `(provider_id, upstream_id)` — the row does not exist yet.
@@ -235,13 +226,6 @@ pub(super) struct CreateModelRequest {
     /// Exact upstream model identifier; routing-safe: non-empty printable ASCII without
     /// whitespace.
     pub upstream_id: String,
-
-    /// Public ID override; `null` composes the ID from the provider's prefix.
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "string | null")
-    )]
-    pub id_override: Nullable<String>,
 
     /// Serving state.
     pub is_enabled: bool,
@@ -280,10 +264,10 @@ pub(super) struct CreateModelRequest {
 }
 
 /// Strictly parsed `models:update` request (README §7.1): the complete state of the row's
-/// writable columns, every field required (README §7.0 rule 3). `id_override` and the capability
+/// writable columns, every field required (README §7.0 rule 3). The capability
 /// overrides are the required-nullable mirror columns (rule 2). Addressed by the row identifier
 /// `model_id`, like `api-keys:update`. The request cannot state `discovery_state` or a
-/// capability base column: this route writes only `id_override`, `is_enabled`, and the
+/// capability base column: this route writes only `is_enabled` and the
 /// capability overrides, so it can never restore a vanished row — recovery is an upstream
 /// reappearance or a `models:create` claim.
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,13 +276,6 @@ pub(super) struct CreateModelRequest {
 pub(super) struct UpdateModelRequest {
     /// Addressed model row.
     pub model_id: i64,
-
-    /// Public ID override; `null` composes the ID from the provider's prefix.
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "string | null")
-    )]
-    pub id_override: Nullable<String>,
 
     /// Serving state.
     pub is_enabled: bool,
@@ -344,9 +321,7 @@ pub(super) struct DeleteModelRequest {
     pub model_id: i64,
 }
 
-/// The `models:create` and `models:update` success body (README §7.1): the composed `public_id`
-/// derives from transaction-time provider state — the current prefix under the collision check —
-/// so it is not client-computable (rule 7).
+/// The applied physical model returned by creation and administrator override updates.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ModelEnvelope {
@@ -533,7 +508,7 @@ fn parse_capability_overrides(
                 .collect::<Result<BTreeMap<_, _>, Error>>()
         })
         .transpose()?
-        .and_then(|facts| CompactionSupportFacts::from_pairs(facts));
+        .and_then(CompactionSupportFacts::from_pairs);
 
     Ok(CapabilityOverrides {
         thinking_levels,
@@ -552,7 +527,7 @@ fn parse_capability_overrides(
 /// # Errors
 ///
 /// Returns [`Error`] for unknown providers, upstream failures (including an upstream that reports
-/// no models), and public ID collisions.
+/// no models), or failed storage.
 async fn handle_discover(
     database: &crate::database::Database,
     control_plane: &Client,
@@ -569,10 +544,7 @@ async fn handle_discover(
         discovery::discover_upstream_models(database, control_plane, &provider).await?,
     )?;
 
-    // An upstream reporting an identifier the gateway cannot route fails the refresh before any
-    // row is written: the composed public ID would carry the same characters, and the schema
-    // would reject the write as a constraint violation — a storage conflict instead of the
-    // upstream failure it is (README §7.1).
+    // Validate the complete report before any lifecycle or capability write can apply.
     for model in &unique_models {
         if super::validate_routing_token("upstream_id", &model.upstream_id).is_err() {
             return Err(Error::UpstreamReportedInvalidModelId {
@@ -581,9 +553,7 @@ async fn handle_discover(
         }
     }
 
-    // The apply re-reads the provider row inside its transaction, so the public IDs are composed
-    // from the provider's current prefix and checked for collisions atomically with the write
-    // (README §7.1).
+    // Apply the complete discovery report atomically against the current account.
     let entries =
         storage::models::apply_discovered_models(database, request.provider_id, &unique_models)
             .await?;
@@ -608,7 +578,7 @@ async fn handle_create(
     database: &crate::database::Database,
     request: CreateModelRequest,
 ) -> Result<ModelEntry, Error> {
-    validate_model_identifiers(&request.upstream_id, &request.id_override)?;
+    super::validate_routing_token("upstream_id", &request.upstream_id)?;
 
     let overrides = parse_capability_overrides(
         request.thinking_levels_override,
@@ -617,15 +587,12 @@ async fn handle_create(
         request.compaction_support_override,
     )?;
 
-    // The checked insert re-reads the provider row inside its transaction, so the composed
-    // public ID uses the provider's current prefix and the collision check applies atomically
-    // with the write (README §7.1).
+    // Natural-key creation and vanished-row claims share one atomic write.
     let entry = storage::models::insert_model_checked(
         database,
         ModelCreate {
             provider_id: request.provider_id,
             upstream_id: &request.upstream_id,
-            id_override: request.id_override.0.as_deref(),
             is_enabled: request.is_enabled,
             thinking_levels_override: overrides.thinking_levels.as_deref(),
             max_input_tokens_override: overrides.max_input_tokens,
@@ -643,19 +610,16 @@ async fn handle_create(
     Ok(entry)
 }
 
-/// Handles one `models:update`: addressed by row id, writing only `id_override` and `is_enabled`.
+/// Handles one `models:update`: addressed by row id, writing the serving switch and capability
+/// overrides.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an empty override, an unknown row, and public ID collisions.
+/// Returns [`Error`] for invalid capability overrides, an unknown row, or failed storage.
 async fn handle_update(
     database: &crate::database::Database,
     request: UpdateModelRequest,
 ) -> Result<ModelEntry, Error> {
-    if let Some(id_override) = &request.id_override.0 {
-        super::validate_routing_token("id_override", id_override)?;
-    }
-
     let overrides = parse_capability_overrides(
         request.thinking_levels_override,
         request.max_input_tokens_override,
@@ -663,14 +627,11 @@ async fn handle_update(
         request.compaction_support_override,
     )?;
 
-    // The checked update re-reads the row and its provider inside its transaction, so the
-    // recomposed public ID uses the provider's current prefix and the collision check applies
-    // atomically with the write (README §7.1).
+    // Row-addressed curation preserves discovery-owned state and base facts.
     let entry = storage::models::update_model_overrides_checked(
         database,
         ModelUpdate {
             model_id: request.model_id,
-            id_override: request.id_override.0.as_deref(),
             is_enabled: request.is_enabled,
             thinking_levels_override: overrides.thinking_levels.as_deref(),
             max_input_tokens_override: overrides.max_input_tokens,
@@ -683,27 +644,6 @@ async fn handle_update(
     info!("updated model {}", request.model_id);
 
     Ok(entry)
-}
-
-/// Validates the identifiers `models:create` carries: `upstream_id` is always a routing token,
-/// and a present `id_override` composes the public routing ID directly, so both carry the same
-/// composition — while human labels stay free-form (README §7).
-///
-/// # Errors
-///
-/// Returns [`Error`] when `upstream_id` or a present `id_override` is empty or carries a
-/// character outside the allowed set.
-fn validate_model_identifiers(
-    upstream_id: &str,
-    id_override: &Nullable<String>,
-) -> Result<(), Error> {
-    super::validate_routing_token("upstream_id", upstream_id)?;
-
-    if let Some(id_override) = &id_override.0 {
-        super::validate_routing_token("id_override", id_override)?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -731,7 +671,7 @@ mod tests {
     }
 
     /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing
-    /// string under `public_id`, and the row's own inputs `is_enabled` and `discovery_state` —
+    /// physical upstream identifier and the row's own inputs `is_enabled` and `discovery_state` —
     /// and, positively, that no thinking-level field and no derived effective verdict rides
     /// along: the row carries its inputs and the caller derives the three-input status (README
     /// §7.0 rule 7). The compaction facts render the stored maps verbatim, the base keyed by the
@@ -768,8 +708,6 @@ mod tests {
                 model: Model {
                     id: 42,
                     upstream_id: "gpt-4".to_string(),
-                    public_id: "acme-gpt-4".to_string(),
-                    id_override: None,
                     is_enabled,
                     discovery_state,
                     thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
@@ -798,8 +736,6 @@ mod tests {
                 "provider_id": 7,
                 "provider": "acme",
                 "upstream_id": "gpt-4",
-                "public_id": "acme-gpt-4",
-                "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "discovered",
                 "thinking_levels": ["low", "high"],
@@ -827,8 +763,6 @@ mod tests {
                 "provider_id": 7,
                 "provider": "acme",
                 "upstream_id": "gpt-4",
-                "public_id": "acme-gpt-4",
-                "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "vanished",
                 "thinking_levels": ["low", "high"],
@@ -844,7 +778,7 @@ mod tests {
     }
 
     /// Verifies the `models:update` request (README §7.0 rules 2-3, §7.1): addressed by `model_id`,
-    /// every field required, `id_override` and the capability overrides nullable with the
+    /// every field required, the capability overrides nullable with the
     /// omitted-key tolerance, an unknown field rejected — and no `discovery_state` or capability
     /// base column accepted.
     ///
@@ -858,7 +792,7 @@ mod tests {
             reason = "the documented payload is constructed to parse"
         )]
         let parsed: UpdateModelRequest = serde_json::from_str(
-            r#"{"model_id":7,"id_override":null,"is_enabled":true,
+            r#"{"model_id":7,"is_enabled":true,
                 "thinking_levels_override":[],"max_input_tokens_override":null,
                 "max_output_tokens_override":8192,
                 "compaction_support_override":{"messages_on_demand_compaction":"unknown"}}"#,
@@ -866,7 +800,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed.model_id, 7);
-        assert_eq!(parsed.id_override, Nullable(None));
         assert!(parsed.is_enabled);
         assert_eq!(parsed.thinking_levels_override, Nullable(Some(Vec::new())));
         assert_eq!(parsed.max_input_tokens_override, Nullable(None));
@@ -885,7 +818,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"id_override":null,"is_enabled":true,
+                r#"{"model_id":7,"is_enabled":true,
                     "thinking_levels_override":null,"max_input_tokens_override":null,
                     "max_output_tokens_override":null,"bogus":1}"#
             )
@@ -894,7 +827,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"id_override":null,"is_enabled":true,"discovery_state":"manual"}"#
+                r#"{"model_id":7,"is_enabled":true,"discovery_state":"manual"}"#
             )
             .is_err()
         );
@@ -903,7 +836,7 @@ mod tests {
         // base facts included.
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"id_override":null,"is_enabled":true,
+                r#"{"model_id":7,"is_enabled":true,
                     "thinking_levels_override":null,"max_input_tokens_override":null,
                     "max_output_tokens_override":null,
                     "compaction_support":{"messages_on_demand_compaction":"supported"}}"#
@@ -913,7 +846,7 @@ mod tests {
     }
 
     /// Verifies the `models:create` request (README §7.0 rule 3, §7.1): every field required, the
-    /// nullable `id_override` mirror, an unknown field rejected, and no thinking-level field
+    /// nullable capability mirrors, unknown fields rejected, and no thinking-level field
     /// accepted.
     ///
     /// # Panics
@@ -926,7 +859,7 @@ mod tests {
             reason = "the documented payload is constructed to parse"
         )]
         let parsed: CreateModelRequest = serde_json::from_str(
-            r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":"custom","is_enabled":false,
+            r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":false,
                 "thinking_levels_override":["high","low"],"max_input_tokens_override":null,
                 "max_output_tokens_override":4096,
                 "compaction_support_override":{"messages_threshold_compaction":"supported"}}"#,
@@ -935,7 +868,6 @@ mod tests {
 
         assert_eq!(parsed.provider_id, 7);
         assert_eq!(parsed.upstream_id, "gpt-4o");
-        assert_eq!(parsed.id_override, Nullable(Some("custom".to_string())));
         assert!(!parsed.is_enabled);
         assert_eq!(
             parsed.thinking_levels_override,
@@ -957,7 +889,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<CreateModelRequest>(
-                r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,"is_enabled":true,
+                r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":true,
                     "thinking_levels_override":null,"max_input_tokens_override":null,
                     "max_output_tokens_override":null}"#
             )
@@ -967,14 +899,14 @@ mod tests {
         // An omitted capability override reads as `null` — the required-nullable tolerance.
         assert!(
             serde_json::from_str::<CreateModelRequest>(
-                r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,"is_enabled":true}"#
+                r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":true}"#
             )
             .is_ok()
         );
 
         assert!(
             serde_json::from_str::<CreateModelRequest>(
-                r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,
+                r#"{"provider_id":7,"upstream_id":"gpt-4o",
                     "is_enabled":true,"discovery_state":"manual"}"#
             )
             .is_err()
