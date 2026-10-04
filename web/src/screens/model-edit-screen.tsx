@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal } from "solid-js";
+import { translation } from "/src/i18n";
+import { deleteModelMessage, editIdentifierMessage } from "/src/i18n/rich";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -88,24 +90,24 @@ export function ModelEditScreen(props: {
             row={model}
             firstReadHeader={
                 <PageHeader
-                    title="Edit model"
+                    title={translation()(($) => $.screens.modelEditScreen.editModel)}
                     backHref={hrefs.modelDetail(props.modelId)}
-                    backLabel="Model"
+                    backLabel={translation()(($) => $.additional.modelEditScreen.model)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="model"
-                    headerTitle="Edit model"
+                    headerTitle={translation()(($) => $.additional.modelEditScreen.editModel)}
                 />
             }
         >
             {(row) => (
                 <>
                     <PageHeader
-                        title={`Edit ${row.upstream_id}`}
+                        title={editIdentifierMessage(row.upstream_id)}
                         backHref={hrefs.modelDetail(row.id)}
-                        backLabel="Model"
+                        backLabel={translation()(($) => $.additional.modelEditScreen.model)}
                     />
 
                     {/* The suspension the detail page states, restated here
@@ -184,14 +186,10 @@ function ModelSettingsForm(props: {
 
     /** Inline errors for the token-cap overrides, shown where each was typed. */
     const maxInputError = (): string | null =>
-        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "Max input tokens override");
+        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "maxInputOverride");
 
     const maxOutputError = (): string | null =>
-        tokenCapOverrideError(
-            hasMaxOutputOverride(),
-            maxOutputText(),
-            "Max output tokens override",
-        );
+        tokenCapOverrideError(hasMaxOutputOverride(), maxOutputText(), "maxOutputOverride");
 
     const normalizedLevels = (): Array<string> | null =>
         normalizedThinkingLevelsOverride(hasLevelsOverride(), selectedLevels());
@@ -262,7 +260,9 @@ function ModelSettingsForm(props: {
 
             return {
                 tone: "ok",
-                title: "Model saved.",
+                get title() {
+                    return translation()(($) => $.notices.modelSaved);
+                },
                 detail: null,
             };
         },
@@ -272,14 +272,14 @@ function ModelSettingsForm(props: {
 
     return (
         <Card>
-            <CardHeader title="Model settings" />
+            <CardHeader title={translation()(($) => $.screens.modelEditScreen.modelSettings)} />
             <form
                 novalidate={true}
                 class="mt-4 flex max-w-2xl flex-col gap-5"
                 onSubmit={form.submit}
             >
                 <Switch
-                    label="Enabled"
+                    label={translation()(($) => $.screens.modelEditScreen.enabled)}
                     isOn={isEnabled()}
                     isDisabled={form.isSaving()}
                     onToggle={setIsEnabled}
@@ -295,8 +295,8 @@ function ModelSettingsForm(props: {
                 />
 
                 <TokenCapOverrideFields
-                    switchLabel="Override max input tokens"
-                    fieldLabel="Max input tokens override"
+                    switchLabel={translation()(($) => $.remainingText.overrideMaxInputTokens)}
+                    fieldLabel={translation()(($) => $.remainingText.maxInputTokensOverride)}
                     hasOverride={hasMaxInputOverride()}
                     onHasOverrideToggle={setHasMaxInputOverride}
                     value={maxInputText()}
@@ -307,8 +307,8 @@ function ModelSettingsForm(props: {
                 />
 
                 <TokenCapOverrideFields
-                    switchLabel="Override max output tokens"
-                    fieldLabel="Max output tokens override"
+                    switchLabel={translation()(($) => $.remainingText.overrideMaxOutputTokens)}
+                    fieldLabel={translation()(($) => $.remainingText.maxOutputTokensOverride)}
                     hasOverride={hasMaxOutputOverride()}
                     onHasOverrideToggle={setHasMaxOutputOverride}
                     value={maxOutputText()}
@@ -356,9 +356,12 @@ function DeleteCard(props: {
 
     return (
         <ConfirmDeleteCard
-            title="Delete this model"
-            description="Deleting removes this physical model and its direct routes. Pool routes remain stored."
-            question={`Delete ${props.model.upstream_id}? Its direct routes are deleted too. Pool routes remain stored. Rediscovery or manual creation produces a new physical row and does not restore deleted routes.`}
+            title={translation()(($) => $.screens.modelEditScreen.deleteThisModel)}
+            description={translation()(
+                ($) =>
+                    $.screens.modelEditScreen.deletingRemovesThisPhysicalModelAndItsDirectMessage,
+            )}
+            question={deleteModelMessage(props.model.upstream_id)}
             onConfirm={confirmDelete}
         />
     );

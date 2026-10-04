@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, Match, Show, Switch } from "solid-js";
+import { translation } from "/src/i18n";
+import { switchPresetMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import {
     type DefinitionPayloadResult,
@@ -35,7 +37,6 @@ import {
     ProviderIdentityFields,
     ProviderPresetPicker,
 } from "/src/ui/provider-form";
-import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
@@ -56,18 +57,22 @@ import { StatedNotice } from "./read-notice";
  * the lock's reason, stated once per card rather than as a hint on every
  * disabled control.
  */
-const FLOW_LOCK_NOTICE =
-    "Locked while the authorization is live — the provider is created from what the flow's start already sent.";
+const flowLockNotice = (): string =>
+    translation()(
+        ($) =>
+            $.helpers.providerNewScreen
+                .lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows,
+    );
 
 /**
  * The lock notice's one rendering: the quiet-ink paragraph stating
- * `FLOW_LOCK_NOTICE`, whose wording's design rule — stated once per card
+ * `flowLockNotice()`, whose wording's design rule — stated once per card
  * rather than as a hint on every disabled control — lives at the constant.
  * Callers own the gate: live-flow sites wrap this in `Show when={isFlowLive()}`,
  * and a site already inside a live branch renders it bare.
  */
 function FlowLockNotice(): JSX.Element {
-    return <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>;
+    return <p class="mt-3 text-[12.5px] text-ink-faint">{flowLockNotice()}</p>;
 }
 
 /**
@@ -296,7 +301,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setBaseUrl(value);
     };
 
-    const apiKeyError = (): string | null => bearerSecretError(apiKey(), "API key");
+    const apiKeyError = (): string | null => bearerSecretError(apiKey(), "apiKey");
 
     /**
      * An OAuth start or completion is submittable with a valid definition, a
@@ -370,9 +375,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return {
                 error: {
                     tone: "bad",
-                    title: "The definition JSON is not a definition the gateway could store.",
+                    get title() {
+                        return translation()(($) => $.operationNotices.invalidDefinition);
+                    },
                     detail: parsed.error,
-                    fix: "Fix the JSON and submit again; nothing was written.",
+                    get fix() {
+                        return translation()(($) => $.operationNotices.fixDefinition);
+                    },
                 },
             };
         }
@@ -598,7 +607,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * definition editing surface, and the base-URL field lock, because the
      * provider is created from what the flow's start already sent — an edit
      * now would look accepted and do nothing. Each editable card states that
-     * reason in a single line (`FLOW_LOCK_NOTICE`) for as long as the flow
+     * reason in a single line (`flowLockNotice()`) for as long as the flow
      * holds — the Connect card's line standing beside its one locked field —
      * so no control grays out silently.
      */
@@ -630,8 +639,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Create provider"
-                description="One upstream account. Pick the preset — the credential path follows."
+                title={translation()(($) => $.screens.providerNewScreen.createProvider)}
+                description={translation()(
+                    ($) =>
+                        $.screens.providerNewScreen
+                            .oneUpstreamAccountPickThePresetTheCredentialMessage,
+                )}
                 backHref={hrefs.providers()}
                 backLabel="Providers"
             />
@@ -656,13 +669,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         isBusy={isBootReading()}
                         onClick={readBootState}
                     >
-                        Read again
+                        {translation()(($) => $.screens.providerNewScreen.readAgain)}
                     </Button>
                 </Show>
             </StatedNotice>
 
             <Card>
-                <CardHeader title="Preset" />
+                <CardHeader title={translation()(($) => $.screens.providerNewScreen.preset)} />
                 <div class="mt-4">
                     <ProviderPresetPicker
                         presets={PROVIDER_PRESETS}
@@ -685,7 +698,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         {(armed) => (
                             <div class="mt-3 flex flex-wrap items-center gap-2">
                                 <InlineConfirmQuestion
-                                    question={`Switch to ${armed.title}? Your edited connection recipe will be replaced.`}
+                                    question={switchPresetMessage(armed.title)}
                                     focusArmed={confirmFocus.focusArmed}
                                 />
                                 <Button
@@ -693,13 +706,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     isDisabled={isBusy()}
                                     onClick={confirmPresetSwitch}
                                 >
-                                    Switch preset
+                                    {translation()(($) => $.screens.providerNewScreen.switchPreset)}
                                 </Button>
                                 <Button
                                     isDisabled={isBusy()}
                                     onClick={cancelPresetSwitch}
                                 >
-                                    Keep my edit
+                                    {translation()(($) => $.screens.providerNewScreen.keepMyEdit)}
                                 </Button>
                             </div>
                         )}
@@ -714,14 +727,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             </Card>
 
             <Card>
-                <CardHeader title="Identity" />
+                <CardHeader title={translation()(($) => $.screens.providerNewScreen.identity)} />
                 <div class="mt-4 flex max-w-2xl flex-col gap-4">
                     <ProviderIdentityFields
                         name={name()}
                         namePlaceholder={suggestion()}
                         modelPrefix={resolvedPrefix()}
                         onModelPrefixInput={setModelPrefix}
-                        prefixError={routingTokenError(resolvedPrefix(), "Model prefix")}
+                        prefixError={routingTokenError(resolvedPrefix(), "modelPrefix")}
                         onNameInput={inputName}
                         isDisabled={isBusy() || isFlowLive()}
                     />
@@ -738,8 +751,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 fallback={
                     <Card>
                         <CardHeader
-                            title="Connection"
-                            description="The key is write-only — the gateway never returns it."
+                            title={translation()(($) => $.screens.providerNewScreen.connection)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.providerNewScreen
+                                        .theKeyIsWriteonlyTheGatewayNeverReturnsMessage,
+                            )}
                         />
                         <form
                             novalidate={true}
@@ -763,7 +780,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     isDisabled={!canCreateStatic()}
                                     isBusy={create.isCreating()}
                                 >
-                                    {create.isCreating() ? "Creating…" : "Create provider"}
+                                    {create.isCreating()
+                                        ? translation()(
+                                              ($) => $.additional.providerNewScreen.creating,
+                                          )
+                                        : translation()(
+                                              ($) => $.additional.providerNewScreen.createProvider,
+                                          )}
                                 </Button>
                             </div>
                         </form>
@@ -773,8 +796,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 <Match when={preset().grant !== null}>
                     <Card>
                         <CardHeader
-                            title="Connect the account"
-                            description="Approve access where the flow points, then let it complete. This app never stores the credentials."
+                            title={translation()(
+                                ($) => $.screens.providerNewScreen.connectTheAccount,
+                            )}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.providerNewScreen
+                                        .approveAccessWhereTheFlowPointsThenLetMessage,
+                            )}
                         />
                         {/* The flow's failures state themselves where its step
                             and buttons stand — a refused begin or exchange, a
@@ -799,7 +828,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     <Show when={needsBaseUrl()}>
                                         <div class="mb-4 max-w-2xl">
                                             <TextField
-                                                label="Upstream base URL"
+                                                label={translation()(
+                                                    ($) =>
+                                                        $.screens.providerNewScreen.upstreamBaseURL,
+                                                )}
                                                 type="url"
                                                 value={baseUrl()}
                                                 onInput={inputBaseUrl}
@@ -831,8 +863,15 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                             <CompletionForm
                                                 flow={oauth}
                                                 startedFlow={authorizationFlow}
-                                                busyLabel="Connecting…"
-                                                submitLabel="Connect the account"
+                                                busyLabel={translation()(
+                                                    ($) =>
+                                                        $.additional.providerNewScreen.connecting,
+                                                )}
+                                                submitLabel={translation()(
+                                                    ($) =>
+                                                        $.additional.providerNewScreen
+                                                            .connectTheAccount,
+                                                )}
                                                 isSubmittable={canComplete}
                                                 class="flex max-w-2xl flex-col gap-4"
                                             />
@@ -850,15 +889,19 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                         paint and the error only once typed. */}
                                     <div class="mb-4 max-w-2xl">
                                         <TextField
-                                            label="Upstream base URL"
+                                            label={translation()(
+                                                ($) => $.screens.providerNewScreen.upstreamBaseURL,
+                                            )}
                                             type="url"
                                             value={baseUrl()}
                                             onInput={inputBaseUrl}
                                             placeholder="https://upstream.example.com/v1"
                                             isDisabled={isBusy()}
                                             error={baseUrlError()}
-                                            hint={requiredHint(
-                                                "The upstream address this definition's requests evaluate against — the gateway refuses a flow start without one.",
+                                            hint={translation()(
+                                                ($) =>
+                                                    $.additional.providerNewScreen
+                                                        .theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage,
                                             )}
                                         />
                                     </div>
@@ -869,7 +912,15 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     isBusy={oauth.isStarting()}
                                     onClick={() => void oauth.start()}
                                 >
-                                    {oauth.isStarting() ? "Starting…" : "Start the authorization"}
+                                    {oauth.isStarting()
+                                        ? translation()(
+                                              ($) => $.additional.providerNewScreen.starting,
+                                          )
+                                        : translation()(
+                                              ($) =>
+                                                  $.additional.providerNewScreen
+                                                      .startTheAuthorization,
+                                          )}
                                 </Button>
                             </div>
                         </Show>
@@ -885,8 +936,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 payload memo, never from the DOM order. */}
             <Card>
                 <CardHeader
-                    title="Definition"
-                    description="The connection recipe the gateway stores. Editing the JSON of a stored definition registers the next version — the stored one is never rewritten."
+                    title={translation()(($) => $.screens.providerNewScreen.definition)}
+                    description={translation()(
+                        ($) =>
+                            $.screens.providerNewScreen
+                                .theConnectionRecipeTheGatewayStoresEditingTheMessage,
+                    )}
                 />
                 <div class="mt-4">
                     <Show
@@ -900,14 +955,20 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             // a failed cycle leaves.
                             <Show when={isStoredKnown()}>
                                 <p class="text-[12.5px] text-ink-faint">
-                                    Not stored yet — submitting creates version 1.
+                                    {translation()(
+                                        ($) =>
+                                            $.screens.providerNewScreen
+                                                .notStoredYetSubmittingCreatesVersion1Message,
+                                    )}
                                 </p>
                             </Show>
                         }
                     >
                         {(current) => (
                             <p class="text-[12.5px] text-ink-faint">
-                                {`Stored as version ${current().version}.`}
+                                {translation()(($) => $.domainMessages.version, {
+                                    version: current().version,
+                                })}
                             </p>
                         )}
                     </Show>
@@ -923,11 +984,18 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                 name="chev-right"
                                 class="mt-0.5 shrink-0 transition-transform duration-150 ease-out group-open:rotate-90"
                             />
-                            Advanced: the connection recipe — prefilled by the preset
+                            {translation()(
+                                ($) =>
+                                    $.screens.providerNewScreen
+                                        .advancedTheConnectionRecipePrefilledByThePreset,
+                            )}
                         </summary>
                         <div class="mt-3">
                             <textarea
-                                aria-label="Definition JSON"
+                                dir="ltr"
+                                aria-label={translation()(
+                                    ($) => $.screens.providerNewScreen.definitionJSON,
+                                )}
                                 class="tnum h-80 w-full rounded-lg border border-rule bg-canvas p-3 font-mono text-[12.5px] leading-relaxed transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60 dark:bg-muted"
                                 spellcheck={false}
                                 value={definitionJson()}
@@ -947,7 +1015,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     isDisabled={isBusy() || isFlowLive()}
                                     onClick={resetDefinition}
                                 >
-                                    Reset to preset
+                                    {translation()(
+                                        ($) => $.screens.providerNewScreen.resetToPreset,
+                                    )}
                                 </Button>
                             </div>
                         </div>
@@ -958,8 +1028,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         open it would be impossible to follow. */}
                     <Show when={definitionError() !== null && !isDefinitionOpen()}>
                         <p class="mt-2 text-[12.5px] text-bad">
-                            The connection recipe is invalid — open the Advanced disclosure above
-                            for the offending path.
+                            {translation()(
+                                ($) =>
+                                    $.screens.providerNewScreen
+                                        .theConnectionRecipeIsInvalidOpenTheAdvancedMessage,
+                            )}
                         </p>
                     </Show>
                 </div>

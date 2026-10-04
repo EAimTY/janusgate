@@ -15,6 +15,13 @@ import {
     setRouteChoice,
     structuralStatus,
 } from "/src/access-control";
+import { translation } from "/src/i18n";
+import {
+    directAccessTargetMessage,
+    modelAccessMessage,
+    ownerDefaultMessage,
+    poolAccessTargetMessage,
+} from "/src/i18n/rich";
 import type {
     AccessDecision,
     ApiKeyAccessControl,
@@ -28,15 +35,21 @@ const choices: ReadonlyArray<{
 }> = [
     {
         value: "inherit",
-        label: "Inherit",
+        get label() {
+            return translation()(($) => $.helpers.apiKeyAccess.inherit);
+        },
     },
     {
         value: "allow",
-        label: "Allow",
+        get label() {
+            return translation()(($) => $.helpers.apiKeyAccess.allow);
+        },
     },
     {
         value: "deny",
-        label: "Deny",
+        get label() {
+            return translation()(($) => $.helpers.apiKeyAccess.deny);
+        },
     },
 ];
 const defaults: ReadonlyArray<{
@@ -45,11 +58,15 @@ const defaults: ReadonlyArray<{
 }> = [
     {
         value: "allow",
-        label: "Allow",
+        get label() {
+            return translation()(($) => $.helpers.apiKeyAccess.allow);
+        },
     },
     {
         value: "deny",
-        label: "Deny",
+        get label() {
+            return translation()(($) => $.helpers.apiKeyAccess.deny);
+        },
     },
 ];
 
@@ -98,26 +115,31 @@ export function ApiKeyAccess(props: {
     return (
         <section
             class="flex min-w-0 flex-col gap-4"
-            aria-label="Model access"
+            aria-label={translation()(($) => $.controls.modelAccess)}
         >
             <div>
-                <h3 class="text-[15px] font-semibold text-ink">Model access</h3>
+                <h3 class="text-[15px] font-semibold text-ink">
+                    {translation()(($) => $.controls.modelAccess)}
+                </h3>
                 <p class="mt-1 text-[13px] text-ink-faint">
-                    Defaults affect existing inheriting entries. Pool access includes future
-                    eligible members. Global availability is separate from permission.
+                    {translation()(
+                        ($) => $.controls.defaultsAffectExistingInheritingEntriesPoolAccessIncludes,
+                    )}
                 </p>
             </div>
             <Show
                 when={props.onChange}
                 fallback={
                     <p class="text-[13px] text-ink">
-                        Default model access:{" "}
-                        {props.policy.default_access === "allow" ? "Allow" : "Deny"}
+                        {translation()(($) => $.controls.defaultModelAccessLabel)}{" "}
+                        {props.policy.default_access === "allow"
+                            ? translation()(($) => $.additional.apiKeyAccess.allow)
+                            : translation()(($) => $.additional.apiKeyAccess.deny)}
                     </p>
                 }
             >
                 <SelectField
-                    label="Default model access"
+                    label={translation()(($) => $.controls.defaultModelAccess)}
                     value={props.policy.default_access}
                     options={defaults}
                     onChange={(default_access) =>
@@ -127,19 +149,19 @@ export function ApiKeyAccess(props: {
                         })
                     }
                     isDisabled={props.isDisabled ?? false}
-                    hint="Applies to entries without a provider, pool, or model override, including future entries."
+                    hint={translation()(($) => $.controls.appliesToEntriesWithoutAProviderPoolOr)}
                 />
             </Show>
             <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
                 <TextField
-                    label="Search model access"
+                    label={translation()(($) => $.controls.searchModelAccess)}
                     value={search()}
                     onInput={setSearch}
-                    placeholder="Public ID or owner name"
+                    placeholder={translation()(($) => $.controls.publicIDOrOwnerName)}
                     class="min-w-0 flex-1"
                 />
                 <Switch
-                    label="Overrides only"
+                    label={translation()(($) => $.controls.overridesOnly)}
                     isOn={hasOverridesOnly()}
                     onToggle={setHasOverridesOnly}
                 />
@@ -148,7 +170,10 @@ export function ApiKeyAccess(props: {
                 {(missing) => (
                     <div class="flex flex-wrap items-center justify-between gap-2 text-[13px] text-bad">
                         <span>
-                            {missing.label} · {missing.access === "allow" ? "Allow" : "Deny"}
+                            {missing.label} ·{" "}
+                            {missing.access === "allow"
+                                ? translation()(($) => $.additional.apiKeyAccess.allow)
+                                : translation()(($) => $.additional.apiKeyAccess.deny)}
                         </span>
                         <Show when={props.onChange}>
                             <Button
@@ -168,7 +193,7 @@ export function ApiKeyAccess(props: {
                                         );
                                 }}
                             >
-                                Remove override
+                                {translation()(($) => $.controls.removeOverride)}
                             </Button>
                         </Show>
                     </div>
@@ -181,8 +206,9 @@ export function ApiKeyAccess(props: {
                     role="alert"
                     class="text-[13px] text-bad"
                 >
-                    Remove deleted references before saving, or refresh to resolve the inventory
-                    mismatch.
+                    {translation()(
+                        ($) => $.controls.removeDeletedReferencesBeforeSavingOrRefreshTo,
+                    )}
                 </p>
             </Show>
             <For each={owners()}>
@@ -192,8 +218,12 @@ export function ApiKeyAccess(props: {
                             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div class="min-w-0">
                                     <h4 class="break-words text-[13px] font-semibold text-ink">
-                                        {owner.name} ·{" "}
-                                        {owner.identity.type === "provider" ? "Provider" : "Pool"}
+                                        <bdi dir="auto">{owner.name}</bdi> ·{" "}
+                                        {owner.identity.type === "provider"
+                                            ? translation()(
+                                                  ($) => $.additional.apiKeyAccess.provider,
+                                              )
+                                            : translation()(($) => $.additional.apiKeyAccess.pool)}
                                     </h4>
                                     <p class="mt-1 text-[13px] text-ink-faint">
                                         {accessLabel(
@@ -202,13 +232,15 @@ export function ApiKeyAccess(props: {
                                     </p>
                                     <Show when={routesFor(owner.identity).length === 0}>
                                         <p class="mt-1 text-[13px] text-ink-faint">
-                                            This default applies to future entries.
+                                            {translation()(
+                                                ($) => $.controls.thisDefaultAppliesToFutureEntries,
+                                            )}
                                         </p>
                                     </Show>
                                 </div>
                                 <Show when={props.onChange}>
                                     <SelectField
-                                        label={`${owner.name} ${owner.identity.type} default`}
+                                        label={ownerDefaultMessage(owner.name, owner.identity.type)}
                                         value={ownerChoice(props.policy, owner.identity)}
                                         options={choices}
                                         onChange={(choice) =>
@@ -230,13 +262,27 @@ export function ApiKeyAccess(props: {
                                         <li class="flex flex-col gap-3 py-3 sm:flex-row sm:items-start sm:justify-between">
                                             <div class="min-w-0">
                                                 <p class="break-all font-mono text-[13px] text-ink">
-                                                    {route.public_id}
+                                                    <bdi dir="ltr">{route.public_id}</bdi>
                                                 </p>
                                                 <p class="mt-1 text-[12.5px] text-ink-faint">
                                                     {route.target.type === "direct"
-                                                        ? `Direct · model #${route.target.model_id}`
-                                                        : `Pool · ${route.target.upstream_id}`}{" "}
-                                                    · {route.is_automatic ? "Automatic" : "Alias"}
+                                                        ? directAccessTargetMessage(
+                                                              route.target.model_id,
+                                                          )
+                                                        : poolAccessTargetMessage(
+                                                              route.target.upstream_id,
+                                                          )}{" "}
+                                                    ·{" "}
+                                                    {route.is_automatic
+                                                        ? translation()(
+                                                              ($) =>
+                                                                  $.additional.apiKeyAccess
+                                                                      .automatic,
+                                                          )
+                                                        : translation()(
+                                                              ($) =>
+                                                                  $.additional.apiKeyAccess.alias,
+                                                          )}
                                                 </p>
                                                 <p class="mt-1 text-[13px] text-ink">
                                                     {accessLabel(
@@ -253,7 +299,7 @@ export function ApiKeyAccess(props: {
                                             </div>
                                             <Show when={props.onChange}>
                                                 <SelectField
-                                                    label={`${route.public_id} model access`}
+                                                    label={modelAccessMessage(route.public_id)}
                                                     value={routeChoice(props.policy, route.id)}
                                                     options={choices}
                                                     onChange={(choice) =>
@@ -278,7 +324,7 @@ export function ApiKeyAccess(props: {
             </For>
             <Show when={owners().every((owner) => !isOwnerVisible(owner.identity, owner.name))}>
                 <p class="text-[13px] text-ink-faint">
-                    No entries match this view. Hidden overrides are preserved.
+                    {translation()(($) => $.controls.noEntriesMatchThisViewHiddenOverridesAre)}
                 </p>
             </Show>
         </section>

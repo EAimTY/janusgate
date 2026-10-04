@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
 import type { MechanismSupport, ModelResponse } from "/src/management-api/generated/v0";
 import {
     COMPACTION_MECHANISM,
@@ -74,14 +76,14 @@ export function normalizedTokenCapOverride(hasOverride: boolean, text: string): 
 export function tokenCapOverrideError(
     hasOverride: boolean,
     text: string,
-    label: string,
+    field: "maxInputOverride" | "maxOutputOverride",
 ): string | null {
     if (!hasOverride) {
         return null;
     }
 
     return normalizedTokenCapOverride(true, text) === null
-        ? `${label} must be a positive integer.`
+        ? translation()(($) => $.validation.positive[field])
         : null;
 }
 
@@ -102,18 +104,41 @@ export function ThinkingLevelsOverrideFields(props: {
 }): JSX.Element {
     const discoveredLine = (): string => {
         if (props.discovered === null) {
-            return "Following discovery — currently unknown, so listings omit it.";
+            return translation()(
+                ($) =>
+                    $.additional.modelForm
+                        .followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage,
+            );
         }
 
         return props.discovered.length === 0
-            ? "Following discovery — currently declares no levels."
-            : `Following discovery: ${props.discovered.join(", ")}.`;
+            ? translation()(($) => $.helpers.modelForm.followingDiscoveryCurrentlyDeclaresNoLevels)
+            : translation()(($) => $.dynamicMessages.following, {
+                  value: props.discovered
+                      .map((level) =>
+                          REASONING_LEVEL.label(
+                              REASONING_LEVEL.parse(level, "discovered reasoning level"),
+                          ),
+                      )
+                      .join(", "),
+              });
     };
 
     const onHint = (): string =>
         props.selected.length === 0
-            ? "Replaces the discovered set — an empty selection declares no levels."
-            : `Replaces the discovered set — clients see ${props.selected.join(", ")}.`;
+            ? translation()(
+                  ($) =>
+                      $.helpers.modelForm.replacesTheDiscoveredSetAnEmptySelectionDeclaresNoLevels,
+              )
+            : translation()(($) => $.dynamicMessages.levelsReplace, {
+                  value: props.selected
+                      .map((level) =>
+                          REASONING_LEVEL.label(
+                              REASONING_LEVEL.parse(level, "selected reasoning level"),
+                          ),
+                      )
+                      .join(", "),
+              });
 
     const toggleLevel = (level: string, isChecked: boolean): void => {
         props.onSelectedChange(
@@ -129,7 +154,7 @@ export function ThinkingLevelsOverrideFields(props: {
     return (
         <div class="flex flex-col gap-4">
             <Switch
-                label="Override reasoning levels"
+                label={translation()(($) => $.controls.overrideReasoningLevels)}
                 hint={props.hasOverride ? onHint() : discoveredLine()}
                 isOn={props.hasOverride}
                 isDisabled={props.isDisabled ?? false}
@@ -137,7 +162,9 @@ export function ThinkingLevelsOverrideFields(props: {
             />
             <Show when={props.hasOverride}>
                 <fieldset disabled={props.isDisabled ?? false}>
-                    <legend class="text-[13px] font-medium text-ink">Reasoning levels</legend>
+                    <legend class="text-[13px] font-medium text-ink">
+                        {translation()(($) => $.controls.reasoningLevels)}
+                    </legend>
                     <div class="mt-1.5 flex flex-wrap gap-2">
                         <For each={REASONING_LEVEL.options}>
                             {(option) => (
@@ -156,7 +183,7 @@ export function ThinkingLevelsOverrideFields(props: {
                         </For>
                     </div>
                     <p class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint">
-                        Pick every level this model declares. Untick all of them to declare none.
+                        {translation()(($) => $.controls.pickEveryLevelThisModelDeclaresUntickAll)}
                     </p>
                 </fieldset>
             </Show>
@@ -182,15 +209,23 @@ export function TokenCapOverrideFields(props: {
 }): JSX.Element {
     const discoveredLine = (): string =>
         props.discovered === null
-            ? "Following discovery — currently unknown, so listings omit it."
-            : `Following discovery: ${props.discovered.toLocaleString()}.`;
+            ? translation()(
+                  ($) => $.helpers.modelForm.followingDiscoveryCurrentlyUnknownSoListingsOmitIt,
+              )
+            : translation()(($) => $.dynamicMessages.following, {
+                  value: formatNumber(props.discovered),
+              });
 
     const onHint = (): string => {
         const parsed = normalizedTokenCapOverride(true, props.value);
 
         return parsed === null
-            ? "Replaces the discovered value with a positive integer."
-            : `Replaces the discovered value — clients see ${parsed.toLocaleString()}.`;
+            ? translation()(
+                  ($) => $.helpers.modelForm.replacesTheDiscoveredValueWithAPositiveInteger,
+              )
+            : translation()(($) => $.dynamicMessages.capReplace, {
+                  value: formatNumber(parsed),
+              });
     };
 
     return (
@@ -209,7 +244,7 @@ export function TokenCapOverrideFields(props: {
                     onInput={props.onValueInput}
                     isDisabled={props.isDisabled ?? false}
                     error={props.valueError}
-                    hint="A positive integer. Clear the switch to follow discovery again."
+                    hint={translation()(($) => $.controls.aPositiveIntegerClearTheSwitchToFollow)}
                 />
             </Show>
         </div>
@@ -266,7 +301,7 @@ export function normalizedCompactionOverride(
         [mechanism: string]: MechanismSupport;
     } = {};
 
-    for (const { value } of COMPACTION_MECHANISM.options) {
+    for (const value of COMPACTION_MECHANISM.values) {
         const choice = selected[value];
 
         if (choice !== "unset") {
@@ -313,7 +348,9 @@ export function CompactionSupportOverrideFields(props: {
         const discovered = props.discovered;
 
         if (discovered === null) {
-            return "Following discovery — currently nothing is known, so the definition's declaration decides.";
+            return translation()(
+                ($) => $.additional.modelForm.followingDiscoveryCurrentlyNothingIsKnownSoTheMessage,
+            );
         }
 
         const stated = COMPACTION_MECHANISM.options.flatMap(({ value }) => {
@@ -322,19 +359,25 @@ export function CompactionSupportOverrideFields(props: {
             return support === undefined
                 ? []
                 : [
-                      `${COMPACTION_MECHANISM.label(value)} ${MECHANISM_SUPPORT.label(support).toLowerCase()}`,
+                      translation()(($) => $.dynamicMessages.mechanismFact, {
+                          mechanism: COMPACTION_MECHANISM.label(value),
+                          support: MECHANISM_SUPPORT.label(support),
+                      }),
                   ];
         });
 
         if (stated.length === 0) {
-            return "Following discovery — currently nothing is known, so the definition's declaration decides.";
+            return translation()(
+                ($) => $.additional.modelForm.followingDiscoveryCurrentlyNothingIsKnownSoTheMessage,
+            );
         }
 
-        return `Following discovery: ${stated.join("; ")}.`;
+        return translation()(($) => $.dynamicMessages.following, {
+            value: stated.join("; "),
+        });
     };
 
-    const onHint = (): string =>
-        "Replaces the discovered facts wholesale — a mechanism left unset falls back to discovery, then the definition's declaration.";
+    const onHint = (): string => translation()(($) => $.dynamicMessages.compactionReplace);
 
     const choose = (mechanism: CompactionMechanism, choice: CompactionOverrideChoice): void => {
         const next: Record<CompactionMechanism, CompactionOverrideChoice> = {
@@ -350,19 +393,27 @@ export function CompactionSupportOverrideFields(props: {
     }> = [
         {
             value: "unset",
-            label: "Unset",
+            get label() {
+                return translation()(($) => $.helpers.modelForm.unset);
+            },
         },
         {
             value: "supported",
-            label: MECHANISM_SUPPORT.label("supported"),
+            get label() {
+                return MECHANISM_SUPPORT.label("supported");
+            },
         },
         {
             value: "unsupported",
-            label: MECHANISM_SUPPORT.label("unsupported"),
+            get label() {
+                return MECHANISM_SUPPORT.label("unsupported");
+            },
         },
         {
             value: "unknown",
-            label: MECHANISM_SUPPORT.label("unknown"),
+            get label() {
+                return MECHANISM_SUPPORT.label("unknown");
+            },
         },
     ];
 
@@ -370,14 +421,16 @@ export function CompactionSupportOverrideFields(props: {
         const support = props.discovered?.[mechanism];
 
         return support === undefined
-            ? "Discovered: nothing known."
-            : `Discovered: ${MECHANISM_SUPPORT.label(support)}.`;
+            ? translation()(($) => $.helpers.modelForm.discoveredNothingKnown)
+            : translation()(($) => $.dynamicMessages.mechanismDiscovered, {
+                  support: MECHANISM_SUPPORT.label(support),
+              });
     };
 
     return (
         <div class="flex flex-col gap-4">
             <Switch
-                label="Override compaction facts"
+                label={translation()(($) => $.controls.overrideCompactionFacts)}
                 hint={props.hasOverride ? onHint() : offHint()}
                 isOn={props.hasOverride}
                 isDisabled={props.isDisabled ?? false}
@@ -385,7 +438,9 @@ export function CompactionSupportOverrideFields(props: {
             />
             <Show when={props.hasOverride}>
                 <fieldset disabled={props.isDisabled ?? false}>
-                    <legend class="text-[13px] font-medium text-ink">Compaction mechanisms</legend>
+                    <legend class="text-[13px] font-medium text-ink">
+                        {translation()(($) => $.controls.compactionMechanisms)}
+                    </legend>
                     <div class="mt-1.5 flex max-w-xl flex-col gap-3">
                         <For each={COMPACTION_MECHANISM.options}>
                             {(option) => (
@@ -401,8 +456,9 @@ export function CompactionSupportOverrideFields(props: {
                         </For>
                     </div>
                     <p class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint">
-                        State every mechanism whose facts this model replaces. Unknown states "no
-                        fact" loudly — it suppresses the discovered fact for that mechanism.
+                        {translation()(
+                            ($) => $.controls.stateEveryMechanismWhoseFactsThisModelReplaces,
+                        )}
                     </p>
                 </fieldset>
             </Show>

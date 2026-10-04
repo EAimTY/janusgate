@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
+import { translation } from "/src/i18n";
+import { editIdentifierMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
@@ -107,15 +109,27 @@ export function ModelRouteEditorScreen(props: {
             row={edit.row}
             firstReadHeader={
                 <PageHeader
-                    title={props.routeId === null ? "Create public route" : "Edit public route"}
+                    title={
+                        props.routeId === null
+                            ? translation()(
+                                  ($) => $.additional.modelRouteEditorScreen.createPublicRoute,
+                              )
+                            : translation()(
+                                  ($) => $.additional.modelRouteEditorScreen.editPublicRoute,
+                              )
+                    }
                     backHref={hrefs.modelRoutes()}
-                    backLabel="Public routes"
+                    backLabel={translation()(
+                        ($) => $.additional.modelRouteEditorScreen.publicRoutes,
+                    )}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="model_route"
-                    headerTitle="Edit public route"
+                    headerTitle={translation()(
+                        ($) => $.additional.modelRouteEditorScreen.editPublicRoute,
+                    )}
                 />
             }
         >
@@ -126,16 +140,29 @@ export function ModelRouteEditorScreen(props: {
                             route.is_automatic
                                 ? route.public_id
                                 : route.id === null
-                                  ? "Create public route"
-                                  : `Edit ${route.public_id}`
+                                  ? translation()(
+                                        ($) =>
+                                            $.additional.modelRouteEditorScreen.createPublicRoute,
+                                    )
+                                  : editIdentifierMessage(route.public_id)
                         }
                         description={
                             route.is_automatic
-                                ? "A model name maintained automatically by its provider or pool."
-                                : "Clients request this public ID. Changing its target leaves that name intact."
+                                ? translation()(
+                                      ($) =>
+                                          $.additional.modelRouteEditorScreen
+                                              .aModelNameMaintainedAutomaticallyByItsProviderMessage,
+                                  )
+                                : translation()(
+                                      ($) =>
+                                          $.additional.modelRouteEditorScreen
+                                              .clientsRequestThisPublicIDChangingItsTargetMessage,
+                                  )
                         }
                         backHref={hrefs.modelRoutes()}
-                        backLabel="Public routes"
+                        backLabel={translation()(
+                            ($) => $.additional.modelRouteEditorScreen.publicRoutes,
+                        )}
                     />
                     <HoldNotice
                         isHeld={edit.isRowHeld()}
@@ -146,8 +173,11 @@ export function ModelRouteEditorScreen(props: {
                         fallback={
                             <Card>
                                 <p>
-                                    This model name is managed automatically. Edit the owning
-                                    provider or pool prefix to change it.
+                                    {translation()(
+                                        ($) =>
+                                            $.screens.modelRouteEditorScreen
+                                                .thisModelNameIsManagedAutomaticallyEditTheMessage,
+                                    )}
                                 </p>
                                 <Show when={route.target !== null}>
                                     <ButtonLink
@@ -160,8 +190,15 @@ export function ModelRouteEditorScreen(props: {
                                         }
                                     >
                                         {route.target?.type === "pool"
-                                            ? "Open pool"
-                                            : "Open physical model"}
+                                            ? translation()(
+                                                  ($) =>
+                                                      $.additional.modelRouteEditorScreen.openPool,
+                                              )
+                                            : translation()(
+                                                  ($) =>
+                                                      $.additional.modelRouteEditorScreen
+                                                          .openPhysicalModel,
+                                              )}
                                     </ButtonLink>
                                 </Show>
                             </Card>
@@ -207,9 +244,15 @@ function RouteDelete(props: {
     });
     return (
         <ConfirmDeleteCard
-            title="Delete this public route"
-            description="Clients requesting its public ID will receive model-not-found. Physical inventory and pools remain stored."
-            question="Delete this public route?"
+            title={translation()(($) => $.screens.modelRouteEditorScreen.deleteThisPublicRoute)}
+            description={translation()(
+                ($) =>
+                    $.screens.modelRouteEditorScreen
+                        .clientsRequestingItsPublicIDWillReceiveModelnotfoundMessage,
+            )}
+            question={translation()(
+                ($) => $.additional.modelRouteEditorScreen.deleteThisPublicRoute,
+            )}
             onConfirm={remove}
         />
     );
@@ -271,9 +314,9 @@ function RouteForm(props: {
                 upstreamId() !== ""));
     const canSave = (): boolean =>
         publicId() !== "" &&
-        routingTokenError(publicId(), "Public ID") === null &&
+        routingTokenError(publicId(), "publicId") === null &&
         target() !== null &&
-        (targetType() !== "pool" || routingTokenError(upstreamId(), "Upstream ID") === null) &&
+        (targetType() !== "pool" || routingTokenError(upstreamId(), "upstreamId") === null) &&
         (baseline().id === null || isDirty());
     const form = createEditForm({
         read: props.read,
@@ -308,7 +351,9 @@ function RouteForm(props: {
             if (props.seed.id === null) navigate(hrefs.modelRouteEdit(id));
             return {
                 tone: "ok",
-                title: "Public route saved.",
+                get title() {
+                    return translation()(($) => $.notices.routeSaved);
+                },
                 detail: null,
             };
         },
@@ -330,41 +375,57 @@ function RouteForm(props: {
     return (
         <>
             <Card>
-                <CardHeader title="Public route settings" />
+                <CardHeader
+                    title={translation()(
+                        ($) => $.screens.modelRouteEditorScreen.publicRouteSettings,
+                    )}
+                />
                 <form
                     novalidate
                     class="mt-4 flex max-w-2xl flex-col gap-5"
                     onSubmit={form.submit}
                 >
                     <Switch
-                        label="Enabled"
+                        label={translation()(($) => $.screens.modelRouteEditorScreen.enabled)}
                         isOn={isEnabled()}
                         onToggle={setIsEnabled}
                         isDisabled={form.isSaving()}
                     />
                     <TextField
-                        label="Public ID"
+                        label={translation()(($) => $.screens.modelRouteEditorScreen.publicID)}
                         value={publicId()}
                         onInput={setPublicId}
                         error={
                             publicId() === ""
-                                ? "Public ID is required."
-                                : routingTokenError(publicId(), "Public ID")
+                                ? translation()(
+                                      ($) =>
+                                          $.additional.modelRouteEditorScreen
+                                              .publicIDIsRequiredMessage,
+                                  )
+                                : routingTokenError(publicId(), "publicId")
                         }
-                        hint="The exact model name clients request. Renaming requires clients to update."
+                        hint={translation()(
+                            ($) =>
+                                $.screens.modelRouteEditorScreen
+                                    .theExactModelNameClientsRequestRenamingRequiresMessage,
+                        )}
                         isDisabled={form.isSaving()}
                     />
                     <SelectField
-                        label="Target type"
+                        label={translation()(($) => $.screens.modelRouteEditorScreen.targetType)}
                         value={targetType()}
                         options={[
                             {
                                 value: "direct",
-                                label: "Direct physical model",
+                                label: translation()(
+                                    ($) => $.additional.modelRouteEditorScreen.directPhysicalModel,
+                                ),
                             },
                             {
                                 value: "pool",
-                                label: "Pool",
+                                label: translation()(
+                                    ($) => $.additional.modelRouteEditorScreen.pool,
+                                ),
                             },
                         ]}
                         onChange={setTargetType}
@@ -375,12 +436,17 @@ function RouteForm(props: {
                         fallback={
                             <>
                                 <SelectField
-                                    label="Pool"
+                                    label={translation()(
+                                        ($) => $.screens.modelRouteEditorScreen.pool,
+                                    )}
                                     value={poolId()}
                                     options={[
                                         {
                                             value: "",
-                                            label: "Choose a pool",
+                                            label: translation()(
+                                                ($) =>
+                                                    $.additional.modelRouteEditorScreen.chooseAPool,
+                                            ),
                                         },
                                         ...props.pools.map((pool) => ({
                                             value: String(pool.id),
@@ -391,27 +457,43 @@ function RouteForm(props: {
                                     isDisabled={form.isSaving()}
                                 />
                                 <TextField
-                                    label="Upstream ID"
+                                    label={translation()(
+                                        ($) => $.screens.modelRouteEditorScreen.upstreamID,
+                                    )}
                                     value={upstreamId()}
                                     onInput={setUpstreamId}
                                     error={
                                         upstreamId() === ""
-                                            ? "Upstream ID is required."
-                                            : routingTokenError(upstreamId(), "Upstream ID")
+                                            ? translation()(
+                                                  ($) =>
+                                                      $.additional.modelRouteEditorScreen
+                                                          .upstreamIDIsRequiredMessage,
+                                              )
+                                            : routingTokenError(upstreamId(), "upstreamId")
                                     }
-                                    hint="Exact identifier requested on every member. Missing models do not prevent publication."
+                                    hint={translation()(
+                                        ($) =>
+                                            $.screens.modelRouteEditorScreen
+                                                .exactIdentifierRequestedOnEveryMemberMissingModelsMessage,
+                                    )}
                                     isDisabled={form.isSaving()}
                                 />
                             </>
                         }
                     >
                         <SelectField
-                            label="Physical model"
+                            label={translation()(
+                                ($) => $.screens.modelRouteEditorScreen.physicalModel,
+                            )}
                             value={modelId()}
                             options={[
                                 {
                                     value: "",
-                                    label: "Choose a physical model",
+                                    label: translation()(
+                                        ($) =>
+                                            $.additional.modelRouteEditorScreen
+                                                .chooseAPhysicalModel,
+                                    ),
                                 },
                                 ...props.models.map((model) => ({
                                     value: String(model.id),
@@ -430,7 +512,9 @@ function RouteForm(props: {
                                 isDisabled={!canSave()}
                                 isBusy={form.isSaving()}
                             >
-                                Create public route
+                                {translation()(
+                                    ($) => $.screens.modelRouteEditorScreen.createPublicRoute,
+                                )}
                             </Button>
                         </div>
                     ) : (

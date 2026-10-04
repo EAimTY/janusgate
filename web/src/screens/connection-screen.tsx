@@ -8,6 +8,10 @@ import {
     PROBE_TIMEOUT_MS,
 } from "/src/connection/app-service";
 import { normalizeBaseUrl } from "/src/connection/model";
+import { translation } from "/src/i18n";
+import { LanguageControl } from "/src/i18n/language-control";
+import { setupCorsMessage, setupTokenMessage } from "/src/i18n/rich";
+import { baseUrlFailureMessage } from "/src/i18n/validation-messages";
 import { type Diagnosis, diagnoseFailure, probeReachability } from "/src/management-api/diagnosis";
 import { CopyButton } from "/src/ui/clipboard";
 import { Button, TextField } from "/src/ui/controls";
@@ -84,12 +88,14 @@ export function ConnectionScreen(): JSX.Element {
         }
 
         const normalization = normalizeBaseUrl(baseUrl());
-        return normalization.ok ? null : normalization.reason;
+        return normalization.ok ? null : baseUrlFailureMessage(normalization.reason);
     };
 
     /** The token field's inline error, open only once a submit was made. */
     const tokenError = (): string | null =>
-        hasSubmitted() && token() === "" ? "Enter the management token." : null;
+        hasSubmitted() && token() === ""
+            ? translation()(($) => $.connectionValidation.managementToken)
+            : null;
 
     createEffect(
         () => {
@@ -206,29 +212,34 @@ export function ConnectionScreen(): JSX.Element {
     return (
         <div class="grid min-h-screen place-items-center px-4 py-10">
             <div class="rise-in flex w-full max-w-xl flex-col gap-6 rounded-2xl border border-rule bg-surface px-6 py-7 sm:px-8">
-                <div class="flex items-center gap-2.5 text-accent">
-                    <JanusMark size={22} />
-                    <span class="text-[16px] font-semibold tracking-tight text-ink">JanusGate</span>
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2.5 text-accent">
+                        <JanusMark size={22} />
+                        <span class="text-[16px] font-semibold tracking-tight text-ink">
+                            JanusGate
+                        </span>
+                    </div>
+                    <LanguageControl />
                 </div>
 
                 <div>
                     <h1 class="text-[22px] font-semibold tracking-tight text-balance">
-                        Connect to JanusGate
+                        {translation()(($) => $.connection.connectToJanusGate)}
                     </h1>
                     <p class="mt-2 text-ink-dim">
-                        This app administers a JanusGate gateway: its upstream accounts, their
-                        models, and their credentials.
+                        {translation()(
+                            ($) => $.connection.thisAppAdministersAJanusGateGatewayItsUpstream,
+                        )}
                     </p>
                 </div>
 
                 <ol class="flex list-none flex-col gap-2.5 rounded-xl bg-canvas px-4 py-4 text-[13.5px] dark:bg-muted">
                     <RequirementStep index={1}>
-                        A running JanusGate instance, reachable from this browser.
+                        {translation()(
+                            ($) => $.connection.aRunningJanusGateInstanceReachableFromThisBrowser,
+                        )}
                     </RequirementStep>
-                    <RequirementStep index={2}>
-                        Its management token: <span class="tnum">management_api.token</span> in that
-                        instance's configuration file.
-                    </RequirementStep>
+                    <RequirementStep index={2}>{setupTokenMessage(translation())}</RequirementStep>
                     <RequirementStep index={3}>
                         <span class="flex flex-wrap items-center gap-x-4 gap-y-2">
                             <span
@@ -239,14 +250,10 @@ export function ConnectionScreen(): JSX.Element {
                             </span>
                             <CopyButton
                                 value={pageOrigin}
-                                subject="the origin beside it"
-                                ariaLabel="Copy this app's origin"
+                                subject={translation()(($) => $.connection.theOriginBesideIt)}
+                                ariaLabel={translation()(($) => $.connection.copyThisAppsOrigin)}
                             />
-                            <span class="basis-full">
-                                in that instance's{" "}
-                                <span class="tnum">management_api.cors.allowed_origin</span> —
-                                unless this app is served from the gateway itself.
-                            </span>
+                            <span class="basis-full">{setupCorsMessage(translation())}</span>
                         </span>
                     </RequirementStep>
                 </ol>
@@ -262,13 +269,14 @@ export function ConnectionScreen(): JSX.Element {
                                 tone="bad"
                                 title={current().title}
                                 detail={current().detail}
+                                rawDetail={current().rawDetail}
                                 fix={current().fix}
                             />
                         )}
                     </Show>
 
                     <TextField
-                        label="Gateway address"
+                        label={translation()(($) => $.connection.gatewayAddress)}
                         value={baseUrl()}
                         onInput={setBaseUrl}
                         type="url"
@@ -276,22 +284,24 @@ export function ConnectionScreen(): JSX.Element {
                         autocomplete="url"
                         isDisabled={isVerifying()}
                         error={baseUrlError()}
-                        hint="Scheme, host and port only."
+                        hint={translation()(($) => $.connection.schemeHostAndPortOnly)}
                     />
 
                     <TextField
-                        label="Management token"
+                        label={translation()(($) => $.connection.managementToken)}
                         value={token()}
                         onInput={setToken}
                         type={isTokenVisible() ? "text" : "password"}
                         autocomplete="off"
                         isDisabled={isVerifying()}
                         error={tokenError()}
-                        hint="Sent only to that instance, and kept only in this browser."
+                        hint={translation()(($) => $.connection.sentOnlyToThatInstanceAndKeptOnly)}
                     />
 
                     <SecretRevealToggle
-                        caption="Show the token while typing"
+                        caption={translation()(
+                            ($) => $.additional.connectionScreen.showTheTokenWhileTyping,
+                        )}
                         isVisible={isTokenVisible()}
                         onToggle={setIsTokenVisible}
                     />
@@ -302,14 +312,18 @@ export function ConnectionScreen(): JSX.Element {
                             tone="primary"
                             isBusy={isVerifying()}
                         >
-                            {isVerifying() ? "Probing the gateway…" : "Connect"}
+                            {isVerifying()
+                                ? translation()(
+                                      ($) => $.additional.connectionScreen.probingTheGateway,
+                                  )
+                                : translation()(($) => $.additional.connectionScreen.connect)}
                         </Button>
                         <Show when={isVerifying()}>
                             <Button
                                 tone="ghost"
                                 onClick={cancelProbe}
                             >
-                                Cancel
+                                {translation()(($) => $.connection.cancel)}
                             </Button>
                         </Show>
                     </div>

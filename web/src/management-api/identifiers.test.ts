@@ -68,33 +68,33 @@ describe("isBaseUrl", () => {
 
 describe("messages", () => {
     it("names the rejected field", () => {
-        expect(compositionMessage("Upstream ID")).toContain("Upstream ID");
-        expect(routingTokenMessage("Upstream ID")).toContain("Upstream ID");
+        expect(compositionMessage("upstreamId")).toContain("Upstream ID");
+        expect(routingTokenMessage("upstreamId")).toContain("Upstream ID");
         expect(baseUrlMessage()).toContain("http");
     });
 });
 
 describe("bearerSecretError", () => {
     it("reads an empty secret as the kept stored one", () => {
-        expect(bearerSecretError("", "Key")).toBeNull();
+        expect(bearerSecretError("", "key")).toBeNull();
     });
 
     it("accepts a composed secret and rejects the rest, naming the field", () => {
-        expect(bearerSecretError("sk-live-123_~-abcXYZ019", "Key")).toBeNull();
-        expect(bearerSecretError("has space", "Key")).toBe(compositionMessage("Key"));
+        expect(bearerSecretError("sk-live-123_~-abcXYZ019", "key")).toBeNull();
+        expect(bearerSecretError("has space", "key")).toBe(compositionMessage("key"));
     });
 });
 
 describe("routingTokenError", () => {
     it("reads an absent or empty value as nothing to reject", () => {
-        expect(routingTokenError(null, "Upstream ID")).toBeNull();
-        expect(routingTokenError("", "Upstream ID")).toBeNull();
+        expect(routingTokenError(null, "upstreamId")).toBeNull();
+        expect(routingTokenError("", "upstreamId")).toBeNull();
     });
 
     it("accepts a routing token and rejects the rest, naming the field", () => {
-        expect(routingTokenError("gpt-4o", "Upstream ID")).toBeNull();
-        expect(routingTokenError("meta-llama/Llama-3.1-8B", "Upstream ID")).toBe(
-            routingTokenMessage("Upstream ID"),
+        expect(routingTokenError("gpt-4o", "upstreamId")).toBeNull();
+        expect(routingTokenError("meta-llama/Llama-3.1-8B", "upstreamId")).toBe(
+            routingTokenMessage("upstreamId"),
         );
     });
 });

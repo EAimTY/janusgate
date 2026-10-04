@@ -96,11 +96,11 @@ describe("normalizedTokenCapOverride", () => {
 
 describe("tokenCapOverrideError", () => {
     it("accepts a switched-off override without reading the field", () => {
-        expect(tokenCapOverrideError(false, "junk", "Max input tokens override")).toBeNull();
+        expect(tokenCapOverrideError(false, "junk", "maxInputOverride")).toBeNull();
     });
 
     it("accepts a positive integer while on", () => {
-        expect(tokenCapOverrideError(true, "200000", "Max input tokens override")).toBeNull();
+        expect(tokenCapOverrideError(true, "200000", "maxInputOverride")).toBeNull();
     });
 
     it("names the field for an empty or non-positive entry while on", () => {
@@ -111,7 +111,7 @@ describe("tokenCapOverrideError", () => {
             "1.5",
             "many",
         ]) {
-            expect(tokenCapOverrideError(true, entry, "Max input tokens override")).toBe(
+            expect(tokenCapOverrideError(true, entry, "maxInputOverride")).toBe(
                 "Max input tokens override must be a positive integer.",
             );
         }

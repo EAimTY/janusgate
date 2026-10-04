@@ -245,7 +245,7 @@ describe("EntityUsageCard doors", () => {
         // own parameter spelling — and nothing else rides along.
         const cases: ReadonlyArray<{
             readonly filter: UsageSubjectFilter;
-            readonly subjectKind: string;
+            readonly subjectKind: "provider" | "model" | "public route" | "api key";
             readonly streamHref: string;
             readonly aggregatesHref: string;
         }> = [

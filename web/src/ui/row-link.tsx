@@ -19,7 +19,7 @@ export function RowLink(props: {
     /** The row's heading line, styled by the table that knows its content. */
     readonly primary: JSX.Element;
     /** The row's quiet meta line beneath the heading. */
-    readonly secondary: string;
+    readonly secondary: JSX.Element;
     /**
      * The row's value line beneath the meta line — the datum the row exists
      * to show, one step stronger than the meta (a serving key's secret).
@@ -42,14 +42,14 @@ export function RowLink(props: {
                 </span>
                 <Show when={props.tertiary !== undefined}>
                     <span class="tnum mt-1 block truncate text-[12.5px] text-ink-dim">
-                        {props.tertiary}
+                        <bdi dir="ltr">{props.tertiary}</bdi>
                     </span>
                 </Show>
             </span>
             <span class="flex min-w-0 max-w-full flex-wrap items-center gap-2">{props.badges}</span>
             <Glyph
                 name="chev-right"
-                class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
+                class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 rtl:group-hover:-translate-x-0.5 group-hover:text-ink-dim"
             />
         </>
     );

@@ -1,3 +1,4 @@
+import { translation } from "/src/i18n";
 import type {
     ControlRequest,
     QuotaDescriptor,
@@ -98,7 +99,9 @@ function codexWindows(at: string[] = []): QuotaEntryExtraction[] {
     ].map((key) =>
         ratioEntry(
             key,
-            key === "primary" ? "Primary window" : "Secondary window",
+            key === "primary"
+                ? translation()(($) => $.helpers.presetQuotas.primaryWindow)
+                : translation()(($) => $.helpers.presetQuotas.secondaryWindow),
             [
                 ...at,
                 `${key}_window`,
@@ -501,7 +504,9 @@ export const PRESET_QUOTAS: Readonly<
                         routing: {
                             type: "monitoring_only",
                         },
-                        label: "Allowance",
+                        get label() {
+                            return translation()(($) => $.helpers.presetQuotas.allowance);
+                        },
                         at: [],
                         is_required: true,
                         window: {
@@ -597,7 +602,9 @@ export const PRESET_QUOTAS: Readonly<
                         routing: {
                             type: "monitoring_only",
                         },
-                        label: "Model allowance",
+                        get label() {
+                            return translation()(($) => $.helpers.presetQuotas.modelAllowance);
+                        },
                         at: [
                             "quotaInfo",
                         ],

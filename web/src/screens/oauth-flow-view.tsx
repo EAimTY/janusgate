@@ -2,6 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { type Accessor, onCleanup, Show } from "solid-js";
 import { appConfig } from "/src/config";
 import { formatTimestamp } from "/src/format";
+import { translation } from "/src/i18n";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
 import { CopyButton } from "/src/ui/clipboard";
 import { Button, buttonClass, TextField } from "/src/ui/controls";
@@ -16,8 +17,12 @@ import type { OauthFlow } from "./oauth-flow";
  * the visitor is tempted into. A tab close or a reload is the leave-guard
  * registry's to warn for (README §6.3); the in-app move is this sentence's.
  */
-const NAVIGATION_WARNING =
-    "Stay on this page until the flow completes — navigating within the console discards the flow.";
+const navigationWarning = (): string =>
+    translation()(
+        ($) =>
+            $.helpers.oauthFlowView
+                .stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe,
+    );
 
 /**
  * The facts both flow steps print about the live flow: the moment it stops
@@ -31,12 +36,22 @@ function FlowFacts(props: { readonly flow: StartProviderOauthResponse }): JSX.El
         <div class="flex flex-col gap-2">
             <dl class="flex flex-wrap gap-x-8 gap-y-3">
                 <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Flow expires</dt>
-                    <dd class="tnum mt-1 text-ink-dim">{formatTimestamp(props.flow.expires_at)}</dd>
+                    <dt class="text-[12.5px] font-medium text-ink-dim">
+                        {translation()(($) => $.screens.oauthFlowView.flowExpires)}
+                    </dt>
+                    <dd class="tnum mt-1 text-ink-dim">
+                        <bdi dir="ltr">{formatTimestamp(props.flow.expires_at)}</bdi>
+                    </dd>
                 </div>
             </dl>
             <p class="text-[12px] text-ink-faint">
-                Single-use state: <span class="tnum break-all">{props.flow.state}</span>
+                {translation()(($) => $.screens.oauthFlowView.singleuseStateLabel)}
+                <bdi
+                    dir="ltr"
+                    class="tnum break-all"
+                >
+                    {props.flow.state}
+                </bdi>
             </p>
         </div>
     );
@@ -62,8 +77,15 @@ export function AuthorizeStep(props: {
     return (
         <div class="flex flex-col gap-4">
             <div class="rounded-lg border border-rule bg-canvas px-3 py-2.5 dark:bg-muted">
-                <p class="text-[12.5px] font-medium text-ink-dim">Authorization URL</p>
-                <p class="tnum mt-1.5 break-all">{props.flow.authorize_url}</p>
+                <p class="text-[12.5px] font-medium text-ink-dim">
+                    {translation()(($) => $.screens.oauthFlowView.authorizationURL)}
+                </p>
+                <p
+                    dir="ltr"
+                    class="tnum mt-1.5 break-all"
+                >
+                    {props.flow.authorize_url}
+                </p>
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
@@ -76,26 +98,26 @@ export function AuthorizeStep(props: {
                     class={buttonClass("primary")}
                 >
                     <Glyph name="out" />
-                    Open the authorization page
+                    {translation()(($) => $.screens.oauthFlowView.openTheAuthorizationPage)}
                 </a>
                 <CopyButton
                     value={props.flow.authorize_url}
-                    subject="the URL above"
-                    label="Copy the URL"
+                    subject={translation()(($) => $.screens.oauthFlowView.theURLAbove)}
+                    label={translation()(($) => $.screens.oauthFlowView.copyTheURL)}
                 />
             </div>
 
             <FlowFacts flow={props.flow} />
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
-                The state is single-use and the flow expires quickly — finish promptly after
-                approving access. {NAVIGATION_WARNING}
+                {translation()(
+                    ($) => $.screens.oauthFlowView.theStateIsSingleuseAndTheFlowExpiresMessage,
+                )}
+                {navigationWarning()}
             </p>
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
-                Most logins end on a page that shows nothing — that is expected. Paste the whole
-                address the browser shows. If a page opens and displays a code, paste that code
-                instead.
+                {translation()(($) => $.screens.oauthFlowView.mostLoginsEndOnAPageThatShowsMessage)}
             </p>
 
             <div class="h-px w-full bg-rule" />
@@ -107,7 +129,7 @@ export function AuthorizeStep(props: {
                     tone="ghost"
                     onClick={props.onStartOver}
                 >
-                    Start over
+                    {translation()(($) => $.screens.oauthFlowView.startOver)}
                 </Button>
             </div>
         </div>
@@ -162,10 +184,14 @@ export function CompletionForm(props: {
                 onStartOver={props.flow.reset}
             >
                 <TextField
-                    label="Callback URL or authorization code"
+                    label={translation()(
+                        ($) => $.screens.oauthFlowView.callbackURLOrAuthorizationCode,
+                    )}
                     value={props.flow.code()}
                     onInput={props.flow.setCode}
-                    placeholder="Paste the whole callback URL"
+                    placeholder={translation()(
+                        ($) => $.screens.oauthFlowView.pasteTheWholeCallbackURL,
+                    )}
                     isDisabled={props.flow.isCompleting()}
                     error={props.flow.pasteError()}
                 />
@@ -241,13 +267,15 @@ export function DeviceStep(props: {
     return (
         <div class="flex flex-col gap-4">
             <div class="rounded-lg border border-rule bg-canvas px-3 py-2.5 dark:bg-muted">
-                <p class="text-[12.5px] font-medium text-ink-dim">Verification code</p>
+                <p class="text-[12.5px] font-medium text-ink-dim">
+                    {translation()(($) => $.screens.oauthFlowView.verificationCode)}
+                </p>
                 <p class="tnum mt-1.5 flex items-center gap-3 text-[17px] font-semibold tracking-wide">
-                    {props.flow.user_code}
+                    <bdi dir="ltr">{props.flow.user_code}</bdi>
                     <CopyButton
                         value={props.flow.user_code}
-                        subject="the verification code"
-                        label="Copy the code"
+                        subject={translation()(($) => $.screens.oauthFlowView.theVerificationCode)}
+                        label={translation()(($) => $.screens.oauthFlowView.copyTheCode)}
                     />
                 </p>
             </div>
@@ -261,12 +289,12 @@ export function DeviceStep(props: {
                         class={buttonClass("primary")}
                     >
                         <Glyph name="out" />
-                        Open the verification page
+                        {translation()(($) => $.screens.oauthFlowView.openTheVerificationPage)}
                     </a>
                     <CopyButton
                         value={completeUri()}
-                        subject="the verification URL"
-                        label="Copy the URL"
+                        subject={translation()(($) => $.screens.oauthFlowView.theVerificationURL)}
+                        label={translation()(($) => $.screens.oauthFlowView.copyTheURL)}
                     />
                 </div>
             </Show>
@@ -274,8 +302,10 @@ export function DeviceStep(props: {
             <FlowFacts flow={props.flow} />
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
-                Approve the code at the verification page; this page keeps asking the gateway for
-                the outcome and moves on as soon as the flow completes. {NAVIGATION_WARNING}
+                {translation()(
+                    ($) => $.screens.oauthFlowView.approveTheCodeAtTheVerificationPageThisMessage,
+                )}
+                {navigationWarning()}
             </p>
 
             <div class="h-px w-full bg-rule" />
@@ -288,7 +318,7 @@ export function DeviceStep(props: {
                         props.onStartOver();
                     }}
                 >
-                    Start over
+                    {translation()(($) => $.screens.oauthFlowView.startOver)}
                 </Button>
             </div>
         </div>

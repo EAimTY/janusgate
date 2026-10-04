@@ -1,10 +1,10 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import type { ProviderPreset } from "/src/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
-import { requiredHint } from "./required-hint";
 import { SecretRevealToggle } from "./secret-reveal";
 
 /**
@@ -32,7 +32,7 @@ export function ProviderPresetPicker(props: {
                             disabled={props.isDisabled ?? false}
                             onClick={() => props.onChange(preset.id)}
                             class={joinClass(
-                                "cursor-pointer rounded-xl border px-3.5 py-3 text-left transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60",
+                                "cursor-pointer rounded-xl border px-3.5 py-3 text-start transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60",
                                 isSelected()
                                     ? "border-accent bg-accent-soft"
                                     : "border-rule-strong bg-surface hover:border-ink-faint",
@@ -46,8 +46,12 @@ export function ProviderPresetPicker(props: {
                                     tone={preset.verification === "live" ? "ok" : "muted"}
                                     label={
                                         preset.verification === "live"
-                                            ? "Verified live"
-                                            : "Unverified"
+                                            ? translation()(
+                                                  ($) => $.additional.providerForm.verifiedLive,
+                                              )
+                                            : translation()(
+                                                  ($) => $.additional.providerForm.unverified,
+                                              )
                                     }
                                 />
                             </span>
@@ -76,7 +80,7 @@ export function ProviderIdentityFields(props: {
     return (
         <div class="flex flex-col gap-4">
             <TextField
-                label="Name"
+                label={translation()(($) => $.controls.name)}
                 value={props.name}
                 onInput={props.onNameInput}
                 placeholder={props.namePlaceholder}
@@ -85,12 +89,12 @@ export function ProviderIdentityFields(props: {
                 error={props.nameError}
             />
             <TextField
-                label="Model prefix"
+                label={translation()(($) => $.controls.modelPrefix)}
                 value={props.modelPrefix}
                 onInput={props.onModelPrefixInput}
                 isDisabled={props.isDisabled ?? false}
                 error={props.prefixError}
-                hint="Outside pools, models are callable as this prefix + upstream ID. Members use their pool prefixes. Leave empty to use upstream IDs directly. Changing the prefix changes existing automatic model names."
+                hint={translation()(($) => $.controls.outsidePoolsModelsAreCallableAsThisPrefix)}
             />
         </div>
     );
@@ -132,7 +136,7 @@ export function CompatibleConnectionFields(props: {
         <div class="flex flex-col gap-4">
             <Show when={props.hasBaseUrl !== false}>
                 <TextField
-                    label="Upstream base URL"
+                    label={translation()(($) => $.controls.upstreamBaseURL)}
                     type="url"
                     value={props.baseUrl}
                     onInput={props.onBaseUrlInput}
@@ -141,15 +145,20 @@ export function CompatibleConnectionFields(props: {
                     error={props.baseUrlError}
                     hint={
                         props.hasBaseUrl === true
-                            ? requiredHint(
-                                  "The upstream address this definition's requests point at.",
+                            ? translation()(
+                                  ($) =>
+                                      $.additional.providerForm
+                                          .theUpstreamAddressThisDefinitionsRequestsPointAtMessage,
                               )
                             : undefined
                     }
                 />
             </Show>
             <TextField
-                label={props.apiKeyLabel ?? "Upstream API key"}
+                label={
+                    props.apiKeyLabel ??
+                    translation()(($) => $.additional.providerForm.upstreamAPIKey)
+                }
                 type={isKeyVisible() ? "text" : "password"}
                 value={props.apiKey}
                 onInput={props.onApiKeyInput}
@@ -158,11 +167,15 @@ export function CompatibleConnectionFields(props: {
                 error={props.apiKeyError}
                 hint={
                     props.apiKeyHint ??
-                    requiredHint("Sent upstream with every request. Never returned by the gateway.")
+                    translation()(
+                        ($) =>
+                            $.additional.providerForm
+                                .sentUpstreamWithEveryRequestNeverReturnedByMessage,
+                    )
                 }
             />
             <SecretRevealToggle
-                caption="Show the API key while typing"
+                caption={translation()(($) => $.additional.providerForm.showTheAPIKeyWhileTyping)}
                 isVisible={isKeyVisible()}
                 onToggle={setIsKeyVisible}
             />
@@ -180,7 +193,7 @@ export function ProviderEnabledSwitch(props: {
 }): JSX.Element {
     return (
         <Switch
-            label="Enabled"
+            label={translation()(($) => $.controls.enabled)}
             isOn={props.isEnabled}
             isDisabled={props.isDisabled ?? false}
             onToggle={props.onToggle}

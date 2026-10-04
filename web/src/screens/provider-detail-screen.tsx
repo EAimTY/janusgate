@@ -1,6 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { type Accessor, createMemo, createSignal, onCleanup, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
+import { credentialExpiryLine, nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
+import { discoveryPendingMessage, reconnectMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
@@ -30,18 +32,17 @@ import {
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
-import { AppLink } from "/src/ui/app-link";
-import { proseLinkClass } from "/src/ui/attributes";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
-import { credentialBadge, OAUTH_NEVER_FRESH_SENTENCE } from "/src/ui/providers-table";
+import { credentialBadge, oauthNeverFreshSentence } from "/src/ui/providers-table";
 import { AccountAvailabilityRow } from "./pool-availability-card";
 import { ProviderQuotaCard } from "./provider-quota-card";
 import { createProviderQuotaView } from "./quota-view";
 import { StatedNotice } from "./read-notice";
 import { RowNotFound } from "./row-not-found";
+import { createDiscoveryNotice } from "./success-notices";
 
 /**
  * One provider's page: what it is, the models it reports, and what serving
@@ -131,8 +132,12 @@ export function ProviderDetailScreen(props: {
         setIsDiscovering(true);
         setDiscoveryNotice({
             tone: "info",
-            title: `Discovering models from ${current.name}…`,
-            detail: "Asking the upstream what it reports right now.",
+            get title() {
+                return discoveryPendingMessage(translation(), current.name);
+            },
+            get detail() {
+                return translation()(($) => $.operationNotices.discoveryQuery);
+            },
         });
 
         const outcome = await performManagementCall(() =>
@@ -171,26 +176,14 @@ export function ProviderDetailScreen(props: {
         const vanished = rows.filter((row) => row.discovery_state === "vanished").length;
         const manual = rows.filter((row) => row.discovery_state === "manual").length;
 
-        const facts: string[] = [];
-
-        if (manual > 0) {
-            facts.push(`${manual} added by hand ${manual === 1 ? "was" : "were"} left untouched.`);
-        }
-
-        if (vanished > 0) {
-            facts.push(
-                `${vanished} ${vanished === 1 ? "model is" : "models are"} now listed as no longer reported.`,
-            );
-        }
-
-        setDiscoveryNotice({
-            tone: "ok",
-            title:
-                added > 0
-                    ? `${added} ${pluralNoun(added, "model")} discovered from ${current.name}.`
-                    : `Nothing new discovered from ${current.name}.`,
-            detail: facts.length > 0 ? facts.join(" ") : null,
-        });
+        setDiscoveryNotice(
+            createDiscoveryNotice({
+                providerName: current.name,
+                added,
+                vanished,
+                manual,
+            }),
+        );
 
         // A discovery answering after the visitor left must not read again.
         if (read.isDisposed()) {
@@ -218,18 +211,20 @@ export function ProviderDetailScreen(props: {
             row={provider}
             firstReadHeader={
                 <PageHeader
-                    title="Provider"
+                    title={translation()(($) => $.screens.providerDetailScreen.provider)}
                     backHref={hrefs.providers()}
-                    backLabel="Providers"
+                    backLabel={translation()(($) => $.additional.providerDetailScreen.providers)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="provider"
-                    headerTitle="Provider"
+                    headerTitle={translation()(($) => $.additional.providerDetailScreen.provider)}
                     createAction={{
                         href: hrefs.providerNew(),
-                        label: "Create provider",
+                        label: translation()(
+                            ($) => $.additional.providerDetailScreen.createProvider,
+                        ),
                     }}
                 />
             }
@@ -240,11 +235,21 @@ export function ProviderDetailScreen(props: {
                         title={row.name}
                         description={`${UPSTREAM_FORMAT.label(row.format)} · ${CREDENTIAL_KIND.label(row.type)}`}
                         backHref={hrefs.providers()}
-                        backLabel="Providers"
+                        backLabel={translation()(
+                            ($) => $.additional.providerDetailScreen.providers,
+                        )}
                     >
                         <Badge
                             tone={row.is_enabled ? "ok" : "muted"}
-                            label={row.is_enabled ? "Enabled" : "Disabled"}
+                            label={
+                                row.is_enabled
+                                    ? translation()(
+                                          ($) => $.additional.providerDetailScreen.enabled,
+                                      )
+                                    : translation()(
+                                          ($) => $.additional.providerDetailScreen.disabled,
+                                      )
+                            }
                         />
                         <Show when={credentialBadge(row)}>
                             {(credential) => (
@@ -254,7 +259,9 @@ export function ProviderDetailScreen(props: {
                                 />
                             )}
                         </Show>
-                        <ButtonLink href={hrefs.providerEdit(row.id)}>Edit provider</ButtonLink>
+                        <ButtonLink href={hrefs.providerEdit(row.id)}>
+                            {translation()(($) => $.screens.providerDetailScreen.editProvider)}
+                        </ButtonLink>
                     </PageHeader>
 
                     {/* A lapsed credential's fix lives one page over, where
@@ -275,25 +282,17 @@ export function ProviderDetailScreen(props: {
                                 tone="warn"
                                 title={
                                     standing() === "expired"
-                                        ? "The OAuth credentials have expired."
-                                        : OAUTH_NEVER_FRESH_SENTENCE
+                                        ? translation()(
+                                              ($) =>
+                                                  $.additional.providerDetailScreen
+                                                      .theOAuthCredentialsHaveExpiredMessage,
+                                          )
+                                        : oauthNeverFreshSentence()
                                 }
-                                detail={
-                                    <>
-                                        {row.is_enabled
-                                            ? "Reconnect on the "
-                                            : "The provider is disabled — reconnect when you re-enable it; the "}
-                                        <AppLink
-                                            href={hrefs.providerEdit(row.id)}
-                                            class={proseLinkClass}
-                                        >
-                                            edit page
-                                        </AppLink>
-                                        {row.is_enabled
-                                            ? " — its Credentials card replaces them."
-                                            : "'s Credentials card replaces them."}
-                                    </>
-                                }
+                                detail={reconnectMessage(
+                                    row.is_enabled,
+                                    hrefs.providerEdit(row.id),
+                                )}
                             />
                         )}
                     </Show>
@@ -313,8 +312,14 @@ export function ProviderDetailScreen(props: {
 
                     <Card>
                         <CardHeader
-                            title="Stored availability"
-                            description="All observed restrictions on this account. Reset clears restrictions and installs refresh grace; it does not reset upstream quota."
+                            title={translation()(
+                                ($) => $.screens.providerDetailScreen.storedAvailability,
+                            )}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.providerDetailScreen
+                                        .allObservedRestrictionsOnThisAccountResetClearsMessage,
+                            )}
                         />
                         <ul class="mt-4">
                             <AccountAvailabilityRow
@@ -372,23 +377,25 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
 
     return (
         <Card>
-            <CardHeader title="Details" />
+            <CardHeader title={translation()(($) => $.screens.providerDetailScreen.details)} />
             <FactList>
                 <Fact
-                    label="Model prefix"
+                    label={translation()(($) => $.screens.providerDetailScreen.modelPrefix)}
                     value={
                         props.provider.model_prefix === ""
-                            ? "None — exact upstream IDs"
+                            ? translation()(
+                                  ($) => $.additional.providerDetailScreen.noneExactUpstreamIDs,
+                              )
                             : props.provider.model_prefix
                     }
                     isTabular
                 />
                 <Fact
-                    label="Type"
+                    label={translation()(($) => $.screens.providerDetailScreen.type)}
                     value={UPSTREAM_FORMAT.label(props.provider.format)}
                 />
                 <Fact
-                    label="Definition"
+                    label={translation()(($) => $.screens.providerDetailScreen.definition)}
                     value={
                         <Show
                             when={definitionPreset()}
@@ -416,7 +423,9 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                 <Show when={props.provider.base_url}>
                     {(url) => (
                         <Fact
-                            label="Upstream base URL"
+                            label={translation()(
+                                ($) => $.screens.providerDetailScreen.upstreamBaseURL,
+                            )}
                             value={url()}
                             isTabular
                             class="break-all"
@@ -426,7 +435,7 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                 <Show when={credentialLine()}>
                     {(line) => (
                         <Fact
-                            label="Credentials"
+                            label={translation()(($) => $.screens.providerDetailScreen.credentials)}
                             value={line()}
                             class="text-ink-dim"
                         />
@@ -436,8 +445,12 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                     value echoes the header badge's word exactly — the tight
                     list-row "On/Off" never appears on a detail page. */}
                 <Fact
-                    label="Status"
-                    value={props.provider.is_enabled ? "Enabled" : "Disabled"}
+                    label={translation()(($) => $.screens.providerDetailScreen.status)}
+                    value={
+                        props.provider.is_enabled
+                            ? translation()(($) => $.additional.providerDetailScreen.enabled)
+                            : translation()(($) => $.additional.providerDetailScreen.disabled)
+                    }
                 />
             </FactList>
         </Card>
@@ -462,21 +475,28 @@ function ModelsCard(props: {
     return (
         <Card>
             <CardHeader
-                title={`Models · ${props.models.length}`}
-                description="Discovered from upstream, or added by hand."
+                title={translation()(($) => $.modelCard.heading, {
+                    total: props.models.length,
+                })}
+                description={translation()(
+                    ($) =>
+                        $.screens.providerDetailScreen.discoveredFromUpstreamOrAddedByHandMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.modelNew(props.provider.id)}
                     glyph="plus"
                 >
-                    Create model
+                    {translation()(($) => $.screens.providerDetailScreen.createModel)}
                 </ButtonLink>
                 <Button
                     glyph="refresh"
                     isBusy={props.isDiscovering}
                     onClick={props.onDiscover}
                 >
-                    {props.isDiscovering ? "Discovering…" : "Discover models"}
+                    {props.isDiscovering
+                        ? translation()(($) => $.additional.providerDetailScreen.discovering)
+                        : translation()(($) => $.additional.providerDetailScreen.discoverModels)}
                 </Button>
                 {/* The inline list stays unsearchable; the quiet door hands
                     the visitor the searchable models view filtered to this
@@ -486,7 +506,7 @@ function ModelsCard(props: {
                     href={hrefs.models(props.provider.id)}
                     tone="ghost"
                 >
-                    All models
+                    {translation()(($) => $.screens.providerDetailScreen.allModels)}
                 </ButtonLink>
             </CardHeader>
             <StatedNotice
@@ -499,8 +519,16 @@ function ModelsCard(props: {
                     fallback={
                         <p class="rounded-lg bg-canvas px-3.5 py-3 text-[13.5px] text-ink-dim dark:bg-muted">
                             {props.isDiscovering
-                                ? "Asking the upstream what it reports…"
-                                : "No models on this provider yet — discover what the provider reports, or add one by hand."}
+                                ? translation()(
+                                      ($) =>
+                                          $.additional.providerDetailScreen
+                                              .askingTheUpstreamWhatItReports,
+                                  )
+                                : translation()(
+                                      ($) =>
+                                          $.additional.providerDetailScreen
+                                              .noModelsOnThisProviderYetDiscoverWhatMessage,
+                                  )}
                         </p>
                     }
                 >

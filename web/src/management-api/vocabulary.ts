@@ -1,3 +1,4 @@
+import { translation } from "/src/i18n";
 import { ContractViolationError } from "/src/management-api/errors";
 
 import type {
@@ -31,20 +32,6 @@ type VocabularyOption<TValue extends string> = {
     readonly value: TValue;
     readonly label: string;
 };
-
-/**
- * A labels record as the options it presents. The record type is exhaustive,
- * so its keys are exactly the values of `TValue` — the single assertion below
- * restates what the signature already guarantees.
- */
-function optionsOf<TValue extends string>(
-    labels: Record<TValue, string>,
-): ReadonlyArray<VocabularyOption<TValue>> {
-    return (Object.keys(labels) as TValue[]).map((value) => ({
-        value,
-        label: labels[value],
-    }));
-}
 
 /** Looks a value up in a vocabulary, returning `null` when it is not a member. */
 function findOption<TValue extends string>(
@@ -98,21 +85,30 @@ function parseOption<TValue extends string>(
  * table's `narrow`, say — never depends on the receiver.
  */
 function defineVocabulary<TValue extends string>(
-    labels: Record<TValue, string>,
+    labels: Record<TValue, () => string>,
     noun: string,
 ): {
     readonly options: ReadonlyArray<VocabularyOption<TValue>>;
+    readonly values: ReadonlyArray<TValue>;
     label(value: TValue): string;
     find(value: unknown): TValue | null;
     parse(value: unknown, context: string): TValue;
 } {
-    const options = optionsOf(labels);
+    const values = Object.keys(labels) as TValue[];
+    // Stable option identities keep keyed form controls mounted when labels change.
+    const members = values.map((value) => ({
+        value,
+        get label() {
+            return labels[value]();
+        },
+    }));
 
     return {
-        options,
-        label: (value) => labels[value],
-        find: (value) => findOption(options, value),
-        parse: (value, context) => parseOption(options, value, context, noun),
+        values,
+        options: members,
+        label: (value) => labels[value](),
+        find: (value) => findOption(members, value),
+        parse: (value, context) => parseOption(members, value, context, noun),
     };
 }
 
@@ -123,8 +119,8 @@ function defineVocabulary<TValue extends string>(
  */
 export const CREDENTIAL_KIND = defineVocabulary<CredentialKind>(
     {
-        api_key: "Static API key",
-        oauth: "OAuth account",
+        api_key: () => translation()(($) => $.vocabulary.credentialKind.api_key),
+        oauth: () => translation()(($) => $.vocabulary.credentialKind.oauth),
     },
     "a credential kind",
 );
@@ -136,11 +132,15 @@ export const CREDENTIAL_KIND = defineVocabulary<CredentialKind>(
  */
 export const UPSTREAM_FORMAT = defineVocabulary<UpstreamFormat>(
     {
-        openai_response: "OpenAI Responses",
-        openai_chat_completion: "OpenAI Chat Completions",
-        gemini_generate_content: "Gemini GenerateContent",
-        gemini_interaction: "Gemini Interactions",
-        anthropic_messages: "Anthropic Messages",
+        openai_response: () => translation()(($) => $.vocabulary.upstreamFormat.openai_response),
+        openai_chat_completion: () =>
+            translation()(($) => $.vocabulary.upstreamFormat.openai_chat_completion),
+        gemini_generate_content: () =>
+            translation()(($) => $.vocabulary.upstreamFormat.gemini_generate_content),
+        gemini_interaction: () =>
+            translation()(($) => $.vocabulary.upstreamFormat.gemini_interaction),
+        anthropic_messages: () =>
+            translation()(($) => $.vocabulary.upstreamFormat.anthropic_messages),
     },
     "an upstream format",
 );
@@ -167,11 +167,16 @@ export type CompactionMechanism =
  */
 export const COMPACTION_MECHANISM = defineVocabulary<CompactionMechanism>(
     {
-        responses_standalone_compact: "Standalone compact",
-        responses_explicit_trigger: "Explicit trigger",
-        responses_automatic_compaction: "Automatic compaction",
-        messages_on_demand_compaction: "On-demand compaction",
-        messages_threshold_compaction: "Threshold compaction",
+        responses_standalone_compact: () =>
+            translation()(($) => $.vocabulary.compactionMechanism.responses_standalone_compact),
+        responses_explicit_trigger: () =>
+            translation()(($) => $.vocabulary.compactionMechanism.responses_explicit_trigger),
+        responses_automatic_compaction: () =>
+            translation()(($) => $.vocabulary.compactionMechanism.responses_automatic_compaction),
+        messages_on_demand_compaction: () =>
+            translation()(($) => $.vocabulary.compactionMechanism.messages_on_demand_compaction),
+        messages_threshold_compaction: () =>
+            translation()(($) => $.vocabulary.compactionMechanism.messages_threshold_compaction),
     },
     "a compaction mechanism",
 );
@@ -185,9 +190,9 @@ export const COMPACTION_MECHANISM = defineVocabulary<CompactionMechanism>(
  */
 export const MECHANISM_SUPPORT = defineVocabulary<MechanismSupport>(
     {
-        supported: "Supported",
-        unsupported: "Unsupported",
-        unknown: "Unknown",
+        supported: () => translation()(($) => $.vocabulary.mechanismSupport.supported),
+        unsupported: () => translation()(($) => $.vocabulary.mechanismSupport.unsupported),
+        unknown: () => translation()(($) => $.vocabulary.mechanismSupport.unknown),
     },
     "a mechanism support state",
 );
@@ -215,12 +220,9 @@ export function isOAuthProviderRow(provider: ProviderResponse): provider is Oaut
  */
 export const DISCOVERY_STATE = defineVocabulary<DiscoveryState>(
     {
-        discovered: "Discovered",
-        // The wire value `vanished` never reaches the operator verbatim: the
-        // label states what it means for them — the upstream no longer lists
-        // this model, while everything curated here is kept.
-        vanished: "No longer reported",
-        manual: "Manual",
+        discovered: () => translation()(($) => $.vocabulary.discoveryState.discovered),
+        vanished: () => translation()(($) => $.vocabulary.discoveryState.vanished),
+        manual: () => translation()(($) => $.vocabulary.discoveryState.manual),
     },
     "a discovery state",
 );
@@ -235,13 +237,13 @@ export const DISCOVERY_STATE = defineVocabulary<DiscoveryState>(
  */
 export const REASONING_LEVEL = defineVocabulary<ReasoningLevel>(
     {
-        none: "none",
-        minimal: "minimal",
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "xhigh",
-        max: "max",
+        none: () => translation()(($) => $.vocabulary.reasoningLevel.none),
+        minimal: () => translation()(($) => $.vocabulary.reasoningLevel.minimal),
+        low: () => translation()(($) => $.vocabulary.reasoningLevel.low),
+        medium: () => translation()(($) => $.vocabulary.reasoningLevel.medium),
+        high: () => translation()(($) => $.vocabulary.reasoningLevel.high),
+        xhigh: () => translation()(($) => $.vocabulary.reasoningLevel.xhigh),
+        max: () => translation()(($) => $.vocabulary.reasoningLevel.max),
     },
     "a reasoning level",
 );
@@ -249,10 +251,10 @@ export const REASONING_LEVEL = defineVocabulary<ReasoningLevel>(
 /** The recorded request outcomes as one vocabulary; the labels record's type is exhaustive. */
 export const API_LOG_OUTCOME = defineVocabulary<ApiLogOutcome>(
     {
-        completed: "Completed",
-        client_aborted: "Client aborted",
-        upstream_error: "Upstream error",
-        internal: "Internal",
+        completed: () => translation()(($) => $.vocabulary.apiLogOutcome.completed),
+        client_aborted: () => translation()(($) => $.vocabulary.apiLogOutcome.client_aborted),
+        upstream_error: () => translation()(($) => $.vocabulary.apiLogOutcome.upstream_error),
+        internal: () => translation()(($) => $.vocabulary.apiLogOutcome.internal),
     },
     "a request outcome",
 );
@@ -260,12 +262,18 @@ export const API_LOG_OUTCOME = defineVocabulary<ApiLogOutcome>(
 /** The outward endpoints as one vocabulary; the labels record's type is exhaustive. */
 export const API_LOG_ENDPOINT_TYPE = defineVocabulary<ApiLogEndpointType>(
     {
-        openai_chat_completions: "Chat Completions",
-        openai_responses: "Responses",
-        openai_responses_compact: "Responses compact",
-        gemini_generate_content: "Gemini GenerateContent",
-        gemini_interactions: "Gemini Interactions",
-        anthropic_messages: "Anthropic Messages",
+        openai_chat_completions: () =>
+            translation()(($) => $.vocabulary.apiLogEndpointType.openai_chat_completions),
+        openai_responses: () =>
+            translation()(($) => $.vocabulary.apiLogEndpointType.openai_responses),
+        openai_responses_compact: () =>
+            translation()(($) => $.vocabulary.apiLogEndpointType.openai_responses_compact),
+        gemini_generate_content: () =>
+            translation()(($) => $.vocabulary.apiLogEndpointType.gemini_generate_content),
+        gemini_interactions: () =>
+            translation()(($) => $.vocabulary.apiLogEndpointType.gemini_interactions),
+        anthropic_messages: () =>
+            translation()(($) => $.vocabulary.apiLogEndpointType.anthropic_messages),
     },
     "an endpoint type",
 );
@@ -273,15 +281,15 @@ export const API_LOG_ENDPOINT_TYPE = defineVocabulary<ApiLogEndpointType>(
 /** The aggregation dimensions as one vocabulary; the labels record's type is exhaustive. */
 export const USAGE_GROUP_BY = defineVocabulary<UsageGroupBy>(
     {
-        day: "Day",
-        model: "Physical model",
-        model_route: "Public route",
-        provider: "Provider",
-        api_key: "API key",
-        endpoint_type: "Endpoint",
-        outcome: "Outcome",
-        is_stream: "Stream mode",
-        http_status: "HTTP status",
+        day: () => translation()(($) => $.vocabulary.usageGroupBy.day),
+        model: () => translation()(($) => $.vocabulary.usageGroupBy.model),
+        model_route: () => translation()(($) => $.vocabulary.usageGroupBy.model_route),
+        provider: () => translation()(($) => $.vocabulary.usageGroupBy.provider),
+        api_key: () => translation()(($) => $.vocabulary.usageGroupBy.api_key),
+        endpoint_type: () => translation()(($) => $.vocabulary.usageGroupBy.endpoint_type),
+        outcome: () => translation()(($) => $.vocabulary.usageGroupBy.outcome),
+        is_stream: () => translation()(($) => $.vocabulary.usageGroupBy.is_stream),
+        http_status: () => translation()(($) => $.vocabulary.usageGroupBy.http_status),
     },
     "an aggregation dimension",
 );

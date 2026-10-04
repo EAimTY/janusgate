@@ -1,3 +1,6 @@
+import type { JSX } from "@solidjs/web";
+import { translation } from "/src/i18n";
+import { corsRecoveryMessage, networkTitleMessage } from "/src/i18n/rich";
 import { isAbortFailure, ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
 
@@ -62,6 +65,7 @@ export type ActionContext = {
  * cause's recovery conditionally instead of claiming either.
  */
 export type Diagnosis = {
+    readonly context: ActionContext;
     readonly kind:
         | "blocked"
         | "mixed-content"
@@ -76,12 +80,11 @@ export type Diagnosis = {
         | "contract"
         | "gateway"
         | "unknown";
-    readonly title: string;
+    readonly title: JSX.Element;
     readonly detail: string;
-    readonly fix: string | null;
+    readonly fix: JSX.Element;
+    readonly rawDetail?: string;
 };
-
-const CORS_SETTING = "management_api.cors.allowed_origin";
 
 function isCrossOrigin(baseUrl: string, pageOrigin: string): boolean {
     try {
@@ -136,20 +139,36 @@ function conflictFix(action: ActionName | undefined): string {
     switch (action) {
         case "create-model":
         case "update-model":
-            return "This account already holds that exact upstream model. Open its existing inventory row.";
+            return translation()(
+                ($) =>
+                    $.diagnosis
+                        .thisAccountAlreadyHoldsThatExactUpstreamModelOpenItsExistingInventoryRow,
+            );
 
         case "create-route":
         case "update-route":
-            return "Another public route holds that public ID. Choose an explicit different name or edit the existing route.";
+            return translation()(
+                ($) =>
+                    $.diagnosis
+                        .anotherPublicRouteHoldsThatPublicIDChooseAnExplicitDifferentNameOrEdit,
+            );
         case "create-pool":
         case "update-pool":
-            return "Another pool holds that name. Choose a different pool name.";
+            return translation()(
+                ($) => $.diagnosis.anotherPoolHoldsThatNameChooseADifferentPoolName,
+            );
         case "delete-pool":
-            return "Public routes still reference this pool. Change or delete those routes before deleting the pool.";
+            return translation()(
+                ($) =>
+                    $.diagnosis
+                        .publicRoutesStillReferenceThisPoolChangeOrDeleteThoseRoutesBeforeDeletingThe,
+            );
 
         case "create-api-key":
         case "update-api-key":
-            return "Another key already holds that secret; generate a fresh one.";
+            return translation()(
+                ($) => $.diagnosis.anotherKeyAlreadyHoldsThatSecretGenerateAFreshOne,
+            );
 
         // The definition write's collision is not the operator's input: its
         // name is the preset's id and its base version is the stored latest,
@@ -157,11 +176,13 @@ function conflictFix(action: ActionName | undefined): string {
         // shell's refresh re-runs the boot read that re-binds it, keeping the
         // in-progress form intact.
         case "ensure-definition":
-            return "The stored version moved — use Refresh in the bar above; it re-reads the stored versions and leaves this form untouched — then submit again.";
+            return translation()(
+                ($) => $.diagnosis.theStoredVersionMovedUseRefreshInTheBarAboveItRereadsTheStored,
+            );
 
         case "create-provider":
         case "update-provider":
-            return "Choose a provider name no other row holds.";
+            return translation()(($) => $.diagnosis.chooseAProviderNameNoOtherRowHolds);
 
         // A creation flow's completion conflicts only on the name the flow
         // was started under, and the gateway consumes the flow on the
@@ -174,10 +195,14 @@ function conflictFix(action: ActionName | undefined): string {
         // row's credentials and touches no unique column, so it stays on the
         // shared arms' behalf alone.
         case "complete-oauth":
-            return "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name; then create again with a name no other row holds.";
+            return translation()(
+                ($) =>
+                    $.diagnosis
+                        .anotherProviderTookThisNameBeforeTheFlowCouldFinishStartOverEndsThis,
+            );
 
         default:
-            return "Choose an identifier no other row holds.";
+            return translation()(($) => $.diagnosis.chooseAnIdentifierNoOtherRowHolds);
     }
 }
 
@@ -193,34 +218,53 @@ function upstreamFix(context: ActionContext): string {
         // is corrected in place) as conditionals and claims neither cause.
         if (isOAuthProvider !== undefined) {
             return isOAuthProvider
-                ? "If the provider's authorization lapsed, reconnect it on the provider's edit page; if the upstream genuinely lists no models yet, add one by hand from this page."
-                : "If the provider's base URL or API key is wrong, correct it on the provider's edit page; if the upstream genuinely lists no models yet, add one by hand from this page.";
+                ? translation()(
+                      ($) =>
+                          $.diagnosis
+                              .ifTheProvidersAuthorizationLapsedReconnectItOnTheProvidersEditPageIfThe,
+                  )
+                : translation()(
+                      ($) => $.diagnosis.ifTheProvidersBaseURLOrAPIKeyIsWrongCorrectItOnThe,
+                  );
         }
 
-        return "Check the provider's state and credentials.";
+        return translation()(($) => $.diagnosis.checkTheProvidersStateAndCredentials);
     }
 
     switch (action) {
         case "start-oauth":
         case "complete-oauth":
         case "reauthorize":
-            return "The provider refused the exchange; start the flow again from this page.";
+            return translation()(
+                ($) => $.diagnosis.theProviderRefusedTheExchangeStartTheFlowAgainFromThisPage,
+            );
 
         default:
-            return "Check the provider's credentials and reachability.";
+            return translation()(($) => $.diagnosis.checkTheProvidersCredentialsAndReachability);
     }
 }
 
-function networkDiagnosis(context: ActionContext): Diagnosis {
+function networkDiagnosis(context: ActionContext, rawDetail: string): Diagnosis {
     const { baseUrl, pageOrigin, reachability = "unknown" } = context;
     const origin = originOf(pageOrigin);
 
     if (!isCrossOrigin(baseUrl, pageOrigin)) {
         return {
+            context,
+            rawDetail,
             kind: "unreachable",
-            title: `Nothing answered at ${baseUrl}.`,
-            detail: "The browser could not complete the connection.",
-            fix: "Check the address, that the gateway is running, and that its `listen` address is reachable from this browser.",
+            get title() {
+                return networkTitleMessage(translation(), "unreachable", baseUrl);
+            },
+            get detail() {
+                return translation()(($) => $.diagnosis.theBrowserCouldNotCompleteTheConnection);
+            },
+            get fix() {
+                return translation()(
+                    ($) =>
+                        $.diagnosis.checkTheAddressThatTheGatewayIsRunningAndThatItsListenAddressIs,
+                );
+            },
         };
     }
 
@@ -231,36 +275,80 @@ function networkDiagnosis(context: ActionContext): Diagnosis {
     // no request.
     if (isMixedContent(pageOrigin, baseUrl)) {
         return {
+            context,
+            rawDetail,
             kind: "mixed-content",
-            title: `An HTTPS page cannot call the HTTP address ${baseUrl}.`,
-            detail: "This page is served over HTTPS, and the browser blocks its calls to HTTP addresses outright, so the gateway was never contacted.",
-            fix: "Serve this app over HTTP as well, or add a `tls` section to that instance's configuration file so the gateway answers HTTPS.",
+            get title() {
+                return networkTitleMessage(translation(), "mixed-content", baseUrl);
+            },
+            get detail() {
+                return translation()(
+                    ($) => $.diagnosis.thisPageIsServedOverHTTPSAndTheBrowserBlocksItsCallsToHTTP,
+                );
+            },
+            get fix() {
+                return translation()(
+                    ($) => $.diagnosis.serveThisAppOverHTTPAsWellOrAddATlsSectionToThat,
+                );
+            },
         };
     }
 
     switch (reachability) {
         case "reached":
             return {
+                context,
+                rawDetail,
                 kind: "blocked",
-                title: `The gateway answered, but the browser blocked the response from ${baseUrl}.`,
-                detail: "The browser withheld the response from this page.",
-                fix: `Add ${origin} to \`${CORS_SETTING}\` in that instance's configuration file and restart the gateway. Serving this app from the gateway's own origin avoids the allowlist entirely.`,
+                get title() {
+                    return networkTitleMessage(translation(), "blocked", baseUrl);
+                },
+                get detail() {
+                    return translation()(
+                        ($) => $.diagnosis.theBrowserWithheldTheResponseFromThisPage,
+                    );
+                },
+                get fix() {
+                    return corsRecoveryMessage(true, origin);
+                },
             };
 
         case "unreached":
             return {
+                context,
+                rawDetail,
                 kind: "unreachable",
-                title: `Nothing answered at ${baseUrl}.`,
-                detail: "The browser could not complete the connection.",
-                fix: "Check the address, that the gateway is running, and that it is reachable from this browser over this scheme.",
+                get title() {
+                    return networkTitleMessage(translation(), "unreachable", baseUrl);
+                },
+                get detail() {
+                    return translation()(
+                        ($) => $.diagnosis.theBrowserCouldNotCompleteTheConnection,
+                    );
+                },
+                get fix() {
+                    return translation()(
+                        ($) =>
+                            $.diagnosis
+                                .checkTheAddressThatTheGatewayIsRunningAndThatItIsReachableFrom,
+                    );
+                },
             };
 
         case "unknown":
             return {
+                context,
+                rawDetail,
                 kind: "no-answer",
-                title: `No answer from ${baseUrl}.`,
-                detail: "The browser received no answer it could read.",
-                fix: `Either nothing is listening at that address, or the browser blocked the response before this page could read it — add ${origin} to \`${CORS_SETTING}\` and restart the gateway.`,
+                get title() {
+                    return networkTitleMessage(translation(), "no-answer", baseUrl);
+                },
+                get detail() {
+                    return translation()(($) => $.diagnosis.theBrowserReceivedNoAnswerItCouldRead);
+                },
+                get fix() {
+                    return corsRecoveryMessage(false, origin);
+                },
             };
     }
 }
@@ -279,48 +367,86 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
     switch (error.errno) {
         case ErrorCode.Unauthorized:
             return {
+                context,
                 kind: "unauthorized",
-                title: "The gateway rejected that management token.",
+                get title() {
+                    return translation()(($) => $.diagnosis.theGatewayRejectedThatManagementToken);
+                },
                 detail: message,
-                fix: "The token must match `management_api.token` in that instance's configuration file; the gateway reads it live, so a changed token needs no restart.",
+                get fix() {
+                    return translation()(
+                        ($) =>
+                            $.diagnosis
+                                .theTokenMustMatchManagementapitokenInThatInstancesConfigurationFileTheGatewayReadsIt,
+                    );
+                },
             };
 
         case ErrorCode.NotFound:
             return {
+                context,
                 kind: "gone",
-                title: "The gateway holds no such row.",
+                get title() {
+                    return translation()(($) => $.diagnosis.theGatewayHoldsNoSuchRow);
+                },
                 detail: message,
                 fix: null,
             };
 
         case ErrorCode.Conflict:
             return {
+                context,
                 kind: "conflict",
-                title: "The gateway refused: an identifier is already taken.",
+                get title() {
+                    return translation()(
+                        ($) => $.diagnosis.theGatewayRefusedAnIdentifierIsAlreadyTaken,
+                    );
+                },
                 detail: message,
-                fix: conflictFix(context.action),
+                get fix() {
+                    return conflictFix(context.action);
+                },
             };
 
         case ErrorCode.UpstreamError:
             return {
+                context,
                 kind: "upstream",
-                title: "The upstream provider refused the call or was unreachable.",
+                get title() {
+                    return translation()(
+                        ($) => $.diagnosis.theUpstreamProviderRefusedTheCallOrWasUnreachable,
+                    );
+                },
                 detail: message,
-                fix: upstreamFix(context),
+                get fix() {
+                    return upstreamFix(context);
+                },
             };
 
         case ErrorCode.Internal:
             return {
+                context,
                 kind: "internal",
-                title: "The gateway failed internally.",
+                get title() {
+                    return translation()(($) => $.diagnosis.theGatewayFailedInternally);
+                },
                 detail: message,
-                fix: "The cause is in the gateway's stderr log; internal causes are never returned to this page.",
+                get fix() {
+                    return translation()(
+                        ($) =>
+                            $.diagnosis
+                                .theCauseIsInTheGatewaysStderrLogInternalCausesAreNeverReturnedTo,
+                    );
+                },
             };
 
         default:
             return {
+                context,
                 kind: "rejected",
-                title: "The gateway rejected the request.",
+                get title() {
+                    return translation()(($) => $.diagnosis.theGatewayRejectedTheRequest);
+                },
                 detail: message,
                 fix: null,
             };
@@ -339,10 +465,21 @@ export function diagnoseFailure(error: unknown, context: ActionContext): Diagnos
     if (error instanceof ManagementApiError) {
         if (error.category === "contract") {
             return {
+                context,
                 kind: "contract",
-                title: "The gateway answered with a shape this build does not know.",
+                get title() {
+                    return translation()(
+                        ($) => $.diagnosis.theGatewayAnsweredWithAShapeThisBuildDoesNotKnow,
+                    );
+                },
                 detail: error.message,
-                fix: "This build's generated bindings and the gateway's management API disagree; regenerate the bindings or rebuild this frontend from a matching revision.",
+                get fix() {
+                    return translation()(
+                        ($) =>
+                            $.diagnosis
+                                .thisBuildsGeneratedBindingsAndTheGatewaysManagementAPIDisagreeRegenerateTheBindingsOr,
+                    );
+                },
             };
         }
 
@@ -354,20 +491,34 @@ export function diagnoseFailure(error: unknown, context: ActionContext): Diagnos
             // The browser refused the call before any answer existed, so
             // there is no gateway message to keep: the network diagnosis's
             // own human wording is the detail (README §6.4).
-            return networkDiagnosis(context);
+            return networkDiagnosis(context, error.message);
         }
 
+        const httpStatus = error.httpStatus;
         return {
+            context,
             kind: "gateway",
-            title: `The gateway answered HTTP ${error.httpStatus} without a management error body.`,
+            get title() {
+                return translation()(
+                    ($) => $.diagnosis.theGatewayAnsweredHTTPHttpStatusWithoutAManagementErrorBody,
+                    {
+                        httpStatus,
+                    },
+                );
+            },
             detail: error.message,
-            fix: "Check the gateway's stderr log for the cause.",
+            get fix() {
+                return translation()(($) => $.diagnosis.checkTheGatewaysStderrLogForTheCause);
+            },
         };
     }
 
     return {
+        context,
         kind: "unknown",
-        title: "The call failed.",
+        get title() {
+            return translation()(($) => $.diagnosis.theCallFailed);
+        },
         detail: error instanceof Error ? error.message : String(error),
         fix: null,
     };

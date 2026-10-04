@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { hrefs } from "/src/router";
 import { ButtonLink } from "/src/ui/controls";
 import { EmptyState } from "/src/ui/feedback";
@@ -14,11 +15,10 @@ type CreateAction = {
     readonly label: string;
 };
 
-/** The state's copy per row kind: the names it composes, the listing, and what the gateway's silence means. */
+/** Localized listing and recovery copy for each row kind. */
 const KIND_COPY: Record<
     RowNotFoundKind,
     {
-        readonly rowName: string;
         readonly listLabel: string;
         readonly listHref: string;
         readonly backActionLabel: string;
@@ -26,44 +26,81 @@ const KIND_COPY: Record<
     }
 > = {
     pool: {
-        rowName: "Pool",
-        listLabel: "Pools",
+        get listLabel() {
+            return translation()(($) => $.navigation.pools);
+        },
         listHref: hrefs.providerPools(),
-        backActionLabel: "Back to pools",
-        description:
-            "The gateway holds no pool here. It was deleted, or the address was typed wrong.",
+        get backActionLabel() {
+            return translation()(($) => $.remainingText.backToPools);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.rowNotFound.theGatewayHoldsNoPoolHereItWasDeletedOrTheAddressWasTyped,
+            );
+        },
     },
     model_route: {
-        rowName: "Public route",
-        listLabel: "Public routes",
+        get listLabel() {
+            return translation()(($) => $.remainingText.publicRoutes);
+        },
         listHref: hrefs.modelRoutes(),
-        backActionLabel: "Back to public routes",
-        description:
-            "The gateway holds no public route here. It was deleted, or the address was typed wrong.",
+        get backActionLabel() {
+            return translation()(($) => $.remainingText.backToPublicRoutes);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.rowNotFound
+                        .theGatewayHoldsNoPublicRouteHereItWasDeletedOrTheAddressWas,
+            );
+        },
     },
     api_key: {
-        rowName: "API key",
-        listLabel: "API keys",
+        get listLabel() {
+            return translation()(($) => $.navigation.apiKeys);
+        },
         listHref: hrefs.apiKeys(),
-        backActionLabel: "Back to API keys",
-        description:
-            "The gateway holds no API key here. It was deleted, or the address was typed wrong. Nothing here can bring it back.",
+        get backActionLabel() {
+            return translation()(($) => $.remainingText.backToAPIKeys);
+        },
+        get description() {
+            return translation()(
+                ($) => $.helpers.rowNotFound.theGatewayHoldsNoAPIKeyHereItWasDeletedOrTheAddressWas,
+            );
+        },
     },
     model: {
-        rowName: "Model",
-        listLabel: "Models",
+        get listLabel() {
+            return translation()(($) => $.navigation.inventory);
+        },
         listHref: hrefs.models(null),
-        backActionLabel: "Back to models",
-        description:
-            "The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery.",
+        get backActionLabel() {
+            return translation()(($) => $.remainingText.backToModels);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.rowNotFound
+                        .theGatewayHoldsNoModelHereItWasDeletedOrTheAddressWasTyped,
+            );
+        },
     },
     provider: {
-        rowName: "Provider",
-        listLabel: "Providers",
+        get listLabel() {
+            return translation()(($) => $.navigation.providers);
+        },
         listHref: hrefs.providers(),
-        backActionLabel: "Back to providers",
-        description:
-            "The gateway holds no provider here. It was deleted, or the address was typed wrong. Nothing here can bring it back.",
+        get backActionLabel() {
+            return translation()(($) => $.remainingText.backToProviders);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.rowNotFound
+                        .theGatewayHoldsNoProviderHereItWasDeletedOrTheAddressWasTyped,
+            );
+        },
     },
 };
 
@@ -93,7 +130,7 @@ export function RowNotFound(props: {
                 backLabel={copy.listLabel}
             />
             <EmptyState
-                title={`${copy.rowName} not found`}
+                title={translation()(($) => $.domainMessages.notFound[props.kind])}
                 description={copy.description}
             >
                 <ButtonLink

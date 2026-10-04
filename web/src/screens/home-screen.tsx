@@ -1,6 +1,14 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
+import { credentialExpiryLine, nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
+import {
+    inventoryAttentionMessage,
+    requestChartPointMessage,
+    requestSummaryMessage,
+    servingKeyMessage,
+} from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import {
@@ -25,15 +33,13 @@ import {
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { EMPTY_USAGE_ENTITIES, readUsageBuckets, readUsageEntities } from "/src/screens/usage-read";
-import { AppLink } from "/src/ui/app-link";
-import { proseLinkClass } from "/src/ui/attributes";
 import { BarChart } from "/src/ui/bar-chart";
 import { CopyButton } from "/src/ui/clipboard";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton, StatLink } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { NO_STORED_EXPIRY_SENTENCE } from "/src/ui/providers-table";
+import { noStoredExpirySentence } from "/src/ui/providers-table";
 import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
 import { OUTWARD_SURFACES } from "./outward-surfaces";
 
@@ -62,7 +68,7 @@ type ProviderAttention = {
 type ProviderInventoryAttention = {
     readonly provider: ProviderResponse;
     readonly attention: {
-        readonly detail: string;
+        readonly reason: "no-models" | "no-ready-models";
         readonly action: {
             readonly href: string;
             readonly label: string;
@@ -206,15 +212,17 @@ export function HomeScreen(props: {
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Overview"
-                description="The health of this gateway at a glance."
+                title={translation()(($) => $.screens.homeScreen.overview)}
+                description={translation()(
+                    ($) => $.screens.homeScreen.theHealthOfThisGatewayAtAGlanceMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.providerNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    Create provider
+                    {translation()(($) => $.screens.homeScreen.createProvider)}
                 </ButtonLink>
             </PageHeader>
 
@@ -250,7 +258,7 @@ export function HomeScreen(props: {
                         <StatLink
                             href={hrefs.providers()}
                             value={String(entities().providers.length)}
-                            label="Providers"
+                            label={translation()(($) => $.screens.homeScreen.providers)}
                         />
                         {/* The figure counts only the ready-inventory
                             rows — the three-input status — while its sibling
@@ -260,19 +268,23 @@ export function HomeScreen(props: {
                         <StatLink
                             href={hrefs.modelRoutes()}
                             value={String(enabledRoutes())}
-                            label="Public routes"
-                            hint={`enabled of ${entities().modelRoutes.length} stored`}
+                            label={translation()(($) => $.screens.homeScreen.publicRoutes)}
+                            hint={translation()(($) => $.dynamicMessages.enabledStored, {
+                                total: formatNumber(entities().modelRoutes.length),
+                            })}
                         />
                         <StatLink
                             href={hrefs.models(null)}
                             value={String(readyInventoryModels())}
-                            label="Inventory ready"
-                            hint={`ready of ${entities().models.length} listed`}
+                            label={translation()(($) => $.screens.homeScreen.inventoryReady)}
+                            hint={translation()(($) => $.dynamicMessages.readyListed, {
+                                total: formatNumber(entities().models.length),
+                            })}
                         />
                         <StatLink
                             href={hrefs.apiKeys()}
                             value={String(entities().apiKeys.length)}
-                            label="API keys"
+                            label={translation()(($) => $.screens.homeScreen.apiKeys)}
                         />
                         <StatLink
                             href={hrefs.usage({
@@ -280,7 +292,7 @@ export function HomeScreen(props: {
                                 window: "24h",
                             })}
                             value={String(traffic().requests)}
-                            label="Recent requests (24h)"
+                            label={translation()(($) => $.screens.homeScreen.recentRequests24h)}
                         />
                         <StatLink
                             href={hrefs.usage({
@@ -289,20 +301,22 @@ export function HomeScreen(props: {
                                 outcome: "failures",
                             })}
                             value={String(traffic().errors)}
-                            label="Recent errors (24h)"
+                            label={translation()(($) => $.screens.homeScreen.recentErrors24h)}
                         />
                     </div>
 
                     <Card>
                         <CardHeader
-                            title="Requests per day"
-                            description="The last 14 days, in UTC — the gateway's own day boundary."
+                            title={translation()(($) => $.screens.homeScreen.requestsPerDay)}
+                            description={translation()(
+                                ($) => $.screens.homeScreen.theLast14DaysInUTCTheGatewaysMessage,
+                            )}
                         >
                             <ButtonLink
                                 href={hrefs.usage()}
                                 glyph="activity"
                             >
-                                Open usage
+                                {translation()(($) => $.screens.homeScreen.openUsage)}
                             </ButtonLink>
                         </CardHeader>
 
@@ -312,7 +326,14 @@ export function HomeScreen(props: {
                                     label: point.day,
                                     value: point.requests,
                                 }))}
-                                unit="requests"
+                                describePoint={(point) =>
+                                    requestChartPointMessage(
+                                        translation(),
+                                        point.label,
+                                        point.value,
+                                        formatNumber(point.value),
+                                    )
+                                }
                                 summary={trafficSummary(traffic().series)}
                             />
                         </div>
@@ -323,14 +344,22 @@ export function HomeScreen(props: {
                         fallback={
                             <Notice
                                 tone="ok"
-                                title="Stored settings reviewed."
-                                detail="Inspect public routes for quota availability. These figures describe stored switches and inventory."
+                                title={translation()(
+                                    ($) => $.screens.homeScreen.storedSettingsReviewedMessage,
+                                )}
+                                detail={translation()(
+                                    ($) =>
+                                        $.additional.homeScreen
+                                            .inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage,
+                                )}
                                 fix={null}
                             />
                         }
                     >
                         <Card>
-                            <CardHeader title="Needs attention" />
+                            <CardHeader
+                                title={translation()(($) => $.screens.homeScreen.needsAttention)}
+                            />
                             <ul class="mt-4 flex flex-col divide-y divide-rule">
                                 <Show when={hasNoPublicRoutes()}>
                                     <AttentionRow
@@ -342,12 +371,19 @@ export function HomeScreen(props: {
                                         }
                                         action={{
                                             href: hrefs.models(null),
-                                            label: "Discover models",
+                                            get label() {
+                                                return translation()(
+                                                    ($) => $.helpers.homeScreen.discoverModels,
+                                                );
+                                            },
                                         }}
                                     >
                                         <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
-                                            No models are available. Discover models on an enabled
-                                            provider.
+                                            {translation()(
+                                                ($) =>
+                                                    $.screens.homeScreen
+                                                        .noModelsAreAvailableDiscoverModelsOnAnMessage,
+                                            )}
                                         </p>
                                     </AttentionRow>
                                 </Show>
@@ -361,15 +397,23 @@ export function HomeScreen(props: {
                                         }
                                         action={{
                                             href: hrefs.apiKeyNew(),
-                                            label: "Create API key",
+                                            get label() {
+                                                return translation()(
+                                                    ($) => $.helpers.homeScreen.createAPIKey,
+                                                );
+                                            },
                                         }}
                                     >
                                         <p class="min-w-0 flex-1 text-[13.5px]">
-                                            <span class="font-medium">No API keys yet.</span>
+                                            <span class="font-medium">
+                                                {translation()(
+                                                    ($) => $.screens.homeScreen.noAPIKeysYetMessage,
+                                                )}
+                                            </span>
                                             <span class="text-ink-dim">
-                                                {
-                                                    " Serving clients authenticate with one — without it, the gateway has no ready inventory."
-                                                }
+                                                {translation()(
+                                                    ($) => $.dynamicMessages.noKeysDetail,
+                                                )}
                                             </span>
                                         </p>
                                     </AttentionRow>
@@ -387,7 +431,7 @@ export function HomeScreen(props: {
                                         >
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                                                 <span class="font-medium">
-                                                    {item.provider.name}
+                                                    <bdi dir="auto">{item.provider.name}</bdi>
                                                 </span>
                                                 <span class="text-ink-dim">
                                                     {` · ${CREDENTIAL_KIND.label(item.provider.type)} · ${item.attention.detail}`}
@@ -408,12 +452,10 @@ export function HomeScreen(props: {
                                             action={item.attention.action}
                                         >
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
-                                                <span class="font-medium">
-                                                    {item.provider.name}
-                                                </span>
-                                                <span class="text-ink-dim">
-                                                    {item.attention.detail}
-                                                </span>
+                                                {inventoryAttentionMessage(
+                                                    item.provider.name,
+                                                    item.attention.reason,
+                                                )}
                                             </p>
                                         </AttentionRow>
                                     )}
@@ -437,21 +479,10 @@ export function HomeScreen(props: {
  */
 function trafficSummary(series: OverviewDailySeries): JSX.Element {
     if (series.total === 0) {
-        return "No requests recorded.";
+        return translation()(($) => $.additional.homeScreen.noRequestsRecordedMessage);
     }
 
-    const total = `${series.total.toLocaleString()} ${pluralNoun(series.total, "request")}`;
-
-    if (series.peak === null) {
-        return total;
-    }
-
-    return (
-        <>
-            {`${total} · peak ${series.peak.requests.toLocaleString()} on `}
-            <span class="whitespace-nowrap">{series.peak.day}</span>
-        </>
-    );
+    return requestSummaryMessage(translation(), series.total, series.peak);
 }
 /**
  * Where a client points: the instance's own address plus one path per outward
@@ -463,8 +494,10 @@ function EndpointsCard(props: { readonly baseUrl: string }): JSX.Element {
     return (
         <Card>
             <CardHeader
-                title="Endpoints"
-                description="Every surface serves every model. Point any OpenAI-, Gemini-, or Anthropic-shaped client at this instance."
+                title={translation()(($) => $.screens.homeScreen.endpoints)}
+                description={translation()(
+                    ($) => $.screens.homeScreen.everySurfaceServesEveryModelPointAnyOpenAIMessage,
+                )}
             />
             <ul class="mt-4 flex flex-col divide-y divide-rule">
                 <For each={OUTWARD_SURFACES}>
@@ -489,24 +522,22 @@ function EndpointsCard(props: { readonly baseUrl: string }): JSX.Element {
                                 </span>
                                 <CopyButton
                                     value={url()}
-                                    subject="the URL beside it"
-                                    ariaLabel={`Copy the ${surface.label} endpoint URL`}
+                                    subject={translation()(
+                                        ($) => $.screens.homeScreen.theURLBesideIt,
+                                    )}
+                                    ariaLabel={translation()(
+                                        ($) => $.dynamicMessages.copyEndpoint,
+                                        {
+                                            surface: surface.label,
+                                        },
+                                    )}
                                 />
                             </li>
                         );
                     }}
                 </For>
             </ul>
-            <p class="mt-3 text-[12.5px] text-ink-faint">
-                A serving client authenticates with a serving API key — create one under{" "}
-                <AppLink
-                    href={hrefs.apiKeys()}
-                    class={proseLinkClass}
-                >
-                    API keys
-                </AppLink>{" "}
-                before pointing anything here.
-            </p>
+            <p class="mt-3 text-[12.5px] text-ink-faint">{servingKeyMessage(hrefs.apiKeys())}</p>
         </Card>
     );
 }
@@ -522,7 +553,7 @@ function inventoryGapAttention(
     models: ReadonlyArray<ModelResponse>,
     providerId: number,
 ): {
-    readonly detail: string;
+    readonly reason: "no-models" | "no-ready-models";
     readonly action: {
         readonly href: string;
         readonly label: string;
@@ -532,16 +563,20 @@ function inventoryGapAttention(
 
     return hasNoModels
         ? {
-              detail: " has no models yet.",
+              reason: "no-models",
               action: {
-                  label: "Open and discover",
+                  get label() {
+                      return translation()(($) => $.helpers.homeScreen.openAndDiscover);
+                  },
                   href: hrefs.providerDetail(providerId),
               },
           }
         : {
-              detail: " has no ready inventory — every model is switched off or vanished.",
+              reason: "no-ready-models",
               action: {
-                  label: "Review models",
+                  get label() {
+                      return translation()(($) => $.helpers.homeScreen.reviewModels);
+                  },
                   href: hrefs.models(providerId),
               },
           };
@@ -567,14 +602,22 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
 
     if (provider.expires_at === null) {
         return {
-            label: "Credential not fresh",
-            detail: NO_STORED_EXPIRY_SENTENCE,
+            get label() {
+                return translation()(($) => $.helpers.homeScreen.credentialNotFresh);
+            },
+            get detail() {
+                return noStoredExpirySentence();
+            },
         };
     }
 
     return {
-        label: "Credential expired",
-        detail: credentialExpiryLine(provider.expires_at, nowMicros()),
+        get label() {
+            return translation()(($) => $.helpers.homeScreen.credentialExpired);
+        },
+        get detail() {
+            return credentialExpiryLine(provider.expires_at!, nowMicros());
+        },
     };
 }
 
@@ -602,18 +645,33 @@ function credentialAttention(provider: ProviderResponse): ProviderAttention["att
 
     return provider.is_enabled
         ? {
-              ...lapsed,
+              get label() {
+                  return lapsed.label;
+              },
+              get detail() {
+                  return lapsed.detail;
+              },
               action: {
                   href: hrefs.providerEdit(provider.id),
-                  label: "Reconnect",
+                  get label() {
+                      return translation()(($) => $.helpers.homeScreen.reconnect);
+                  },
               },
           }
         : {
-              ...lapsed,
-              detail: `${lapsed.detail} The provider is disabled — reconnect when you re-enable it.`,
+              get label() {
+                  return lapsed.label;
+              },
+              get detail() {
+                  return translation()(($) => $.dynamicMessages.disabledCredential, {
+                      expiry: lapsed.detail,
+                  });
+              },
               action: {
                   href: hrefs.providerDetail(provider.id),
-                  label: "Open provider",
+                  get label() {
+                      return translation()(($) => $.helpers.homeScreen.openProvider);
+                  },
               },
           };
 }
@@ -650,38 +708,42 @@ function GettingStarted(props: { readonly apiKeyCount: number }): JSX.Element {
     return (
         <EmptyState
             glyph="plug"
-            title="No providers yet"
-            description="A provider is one upstream account. Its models arrive when you discover them."
+            title={translation()(($) => $.screens.homeScreen.noProvidersYet)}
+            description={translation()(
+                ($) => $.screens.homeScreen.aProviderIsOneUpstreamAccountItsModelsMessage,
+            )}
         >
             <ButtonLink
                 href={hrefs.providerNew()}
                 tone="primary"
                 glyph="plus"
             >
-                Create your first provider
+                {translation()(($) => $.screens.homeScreen.createYourFirstProvider)}
             </ButtonLink>
             <ol class="mt-2 flex w-full list-none flex-col gap-2 text-[13.5px]">
                 <GettingStartedStep
                     index={1}
                     isDone
-                    title="Connected to the gateway"
+                    title={translation()(($) => $.screens.homeScreen.connectedToTheGateway)}
                 />
                 <GettingStartedStep
                     index={2}
-                    title="Create a provider"
+                    title={translation()(($) => $.screens.homeScreen.createAProvider)}
                 />
                 <GettingStartedStep
                     index={3}
-                    title="Discover its models from upstream"
+                    title={translation()(($) => $.screens.homeScreen.discoverItsModelsFromUpstream)}
                 />
                 <GettingStartedStep
                     index={4}
                     isDone={props.apiKeyCount > 0}
-                    title="Issue an API key for serving clients"
+                    title={translation()(
+                        ($) => $.screens.homeScreen.issueAnAPIKeyForServingClients,
+                    )}
                 />
                 <GettingStartedStep
                     index={5}
-                    title="Point a client at an endpoint below"
+                    title={translation()(($) => $.screens.homeScreen.pointAClientAtAnEndpointBelow)}
                 />
             </ol>
         </EmptyState>

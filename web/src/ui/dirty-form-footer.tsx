@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { Button } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 
@@ -23,20 +24,22 @@ export function DirtyFormFooter(props: {
                 isDisabled={!props.canSave}
                 isBusy={props.isSaving}
             >
-                {props.isSaving ? "Saving…" : "Save changes"}
+                {props.isSaving
+                    ? translation()(($) => $.additional.dirtyFormFooter.saving)
+                    : translation()(($) => $.additional.dirtyFormFooter.saveChanges)}
             </Button>
             <Button
                 isDisabled={!props.isDirty || props.isSaving}
                 onClick={props.onRevert}
             >
-                Revert
+                {translation()(($) => $.controls.revert)}
             </Button>
             <Show when={props.isDirty && !props.isSaving}>
                 <span
                     class="text-[13px] font-medium text-warn"
                     role="status"
                 >
-                    Unsaved changes
+                    {translation()(($) => $.controls.unsavedChanges)}
                 </span>
             </Show>
         </div>
@@ -51,14 +54,16 @@ export function DirtyFormFooter(props: {
  */
 export function HoldNotice(props: {
     readonly isHeld: boolean;
-    readonly subject: string;
+    readonly subject: "key" | "provider" | "model" | "pool" | "public route";
 }): JSX.Element {
     return (
         <Show when={props.isHeld}>
             <Notice
                 tone="warn"
-                title={`This ${props.subject} changed on the gateway while you have unsaved edits.`}
-                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
+                title={translation()(($) => $.domainMessages.hold[props.subject])}
+                detail={translation()(
+                    ($) => $.remainingText.saveWritesYourEditsOverTheGatewaySVersionRevert,
+                )}
             />
         </Show>
     );

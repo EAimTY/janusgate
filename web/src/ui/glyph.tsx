@@ -1,4 +1,5 @@
 import type { JSX } from "@solidjs/web";
+import { joinClass } from "./attributes";
 
 /**
  * The app's drawn marks: one authored set, one stroke weight, one 16-unit
@@ -63,7 +64,10 @@ export function Glyph(props: { readonly name: GlyphName; readonly class?: string
             stroke-linecap="square"
             stroke-linejoin="miter"
             aria-hidden="true"
-            class={props.class}
+            class={joinClass(
+                props.class ?? "",
+                props.name === "chev-left" || props.name === "chev-right" ? "rtl:scale-x-[-1]" : "",
+            )}
         >
             <path d={GLYPH_PATHS[props.name]} />
         </svg>

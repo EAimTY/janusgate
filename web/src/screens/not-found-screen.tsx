@@ -1,4 +1,6 @@
 import type { JSX } from "@solidjs/web";
+import { translation } from "/src/i18n";
+import { missingPathMessage } from "/src/i18n/rich";
 import { hrefs } from "/src/router";
 import { ButtonLink } from "/src/ui/controls";
 import { EmptyState } from "/src/ui/feedback";
@@ -7,17 +9,21 @@ import { EmptyState } from "/src/ui/feedback";
 export function NotFoundScreen(): JSX.Element {
     return (
         <EmptyState
-            title="Page not found"
-            description={`Nothing lives at ${window.location.pathname}. It may have been deleted, or the address was typed wrong.`}
+            title={translation()(($) => $.screens.notFoundScreen.pageNotFound)}
+            description={missingPathMessage(window.location.pathname)}
         >
             <ButtonLink
                 href={hrefs.home()}
                 tone="primary"
             >
-                Go to Overview
+                {translation()(($) => $.screens.notFoundScreen.goToOverview)}
             </ButtonLink>
-            <ButtonLink href={hrefs.providers()}>Providers</ButtonLink>
-            <ButtonLink href={hrefs.models(null)}>Models</ButtonLink>
+            <ButtonLink href={hrefs.providers()}>
+                {translation()(($) => $.screens.notFoundScreen.providers)}
+            </ButtonLink>
+            <ButtonLink href={hrefs.models(null)}>
+                {translation()(($) => $.screens.notFoundScreen.models)}
+            </ButtonLink>
         </EmptyState>
     );
 }

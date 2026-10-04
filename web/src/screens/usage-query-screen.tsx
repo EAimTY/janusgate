@@ -6,6 +6,7 @@ import {
     nowMicros,
     parseDateTimeInputToMicros,
 } from "/src/format";
+import { translation } from "/src/i18n";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     QueryUsageRequest,
@@ -63,12 +64,12 @@ function arrivalGroupBy(subject: UsageQuerySubject | null): ReadonlyArray<UsageG
  * complete date and time. The submit gate reads it ungated, and each field's
  * inline error reads it once that field was typed in.
  */
-function boundError(label: string, value: string): string | null {
+function boundError(label: "From" | "To", value: string): string | null {
     if (value.trim() === "" || parseDateTimeInputToMicros(value) !== null) {
         return null;
     }
 
-    return `${label} must be a complete date and time, like 2026-09-23T10:00 — or blank for no bound.`;
+    return translation()(($) => $.domainMessages.bound[label]);
 }
 
 /**
@@ -81,9 +82,17 @@ function boundError(label: string, value: string): string | null {
  */
 const HELD_QUERY_NOTICE: ScreenNotice = {
     tone: "warn",
-    title: "The query did not run — a filter value is invalid.",
-    detail: "The answer below is still the previous query's — the field showing an inline error names the problem.",
-    fix: "Fix that field, then run the query again.",
+    get title() {
+        return translation()(
+            ($) => $.helpers.usageQueryScreen.theQueryDidNotRunAFilterValueIsInvalid,
+        );
+    },
+    get detail() {
+        return translation()(($) => $.remainingText.theAnswerBelowIsStillThePreviousQuerySThe);
+    },
+    get fix() {
+        return translation()(($) => $.operationNotices.fixFilter);
+    },
 };
 
 /**
@@ -358,18 +367,24 @@ export function UsageQueryScreen(props: {
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Usage aggregates"
-                description="One bucket per dimension combination inside the filter — counts and token sums, never content."
+                title={translation()(($) => $.screens.usageQueryScreen.usageAggregates)}
+                description={translation()(
+                    ($) =>
+                        $.screens.usageQueryScreen
+                            .oneBucketPerDimensionCombinationInsideTheFilterMessage,
+                )}
                 backHref={hrefs.usage()}
                 backLabel="Usage"
             >
                 <ButtonLink href={hrefs.usage(streamDraftOf(fields()))}>
-                    View requests
+                    {translation()(($) => $.screens.usageQueryScreen.viewRequests)}
                     <Show when={hasBoundInput()}>
                         {/* The stated trade, muted but visible — the same
                             sentence every crossing door states while what it
                             drops stands set. */}
-                        <span class="text-ink-faint">{" — From and To do not apply there."}</span>
+                        <span class="text-ink-faint">
+                            {translation()(($) => $.remainingText.fromAndToDoNotApplyThere)}
+                        </span>
                     </Show>
                 </ButtonLink>
             </PageHeader>
@@ -377,14 +392,16 @@ export function UsageQueryScreen(props: {
             <StatedNotice notice={failure} />
 
             <Card>
-                <CardHeader title="Question" />
+                <CardHeader title={translation()(($) => $.screens.usageQueryScreen.question)} />
                 <form
                     novalidate={true}
                     class="mt-4 flex flex-col gap-4"
                     onSubmit={(event) => void submit(event)}
                 >
                     <div>
-                        <p class="text-[13px] font-medium text-ink">Group by</p>
+                        <p class="text-[13px] font-medium text-ink">
+                            {translation()(($) => $.screens.usageQueryScreen.groupBy)}
+                        </p>
                         <div class="mt-2 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
                             <For each={USAGE_GROUP_BY.options}>
                                 {(option) => (
@@ -398,11 +415,17 @@ export function UsageQueryScreen(props: {
                             </For>
                         </div>
                         <p class="mt-2 max-w-[70ch] text-[13px] text-ink-faint">
-                            Any dimension set works — none selected totals every matching row.
+                            {translation()(
+                                ($) =>
+                                    $.screens.usageQueryScreen
+                                        .anyDimensionSetWorksNoneSelectedTotalsEveryMessage,
+                            )}
                         </p>
                     </div>
                     <div>
-                        <p class="text-[13px] font-medium text-ink">Window</p>
+                        <p class="text-[13px] font-medium text-ink">
+                            {translation()(($) => $.screens.usageQueryScreen.window)}
+                        </p>
                         <div class="mt-2 flex flex-wrap gap-2">
                             <For each={USAGE_WINDOW_OPTIONS}>
                                 {(option) => (
@@ -417,13 +440,16 @@ export function UsageQueryScreen(props: {
                             </For>
                         </div>
                         <p class="mt-2 max-w-[70ch] text-[13px] text-ink-faint">
-                            Fills the bounds below — from one window back, to left open — resolved
-                            now; the fields stay hand-editable.
+                            {translation()(
+                                ($) =>
+                                    $.screens.usageQueryScreen
+                                        .fillsTheBoundsBelowFromOneWindowBackMessage,
+                            )}
                         </p>
                     </div>
                     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <TextField
-                            label="From"
+                            label={translation()(($) => $.screens.usageQueryScreen.from)}
                             value={fromInput()}
                             onInput={(value) => {
                                 setHasFromInput(true);
@@ -431,10 +457,14 @@ export function UsageQueryScreen(props: {
                             }}
                             isDisabled={isQuerying()}
                             error={fromError()}
-                            hint="Inclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound."
+                            hint={translation()(
+                                ($) =>
+                                    $.screens.usageQueryScreen
+                                        .inclusiveInThisBrowsersZoneLike20260923T1000BlankMessage,
+                            )}
                         />
                         <TextField
-                            label="To"
+                            label={translation()(($) => $.screens.usageQueryScreen.to)}
                             value={toInput()}
                             onInput={(value) => {
                                 setHasToInput(true);
@@ -442,7 +472,11 @@ export function UsageQueryScreen(props: {
                             }}
                             isDisabled={isQuerying()}
                             error={toError()}
-                            hint="Exclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound."
+                            hint={translation()(
+                                ($) =>
+                                    $.screens.usageQueryScreen
+                                        .exclusiveInThisBrowsersZoneLike20260923T1000BlankMessage,
+                            )}
                         />
                         <UsageFilterControls
                             fields={fields()}
@@ -468,7 +502,9 @@ export function UsageQueryScreen(props: {
                             isBusy={isQuerying()}
                             isDisabled={!isFormValid()}
                         >
-                            {isQuerying() ? "Querying…" : "Run query"}
+                            {isQuerying()
+                                ? translation()(($) => $.additional.usageQueryScreen.querying)
+                                : translation()(($) => $.additional.usageQueryScreen.runQuery)}
                         </Button>
                         <Show when={isAnyFilterSet()}>
                             <Button
@@ -476,7 +512,7 @@ export function UsageQueryScreen(props: {
                                 isDisabled={isQuerying()}
                                 onClick={clearFilters}
                             >
-                                Clear filters
+                                {translation()(($) => $.screens.usageQueryScreen.clearFilters)}
                             </Button>
                         </Show>
                     </div>
@@ -502,15 +538,29 @@ export function UsageQueryScreen(props: {
                             fallback={
                                 <Notice
                                     tone="info"
-                                    title="Nothing recorded in this window."
-                                    detail="No filter or bound narrows the question, so an empty answer is the gateway's whole record — it holds no usage yet."
+                                    title={translation()(
+                                        ($) =>
+                                            $.screens.usageQueryScreen
+                                                .nothingRecordedInThisWindowMessage,
+                                    )}
+                                    detail={translation()(
+                                        ($) =>
+                                            $.additional.usageQueryScreen
+                                                .noFilterOrBoundNarrowsTheQuestionSoMessage,
+                                    )}
                                 />
                             }
                         >
                             <Notice
                                 tone="info"
-                                title="No rows in this window."
-                                detail="Nothing recorded matches these filters — widen the bounds, drop a filter, or query without one. Clear filters sits in the form above."
+                                title={translation()(
+                                    ($) => $.screens.usageQueryScreen.noRowsInThisWindowMessage,
+                                )}
+                                detail={translation()(
+                                    ($) =>
+                                        $.additional.usageQueryScreen
+                                            .nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage,
+                                )}
                             />
                         </Show>
                     }
@@ -519,29 +569,45 @@ export function UsageQueryScreen(props: {
                         <UsageTable minWidthClass="min-w-[640px]">
                             <thead>
                                 <tr class="text-ink-dim">
-                                    <BucketHeader label="Bucket" />
                                     <BucketHeader
-                                        label="Requests"
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.bucket,
+                                        )}
+                                    />
+                                    <BucketHeader
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.requests,
+                                        )}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Input"
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.input,
+                                        )}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Output"
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.output,
+                                        )}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Cached"
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.cached,
+                                        )}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Cache write"
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.cacheWrite,
+                                        )}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Reasoning"
+                                        label={translation()(
+                                            ($) => $.screens.usageQueryScreen.reasoning,
+                                        )}
                                         isNumeric
                                     />
                                 </tr>
@@ -577,8 +643,11 @@ export function UsageQueryScreen(props: {
                             </tbody>
                         </UsageTable>
                         <p class="mt-3 text-[12.5px] text-ink-faint">
-                            Token totals skip rows where the upstream reported no usage — an absent
-                            breakdown never inflates or deflates a total.
+                            {translation()(
+                                ($) =>
+                                    $.screens.usageQueryScreen
+                                        .tokenTotalsSkipRowsWhereTheUpstreamReportedMessage,
+                            )}
                         </p>
                         <Show when={responseDimensions().includes("day")}>
                             <UsageDaysUtcNote class="mt-1" />
@@ -603,7 +672,7 @@ function BucketKeyCell(props: {
 }): JSX.Element {
     const label = (): string =>
         props.dimensions.length === 0
-            ? "Total"
+            ? translation()(($) => $.helpers.usageQueryScreen.total)
             : props.dimensions
                   .map((dimension) => usageDimensionLabel(dimension, props.bucket.key, props.index))
                   .join(" · ");

@@ -57,9 +57,10 @@ describe("copyText", () => {
         });
         const execCommand = stubExecCommand(true);
 
-        await expect(copyText("sk-live")).resolves.toBe(true);
+        const mixedValue = "sk-live/العربية 中文 [[name]] <script>";
+        await expect(copyText(mixedValue)).resolves.toBe(true);
 
-        expect(writeText).toHaveBeenCalledWith("sk-live");
+        expect(writeText).toHaveBeenCalledWith(mixedValue);
         expect(execCommand).not.toHaveBeenCalled();
     });
 

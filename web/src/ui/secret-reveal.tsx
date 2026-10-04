@@ -25,6 +25,7 @@ export function SecretRevealToggle(props: {
             )}
         >
             <input
+                dir="ltr"
                 type="checkbox"
                 class="size-4 accent-(--color-accent)"
                 checked={props.isVisible}

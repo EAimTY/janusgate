@@ -11,7 +11,7 @@ import type { InlineConfirmFocus } from "./inline-confirm";
  * attributes live in one place beside the contract.
  */
 export function InlineConfirmQuestion(props: {
-    readonly question: string;
+    readonly question: JSX.Element;
     readonly focusArmed: InlineConfirmFocus["focusArmed"];
 }): JSX.Element {
     return (

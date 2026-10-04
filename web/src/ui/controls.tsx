@@ -1,12 +1,13 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, createUniqueId, For, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { AppLink } from "/src/ui/app-link";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Glyph, type GlyphName } from "/src/ui/glyph";
 
 /** A labelled field: what an input is for, what went wrong, and a hint. */
 function FieldFrame(props: {
-    readonly label: string;
+    readonly label: JSX.Element;
     readonly controlId: string;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
@@ -72,6 +73,7 @@ export function TextField(props: {
             <input
                 id={controlId}
                 type={props.type ?? "text"}
+                dir={props.isData === false ? "auto" : "ltr"}
                 class={joinClass(INPUT_CLASS, props.isData === false ? "" : "tnum")}
                 value={props.value}
                 placeholder={props.placeholder}
@@ -89,15 +91,17 @@ export function TextField(props: {
  * options carry: the id the entity listings, once read, no longer hold.
  */
 export function noLongerListedLabel(value: string): string {
-    return `${value} (no longer listed)`;
+    return translation()(($) => $.domainMessages.unlisted, {
+        value,
+    });
 }
 
 export function SelectField<T extends string>(props: {
-    readonly label: string;
+    readonly label: JSX.Element;
     readonly value: T;
     readonly options: ReadonlyArray<{
         readonly value: T;
-        readonly label: string;
+        readonly label: JSX.Element;
     }>;
     /**
      * The label of the trailing option rendered when no offered option
@@ -158,7 +162,7 @@ export function SelectField<T extends string>(props: {
                     selectElement = element;
                 }}
                 id={controlId}
-                class={joinClass(INPUT_CLASS, "tnum pr-8")}
+                class={joinClass(INPUT_CLASS, "tnum pe-8")}
                 disabled={props.isDisabled ?? false}
                 onChange={(event) => {
                     const picked = event.currentTarget.value;
@@ -247,15 +251,16 @@ export function SearchInput(props: {
             <div class="relative">
                 <Glyph
                     name="search"
-                    class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
+                    class="pointer-events-none absolute top-1/2 start-3 -translate-y-1/2 text-ink-faint"
                 />
                 <input
                     type="search"
+                    dir="auto"
                     aria-label={props.label}
                     placeholder={props.placeholder}
                     value={props.value}
                     onInput={(event) => props.onInput(event.currentTarget.value)}
-                    class={joinClass(INPUT_CLASS, "pl-9")}
+                    class={joinClass(INPUT_CLASS, "ps-9")}
                 />
             </div>
         </div>
@@ -385,8 +390,8 @@ export function Switch(props: {
                     <span
                         aria-hidden="true"
                         class={joinClass(
-                            "absolute top-0.5 left-0.5 block size-5 rounded-full bg-surface transition-transform duration-150 ease-out dark:bg-ink",
-                            props.isOn ? "translate-x-5" : "translate-x-0",
+                            "absolute top-0.5 start-0.5 block size-5 rounded-full bg-surface transition-transform duration-150 ease-out dark:bg-ink",
+                            props.isOn ? "translate-x-5 rtl:-translate-x-5" : "translate-x-0",
                         )}
                     />
                 </button>

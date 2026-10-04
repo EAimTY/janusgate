@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import type { Accessor } from "solid-js";
 import { Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { Button } from "/src/ui/controls";
 import { Skeleton } from "/src/ui/feedback";
 import type { ScreenRead } from "./read";
@@ -57,7 +58,7 @@ export function ScreenFrame<TRow>(props: {
                         isBusy={props.read.isReading()}
                         onClick={() => props.read.reload()}
                     >
-                        Read again
+                        {translation()(($) => $.screens.screenFrame.readAgain)}
                     </Button>
                 </div>
             </Show>

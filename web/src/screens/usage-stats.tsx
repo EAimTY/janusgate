@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
+import { translation } from "/src/i18n";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
 import { bucketKeyField } from "/src/management-api/usage-buckets";
@@ -65,7 +66,7 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
 export function EntityUsageCard(props: {
     readonly api: ManagementApi;
     readonly filter: UsageSubjectFilter;
-    readonly subjectKind: string;
+    readonly subjectKind: "provider" | "model" | "public route" | "api key";
 }): JSX.Element {
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
 
@@ -117,12 +118,16 @@ export function EntityUsageCard(props: {
     return (
         <Card>
             <CardHeader
-                title="Usage"
-                description="Requests and tokens per day — numbers only, never content."
+                title={translation()(($) => $.screens.usageStats.usage)}
+                description={translation()(
+                    ($) => $.screens.usageStats.requestsAndTokensPerDayNumbersOnlyNeverMessage,
+                )}
             >
-                <ButtonLink href={hrefs.usageQuery(subject)}>Open aggregates</ButtonLink>
+                <ButtonLink href={hrefs.usageQuery(subject)}>
+                    {translation()(($) => $.screens.usageStats.openAggregates)}
+                </ButtonLink>
                 <ButtonLink href={hrefs.usage(streamDraftOf(subjectFilterFields(subject)))}>
-                    View requests
+                    {translation()(($) => $.screens.usageStats.viewRequests)}
                 </ButtonLink>
             </CardHeader>
 
@@ -149,18 +154,22 @@ export function EntityUsageCard(props: {
                         <div class="grid gap-3 sm:grid-cols-3">
                             <Stat
                                 value={formatTokenCount(totals().requests)}
-                                label="Requests"
-                                hint="Dispatched, all days"
+                                label={translation()(($) => $.screens.usageStats.requests)}
+                                hint={translation()(($) => $.screens.usageStats.dispatchedAllDays)}
                             />
                             <Stat
                                 value={formatTokenCount(totals().input)}
-                                label="Input tokens"
-                                hint="Summed, usage reported"
+                                label={translation()(($) => $.screens.usageStats.inputTokens)}
+                                hint={translation()(
+                                    ($) => $.screens.usageStats.summedUsageReported,
+                                )}
                             />
                             <Stat
                                 value={formatTokenCount(totals().output)}
-                                label="Output tokens"
-                                hint="Summed, usage reported"
+                                label={translation()(($) => $.screens.usageStats.outputTokens)}
+                                hint={translation()(
+                                    ($) => $.screens.usageStats.summedUsageReported,
+                                )}
                             />
                         </div>
 
@@ -170,17 +179,19 @@ export function EntityUsageCard(props: {
                         >
                             <thead>
                                 <tr class="text-ink-dim">
-                                    <BucketHeader label="Day" />
                                     <BucketHeader
-                                        label="Requests"
+                                        label={translation()(($) => $.screens.usageStats.day)}
+                                    />
+                                    <BucketHeader
+                                        label={translation()(($) => $.screens.usageStats.requests)}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Input"
+                                        label={translation()(($) => $.screens.usageStats.input)}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label="Output"
+                                        label={translation()(($) => $.screens.usageStats.output)}
                                         isNumeric
                                     />
                                 </tr>
@@ -214,8 +225,14 @@ export function EntityUsageCard(props: {
                     <Show when={read.notice() === null && buckets().length === 0}>
                         <Notice
                             tone="info"
-                            title={`No requests recorded for this ${props.subjectKind} yet.`}
-                            detail="One row appears per dispatched serving request — the moment the gateway sends upstream."
+                            title={translation()(
+                                ($) => $.domainMessages.noRequests[props.subjectKind],
+                            )}
+                            detail={translation()(
+                                ($) =>
+                                    $.remainingText
+                                        .oneRowAppearsPerDispatchedServingRequestTheMomentThe,
+                            )}
                         />
                     </Show>
                 </Show>

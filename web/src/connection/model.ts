@@ -10,6 +10,8 @@ export type Connection = {
     readonly token: string;
 };
 
+export type BaseUrlFailure = "empty" | "not-absolute" | "scheme" | "credentials" | "not-origin";
+
 type BaseUrlNormalization =
     | {
           readonly ok: true;
@@ -17,7 +19,7 @@ type BaseUrlNormalization =
       }
     | {
           readonly ok: false;
-          readonly reason: string;
+          readonly reason: BaseUrlFailure;
       };
 
 /**
@@ -32,7 +34,7 @@ export function normalizeBaseUrl(rawInput: string): BaseUrlNormalization {
     if (trimmedInput === "") {
         return {
             ok: false,
-            reason: "Enter the JanusGate base URL.",
+            reason: "empty",
         };
     }
 
@@ -43,28 +45,28 @@ export function normalizeBaseUrl(rawInput: string): BaseUrlNormalization {
     } catch {
         return {
             ok: false,
-            reason: "Enter an absolute URL, for example https://gateway.example.com.",
+            reason: "not-absolute",
         };
     }
 
     if (url.protocol !== "http:" && url.protocol !== "https:") {
         return {
             ok: false,
-            reason: "Use an http:// or https:// URL.",
+            reason: "scheme",
         };
     }
 
     if (url.username !== "" || url.password !== "") {
         return {
             ok: false,
-            reason: "Remove the credentials from the URL.",
+            reason: "credentials",
         };
     }
 
     if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
         return {
             ok: false,
-            reason: "Enter only the gateway origin, without a path, query, or fragment.",
+            reason: "not-origin",
         };
     }
 

@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
-import { pluralNoun } from "/src/format";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { type CredentialStanding, credentialStanding } from "/src/management-api/serving";
 import { CREDENTIAL_KIND, UPSTREAM_FORMAT } from "/src/management-api/vocabulary";
@@ -25,14 +26,18 @@ type CredentialBadge = {
  * The short per-surface labels ("Stale" on the badge, "Credential not fresh"
  * on the overview) stay each surface's own.
  */
-export const OAUTH_NEVER_FRESH_SENTENCE: string = "The OAuth credentials were never fresh.";
+export function oauthNeverFreshSentence(): string {
+    return translation()(($) => $.remainingText.theOAuthCredentialsWereNeverFresh);
+}
 
 /**
  * The never-fresh standing's stored-fact sentence — no OAuth expiry column
  * is stored — named once so the overview's attention detail and the edit
  * page's Credentials card state the same words instead of two spellings.
  */
-export const NO_STORED_EXPIRY_SENTENCE: string = "No expiry is stored for this provider.";
+export function noStoredExpirySentence(): string {
+    return translation()(($) => $.dynamicMessages.noExpiry);
+}
 
 /**
  * The badge each non-null credential standing is presented under. The record
@@ -42,16 +47,24 @@ export const NO_STORED_EXPIRY_SENTENCE: string = "No expiry is stored for this p
 const CREDENTIAL_STANDING_BADGES: Record<Exclude<CredentialStanding, null>, CredentialBadge> = {
     valid: {
         tone: "ok",
-        label: "Valid",
+        get label() {
+            return translation()(($) => $.helpers.providersTable.valid);
+        },
     },
     expired: {
         tone: "warn",
-        label: "Expired",
+        get label() {
+            return translation()(($) => $.helpers.providersTable.expired);
+        },
     },
     "never-fresh": {
         tone: "warn",
-        label: "Stale",
-        title: OAUTH_NEVER_FRESH_SENTENCE,
+        get label() {
+            return translation()(($) => $.helpers.providersTable.stale);
+        },
+        get title() {
+            return oauthNeverFreshSentence();
+        },
     },
 };
 
@@ -90,12 +103,22 @@ function ProviderRow(props: {
                         {props.provider.name}
                     </span>
                 }
-                secondary={`${UPSTREAM_FORMAT.label(props.provider.format)} · ${CREDENTIAL_KIND.label(props.provider.type)} · ${props.modelCount} ${pluralNoun(props.modelCount, "model")}`}
+                secondary={`${UPSTREAM_FORMAT.label(props.provider.format)} · ${CREDENTIAL_KIND.label(props.provider.type)} · ${translation()(
+                    ($) => $.counts.models,
+                    {
+                        count: props.modelCount,
+                        total: formatNumber(props.modelCount),
+                    },
+                )}`}
                 badges={
                     <>
                         <Badge
                             tone={props.provider.is_enabled ? "ok" : "muted"}
-                            label={props.provider.is_enabled ? "On" : "Off"}
+                            label={
+                                props.provider.is_enabled
+                                    ? translation()(($) => $.additional.providersTable.on)
+                                    : translation()(($) => $.additional.providersTable.off)
+                            }
                         />
                         <Show when={credential()}>
                             {(current) => (

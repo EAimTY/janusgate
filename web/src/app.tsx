@@ -14,6 +14,9 @@ import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
 import { hasDirtyForms } from "/src/dirty-form-registry";
 import { formatRefreshStamp } from "/src/format";
+import { translation } from "/src/i18n";
+import { LanguageControl } from "/src/i18n/language-control";
+import { connectedMessage } from "/src/i18n/rich";
 import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import {
@@ -57,7 +60,9 @@ import { InlineConfirmQuestion } from "/src/ui/inline-confirm-question";
  * The connection screen's document title: the one page outside the routes,
  * shown whenever no connection exists to route for.
  */
-const CONNECTION_TITLE = "Connect to JanusGate";
+function connectionTitle(): string {
+    return translation()(($) => $.connection.connectToJanusGate);
+}
 
 /**
  * The application gate: without a connection only the setup screen exists;
@@ -87,7 +92,7 @@ export function App(): JSX.Element {
     // The null guard keeps the write on the transition into setup, so it can
     // never race the shell's route title.
     createEffect(
-        () => (connection() === null ? CONNECTION_TITLE : null),
+        () => (connection() === null ? connectionTitle() : null),
         (title) => {
             if (title !== null) {
                 document.title = title;
@@ -150,43 +155,57 @@ const NAV_ITEMS: ReadonlyArray<{
 }> = [
     {
         key: "overview",
-        label: "Overview",
+        get label() {
+            return translation()(($) => $.navigation.overview);
+        },
         glyph: "grid",
         href: hrefs.home(),
     },
     {
         key: "providers",
-        label: "Providers",
+        get label() {
+            return translation()(($) => $.navigation.providers);
+        },
         glyph: "plug",
         href: hrefs.providers(),
     },
     {
         key: "models",
-        label: "Inventory",
+        get label() {
+            return translation()(($) => $.navigation.inventory);
+        },
         glyph: "stack",
         href: hrefs.models(null),
     },
     {
         key: "pools",
-        label: "Pools",
+        get label() {
+            return translation()(($) => $.navigation.pools);
+        },
         glyph: "stack",
         href: hrefs.providerPools(),
     },
     {
         key: "routes",
-        label: "Public routes",
+        get label() {
+            return translation()(($) => $.navigation.routes);
+        },
         glyph: "stack",
         href: hrefs.modelRoutes(),
     },
     {
         key: "keys",
-        label: "API keys",
+        get label() {
+            return translation()(($) => $.navigation.apiKeys);
+        },
         glyph: "key",
         href: hrefs.apiKeys(),
     },
     {
         key: "usage",
-        label: "Usage",
+        get label() {
+            return translation()(($) => $.navigation.usage);
+        },
         glyph: "activity",
         href: hrefs.usage(),
     },
@@ -315,9 +334,9 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
         <div class="flex min-h-screen flex-col">
             <a
                 href="#main"
-                class="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-20 focus:rounded-lg focus:bg-accent focus:px-3 focus:py-2 focus:text-[13px] focus:font-medium focus:text-accent-ink"
+                class="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:start-3 focus:z-20 focus:rounded-lg focus:bg-accent focus:px-3 focus:py-2 focus:text-[13px] focus:font-medium focus:text-accent-ink"
             >
-                Skip to content
+                {translation()(($) => $.shell.skipToContent)}
             </a>
 
             <TopBar />
@@ -525,7 +544,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
 
                 <footer class="mt-4 border-t border-rule pt-4">
                     <p class="text-[12.5px] text-ink-faint">
-                        {`Connected to ${props.connection.baseUrl} — the token lives only in this browser.`}
+                        {connectedMessage(translation(), props.connection.baseUrl)}
                     </p>
                 </footer>
             </div>
@@ -548,15 +567,21 @@ const THEME_CONTROL_STATES: Record<
 > = {
     light: {
         glyph: "sun",
-        label: "Light theme — switch to dark",
+        get label() {
+            return translation()(($) => $.navigation.lightTheme);
+        },
     },
     dark: {
         glyph: "moon",
-        label: "Dark theme — switch to system",
+        get label() {
+            return translation()(($) => $.navigation.darkTheme);
+        },
     },
     system: {
         glyph: "display",
-        label: "System theme — switch to light",
+        get label() {
+            return translation()(($) => $.navigation.systemTheme);
+        },
     },
 };
 
@@ -575,7 +600,8 @@ function TopBar(): JSX.Element {
                     <span class="text-[15px] font-semibold tracking-tight text-ink">JanusGate</span>
                 </AppLink>
 
-                <div class="ml-auto flex items-center gap-1">
+                <div class="ms-auto flex flex-wrap items-center justify-end gap-2">
+                    <LanguageControl />
                     <button
                         type="button"
                         title={themeControl().label}
@@ -615,7 +641,7 @@ function ContextBar(props: {
     return (
         <div class="flex flex-wrap items-center gap-x-4 gap-y-3">
             <nav
-                aria-label="Primary"
+                aria-label={translation()(($) => $.shell.primary)}
                 class="flex flex-wrap items-center gap-1 rounded-xl border border-rule bg-surface p-1"
             >
                 {NAV_ITEMS.map((item) => (
@@ -635,35 +661,43 @@ function ContextBar(props: {
                 ))}
             </nav>
 
-            <div class="ml-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-faint">
+            <div class="ms-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-faint">
                 <span
                     class="tnum max-w-56 truncate sm:max-w-72"
                     title={props.connection.baseUrl}
                 >
-                    {props.connection.baseUrl}
+                    <bdi dir="ltr">{props.connection.baseUrl}</bdi>
                 </span>
                 <span aria-hidden="true">·</span>
                 <span>
                     <Show
                         when={refreshStamp()}
-                        fallback="Not refreshed yet"
+                        fallback={translation()(($) => $.remainingText.notRefreshedYet)}
                     >
-                        {(stamp) => `Updated ${formatRefreshStamp(stamp(), new Date())}`}
+                        {(stamp) =>
+                            translation()(($) => $.domainMessages.updated, {
+                                instant: formatRefreshStamp(stamp(), new Date()),
+                            })
+                        }
                     </Show>
                 </span>
                 <button
                     type="button"
                     title={
                         props.hasScreenReads
-                            ? "Read this screen's state from the gateway again"
-                            : "This screen reads nothing from the gateway, so there is nothing to refresh"
+                            ? translation()(
+                                  ($) => $.additional.app.readThisScreensStateFromTheGatewayAgain,
+                              )
+                            : translation()(
+                                  ($) => $.additional.app.thisScreenReadsNothingFromTheGatewaySo,
+                              )
                     }
                     disabled={!props.hasScreenReads}
                     onClick={() => requestRefresh()}
                     class="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 font-medium text-ink-dim transition-colors duration-150 ease-out hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     <Glyph name="refresh" />
-                    Refresh
+                    {translation()(($) => $.shell.refresh)}
                 </button>
             </div>
         </div>
@@ -709,7 +743,7 @@ function DisconnectControl(): JSX.Element {
                             setIsArmed(true);
                         }}
                     >
-                        Disconnect
+                        {translation()(($) => $.shell.disconnect)}
                     </Button>
                 </span>
             }
@@ -717,7 +751,11 @@ function DisconnectControl(): JSX.Element {
             <div class="flex flex-wrap items-center gap-2">
                 <InlineConfirmQuestion
                     focusArmed={confirmFocus.focusArmed}
-                    question="Disconnect and forget the stored token? Reconnecting means entering it again."
+                    question={translation()(
+                        ($) =>
+                            $.additional.app
+                                .disconnectAndForgetTheStoredTokenReconnectingMeansMessage,
+                    )}
                 />
                 <Button
                     tone="danger"
@@ -726,13 +764,13 @@ function DisconnectControl(): JSX.Element {
                         goHome();
                     }}
                 >
-                    Disconnect
+                    {translation()(($) => $.shell.disconnect)}
                 </Button>
                 <Button
                     tone="ghost"
                     onClick={disarm}
                 >
-                    Keep
+                    {translation()(($) => $.shell.keep)}
                 </Button>
             </div>
         </Show>

@@ -1,6 +1,9 @@
 import type { JSX } from "@solidjs/web";
 import { type Accessor, createMemo, createSignal, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros, pluralNoun } from "/src/format";
+import { credentialExpiryLine, nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
+import { deleteProviderMessage, editNameMessage } from "/src/i18n/rich";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -35,11 +38,12 @@ import {
     ProviderEnabledSwitch,
     ProviderIdentityFields,
 } from "/src/ui/provider-form";
-import { NO_STORED_EXPIRY_SENTENCE } from "/src/ui/providers-table";
+import { noStoredExpirySentence } from "/src/ui/providers-table";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { createOauthFlow, type OauthFlow } from "./oauth-flow";
 import { CompletionForm, DeviceStep } from "./oauth-flow-view";
 import { RowNotFound } from "./row-not-found";
+import { providerSavedNotice } from "./success-notices";
 
 /**
  * One provider's edit page: its settings, its credentials, and its deletion.
@@ -111,8 +115,12 @@ export function ProviderEditScreen(props: {
         onSucceeded: () => {
             read.showNotice({
                 tone: "ok",
-                title: "Credentials replaced.",
-                detail: "The provider's listing now carries the new expiry.",
+                get title() {
+                    return translation()(($) => $.notices.credentialsReplaced);
+                },
+                get detail() {
+                    return translation()(($) => $.notices.expiryReplaced);
+                },
             });
             read.reload();
         },
@@ -124,24 +132,24 @@ export function ProviderEditScreen(props: {
             row={provider}
             firstReadHeader={
                 <PageHeader
-                    title="Edit provider"
+                    title={translation()(($) => $.screens.providerEditScreen.editProvider)}
                     backHref={hrefs.providerDetail(props.providerId)}
-                    backLabel="Provider"
+                    backLabel={translation()(($) => $.additional.providerEditScreen.provider)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="provider"
-                    headerTitle="Edit provider"
+                    headerTitle={translation()(($) => $.additional.providerEditScreen.editProvider)}
                 />
             }
         >
             {(row) => (
                 <>
                     <PageHeader
-                        title={`Edit ${row.name}`}
+                        title={editNameMessage(row.name)}
                         backHref={hrefs.providerDetail(row.id)}
-                        backLabel="Provider"
+                        backLabel={translation()(($) => $.additional.providerEditScreen.provider)}
                     />
 
                     <HoldNotice
@@ -244,8 +252,12 @@ function withEdits(
  * would name a spacing fault over a field holding nothing — and the fix is
  * the stored address back, or the whole form back onto the row (`Revert`).
  */
-const EMPTY_BASE_URL_ERROR =
-    "This provider's definition evaluates requests against a base URL — restore one, or Revert.";
+const emptyBaseUrlError = (): string =>
+    translation()(
+        ($) =>
+            $.helpers.providerEditScreen
+                .thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert,
+    );
 
 /**
  * The provider's editable settings. Saving writes the complete readable state.
@@ -304,10 +316,10 @@ function DetailsCard(props: {
             return null;
         }
 
-        return trimmedBaseUrl() === "" ? EMPTY_BASE_URL_ERROR : baseUrlMessage();
+        return trimmedBaseUrl() === "" ? emptyBaseUrlError() : baseUrlMessage();
     };
 
-    const apiKeyError = (): string | null => bearerSecretError(apiKey(), "API key");
+    const apiKeyError = (): string | null => bearerSecretError(apiKey(), "apiKey");
 
     /** The connection fields are submittable when every typed value is routable. The key stays
      * empty to keep the stored secret; the URL follows the same legal rule the
@@ -392,19 +404,10 @@ function DetailsCard(props: {
             );
             setApiKey("");
 
-            // The save's consequence lines, composed the way the API-key
-            // edit's save composes its own: one line per consequence this
-            // save actually carries, joined where more than one stands.
-            const consequences: string[] = [];
-            if (isApiKeyReplaced) {
-                consequences.push("The upstream API key was replaced.");
-            }
-
-            return {
-                tone: "ok",
-                title: `${name()} saved.`,
-                detail: consequences.length > 0 ? consequences.join(" ") : null,
-            };
+            return providerSavedNotice({
+                name: name(),
+                isApiKeyReplaced,
+            });
         },
         onDirtyChange: props.onDirtyChange,
         onSaved: props.onSaved,
@@ -412,7 +415,7 @@ function DetailsCard(props: {
 
     return (
         <Card>
-            <CardHeader title="Settings" />
+            <CardHeader title={translation()(($) => $.screens.providerEditScreen.settings)} />
             <form
                 novalidate={true}
                 class="mt-4 flex max-w-2xl flex-col gap-4"
@@ -429,9 +432,15 @@ function DetailsCard(props: {
                     namePlaceholder={props.provider.name}
                     modelPrefix={modelPrefix()}
                     onModelPrefixInput={setModelPrefix}
-                    prefixError={routingTokenError(modelPrefix(), "Model prefix")}
+                    prefixError={routingTokenError(modelPrefix(), "modelPrefix")}
                     onNameInput={setName}
-                    nameError={isNamePresent() ? null : "A provider needs a name."}
+                    nameError={
+                        isNamePresent()
+                            ? null
+                            : translation()(
+                                  ($) => $.additional.providerEditScreen.aProviderNeedsANameMessage,
+                              )
+                    }
                     isDisabled={form.isSaving()}
                 />
 
@@ -441,8 +450,10 @@ function DetailsCard(props: {
                         apiKey={apiKey()}
                         onBaseUrlInput={setBaseUrl}
                         onApiKeyInput={setApiKey}
-                        apiKeyLabel="Replace the upstream API key"
-                        apiKeyHint="Write-only: the gateway never returns it, so leaving this empty keeps what is stored."
+                        apiKeyLabel={translation()(($) => $.remainingText.replaceTheUpstreamAPIKey)}
+                        apiKeyHint={translation()(
+                            ($) => $.remainingText.writeOnlyTheGatewayNeverReturnsItSoLeavingThis,
+                        )}
                         baseUrlError={baseUrlError()}
                         apiKeyError={apiKeyError()}
                         isDisabled={form.isSaving()}
@@ -491,7 +502,7 @@ function CredentialsCard(props: {
         const row = credentialRow();
 
         if (!isOAuthProviderRow(row) || row.expires_at === null) {
-            return NO_STORED_EXPIRY_SENTENCE;
+            return noStoredExpirySentence();
         }
 
         return credentialExpiryLine(row.expires_at, nowMicros());
@@ -505,8 +516,12 @@ function CredentialsCard(props: {
     return (
         <Card>
             <CardHeader
-                title="Credentials"
-                description="OAuth credentials expire — reconnecting replaces them."
+                title={translation()(($) => $.screens.providerEditScreen.credentials)}
+                description={translation()(
+                    ($) =>
+                        $.screens.providerEditScreen
+                            .oauthCredentialsExpireReconnectingReplacesThemMessage,
+                )}
             />
             <div class="mt-4 flex max-w-2xl flex-col gap-4">
                 <p class="text-[13.5px] text-ink-dim">{expiryLine()}</p>
@@ -530,8 +545,14 @@ function CredentialsCard(props: {
                                     onClick={() => void props.oauth.start()}
                                 >
                                     {props.oauth.isStarting()
-                                        ? "Starting…"
-                                        : "Reconnect the account"}
+                                        ? translation()(
+                                              ($) => $.additional.providerEditScreen.starting,
+                                          )
+                                        : translation()(
+                                              ($) =>
+                                                  $.additional.providerEditScreen
+                                                      .reconnectTheAccount,
+                                          )}
                                 </Button>
                             </div>
                         </Show>
@@ -548,8 +569,12 @@ function CredentialsCard(props: {
                             <CompletionForm
                                 flow={props.oauth}
                                 startedFlow={startedFlow}
-                                busyLabel="Replacing…"
-                                submitLabel="Replace the credentials"
+                                busyLabel={translation()(
+                                    ($) => $.additional.providerEditScreen.replacing,
+                                )}
+                                submitLabel={translation()(
+                                    ($) => $.additional.providerEditScreen.replaceTheCredentials,
+                                )}
                                 class="flex flex-col gap-4"
                             />
                         )
@@ -583,13 +608,20 @@ function DangerCard(props: {
     // tracking scope instead of this component's setup.
     return (
         <ConfirmDeleteCard
-            title="Delete this provider"
+            title={translation()(($) => $.screens.providerEditScreen.deleteThisProvider)}
             description={
                 props.modelCount === 0
-                    ? "Deleting removes the account and its pool memberships. It has no physical models."
-                    : `Deleting removes the account, its pool memberships, and its ${props.modelCount} physical ${pluralNoun(props.modelCount, "model")} with their direct routes. Pool routes remain stored.`
+                    ? translation()(
+                          ($) =>
+                              $.additional.providerEditScreen
+                                  .deletingRemovesTheAccountAndItsPoolMembershipsMessage,
+                      )
+                    : translation()(($) => $.counts.providerDeleted, {
+                          count: props.modelCount,
+                          total: formatNumber(props.modelCount),
+                      })
             }
-            question={`Delete ${props.provider.name}?`}
+            question={deleteProviderMessage(props.provider.name)}
             onConfirm={confirmDelete}
         />
     );

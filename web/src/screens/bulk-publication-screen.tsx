@@ -1,6 +1,9 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { registerDirtyForm } from "/src/dirty-form-registry";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
+import { addAliasMessage, aliasCreatedMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ModelRouteResponse } from "/src/management-api/generated/v0";
 import { routingTokenError } from "/src/management-api/identifiers";
@@ -118,8 +121,11 @@ export function BulkPublicationScreen(props: {
     const fieldError = (id: number): string | null => {
         const value = draft(id);
         if (!value.isSelected) return null;
-        if (value.publicId === "") return "Public ID is required.";
-        const tokenError = routingTokenError(value.publicId, "Public ID");
+        if (value.publicId === "")
+            return translation()(
+                ($) => $.additional.bulkPublicationScreen.publicIDIsRequiredMessage,
+            );
+        const tokenError = routingTokenError(value.publicId, "publicId");
         if (tokenError !== null) return tokenError;
         return models().some(
             (other) =>
@@ -127,7 +133,11 @@ export function BulkPublicationScreen(props: {
                 draft(other.id).isSelected &&
                 draft(other.id).publicId === value.publicId,
         )
-            ? "Another selected row uses this public ID. Choose distinct explicit names."
+            ? translation()(
+                  ($) =>
+                      $.helpers.bulkPublicationScreen
+                          .anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames,
+              )
             : null;
     };
     const registration = registerDirtyForm();
@@ -215,8 +225,12 @@ export function BulkPublicationScreen(props: {
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Create aliases"
-                description="Choose physical models and author their public IDs. Each selection creates one enabled direct route; name conflicts are reported without renaming or overwriting."
+                title={translation()(($) => $.screens.bulkPublicationScreen.createAliases)}
+                description={translation()(
+                    ($) =>
+                        $.screens.bulkPublicationScreen
+                            .choosePhysicalModelsAndAuthorTheirPublicIDsMessage,
+                )}
                 backHref={hrefs.models(props.providerFilter)}
                 backLabel="Inventory"
             />
@@ -235,8 +249,14 @@ export function BulkPublicationScreen(props: {
                     fallback={
                         <EmptyState
                             glyph="stack"
-                            title="No physical models to alias"
-                            description="Discover or add inventory first."
+                            title={translation()(
+                                ($) => $.screens.bulkPublicationScreen.noPhysicalModelsToAlias,
+                            )}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.bulkPublicationScreen
+                                        .discoverOrAddInventoryFirstMessage,
+                            )}
                         />
                     }
                 >
@@ -261,21 +281,50 @@ export function BulkPublicationScreen(props: {
                                                     })
                                                 }
                                             />
-                                            {`Add alias for ${subject}`}
+                                            {addAliasMessage(subject)}
                                         </label>
                                         <p class="text-[12.5px] text-ink-faint">
                                             {directCount(model.id) === 0
-                                                ? "No direct routes"
-                                                : `${directCount(model.id)} direct routes`}{" "}
+                                                ? translation()(
+                                                      ($) =>
+                                                          $.additional.bulkPublicationScreen
+                                                              .noDirectRoutes,
+                                                  )
+                                                : translation()(
+                                                      ($) => $.routingMessages.directRoutes,
+                                                      {
+                                                          count: directCount(model.id),
+                                                          quantity: formatNumber(
+                                                              directCount(model.id),
+                                                          ),
+                                                      },
+                                                  )}{" "}
                                             ·{" "}
                                             {model.discovery_state === "vanished"
-                                                ? "Model vanished; its new route will be suspended"
+                                                ? translation()(
+                                                      ($) =>
+                                                          $.additional.bulkPublicationScreen
+                                                              .modelVanishedItsNewRouteWillBeSuspended,
+                                                  )
                                                 : model.is_enabled
-                                                  ? "Model enabled"
-                                                  : "Model disabled"}
+                                                  ? translation()(
+                                                        ($) =>
+                                                            $.additional.bulkPublicationScreen
+                                                                .modelEnabled,
+                                                    )
+                                                  : translation()(
+                                                        ($) =>
+                                                            $.additional.bulkPublicationScreen
+                                                                .modelDisabled,
+                                                    )}
                                         </p>
                                         <TextField
-                                            label={`Public ID for ${subject}`}
+                                            label={translation()(
+                                                ($) => $.domainMessages.publicIdFor,
+                                                {
+                                                    subject,
+                                                },
+                                            )}
                                             value={draft(model.id).publicId}
                                             onInput={(publicId) =>
                                                 edit(model.id, {
@@ -300,13 +349,17 @@ export function BulkPublicationScreen(props: {
                                                     />
                                                 ) : (
                                                     <p class="text-[13px] text-ok">
-                                                        {`Alias created: ${outcome.publicId}`} ·{" "}
+                                                        {aliasCreatedMessage(outcome.publicId)} ·{" "}
                                                         <ButtonLink
                                                             href={hrefs.modelRouteEdit(
                                                                 outcome.routeId,
                                                             )}
                                                         >
-                                                            Open route
+                                                            {translation()(
+                                                                ($) =>
+                                                                    $.screens.bulkPublicationScreen
+                                                                        .openRoute,
+                                                            )}
                                                         </ButtonLink>
                                                     </p>
                                                 )
@@ -324,10 +377,15 @@ export function BulkPublicationScreen(props: {
                             isDisabled={!canPublish()}
                             onClick={() => void publish()}
                         >
-                            Create selected aliases
+                            {translation()(
+                                ($) => $.screens.bulkPublicationScreen.createSelectedAliases,
+                            )}
                         </Button>
                         <p class="text-[12.5px] text-ink-faint">
-                            {selectedCount()} selected. Successful rows will not be submitted again.
+                            {translation()(($) => $.linkedMessages.selected, {
+                                count: selectedCount(),
+                                quantity: formatNumber(selectedCount()),
+                            })}
                         </p>
                     </div>
                 </Show>

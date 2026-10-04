@@ -1,3 +1,5 @@
+import { translation } from "/src/i18n";
+
 /**
  * Composition rules for machine-consumed management fields (gateway README
  * §7): routing identifiers, bearer secrets, and base URLs.
@@ -53,18 +55,22 @@ export function isBaseUrl(value: string): boolean {
  * Human wording for a composition rejection of the named field, shown where
  * the value was typed.
  */
-export function compositionMessage(field: string): string {
-    return `${field} accepts letters, numbers, and symbols only — no spaces or non-ASCII text.`;
+export type CompositionField = "upstreamId" | "publicId" | "modelPrefix" | "apiKey" | "key";
+
+export function compositionMessage(field: CompositionField): string {
+    return translation()(($) => $.validation.composition[field]);
 }
 
 /** Human wording for a routing-token rejection, shown where the value was typed. */
-export function routingTokenMessage(field: string): string {
-    return `${field} accepts letters, numbers, and symbols only — no spaces, non-ASCII text, "/", or ":".`;
+export function routingTokenMessage(field: CompositionField): string {
+    return translation()(($) => $.validation.routing[field]);
 }
 
 /** Human wording for a base URL rejection, shown where the URL was typed. */
 export function baseUrlMessage(): string {
-    return "Base URL must be an http:// or https:// address with no spaces.";
+    return translation()(
+        ($) => $.helpers.identifiers.baseURLMustBeAnHttpOrHttpsAddressWithNoSpaces,
+    );
 }
 
 /**
@@ -73,7 +79,7 @@ export function baseUrlMessage(): string {
  * typed. An empty value is allowed: the write-only field's absence keeps the
  * stored secret, so only a typed value is judged.
  */
-export function bearerSecretError(value: string, label: string): string | null {
+export function bearerSecretError(value: string, label: CompositionField): string | null {
     return value === "" || isBearerSecret(value) ? null : compositionMessage(label);
 }
 
@@ -81,7 +87,7 @@ export function bearerSecretError(value: string, label: string): string | null {
  * The inline error for an upstream or public route ID. Empty input is the
  * form's not-yet-typed state, named by the submit gate instead.
  */
-export function routingTokenError(value: string | null, label: string): string | null {
+export function routingTokenError(value: string | null, label: CompositionField): string | null {
     return value === null || value === "" || isRoutingToken(value)
         ? null
         : routingTokenMessage(label);

@@ -40,7 +40,7 @@
 
     --font-sans:
         ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Sans Arabic", Tahoma, sans-serif;
     --font-data: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 

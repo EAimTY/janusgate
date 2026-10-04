@@ -1,6 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { formatTimestamp, pluralNoun } from "/src/format";
+import { formatTimestamp } from "/src/format";
+import { translation } from "/src/i18n";
+import { keyCountMessage, noKeysMatchMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
@@ -55,30 +57,31 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
         () => visibleKeys().filter((row) => row.is_enabled).length,
     );
 
-    const countLine = createMemo(() => {
-        const total = keys().length;
-        const totalNoun = pluralNoun(total, "key");
-        const shown = visibleKeys().length;
-
-        if (listingNeedle(search()).length === 0) {
-            return `${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
-        }
-
-        return `${shown} ${pluralNoun(shown, "key")} shown · ${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
-    });
+    const countLine = createMemo(() =>
+        keyCountMessage(translation(), {
+            total: keys().length,
+            shown: visibleKeys().length,
+            enabled: visibleEnabledCount(),
+            hasSearch: listingNeedle(search()).length > 0,
+        }),
+    );
 
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="API keys"
-                description="Serving keys. OpenAI clients send one as Authorization: Bearer <key>, Gemini as x-goog-api-key, and Anthropic as x-api-key; open one for its secret and usage."
+                title={translation()(($) => $.screens.apiKeysScreen.apiKeys)}
+                description={translation()(
+                    ($) =>
+                        $.screens.apiKeysScreen
+                            .servingKeysOpenAIClientsSendOneAsAuthorizationMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.apiKeyNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    Create API key
+                    {translation()(($) => $.screens.apiKeysScreen.createAPIKey)}
                 </ButtonLink>
             </PageHeader>
 
@@ -99,22 +102,28 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                     fallback={
                         <EmptyState
                             glyph="key"
-                            title="No API keys yet"
-                            description="A fresh gateway serves nothing until the first key exists."
+                            title={translation()(($) => $.screens.apiKeysScreen.noAPIKeysYet)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.apiKeysScreen
+                                        .aFreshGatewayServesNothingUntilTheFirstMessage,
+                            )}
                         >
                             <ButtonLink
                                 href={hrefs.apiKeyNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                Create API key
+                                {translation()(($) => $.screens.apiKeysScreen.createAPIKey)}
                             </ButtonLink>
                         </EmptyState>
                     }
                 >
                     <SearchInput
-                        label="Search API keys"
-                        placeholder="Search by name or key"
+                        label={translation()(($) => $.screens.apiKeysScreen.searchAPIKeys)}
+                        placeholder={translation()(
+                            ($) => $.screens.apiKeysScreen.searchByNameOrKey,
+                        )}
                         value={search()}
                         onInput={setSearch}
                         class="sm:max-w-xs"
@@ -125,7 +134,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                         fallback={
                             <Notice
                                 tone="info"
-                                title={`No API keys match "${search().trim()}".`}
+                                title={noKeysMatchMessage(search().trim())}
                             />
                         }
                     >
@@ -152,18 +161,24 @@ function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
             primary={
                 <span class="block truncate text-[14.5px] font-semibold">{props.apiKey.name}</span>
             }
-            secondary={`Created ${formatTimestamp(props.apiKey.created_at)}`}
+            secondary={translation()(($) => $.domainMessages.created, {
+                instant: formatTimestamp(props.apiKey.created_at),
+            })}
             tertiary={props.apiKey.key}
             badges={
                 <Badge
                     tone={props.apiKey.is_enabled ? "ok" : "muted"}
-                    label={props.apiKey.is_enabled ? "On" : "Off"}
+                    label={
+                        props.apiKey.is_enabled
+                            ? translation()(($) => $.additional.apiKeysScreen.on)
+                            : translation()(($) => $.additional.apiKeysScreen.off)
+                    }
                 />
             }
             trailing={
                 <CopyButton
                     value={props.apiKey.key}
-                    subject="the secret here"
+                    subject={translation()(($) => $.screens.apiKeysScreen.theSecretHere)}
                 />
             }
         />

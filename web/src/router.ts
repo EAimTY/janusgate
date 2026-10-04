@@ -1,4 +1,5 @@
 import { type Accessor, createSignal } from "solid-js";
+import { translation } from "/src/i18n";
 import { isRoutingToken } from "/src/management-api/identifiers";
 import { parseRowIdentifier } from "./row-id";
 import {
@@ -223,51 +224,67 @@ export const hrefs = {
 function routeScreenName(route: AppRoute): string {
     switch (route.name) {
         case "bulkPublication":
-            return "Publish inventory";
+            return translation()(($) => $.titles.bulkPublication);
         case "providerPools":
-            return "Pools";
+            return translation()(($) => $.titles.providerPools);
         case "providerPoolNew":
-            return "Create pool";
+            return translation()(($) => $.titles.providerPoolNew);
         case "providerPoolEdit":
-            return `Edit pool #${route.poolId}`;
+            return translation()(($) => $.titles.providerPoolEdit, {
+                id: route.poolId,
+            });
         case "modelRoutes":
-            return "Public routes";
+            return translation()(($) => $.titles.modelRoutes);
         case "modelRouteNew":
-            return "Create public route";
+            return translation()(($) => $.titles.modelRouteNew);
         case "modelRouteEdit":
-            return `Edit public route #${route.routeId}`;
+            return translation()(($) => $.titles.modelRouteEdit, {
+                id: route.routeId,
+            });
         case "home":
-            return "Overview";
+            return translation()(($) => $.titles.home);
         case "providers":
-            return "Providers";
+            return translation()(($) => $.titles.providers);
         case "providerNew":
-            return "Create provider";
+            return translation()(($) => $.titles.providerNew);
         case "providerDetail":
-            return `Provider #${route.providerId}`;
+            return translation()(($) => $.titles.providerDetail, {
+                id: route.providerId,
+            });
         case "providerEdit":
-            return `Edit provider #${route.providerId}`;
+            return translation()(($) => $.titles.providerEdit, {
+                id: route.providerId,
+            });
         case "models":
-            return "Models";
+            return translation()(($) => $.titles.models);
         case "modelNew":
-            return "Create model";
+            return translation()(($) => $.titles.modelNew);
         case "modelDetail":
-            return `Model #${route.modelId}`;
+            return translation()(($) => $.titles.modelDetail, {
+                id: route.modelId,
+            });
         case "modelEdit":
-            return `Edit model #${route.modelId}`;
+            return translation()(($) => $.titles.modelEdit, {
+                id: route.modelId,
+            });
         case "apiKeys":
-            return "API keys";
+            return translation()(($) => $.titles.apiKeys);
         case "apiKeyNew":
-            return "Create API key";
+            return translation()(($) => $.titles.apiKeyNew);
         case "apiKeyDetail":
-            return `API key #${route.apiKeyId}`;
+            return translation()(($) => $.titles.apiKeyDetail, {
+                id: route.apiKeyId,
+            });
         case "apiKeyEdit":
-            return `Edit API key #${route.apiKeyId}`;
+            return translation()(($) => $.titles.apiKeyEdit, {
+                id: route.apiKeyId,
+            });
         case "usage":
-            return "Usage";
+            return translation()(($) => $.titles.usage);
         case "usageQuery":
-            return "Usage aggregates";
+            return translation()(($) => $.titles.usageQuery);
         case "notFound":
-            return "Page not found";
+            return translation()(($) => $.titles.notFound);
     }
 }
 

@@ -1,4 +1,5 @@
 import type { JSX } from "@solidjs/web";
+import { translation } from "/src/i18n";
 
 /**
  * The usage bucket table's shared grammar, spelled once for every site that
@@ -12,7 +13,7 @@ import type { JSX } from "@solidjs/web";
 
 /**
  * The wrapper every usage bucket table stands in: a horizontally scrollable
- * `div` around a full-width, left-aligned, tabular-number `table` at the
+ * `div` around a full-width, start-aligned, tabular-number `table` at the
  * shared cell size. `minWidthClass` is the table's whole min-width class
  * (like `min-w-[480px]`) — passed as one literal string at the call site, so
  * the class stays visible to Tailwind's source scan — and `class` carries the
@@ -27,7 +28,7 @@ export function UsageTable(props: {
         <div
             class={props.class === undefined ? "overflow-x-auto" : `${props.class} overflow-x-auto`}
         >
-            <table class={`tnum w-full ${props.minWidthClass} text-left text-[13px]`}>
+            <table class={`tnum w-full ${props.minWidthClass} text-start text-[13px]`}>
                 {props.children}
             </table>
         </div>
@@ -35,7 +36,7 @@ export function UsageTable(props: {
 }
 
 /**
- * One column header cell: the label, right-aligned when the column holds
+ * One column header cell: the label, end-aligned when the column holds
  * numbers — the alignment every `BucketCell` beneath it carries.
  */
 export function BucketHeader(props: {
@@ -57,11 +58,15 @@ export function BucketHeader(props: {
 }
 
 /**
- * One numeric cell: a preformatted count or token sum, right-aligned under
+ * One numeric cell: a preformatted count or token sum, end-aligned under
  * its numeric `BucketHeader`.
  */
 export function BucketCell(props: { readonly value: string }): JSX.Element {
-    return <td class="px-3 py-2 text-right">{props.value}</td>;
+    return (
+        <td class="px-3 py-2 text-right">
+            <bdi dir="ltr">{props.value}</bdi>
+        </td>
+    );
 }
 
 /**
@@ -72,7 +77,7 @@ export function BucketCell(props: { readonly value: string }): JSX.Element {
 export function UsageDaysUtcNote(props: { readonly class: string }): JSX.Element {
     return (
         <p class={`${props.class} text-[12.5px] text-ink-faint`}>
-            Days are UTC — the gateway's own day boundary.
+            {translation()(($) => $.screens.usageTable.daysAreUTCTheGatewaysOwnDayBoundaryMessage)}
         </p>
     );
 }

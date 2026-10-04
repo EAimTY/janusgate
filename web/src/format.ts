@@ -1,6 +1,8 @@
+import { translation } from "/src/i18n";
+import { formatDate, formatNumber } from "/src/i18n/formatters";
 /** A unix timestamp (microseconds) in the browser's locale. */
 export function formatTimestamp(unixMicros: number): string {
-    return new Date(unixMicros / 1000).toLocaleString();
+    return formatDate(new Date(unixMicros / 1000), "timestamp");
 }
 
 /** The length of one day in microseconds — the unit every usage window and day boundary counts in. */
@@ -13,12 +15,7 @@ export function nowMicros(): number {
 
 /** A wall clock of hours, minutes and seconds — the freshness stamp's today shape. */
 function formatClock(date: Date): string {
-    return date.toLocaleTimeString(undefined, {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-    });
+    return formatDate(date, "clock");
 }
 
 /**
@@ -33,7 +30,7 @@ function formatClock(date: Date): string {
 export function formatRefreshStamp(stamp: Date, now: Date): string {
     return stamp.toDateString() === now.toDateString()
         ? formatClock(stamp)
-        : `${stamp.toLocaleDateString()} ${formatClock(stamp)}`;
+        : `${formatDate(stamp, "day")} ${formatClock(stamp)}`;
 }
 
 /**
@@ -45,7 +42,7 @@ function validityDistance(expiresAtMicros: number, nowMicros: number): string {
     const magnitudeSeconds = Math.floor(Math.abs(expiresAtMicros - nowMicros) / 1_000_000);
 
     if (magnitudeSeconds < 60) {
-        return "<1m";
+        return translation()(($) => $.format.lessThanMinute);
     }
 
     const minutes = Math.floor(magnitudeSeconds / 60);
@@ -53,14 +50,30 @@ function validityDistance(expiresAtMicros: number, nowMicros: number): string {
     const days = Math.floor(hours / 24);
 
     if (days > 0) {
-        return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+        return hours % 24 === 0
+            ? translation()(($) => $.format.days, {
+                  days: formatNumber(days),
+              })
+            : translation()(($) => $.format.daysHours, {
+                  days: formatNumber(days),
+                  hours: formatNumber(hours % 24),
+              });
     }
 
     if (hours > 0) {
-        return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+        return minutes % 60 === 0
+            ? translation()(($) => $.format.hours, {
+                  hours: formatNumber(hours),
+              })
+            : translation()(($) => $.format.hoursMinutes, {
+                  hours: formatNumber(hours),
+                  minutes: formatNumber(minutes % 60),
+              });
     }
 
-    return `${minutes}m`;
+    return translation()(($) => $.format.minutes, {
+        minutes: formatNumber(minutes),
+    });
 }
 
 /**
@@ -72,13 +85,12 @@ export function isCredentialExpired(expiresAtMicros: number, nowMicros: number):
 }
 
 /**
- * An instant as `YYYY-MM-DD HH:MM` in this browser's zone, minute precision —
- * [`dateTimeInputValue`]'s shape with the `T` swapped for a space, the same
- * spelling in a prose-fit separator. The distance beside it goes stale on a
+ * An instant in the committed locale and browser-local Gregorian calendar,
+ * at minute precision. The distance beside it goes stale on a
  * screen left open; this instant stays true.
  */
 function formatDateTimeMinute(date: Date): string {
-    return dateTimeInputValue(date).replace("T", " ");
+    return formatDate(date, "minute");
 }
 
 /**
@@ -94,8 +106,14 @@ export function credentialExpiryLine(expiresAtMicros: number, nowMicros: number)
     const instant = formatDateTimeMinute(new Date(expiresAtMicros / 1000));
 
     return isCredentialExpired(expiresAtMicros, nowMicros)
-        ? `Expired ${validityDistance(expiresAtMicros, nowMicros)} ago — on ${instant}.`
-        : `Valid for ${validityDistance(expiresAtMicros, nowMicros)} — until ${instant}.`;
+        ? translation()(($) => $.format.expired, {
+              distance: validityDistance(expiresAtMicros, nowMicros),
+              instant,
+          })
+        : translation()(($) => $.format.valid, {
+              distance: validityDistance(expiresAtMicros, nowMicros),
+              instant,
+          });
 }
 
 /**
@@ -104,19 +122,7 @@ export function credentialExpiryLine(expiresAtMicros: number, nowMicros: number)
  * mistaken for a measured one.
  */
 export function formatTokenCount(value: number | null): string {
-    return value === null ? "—" : value.toLocaleString();
-}
-
-/**
- * A counted phrase's noun — `"model"` beside 1, `"models"` beside every other
- * count: singular exactly when the count is `1`. A noun that does not
- * pluralize by suffixing `s` states its plural itself (`pluralNoun(count,
- * "ID", "IDs")`). The count itself stays the caller's — surfaces spell it
- * differently (grouped totals, `x of y` fractions) — this only homes the
- * singular/plural grammar.
- */
-export function pluralNoun(count: number, singular: string, plural = `${singular}s`): string {
-    return count === 1 ? singular : plural;
+    return value === null ? "—" : formatNumber(value);
 }
 
 /**
@@ -130,13 +136,18 @@ export function pluralNoun(count: number, singular: string, plural = `${singular
  */
 export function formatDuration(millis: number): string {
     if (millis < 60_000) {
-        return `${(Math.floor(millis / 100) / 10).toFixed(1)}s`;
+        return translation()(($) => $.format.durationSeconds, {
+            seconds: formatNumber(Math.floor(millis / 100) / 10, "tenth"),
+        });
     }
 
     const minutes = Math.floor(millis / 60_000);
     const seconds = Math.floor((millis % 60_000) / 1000);
 
-    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+    return translation()(($) => $.format.durationMinutesSeconds, {
+        minutes: formatNumber(minutes),
+        seconds: formatNumber(seconds, "paddedSecond"),
+    });
 }
 
 /**

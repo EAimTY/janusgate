@@ -20,7 +20,10 @@ export type BarChartPoint = {
 export function BarChart(props: {
     readonly points: ReadonlyArray<BarChartPoint>;
     /** What one bar counts, as each bar's accessible name spells it. */
-    readonly unit: string;
+    readonly describePoint: (point: BarChartPoint) => {
+        readonly accessibleName: string;
+        readonly content: JSX.Element;
+    };
     /** The line stated while no bar is read: the window's own summary. */
     readonly summary: JSX.Element;
     readonly class?: string | undefined;
@@ -54,26 +57,22 @@ export function BarChart(props: {
         const index = activeIndex();
         const point = index === null ? undefined : props.points[index];
 
-        return point === undefined ? (
-            props.summary
-        ) : (
-            <>
-                <span class="whitespace-nowrap">{point.label}</span>
-                {` · ${point.value.toLocaleString()} ${props.unit}`}
-            </>
-        );
+        return point === undefined ? props.summary : props.describePoint(point).content;
     };
 
     return (
         <div class={joinClass("flex flex-col gap-2", props.class ?? "")}>
-            <ul class="flex h-28 items-end gap-1 border-b border-rule">
+            <ul
+                dir="ltr"
+                class="flex h-28 items-end gap-1 border-b border-rule"
+            >
                 <For each={props.points}>
                     {(point, index) => (
                         <li class="flex h-full min-w-0 flex-1 items-end">
                             <span
                                 tabindex="0"
                                 role="img"
-                                aria-label={`${point.label}: ${point.value.toLocaleString()} ${props.unit}`}
+                                aria-label={props.describePoint(point).accessibleName}
                                 class="flex h-full w-full items-end rounded-t-[3px] outline-offset-4"
                                 onPointerEnter={() => setActiveIndex(index())}
                                 onPointerLeave={() => setActiveIndex(null)}
@@ -95,9 +94,12 @@ export function BarChart(props: {
                     )}
                 </For>
             </ul>
-            <div class="tnum flex justify-between text-[12.5px] text-ink-faint">
-                <span>{props.points[0]?.label ?? ""}</span>
-                <span>{props.points.at(-1)?.label ?? ""}</span>
+            <div
+                dir="ltr"
+                class="tnum flex justify-between text-[12.5px] text-ink-faint"
+            >
+                <bdi dir="ltr">{props.points[0]?.label ?? ""}</bdi>
+                <bdi dir="ltr">{props.points.at(-1)?.label ?? ""}</bdi>
             </div>
             <p class="tnum text-[12.5px] text-ink-faint">{readout()}</p>
         </div>

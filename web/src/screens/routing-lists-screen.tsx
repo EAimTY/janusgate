@@ -1,5 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
+import { translation } from "/src/i18n";
+import {
+    directTargetMessage,
+    missingDirectTargetMessage,
+    poolMembersMessage,
+    poolTargetMessage,
+} from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
@@ -27,15 +34,19 @@ export function ProviderPoolsScreen(props: { readonly api: ManagementApi }): JSX
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Pools"
-                description="Named model catalogs built from interchangeable accounts for one upstream service."
+                title={translation()(($) => $.screens.routingListsScreen.pools)}
+                description={translation()(
+                    ($) =>
+                        $.screens.routingListsScreen
+                            .namedModelCatalogsBuiltFromInterchangeableAccountsForMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.providerPoolNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    Create pool
+                    {translation()(($) => $.screens.routingListsScreen.createPool)}
                 </ButtonLink>
             </PageHeader>
             <ReadNotice
@@ -53,8 +64,12 @@ export function ProviderPoolsScreen(props: { readonly api: ManagementApi }): JSX
                     fallback={
                         <EmptyState
                             glyph="stack"
-                            title="No pools yet"
-                            description="Create a named pool with a model prefix. Member models are exposed automatically."
+                            title={translation()(($) => $.screens.routingListsScreen.noPoolsYet)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.routingListsScreen
+                                        .createANamedPoolWithAModelPrefixMessage,
+                            )}
                         />
                     }
                 >
@@ -65,11 +80,30 @@ export function ProviderPoolsScreen(props: { readonly api: ManagementApi }): JSX
                                     <RowLink
                                         href={hrefs.providerPoolEdit(pool.id)}
                                         primary={pool.name}
-                                        secondary={`${pool.members.length} account members · Model prefix: ${pool.model_prefix === "" ? "none" : pool.model_prefix}`}
+                                        secondary={poolMembersMessage(
+                                            pool.members.length,
+                                            pool.model_prefix === ""
+                                                ? translation()(
+                                                      ($) => $.vocabulary.reasoningLevel.none,
+                                                  )
+                                                : pool.model_prefix,
+                                        )}
                                         badges={
                                             <Badge
                                                 tone={pool.is_enabled ? "ok" : "muted"}
-                                                label={pool.is_enabled ? "On" : "Off"}
+                                                label={
+                                                    pool.is_enabled
+                                                        ? translation()(
+                                                              ($) =>
+                                                                  $.additional.routingListsScreen
+                                                                      .on,
+                                                          )
+                                                        : translation()(
+                                                              ($) =>
+                                                                  $.additional.routingListsScreen
+                                                                      .off,
+                                                          )
+                                                }
                                             />
                                         }
                                     />
@@ -107,28 +141,35 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
             setPools(poolRows.provider_pools);
         },
     });
-    const targetLabel = (route: ModelRouteResponse): string => {
+    const targetLabel = (route: ModelRouteResponse): JSX.Element => {
         const target = route.target;
         if (target.type === "direct") {
             const model = models().find((row) => row.id === target.model_id);
             return model === undefined
-                ? `Direct · Physical model #${target.model_id}`
-                : `Direct · ${model.provider} · ${model.upstream_id}`;
+                ? missingDirectTargetMessage(target.model_id)
+                : directTargetMessage(model.provider, model.upstream_id);
         }
-        return `Pool · ${pools().find((pool) => pool.id === target.pool_id)?.name ?? `#${target.pool_id}`} · ${target.upstream_id}`;
+        return poolTargetMessage(
+            pools().find((pool) => pool.id === target.pool_id)?.name ?? `#${target.pool_id}`,
+            target.upstream_id,
+        );
     };
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Public routes"
-                description="Model names clients request. Standalone providers and pools expose model names automatically. Additional aliases are optional."
+                title={translation()(($) => $.screens.routingListsScreen.publicRoutes)}
+                description={translation()(
+                    ($) =>
+                        $.screens.routingListsScreen
+                            .modelNamesClientsRequestStandaloneProvidersAndPoolsMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.modelRouteNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    Create public route
+                    {translation()(($) => $.screens.routingListsScreen.createPublicRoute)}
                 </ButtonLink>
             </PageHeader>
             <ReadNotice
@@ -146,8 +187,14 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
                     fallback={
                         <EmptyState
                             glyph="stack"
-                            title="No public routes yet"
-                            description="Publish a physical model directly or target a pool and exact upstream ID."
+                            title={translation()(
+                                ($) => $.screens.routingListsScreen.noPublicRoutesYet,
+                            )}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.routingListsScreen
+                                        .publishAPhysicalModelDirectlyOrTargetAMessage,
+                            )}
                         />
                     }
                 >
@@ -168,7 +215,19 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
                                         badges={
                                             <Badge
                                                 tone={route.is_enabled ? "ok" : "muted"}
-                                                label={route.is_enabled ? "On" : "Off"}
+                                                label={
+                                                    route.is_enabled
+                                                        ? translation()(
+                                                              ($) =>
+                                                                  $.additional.routingListsScreen
+                                                                      .on,
+                                                          )
+                                                        : translation()(
+                                                              ($) =>
+                                                                  $.additional.routingListsScreen
+                                                                      .off,
+                                                          )
+                                                }
                                             />
                                         }
                                     />

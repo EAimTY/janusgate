@@ -1,3 +1,4 @@
+import { translation } from "/src/i18n";
 import type {
     ApiKeyResponse,
     ModelResponse,
@@ -58,7 +59,10 @@ export function usageModelRouteLabel(
     modelRoutesById: ReadonlyMap<number, ModelRouteResponse>,
     modelRouteId: number,
 ): UsageLabel {
-    return resolveLabel(modelRoutesById.get(modelRouteId)?.public_id, "Deleted route");
+    return resolveLabel(
+        modelRoutesById.get(modelRouteId)?.public_id,
+        translation()(($) => $.remainingText.deletedRoute),
+    );
 }
 
 /** A request's physical model as its upstream ID, or a deleted model. */
@@ -66,7 +70,10 @@ export function usageModelLabel(
     modelsById: ReadonlyMap<number, ModelResponse>,
     modelId: number,
 ): UsageLabel {
-    return resolveLabel(modelsById.get(modelId)?.upstream_id, "Deleted model");
+    return resolveLabel(
+        modelsById.get(modelId)?.upstream_id,
+        translation()(($) => $.remainingText.deletedModel),
+    );
 }
 
 /** A request's provider as its current name, or as a deleted provider. */
@@ -74,7 +81,10 @@ export function usageProviderLabel(
     providersById: ReadonlyMap<number, ProviderResponse>,
     providerId: number,
 ): UsageLabel {
-    return resolveLabel(providersById.get(providerId)?.name, "Deleted provider");
+    return resolveLabel(
+        providersById.get(providerId)?.name,
+        translation()(($) => $.remainingText.deletedProvider),
+    );
 }
 
 /** A request's API key as its current name, or as a deleted key. */
@@ -82,7 +92,10 @@ export function usageApiKeyLabel(
     apiKeysById: ReadonlyMap<number, ApiKeyResponse>,
     apiKeyId: number,
 ): UsageLabel {
-    return resolveLabel(apiKeysById.get(apiKeyId)?.name, "Deleted key");
+    return resolveLabel(
+        apiKeysById.get(apiKeyId)?.name,
+        translation()(($) => $.remainingText.deletedKey),
+    );
 }
 
 /**
@@ -164,7 +177,9 @@ export function usageDimensionLabel(
         case "is_stream": {
             const field = DIMENSION_KEY_FIELD[dimension];
 
-            return bucketKeyField(key[field], field) ? "Streamed" : "Non-streamed";
+            return bucketKeyField(key[field], field)
+                ? translation()(($) => $.helpers.usageLabels.streamed)
+                : translation()(($) => $.helpers.usageLabels.nonstreamed);
         }
 
         case "http_status": {

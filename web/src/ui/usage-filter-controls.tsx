@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo } from "solid-js";
+import { translation } from "/src/i18n";
 import type {
     ApiKeyResponse,
     ModelResponse,
@@ -16,20 +17,28 @@ import type { UsageFilterFields, UsageOutcomeChoice, UsageStreamChoice } from "/
  * grouped choice exists so a figure stated as "errors" can be opened as a
  * filter without the control having to show a list it cannot present.
  */
-const OUTCOME_CHOICE_OPTIONS: ReadonlyArray<{
+function outcomeChoiceOptions(): ReadonlyArray<{
     readonly value: UsageOutcomeChoice;
     readonly label: string;
-}> = [
-    {
-        value: "",
-        label: "All outcomes",
-    },
-    {
-        value: "failures",
-        label: "Failures (upstream or internal)",
-    },
-    ...API_LOG_OUTCOME.options,
-];
+}> {
+    return [
+        {
+            value: "",
+            get label() {
+                return translation()(($) => $.helpers.usageFilterControls.allOutcomes);
+            },
+        },
+        {
+            value: "failures",
+            get label() {
+                return translation()(
+                    ($) => $.helpers.usageFilterControls.failuresUpstreamOrInternal,
+                );
+            },
+        },
+        ...API_LOG_OUTCOME.options,
+    ];
+}
 
 const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
     readonly value: UsageStreamChoice;
@@ -37,15 +46,21 @@ const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
 }> = [
     {
         value: "",
-        label: "Any",
+        get label() {
+            return translation()(($) => $.helpers.usageFilterControls.any);
+        },
     },
     {
         value: "streamed",
-        label: "Streamed",
+        get label() {
+            return translation()(($) => $.helpers.usageFilterControls.streamed);
+        },
     },
     {
         value: "non-streamed",
-        label: "Non-streamed",
+        get label() {
+            return translation()(($) => $.helpers.usageFilterControls.nonstreamed);
+        },
     },
 ];
 
@@ -80,25 +95,41 @@ export function UsageFilterControls(props: {
     readonly onEdit: (edits: Partial<UsageFilterFields>) => void;
 }): JSX.Element {
     const providerOptions = createMemo(() =>
-        entitySelectOptions(props.providers, (row) => row.name, "All providers"),
+        entitySelectOptions(
+            props.providers,
+            (row) => row.name,
+            translation()(($) => $.remainingText.allProviders),
+        ),
     );
 
     const routeOptions = createMemo(() =>
-        entitySelectOptions(props.modelRoutes, (row) => row.public_id, "All public routes"),
+        entitySelectOptions(
+            props.modelRoutes,
+            (row) => row.public_id,
+            translation()(($) => $.remainingText.allPublicRoutes),
+        ),
     );
 
     const modelOptions = createMemo(() =>
-        entitySelectOptions(props.models, (row) => row.upstream_id, "All physical models"),
+        entitySelectOptions(
+            props.models,
+            (row) => row.upstream_id,
+            translation()(($) => $.remainingText.allPhysicalModels),
+        ),
     );
 
     const apiKeyOptions = createMemo(() =>
-        entitySelectOptions(props.apiKeys, (row) => row.name, "All API keys"),
+        entitySelectOptions(
+            props.apiKeys,
+            (row) => row.name,
+            translation()(($) => $.remainingText.allAPIKeys),
+        ),
     );
 
     return (
         <>
             <SelectField
-                label="Public route"
+                label={translation()(($) => $.controls.publicRoute)}
                 value={props.fields.modelRouteId}
                 options={routeOptions()}
                 absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
@@ -110,7 +141,7 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="Provider"
+                label={translation()(($) => $.controls.provider)}
                 value={props.fields.providerId}
                 options={providerOptions()}
                 absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
@@ -122,7 +153,7 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="Physical model"
+                label={translation()(($) => $.controls.physicalModel)}
                 value={props.fields.modelId}
                 options={modelOptions()}
                 absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
@@ -134,7 +165,7 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="API key"
+                label={translation()(($) => $.controls.apiKey)}
                 value={props.fields.apiKeyId}
                 options={apiKeyOptions()}
                 absentLabel={props.hasEntityListings ? noLongerListedLabel : undefined}
@@ -146,12 +177,12 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="Endpoint"
+                label={translation()(($) => $.controls.endpoint)}
                 value={props.fields.endpointType}
                 options={[
                     {
                         value: "",
-                        label: "All endpoints",
+                        label: translation()(($) => $.additional.usageFilterControls.allEndpoints),
                     },
                     ...API_LOG_ENDPOINT_TYPE.options,
                 ]}
@@ -163,9 +194,9 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="Outcome"
+                label={translation()(($) => $.controls.outcome)}
                 value={props.fields.outcome}
-                options={OUTCOME_CHOICE_OPTIONS}
+                options={outcomeChoiceOptions()}
                 onChange={(outcome) =>
                     props.onEdit({
                         outcome,
@@ -174,7 +205,7 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <SelectField
-                label="Stream mode"
+                label={translation()(($) => $.controls.streamMode)}
                 value={props.fields.streamChoice}
                 options={STREAM_CHOICE_OPTIONS}
                 onChange={(streamChoice) =>
@@ -185,7 +216,7 @@ export function UsageFilterControls(props: {
                 isDisabled={props.isDisabled}
             />
             <TextField
-                label="HTTP statuses"
+                label={translation()(($) => $.controls.httpStatuses)}
                 value={props.fields.statusInput}
                 onInput={(statusInput) =>
                     props.onEdit({
@@ -194,7 +225,9 @@ export function UsageFilterControls(props: {
                 }
                 isDisabled={props.isDisabled}
                 error={props.statusError}
-                hint="Comma-separated, e.g. 200, 429. Never-answered requests match no status."
+                hint={translation()(
+                    ($) => $.controls.commaseparatedEg200429NeveransweredRequestsMatchNo,
+                )}
             />
         </>
     );

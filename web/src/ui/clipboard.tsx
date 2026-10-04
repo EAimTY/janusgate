@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
+import type { TFunction } from "i18next";
 import { createSignal, onCleanup, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { Button } from "/src/ui/controls";
 
 /**
@@ -57,12 +59,15 @@ type CopyState = "idle" | "copied" | "refused";
  */
 export function CopyButton(props: {
     readonly value: string;
+    /** Explicit translator for isolated previews; production uses the tracked facade. */
+    readonly translator?: TFunction<"translation"> | undefined;
     readonly subject?: string | undefined;
     readonly isDisabled?: boolean;
     readonly label?: string | undefined;
     /** The button's accessible name, where several copies share one visible label. */
     readonly ariaLabel?: string | undefined;
 }): JSX.Element {
+    const t = (): TFunction<"translation"> => props.translator ?? translation();
     const [copyState, setCopyState] = createSignal<CopyState>("idle");
     let timer: number | undefined;
 
@@ -88,19 +93,23 @@ export function CopyButton(props: {
         <>
             <Button
                 glyph="copy"
-                title={props.label ?? "Copy to clipboard"}
+                title={props.label ?? t()(($) => $.additional.clipboard.copyToClipboard)}
                 ariaLabel={props.ariaLabel}
                 isDisabled={(props.isDisabled ?? false) || props.value === ""}
                 onClick={() => void copy()}
             >
-                {copyState() === "copied" ? "Copied" : (props.label ?? "Copy")}
+                {copyState() === "copied"
+                    ? t()(($) => $.additional.clipboard.copied)
+                    : (props.label ?? t()(($) => $.additional.clipboard.copy))}
             </Button>
             <Show when={copyState() === "refused"}>
                 <span
                     class="text-[13px] font-medium text-bad"
                     role="status"
                 >
-                    {`This browser refused the clipboard — select ${props.subject ?? "the value here"} and copy it by hand.`}
+                    {t()(($) => $.dynamicMessages.refusedClipboard, {
+                        subject: props.subject ?? t()(($) => $.additional.clipboard.theValueHere),
+                    })}
                 </span>
             </Show>
         </>

@@ -1,3 +1,4 @@
+import { translation } from "/src/i18n";
 /** Sparse public-entry permissions. Global availability is a separate inventory fact. */
 import type {
     AccessDecision,
@@ -90,8 +91,11 @@ export function resolveAccess(
 }
 
 export function accessLabel(result: ResolvedAccess): string {
-    const decision = result.access === "allow" ? "Allowed" : "Denied";
-    return `${decision} · ${result.source === "route" ? "Model override" : `from ${result.source}`}`;
+    const decision =
+        result.access === "allow"
+            ? translation()(($) => $.helpers.accessControl.allowed)
+            : translation()(($) => $.helpers.accessControl.denied);
+    return `${decision} · ${result.source === "route" ? translation()(($) => $.helpers.accessControl.modelOverride) : translation()(($) => $.domainMessages.source[result.source])}`;
 }
 
 /** Stable order only; no deduplication or removal of explicit equal-default pins. */
@@ -201,7 +205,9 @@ export function missingReferences(
                 ? []
                 : [
                       {
-                          label: `Deleted ${owner.type} #${owner.id}`,
+                          label: translation()(($) => $.domainMessages.deleted[owner.type], {
+                              id: owner.id,
+                          }),
                           access: rule.access,
                           owner,
                       },
@@ -212,7 +218,9 @@ export function missingReferences(
                 (rule) => !inventory.modelRoutes.some((route) => route.id === rule.model_route_id),
             )
             .map((rule) => ({
-                label: `Deleted route #${rule.model_route_id}`,
+                label: translation()(($) => $.domainMessages.deleted.route, {
+                    id: rule.model_route_id,
+                }),
                 access: rule.access,
                 routeId: rule.model_route_id,
             })),
@@ -220,18 +228,22 @@ export function missingReferences(
 }
 
 export function structuralStatus(route: ModelRouteResponse, inventory: AccessInventory): string {
-    if (!route.is_enabled) return "Globally disabled";
+    if (!route.is_enabled) return translation()(($) => $.helpers.accessControl.globallyDisabled);
     const target = route.target;
     if (target.type === "direct") {
         const model = inventory.models.find((model) => model.id === target.model_id);
         const provider = inventory.providers.find((provider) => provider.id === model?.provider_id);
-        if (!model || !provider) return "Target unavailable";
-        if (!provider.is_enabled || !model.is_enabled) return "Globally disabled";
-        return model.discovery_state === "vanished" ? "Target vanished" : "Globally available";
+        if (!model || !provider)
+            return translation()(($) => $.helpers.accessControl.targetUnavailable);
+        if (!provider.is_enabled || !model.is_enabled)
+            return translation()(($) => $.helpers.accessControl.globallyDisabled);
+        return model.discovery_state === "vanished"
+            ? translation()(($) => $.helpers.accessControl.targetVanished)
+            : translation()(($) => $.helpers.accessControl.globallyAvailable);
     }
     const pool = inventory.pools.find((pool) => pool.id === target.pool_id);
-    if (!pool) return "Target unavailable";
-    if (!pool.is_enabled) return "Globally disabled";
+    if (!pool) return translation()(($) => $.helpers.accessControl.targetUnavailable);
+    if (!pool.is_enabled) return translation()(($) => $.helpers.accessControl.globallyDisabled);
     const hasCandidate = pool.members.some(
         (member) =>
             inventory.providers.some(
@@ -245,5 +257,7 @@ export function structuralStatus(route: ModelRouteResponse, inventory: AccessInv
                     model.discovery_state !== "vanished",
             ),
     );
-    return hasCandidate ? "Globally available" : "No available pool members";
+    return hasCandidate
+        ? translation()(($) => $.helpers.accessControl.globallyAvailable)
+        : translation()(($) => $.helpers.accessControl.noAvailablePoolMembers);
 }

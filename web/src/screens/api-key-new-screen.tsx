@@ -7,6 +7,7 @@ import {
     newAccessControl,
 } from "/src/access-control";
 import { registerDirtyForm } from "/src/dirty-form-registry";
+import { translation } from "/src/i18n";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyAccessControl } from "/src/management-api/generated/v0";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
@@ -87,7 +88,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     const nameError = (): string | null => (hasNameInput() ? apiKeyNameError(name()) : null);
 
     /** Inline composition error for the secret, shown where it was typed. */
-    const secretError = (): string | null => bearerSecretError(secret(), "Key");
+    const secretError = (): string | null => bearerSecretError(secret(), "key");
 
     /** The creation's composition rules: a named key carrying a complete secret. */
     const canCompose = (): boolean => {
@@ -126,8 +127,10 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Create API key"
-                description="One secret your serving clients share."
+                title={translation()(($) => $.screens.apiKeyNewScreen.createAPIKey)}
+                description={translation()(
+                    ($) => $.screens.apiKeyNewScreen.oneSecretYourServingClientsShareMessage,
+                )}
                 backHref={hrefs.apiKeys()}
                 backLabel="API keys"
             />
@@ -140,8 +143,12 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
 
             <Card>
                 <CardHeader
-                    title="Key"
-                    description="The secret holds letters, numbers, and symbols only — no spaces — and is held by no other key."
+                    title={translation()(($) => $.screens.apiKeyNewScreen.key)}
+                    description={translation()(
+                        ($) =>
+                            $.screens.apiKeyNewScreen
+                                .theSecretHoldsLettersNumbersAndSymbolsOnlyMessage,
+                    )}
                 />
                 <form
                     novalidate={true}
@@ -149,7 +156,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                     onSubmit={create.submit}
                 >
                     <Switch
-                        label="Enabled"
+                        label={translation()(($) => $.screens.apiKeyNewScreen.enabled)}
                         isOn={isEnabled()}
                         isDisabled={create.isCreating()}
                         onToggle={setIsEnabled}
@@ -173,7 +180,11 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         when={inventory()}
                         fallback={
                             <p class="text-[13px] text-ink-faint">
-                                Load model access inventory before creating a key.
+                                {translation()(
+                                    ($) =>
+                                        $.screens.apiKeyNewScreen
+                                            .loadModelAccessInventoryBeforeCreatingAKeyMessage,
+                                )}
                             </p>
                         }
                     >
@@ -193,7 +204,9 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                             isDisabled={!canCreate()}
                             isBusy={create.isCreating()}
                         >
-                            {create.isCreating() ? "Creating…" : "Create API key"}
+                            {create.isCreating()
+                                ? translation()(($) => $.additional.apiKeyNewScreen.creating)
+                                : translation()(($) => $.additional.apiKeyNewScreen.createAPIKey)}
                         </Button>
                     </div>
                 </form>

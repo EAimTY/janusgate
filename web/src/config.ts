@@ -4,6 +4,8 @@
  * `localStorage` under the key below and are never baked into the build.
  */
 export const appConfig = {
+    languageStorageKey: "janusgate-web:language",
+    languageLoadDeadlineMs: 15_000,
     connectionStorageKey: "janusgate-web:connection",
     /** Read as a literal by the inline theme bootstrap in `index.html` — keep the two in sync. */
     themeStorageKey: "janusgate-web:theme",

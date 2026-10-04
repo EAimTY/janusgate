@@ -5,6 +5,7 @@
     "type": "module",
     "dependencies": {
         "@solidjs/web": "^2.0.0-rc.9",
+        "i18next": "^26.4.2",
         "solid-js": "^2.0.0-rc.9"
     },
     "devDependencies": {
@@ -18,8 +19,9 @@
     "scripts": {
         "generate-bindings": "rm -rf $PWD/src/management-api/generated && cargo run --locked --manifest-path ../Cargo.toml --bin generate-management-api-typescript-bindings --features management-api-typescript-bindings -- $PWD/src/management-api/generated",
         "dev": "vite",
-        "build": "vite build",
+        "build": "npm run check:i18n && vite build",
         "typecheck": "tsc --noEmit",
-        "test": "vitest run"
+        "test": "vitest run",
+        "check:i18n": "vitest run src/i18n/catalog-check.test.ts"
     }
 }

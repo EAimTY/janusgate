@@ -1,5 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
+import { publicIdsMessage } from "/src/i18n/rich";
 import type {
     ModelResponse,
     ModelRouteResponse,
@@ -36,28 +39,36 @@ export function modelInventoryBadge(
     if (isModelInventoryReady(model, provider)) {
         return {
             tone: "ok",
-            label: "Ready",
+            get label() {
+                return translation()(($) => $.helpers.modelsTable.ready);
+            },
         };
     }
 
     if (!model.is_enabled) {
         return {
             tone: "muted",
-            label: "Off",
+            get label() {
+                return translation()(($) => $.helpers.modelsTable.off);
+            },
         };
     }
 
     if (model.discovery_state === "vanished") {
         return {
             tone: "warn",
-            label: "Suspended",
+            get label() {
+                return translation()(($) => $.helpers.modelsTable.suspended);
+            },
         };
     }
 
     if (provider !== undefined && !provider.is_enabled) {
         return {
             tone: "warn",
-            label: "Held by provider",
+            get label() {
+                return translation()(($) => $.helpers.modelsTable.heldByProvider);
+            },
         };
     }
 
@@ -67,7 +78,9 @@ export function modelInventoryBadge(
     // read settles the verdict.
     return {
         tone: "muted",
-        label: "Unknown",
+        get label() {
+            return translation()(($) => $.helpers.modelsTable.unknown);
+        },
     };
 }
 
@@ -161,8 +174,35 @@ function ModelRow(props: {
 
     const compaction = (): ReadonlyArray<BadgeMark> => modelCompactionBadges(props.model);
 
-    const subline = (): string =>
-        `${props.provider === undefined ? "" : `Public ID ${props.automaticNames.length === 0 ? "No automatic entry" : props.automaticNames.join(", ")} · `}${props.showProvider === true ? `${props.model.provider} · ` : ""}${props.directRouteCount === 0 ? "No direct routes" : `${props.directRouteCount} direct routes`}`;
+    const subline = (): JSX.Element => (
+        <>
+            {props.provider === undefined ? (
+                ""
+            ) : (
+                <>
+                    {publicIdsMessage(
+                        props.automaticNames.length === 0
+                            ? translation()(($) => $.helpers.modelsTable.noAutomaticEntry)
+                            : props.automaticNames.join(", "),
+                    )}{" "}
+                    ·{" "}
+                </>
+            )}
+            {props.showProvider === true ? (
+                <>
+                    <bdi dir="auto">{props.model.provider}</bdi> ·{" "}
+                </>
+            ) : (
+                ""
+            )}
+            {props.directRouteCount === 0
+                ? translation()(($) => $.helpers.modelsTable.noDirectRoutes)
+                : translation()(($) => $.routingMessages.directRoutes, {
+                      count: props.directRouteCount,
+                      quantity: formatNumber(props.directRouteCount),
+                  })}
+        </>
+    );
 
     return (
         <RowLink
@@ -173,7 +213,11 @@ function ModelRow(props: {
                 </span>
             }
             secondary={subline()}
-            trailing={<ButtonLink href={hrefs.modelRouteNew(props.model.id)}>Add alias</ButtonLink>}
+            trailing={
+                <ButtonLink href={hrefs.modelRouteNew(props.model.id)}>
+                    {translation()(($) => $.controls.addAlias)}
+                </ButtonLink>
+            }
             badges={
                 <>
                     <Badge

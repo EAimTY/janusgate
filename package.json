@@ -9,7 +9,7 @@
         "dev:web": "npm run dev -w web --",
         "build:web": "npm run build -w web --",
         "test:web": "npm test -w web --",
-        "check": "biome check && npm run typecheck -w web",
+        "check": "biome check && npm run typecheck -w web && npm run check:i18n -w web",
         "fix": "biome check --write --unsafe && npm run typecheck -w web"
     },
     "devDependencies": {

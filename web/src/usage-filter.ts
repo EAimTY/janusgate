@@ -1,3 +1,4 @@
+import { translation } from "/src/i18n";
 import { ContractViolationError } from "/src/management-api/errors";
 import type {
     ApiLogEndpointType,
@@ -76,19 +77,27 @@ export const USAGE_WINDOW_OPTIONS: ReadonlyArray<{
 }> = [
     {
         value: "all",
-        label: "All time",
+        get label() {
+            return translation()(($) => $.helpers.usageFilter.allTime);
+        },
     },
     {
         value: "24h",
-        label: "Last 24 hours",
+        get label() {
+            return translation()(($) => $.helpers.usageFilter.last24Hours);
+        },
     },
     {
         value: "7d",
-        label: "Last 7 days",
+        get label() {
+            return translation()(($) => $.helpers.usageFilter.last7Days);
+        },
     },
     {
         value: "30d",
-        label: "Last 30 days",
+        get label() {
+            return translation()(($) => $.helpers.usageFilter.last30Days);
+        },
     },
 ];
 

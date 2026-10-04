@@ -28,9 +28,10 @@ const NOTICE_GLYPH: Record<NoticeTone, GlyphName> = {
  */
 export function Notice(props: {
     readonly tone: NoticeTone;
-    readonly title: string;
+    readonly title: JSX.Element;
     readonly detail?: string | JSX.Element | null | undefined;
-    readonly fix?: string | null | undefined;
+    readonly fix?: JSX.Element;
+    readonly rawDetail?: string | undefined;
     readonly class?: string | undefined;
 }): JSX.Element {
     return (
@@ -49,7 +50,14 @@ export function Notice(props: {
             <div class="min-w-0 flex-1">
                 <p class="text-[13.5px] font-medium">{props.title}</p>
                 <Show when={props.detail}>
-                    {(detail) => <p class="tnum mt-1 break-words text-ink-dim">{detail()}</p>}
+                    {(detail) => <p class="mt-1 break-words text-ink-dim">{detail()}</p>}
+                </Show>
+                <Show when={props.rawDetail}>
+                    {(detail) => (
+                        <pre class="mt-1 whitespace-pre-wrap break-words text-[12.5px] text-ink-dim">
+                            <bdi dir="auto">{detail()}</bdi>
+                        </pre>
+                    )}
                 </Show>
                 <Show when={props.fix}>
                     {(fix) => <p class="mt-1 max-w-[70ch] text-[13px] text-ink-dim">{fix()}</p>}
@@ -171,8 +179,8 @@ export function StatLink(props: {
 /** A page with nothing to show yet: what this is, and the one way forward. */
 export function EmptyState(props: {
     readonly glyph?: GlyphName | undefined;
-    readonly title: string;
-    readonly description: string;
+    readonly title: JSX.Element;
+    readonly description: JSX.Element;
     readonly children?: JSX.Element | undefined;
 }): JSX.Element {
     return (

@@ -1,6 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Show } from "solid-js";
-import { pluralNoun } from "/src/format";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
+import { noModelsMatchMessage, noProviderModelsMatchMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
@@ -64,7 +66,11 @@ export function ModelsScreen(props: {
     // `noLongerListedLabel`, keeps the filter in force visible instead of
     // letting the select silently reset to "All providers".
     const filterOptions = createMemo(() =>
-        entitySelectOptions(providers(), (row) => row.name, "All providers"),
+        entitySelectOptions(
+            providers(),
+            (row) => row.name,
+            translation()(($) => $.remainingText.allProviders),
+        ),
     );
 
     const visibleModels = createMemo(() => {
@@ -92,13 +98,19 @@ export function ModelsScreen(props: {
     // a search stands, the narrow it then reports.
     const countLine = createMemo(() => {
         const total = models().length;
-        const totalNoun = pluralNoun(total, "model");
 
         if (listingNeedle(search()).length === 0) {
-            return `${total} ${totalNoun}`;
+            return translation()(($) => $.counts.models, {
+                count: total,
+                total: formatNumber(total),
+            });
         }
 
-        return `${visibleModels().length} of ${total} ${totalNoun}`;
+        return translation()(($) => $.counts.filteredModels, {
+            count: total,
+            total: formatNumber(total),
+            shown: formatNumber(visibleModels().length),
+        });
     });
 
     // The provider listing is the authority on a filter's subject's
@@ -123,34 +135,44 @@ export function ModelsScreen(props: {
 
         if (listingNeedle(search()).length !== 0) {
             return props.providerFilter === null
-                ? `No models match "${query}".`
-                : `No models of this provider match "${query}".`;
+                ? noModelsMatchMessage(query)
+                : noProviderModelsMatchMessage(query);
         }
 
         if (props.providerFilter === null) {
-            return "No models on any provider yet — discover or add one.";
+            return translation()(
+                ($) => $.additional.modelsScreen.noModelsOnAnyProviderYetDiscoverOrMessage,
+            );
         }
 
         return isFilteredProviderListed()
-            ? "This provider holds no models."
-            : "This provider is no longer listed — pick another in the Provider filter.";
+            ? translation()(($) => $.helpers.modelsScreen.thisProviderHoldsNoModels)
+            : translation()(
+                  ($) =>
+                      $.helpers.modelsScreen
+                          .thisProviderIsNoLongerListedPickAnotherInTheProviderFilter,
+              );
     });
 
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Models"
-                description="Models are automatically exposed through a standalone provider prefix or their owning pool prefixes."
+                title={translation()(($) => $.screens.modelsScreen.models)}
+                description={translation()(
+                    ($) =>
+                        $.screens.modelsScreen
+                            .modelsAreAutomaticallyExposedThroughAStandaloneProviderMessage,
+                )}
             >
                 <ButtonLink href={hrefs.bulkPublication(props.providerFilter)}>
-                    Create aliases
+                    {translation()(($) => $.screens.modelsScreen.createAliases)}
                 </ButtonLink>
                 <ButtonLink
                     href={hrefs.modelNew(props.providerFilter)}
                     tone="primary"
                     glyph="plus"
                 >
-                    Create model
+                    {translation()(($) => $.screens.modelsScreen.createModel)}
                 </ButtonLink>
             </PageHeader>
 
@@ -171,32 +193,38 @@ export function ModelsScreen(props: {
                     fallback={
                         <EmptyState
                             glyph="stack"
-                            title="No models yet"
-                            description="Add a provider first, then discover its models — or add one by hand."
+                            title={translation()(($) => $.screens.modelsScreen.noModelsYet)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.modelsScreen
+                                        .addAProviderFirstThenDiscoverItsModelsMessage,
+                            )}
                         >
                             <ButtonLink
                                 href={hrefs.providerNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                Create provider
+                                {translation()(($) => $.screens.modelsScreen.createProvider)}
                             </ButtonLink>
                             <ButtonLink href={hrefs.modelNew(props.providerFilter)}>
-                                Create model
+                                {translation()(($) => $.screens.modelsScreen.createModel)}
                             </ButtonLink>
                         </EmptyState>
                     }
                 >
                     <div class="flex flex-wrap items-end gap-3">
                         <SearchInput
-                            label="Search models"
-                            placeholder="Search by upstream ID or provider name"
+                            label={translation()(($) => $.screens.modelsScreen.searchModels)}
+                            placeholder={translation()(
+                                ($) => $.screens.modelsScreen.searchByUpstreamIDOrProviderName,
+                            )}
                             value={search()}
                             onInput={setSearch}
                             class="min-w-0 flex-1 basis-56 sm:max-w-xs"
                         />
                         <SelectField
-                            label="Provider"
+                            label={translation()(($) => $.screens.modelsScreen.provider)}
                             value={
                                 props.providerFilter === null ? "" : String(props.providerFilter)
                             }

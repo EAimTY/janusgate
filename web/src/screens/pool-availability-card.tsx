@@ -1,6 +1,9 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import { formatTimestamp, nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
+import { quotaFactMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     GetProviderAvailabilityResponse,
@@ -21,30 +24,28 @@ import {
 } from "./read";
 import { ReadNotice, StatedNotice } from "./read-notice";
 
-const INVENTORY_LABELS: Record<InventoryAvailability, string> = {
-    pool_disabled: "Pool disabled",
-    account_missing: "Account missing",
-    account_disabled: "Account disabled",
-    model_not_selected: "Choose an upstream ID to inspect model availability",
-    model_missing: "Model missing",
-    model_disabled: "Model disabled",
-    model_vanished: "Model vanished",
-    ready: "Inventory ready",
-};
+function inventoryLabel(value: InventoryAvailability): string {
+    return translation()(($) => $.quotaMessages.inventory[value]);
+}
 
-function refreshText(refresh: LastRefresh | null): string {
-    if (refresh === null) return "Reading stored availability…";
+function refreshText(refresh: LastRefresh | null): JSX.Element {
+    if (refresh === null)
+        return translation()(($) => $.additional.poolAvailabilityCard.readingStoredAvailability);
     switch (refresh.type) {
         case "not_observed":
-            return "Quota not observed";
+            return translation()(($) => $.additional.poolAvailabilityCard.quotaNotObserved);
         case "succeeded":
-            return `Quota observed ${formatTimestamp(refresh.observed_at)}`;
+            return quotaFactMessage("quotaObserved", formatTimestamp(refresh.observed_at));
         case "failed":
-            return `Quota read failed · ${refresh.reason.replaceAll("_", " ")}`;
+            return translation()(($) => $.quotaMessages.quotaFailed, {
+                reason: translation()(($) => $.quotaMessages.failure[refresh.reason]),
+            });
         case "unsupported":
-            return "Quota reads unsupported";
+            return translation()(($) => $.additional.poolAvailabilityCard.quotaReadsUnsupported);
         case "reset":
-            return "Administrator reset; refresh grace installed";
+            return translation()(
+                ($) => $.additional.poolAvailabilityCard.administratorResetRefreshGraceInstalled,
+            );
     }
 }
 
@@ -152,14 +153,28 @@ export function AccountAvailabilityRow(props: {
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0 break-words">
                     <p class="font-medium">
-                        {props.provider?.name ?? `Deleted account #${props.providerId}`}
+                        <bdi dir="auto">
+                            {props.provider?.name ??
+                                translation()(($) => $.quotaMessages.deletedAccount, {
+                                    id: formatNumber(props.providerId),
+                                })}
+                        </bdi>
                     </p>
                     <p class="mt-1 text-ink-dim text-[12.5px]">
-                        {props.priority !== undefined ? `Priority ${props.priority} · ` : ""}
+                        {props.priority !== undefined ? (
+                            <>
+                                {translation()(($) => $.quotaMessages.priority, {
+                                    priority: formatNumber(props.priority),
+                                })}{" "}
+                                ·{" "}
+                            </>
+                        ) : (
+                            ""
+                        )}
                         {props.isAccountInspection &&
                         availability().inventory === "model_not_selected"
-                            ? "Account enabled"
-                            : INVENTORY_LABELS[availability().inventory]}
+                            ? translation()(($) => $.additional.poolAvailabilityCard.accountEnabled)
+                            : inventoryLabel(availability().inventory)}
                     </p>
                 </div>
                 <div class="flex flex-wrap gap-2">
@@ -168,14 +183,14 @@ export function AccountAvailabilityRow(props: {
                             isDisabled={isBusy() || props.provider === undefined}
                             onClick={() => void act(false)}
                         >
-                            Refresh quota
+                            {translation()(($) => $.screens.poolAvailabilityCard.refreshQuota)}
                         </Button>
                     </Show>
                     <Button
                         isDisabled={isBusy() || props.provider === undefined}
                         onClick={() => void act(true)}
                     >
-                        Reset restrictions
+                        {translation()(($) => $.screens.poolAvailabilityCard.resetRestrictions)}
                     </Button>
                 </div>
             </div>
@@ -191,24 +206,42 @@ export function AccountAvailabilityRow(props: {
                 role="status"
                 class="mt-3 text-[12.5px] text-ink-dim"
             >
-                {isBusy() ? "Updating availability…" : refreshText(availability().refresh)}
+                {isBusy()
+                    ? translation()(($) => $.additional.poolAvailabilityCard.updatingAvailability)
+                    : refreshText(availability().refresh)}
             </p>
             <Show when={blocks().length > 0}>
-                <p class="mt-3 font-medium">Quota exhausted</p>
+                <p class="mt-3 font-medium">
+                    {translation()(($) => $.screens.poolAvailabilityCard.quotaExhausted)}
+                </p>
                 <ul class="mt-2 space-y-2 text-[12.5px] text-ink-dim">
                     <For each={blocks()}>
                         {(block) => (
                             <li class="break-words">
-                                {block.key.join(" / ")} ·{" "}
+                                <bdi dir="ltr">{block.key.join(" / ")}</bdi> ·{" "}
                                 {block.applies_to.type === "all_models"
-                                    ? "All models"
-                                    : `Models: ${block.applies_to.upstream_ids.join(", ")}`}{" "}
+                                    ? translation()(
+                                          ($) => $.additional.poolAvailabilityCard.allModels,
+                                      )
+                                    : quotaFactMessage(
+                                          "models",
+                                          block.applies_to.upstream_ids.join(", "),
+                                      )}{" "}
                                 ·{" "}
                                 {block.blocked_until === null
-                                    ? "Reset unknown"
+                                    ? translation()(
+                                          ($) => $.additional.poolAvailabilityCard.resetUnknown,
+                                      )
                                     : block.blocked_until <= nowMicros()
-                                      ? "Reset time passed; refresh required"
-                                      : `Resets ${formatTimestamp(block.blocked_until)}`}
+                                      ? translation()(
+                                            ($) =>
+                                                $.additional.poolAvailabilityCard
+                                                    .resetTimePassedRefreshRequired,
+                                        )
+                                      : quotaFactMessage(
+                                            "resets",
+                                            formatTimestamp(block.blocked_until),
+                                        )}
                             </li>
                         )}
                     </For>
@@ -229,12 +262,22 @@ export function PoolAvailabilityCard(props: {
     return (
         <Card>
             <CardHeader
-                title="Pool availability"
-                description="Stored observations. Refresh explicitly queries the upstream account. Reset clears restrictions and installs refresh grace; it does not reset upstream quota."
+                title={translation()(($) => $.screens.poolAvailabilityCard.poolAvailability)}
+                description={translation()(
+                    ($) =>
+                        $.screens.poolAvailabilityCard
+                            .storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage,
+                )}
             />
             <Show
                 when={props.pool.members.length > 0}
-                fallback={<p class="mt-4 text-ink-dim">This pool has no members.</p>}
+                fallback={
+                    <p class="mt-4 text-ink-dim">
+                        {translation()(
+                            ($) => $.screens.poolAvailabilityCard.thisPoolHasNoMembersMessage,
+                        )}
+                    </p>
+                }
             >
                 <ul class="mt-4 divide-y divide-rule">
                     <For each={props.pool.members}>

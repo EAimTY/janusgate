@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { Button } from "/src/ui/controls";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { Card, CardHeader } from "/src/ui/layout";
@@ -18,7 +19,7 @@ import { InlineConfirmQuestion } from "./inline-confirm-question";
 export function ConfirmDeleteCard(props: {
     readonly title: string;
     readonly description: string;
-    readonly question: string;
+    readonly question: JSX.Element;
     readonly onConfirm: () => Promise<boolean>;
 }): JSX.Element {
     const [isArmed, setIsArmed] = createSignal(false);
@@ -61,7 +62,7 @@ export function ConfirmDeleteCard(props: {
                                 setIsArmed(true);
                             }}
                         >
-                            Delete…
+                            {translation()(($) => $.controls.delete)}
                         </Button>
                     </div>
                 }
@@ -76,7 +77,9 @@ export function ConfirmDeleteCard(props: {
                         isBusy={isDeleting()}
                         onClick={() => void remove()}
                     >
-                        {isDeleting() ? "Deleting…" : "Delete for good"}
+                        {isDeleting()
+                            ? translation()(($) => $.additional.confirmDeleteCard.deleting)
+                            : translation()(($) => $.additional.confirmDeleteCard.deleteForGood)}
                     </Button>
                     <Button
                         isDisabled={isDeleting()}
@@ -85,7 +88,7 @@ export function ConfirmDeleteCard(props: {
                             setIsArmed(false);
                         }}
                     >
-                        Keep it
+                        {translation()(($) => $.controls.keepIt)}
                     </Button>
                 </div>
             </Show>

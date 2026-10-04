@@ -1,6 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal } from "solid-js";
 import { type AccessInventory, isSamePolicy, missingReferences } from "/src/access-control";
+import { translation } from "/src/i18n";
+import { deleteKeyMessage, deleteLastKeyMessage, editNameMessage } from "/src/i18n/rich";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyAccessControl, ApiKeyResponse } from "/src/management-api/generated/v0";
@@ -24,6 +26,7 @@ import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { RowNotFound } from "./row-not-found";
+import { apiKeySavedNotice } from "./success-notices";
 
 /**
  * One serving key's edit page: its settings and its deletion. The form opens
@@ -94,24 +97,24 @@ export function ApiKeyEditScreen(props: {
             row={apiKey}
             firstReadHeader={
                 <PageHeader
-                    title="Edit API key"
+                    title={translation()(($) => $.screens.apiKeyEditScreen.editAPIKey)}
                     backHref={hrefs.apiKeyDetail(props.apiKeyId)}
-                    backLabel="API key"
+                    backLabel={translation()(($) => $.additional.apiKeyEditScreen.apiKey)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="api_key"
-                    headerTitle="Edit API key"
+                    headerTitle={translation()(($) => $.additional.apiKeyEditScreen.editAPIKey)}
                 />
             }
         >
             {(row) => (
                 <>
                     <PageHeader
-                        title={`Edit ${row.name}`}
+                        title={editNameMessage(row.name)}
                         backHref={hrefs.apiKeyDetail(row.id)}
-                        backLabel="API key"
+                        backLabel={translation()(($) => $.additional.apiKeyEditScreen.apiKey)}
                     />
 
                     <HoldNotice
@@ -201,7 +204,9 @@ function SettingsCard(props: {
      * secret — this update restates the secret whole, so an emptied Key is
      * named here: the save gate cannot pass without it. */
     const secretError = (): string | null =>
-        secret() === "" ? "A key needs a secret." : bearerSecretError(secret(), "Key");
+        secret() === ""
+            ? translation()(($) => $.helpers.apiKeyEditScreen.aKeyNeedsASecret)
+            : bearerSecretError(secret(), "key");
 
     const canSave = (): boolean => {
         const inventory = props.inventory;
@@ -256,23 +261,11 @@ function SettingsCard(props: {
             const isTurningOffLastEnabled =
                 !isEnabled() && props.apiKey.is_enabled && props.otherEnabledCount === 0;
 
-            const consequences: string[] = [];
-            if (isRotatingSecret) {
-                consequences.push(
-                    "The previous secret stopped working on this save — update every client that held it.",
-                );
-            }
-            if (isTurningOffLastEnabled) {
-                consequences.push(
-                    "This was the last enabled key: the gateway now serves nothing until a key is turned on.",
-                );
-            }
-
-            return {
-                tone: "ok",
-                title: `${name()} saved.`,
-                detail: consequences.length > 0 ? consequences.join(" ") : null,
-            };
+            return apiKeySavedNotice({
+                name: name(),
+                isRotatingSecret,
+                isTurningOffLastEnabled,
+            });
         },
         onDirtyChange: props.onDirtyChange,
         onSaved: props.onSaved,
@@ -281,8 +274,10 @@ function SettingsCard(props: {
     return (
         <Card>
             <CardHeader
-                title="Settings"
-                description="Rotating means Generate, then Save."
+                title={translation()(($) => $.screens.apiKeyEditScreen.settings)}
+                description={translation()(
+                    ($) => $.screens.apiKeyEditScreen.rotatingMeansGenerateThenSaveMessage,
+                )}
             />
             <form
                 novalidate={true}
@@ -290,7 +285,7 @@ function SettingsCard(props: {
                 onSubmit={form.submit}
             >
                 <Switch
-                    label="Enabled"
+                    label={translation()(($) => $.screens.apiKeyEditScreen.enabled)}
                     isOn={isEnabled()}
                     isDisabled={form.isSaving()}
                     onToggle={setIsEnabled}
@@ -311,8 +306,14 @@ function SettingsCard(props: {
                     // how the operator inspects that live value before
                     // rotating.
                     generateConfirmSubject="current"
-                    revealLabel="Show the current key"
-                    hint="Replacing the secret revokes the old value on save."
+                    revealLabel={translation()(
+                        ($) => $.additional.apiKeyEditScreen.showTheCurrentKey,
+                    )}
+                    hint={translation()(
+                        ($) =>
+                            $.screens.apiKeyEditScreen
+                                .replacingTheSecretRevokesTheOldValueOnMessage,
+                    )}
                     error={secretError()}
                 />
                 {props.inventory && (
@@ -353,12 +354,14 @@ function DangerCard(props: {
 
     return (
         <ConfirmDeleteCard
-            title="Delete this key"
-            description="Deleting revokes the key at once. Clients holding it start getting 401s. Its model access rules are removed; historical accounting remains."
+            title={translation()(($) => $.screens.apiKeyEditScreen.deleteThisKey)}
+            description={translation()(
+                ($) => $.screens.apiKeyEditScreen.deletingRevokesTheKeyAtOnceClientsHoldingMessage,
+            )}
             question={
                 props.isLastEnabled
-                    ? `Delete ${props.apiKey.name}? It is the last enabled key — the gateway will serve nothing until another key is turned on.`
-                    : `Delete ${props.apiKey.name}? Clients holding this secret lose access.`
+                    ? deleteLastKeyMessage(props.apiKey.name)
+                    : deleteKeyMessage(translation(), props.apiKey.name)
             }
             onConfirm={confirmDelete}
         />

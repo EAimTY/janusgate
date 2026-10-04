@@ -1,3 +1,4 @@
+import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
 import { connectionService } from "/src/connection/app-service";
 import { ManagementApiError } from "/src/management-api/errors";
@@ -17,7 +18,11 @@ describe("describeCallFailure", () => {
             }),
         );
 
-        expect(diagnosis.title).toContain("https://gateway.example.com");
-        expect(diagnosis.title).not.toContain(" .");
+        const host = document.createElement("div");
+        const dispose = render(() => diagnosis.title, host);
+        expect(host.textContent).toContain("https://gateway.example.com");
+        expect(host.textContent).not.toContain(" .");
+        expect(host.querySelector("bdi")?.getAttribute("dir")).toBe("ltr");
+        dispose();
     });
 });

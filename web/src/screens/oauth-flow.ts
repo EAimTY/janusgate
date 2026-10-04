@@ -31,6 +31,7 @@
 import { type Accessor, createSignal, onCleanup } from "solid-js";
 import { registerDirtyForm } from "/src/dirty-form-registry";
 import { nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
 import type {
@@ -117,16 +118,19 @@ export type OauthFlow = {
  * fix, stated where the value was typed — the lazy treatment every field's
  * inline error gets, never a notice above the page.
  */
-const UNREADABLE_PASTE_ERROR =
-    "That paste holds neither a bare code nor a URL with a code — copy the whole address the login landed on, or just its code, and paste it here.";
+const unreadablePasteError = (): string =>
+    translation()(($) => $.helpers.oauthFlow.thatPasteHoldsNeitherABareCodeNorAURLWithACodeCopy);
 
 /** The one recovery a spent or stalled flow leaves: begin a new one. */
-const FRESH_FLOW_FIX = "Start a fresh flow and authorize it promptly.";
+function freshFlowFix(): string {
+    return translation()(($) => $.operationNotices.freshFlow);
+}
 
 /** The recovery a failed-but-not-gone poll states: the gateway still holds
  * the flow pending, so the honest line is that this page keeps asking —
  * never the fresh-flow recovery, which would claim a live flow dead. */
-const POLL_RETRY_FIX = "The flow stays live; this page keeps asking for the outcome.";
+const pollRetryFix = (): string =>
+    translation()(($) => $.helpers.oauthFlow.theFlowStaysLiveThisPageKeepsAskingForTheOutcome);
 
 /**
  * How many consecutive failed outcome polls the device loop rides out before
@@ -143,9 +147,13 @@ const MAX_CONSECUTIVE_FAILED_POLLS = 3;
 function flowFailedNotice(failureMessage: string): ScreenNotice {
     return {
         tone: "bad",
-        title: "The flow failed.",
+        get title() {
+            return translation()(($) => $.operationNotices.flowFailed);
+        },
         detail: failureMessage,
-        fix: FRESH_FLOW_FIX,
+        get fix() {
+            return freshFlowFix();
+        },
     };
 }
 
@@ -159,9 +167,13 @@ function flowFailedNotice(failureMessage: string): ScreenNotice {
 function goneFlowNotice(diagnosis: Diagnosis): ScreenNotice {
     return {
         tone: "bad",
-        title: "This authorization flow is no longer completable — its state expired or was already used.",
+        get title() {
+            return translation()(($) => $.dynamicMessages.goneFlow);
+        },
         detail: diagnosis.detail,
-        fix: FRESH_FLOW_FIX,
+        get fix() {
+            return freshFlowFix();
+        },
     };
 }
 
@@ -258,7 +270,7 @@ export function createOauthFlow(options: {
      */
     const pasteError = (): string | null =>
         hasPasteRefusal() && extractAuthorizationCode(code()) === null
-            ? UNREADABLE_PASTE_ERROR
+            ? unreadablePasteError()
             : null;
 
     /**
@@ -444,9 +456,15 @@ export function createOauthFlow(options: {
             discardFlow();
             setFailure({
                 tone: "bad",
-                title: "The flow expired.",
-                detail: "The flow's expiry passed while this page waited for the outcome.",
-                fix: FRESH_FLOW_FIX,
+                get title() {
+                    return translation()(($) => $.operationNotices.flowExpired);
+                },
+                get detail() {
+                    return translation()(($) => $.operationNotices.flowExpiryPassed);
+                },
+                get fix() {
+                    return freshFlowFix();
+                },
             });
             return "done";
         }
@@ -478,9 +496,13 @@ export function createOauthFlow(options: {
             if (failedPolls >= MAX_CONSECUTIVE_FAILED_POLLS) {
                 setFailure({
                     tone: "bad",
-                    title: "The outcome poll kept failing, so this page stopped asking.",
+                    get title() {
+                        return translation()(($) => $.operationNotices.pollStopped);
+                    },
                     detail: settlement.diagnosis.detail,
-                    fix: FRESH_FLOW_FIX,
+                    get fix() {
+                        return freshFlowFix();
+                    },
                 });
 
                 return "done";
@@ -488,9 +510,13 @@ export function createOauthFlow(options: {
 
             setFailure({
                 tone: "bad",
-                title: "The last outcome poll failed.",
+                get title() {
+                    return translation()(($) => $.operationNotices.pollFailed);
+                },
                 detail: settlement.diagnosis.detail,
-                fix: POLL_RETRY_FIX,
+                get fix() {
+                    return pollRetryFix();
+                },
             });
 
             return "pending";

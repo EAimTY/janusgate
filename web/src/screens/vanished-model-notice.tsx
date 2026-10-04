@@ -1,8 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
+import { translation } from "/src/i18n";
+import { vanishedModelMessage } from "/src/i18n/rich";
 import { hrefs } from "/src/router";
-import { AppLink } from "/src/ui/app-link";
-import { proseLinkClass } from "/src/ui/attributes";
 import { Notice } from "/src/ui/feedback";
 
 /**
@@ -26,26 +26,13 @@ export function VanishedModelNotice(props: {
         <Show when={props.isVanished}>
             <Notice
                 tone="warn"
-                title="The upstream no longer reports this model."
-                detail={
-                    <>
-                        It serves nothing meanwhile.{" "}
-                        <AppLink
-                            href={hrefs.providerDetail(props.providerId)}
-                            class={proseLinkClass}
-                        >
-                            Discover again on the provider's page
-                        </AppLink>
-                        {" when the upstream lists it, or "}
-                        <AppLink
-                            href={hrefs.modelNew(props.providerId, props.upstreamId)}
-                            class={proseLinkClass}
-                        >
-                            claim it back from the Create model page
-                        </AppLink>
-                        {"."}
-                    </>
-                }
+                title={translation()(
+                    ($) => $.screens.vanishedModelNotice.theUpstreamNoLongerReportsThisModelMessage,
+                )}
+                detail={vanishedModelMessage(
+                    hrefs.providerDetail(props.providerId),
+                    hrefs.modelNew(props.providerId, props.upstreamId),
+                )}
             />
         </Show>
     );

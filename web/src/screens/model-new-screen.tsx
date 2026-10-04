@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { toCreateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
@@ -27,7 +28,6 @@ import {
     TokenCapOverrideFields,
     tokenCapOverrideError,
 } from "/src/ui/model-form";
-import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createScreenRead, readOne, readProviders, type ScreenNotice } from "./read";
 
@@ -67,13 +67,19 @@ export function ModelNewScreen(props: {
 
         return fixed === null ? hrefs.models(props.providerFilter) : hrefs.providerDetail(fixed.id);
     };
-    const backLabel = (): string => (fixedProvider() === null ? "Models" : "Provider");
+    const backLabel = (): string =>
+        fixedProvider() === null
+            ? translation()(($) => $.helpers.modelNewScreen.models)
+            : translation()(($) => $.helpers.modelNewScreen.provider);
 
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Create model"
-                description="Something discovery would not produce — or a model the upstream no longer reports, to claim back."
+                title={translation()(($) => $.screens.modelNewScreen.createModel)}
+                description={translation()(
+                    ($) =>
+                        $.screens.modelNewScreen.somethingDiscoveryWouldNotProduceOrAModelMessage,
+                )}
                 backHref={backHref()}
                 backLabel={backLabel()}
             />
@@ -93,15 +99,19 @@ export function ModelNewScreen(props: {
                     fallback={
                         <EmptyState
                             glyph="stack"
-                            title="No providers yet"
-                            description="A model belongs to a provider, and there is none to hold it. Add a provider first — discovery may already produce this model."
+                            title={translation()(($) => $.screens.modelNewScreen.noProvidersYet)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.modelNewScreen
+                                        .aModelBelongsToAProviderAndThereMessage,
+                            )}
                         >
                             <ButtonLink
                                 href={hrefs.providerNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                Create provider
+                                {translation()(($) => $.screens.modelNewScreen.createProvider)}
                             </ButtonLink>
                         </EmptyState>
                     }
@@ -166,17 +176,13 @@ function ModelCreateForm(props: {
     const trimmedUpstream = (): string => upstreamId().trim();
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
-    const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "Upstream ID");
+    const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "upstreamId");
 
     const maxInputError = (): string | null =>
-        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "Max input tokens override");
+        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "maxInputOverride");
 
     const maxOutputError = (): string | null =>
-        tokenCapOverrideError(
-            hasMaxOutputOverride(),
-            maxOutputText(),
-            "Max output tokens override",
-        );
+        tokenCapOverrideError(hasMaxOutputOverride(), maxOutputText(), "maxOutputOverride");
 
     /** The creation's composition rules: an owned provider with a routable identity. */
     const canCompose = (): boolean =>
@@ -235,7 +241,11 @@ function ModelCreateForm(props: {
     const canCreate = (): boolean => canCompose() && !create.isCreating();
 
     const providerOptions = createMemo(() =>
-        entitySelectOptions(props.providers, (row) => row.name, "Choose a provider"),
+        entitySelectOptions(
+            props.providers,
+            (row) => row.name,
+            translation()(($) => $.remainingText.chooseAProvider),
+        ),
     );
 
     return (
@@ -244,8 +254,12 @@ function ModelCreateForm(props: {
 
             <Notice
                 tone="warn"
-                title="A model added by hand is never removed automatically — and it claims back what discovery lost."
-                detail="Naming a provider and upstream ID the upstream no longer reports claims that model back under the settings below. The model is automatically exposed through its standalone provider prefix or owning pool prefixes."
+                title={translation()(
+                    ($) => $.screens.modelNewScreen.aModelAddedByHandIsNeverRemovedMessage,
+                )}
+                detail={translation()(
+                    ($) => $.remainingText.namingAProviderAndUpstreamIDTheUpstreamNoLonger,
+                )}
             />
 
             {/* One form spans both cards, so pressing Enter in the identity
@@ -256,30 +270,36 @@ function ModelCreateForm(props: {
                 onSubmit={create.submit}
             >
                 <Card>
-                    <CardHeader title="Identity" />
+                    <CardHeader title={translation()(($) => $.screens.modelNewScreen.identity)} />
                     <div class="mt-4 flex max-w-2xl flex-col gap-4">
                         <Show
                             when={props.fixedProvider}
                             fallback={
                                 <SelectField
-                                    label="Provider"
+                                    label={translation()(($) => $.screens.modelNewScreen.provider)}
                                     value={providerId()}
                                     options={providerOptions()}
                                     onChange={setProviderId}
                                     isDisabled={create.isCreating()}
-                                    hint={requiredHint("A model belongs to one provider.")}
+                                    hint={translation()(
+                                        ($) =>
+                                            $.additional.modelNewScreen
+                                                .aModelBelongsToOneProviderMessage,
+                                    )}
                                 />
                             }
                         >
                             {(fixed) => (
                                 <div>
-                                    <p class="block text-[13px] font-medium text-ink">Provider</p>
+                                    <p class="block text-[13px] font-medium text-ink">
+                                        {translation()(($) => $.screens.modelNewScreen.provider)}
+                                    </p>
                                     <p class="tnum mt-1.5">{fixed().name}</p>
                                 </div>
                             )}
                         </Show>
                         <TextField
-                            label="Upstream ID"
+                            label={translation()(($) => $.screens.modelNewScreen.upstreamID)}
                             value={upstreamId()}
                             onInput={setUpstreamId}
                             placeholder="gpt-4o"
@@ -287,11 +307,15 @@ function ModelCreateForm(props: {
                             error={upstreamError()}
                             hint={
                                 props.initialUpstreamId === null
-                                    ? requiredHint(
-                                          "Sent upstream verbatim — letters, numbers, and symbols only.",
+                                    ? translation()(
+                                          ($) =>
+                                              $.additional.modelNewScreen
+                                                  .sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage,
                                       )
-                                    : requiredHint(
-                                          "Carried here from a model the upstream no longer reports — submitting claims it back under the settings below.",
+                                    : translation()(
+                                          ($) =>
+                                              $.additional.modelNewScreen
+                                                  .carriedHereFromAModelTheUpstreamNoMessage,
                                       )
                             }
                         />
@@ -299,10 +323,12 @@ function ModelCreateForm(props: {
                 </Card>
 
                 <Card>
-                    <CardHeader title="Model settings" />
+                    <CardHeader
+                        title={translation()(($) => $.screens.modelNewScreen.modelSettings)}
+                    />
                     <div class="mt-4 flex max-w-2xl flex-col gap-5">
                         <Switch
-                            label="Enabled"
+                            label={translation()(($) => $.screens.modelNewScreen.enabled)}
                             isOn={isEnabled()}
                             isDisabled={create.isCreating()}
                             onToggle={setIsEnabled}
@@ -318,8 +344,12 @@ function ModelCreateForm(props: {
                         />
 
                         <TokenCapOverrideFields
-                            switchLabel="Override max input tokens"
-                            fieldLabel="Max input tokens override"
+                            switchLabel={translation()(
+                                ($) => $.remainingText.overrideMaxInputTokens,
+                            )}
+                            fieldLabel={translation()(
+                                ($) => $.remainingText.maxInputTokensOverride,
+                            )}
                             hasOverride={hasMaxInputOverride()}
                             onHasOverrideToggle={setHasMaxInputOverride}
                             value={maxInputText()}
@@ -330,8 +360,12 @@ function ModelCreateForm(props: {
                         />
 
                         <TokenCapOverrideFields
-                            switchLabel="Override max output tokens"
-                            fieldLabel="Max output tokens override"
+                            switchLabel={translation()(
+                                ($) => $.remainingText.overrideMaxOutputTokens,
+                            )}
+                            fieldLabel={translation()(
+                                ($) => $.remainingText.maxOutputTokensOverride,
+                            )}
                             hasOverride={hasMaxOutputOverride()}
                             onHasOverrideToggle={setHasMaxOutputOverride}
                             value={maxOutputText()}
@@ -357,7 +391,9 @@ function ModelCreateForm(props: {
                                 isDisabled={!canCreate()}
                                 isBusy={create.isCreating()}
                             >
-                                {create.isCreating() ? "Creating…" : "Create model"}
+                                {create.isCreating()
+                                    ? translation()(($) => $.additional.modelNewScreen.creating)
+                                    : translation()(($) => $.additional.modelNewScreen.createModel)}
                             </Button>
                         </div>
                     </div>

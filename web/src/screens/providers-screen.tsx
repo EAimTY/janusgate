@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Show } from "solid-js";
+import { translation } from "/src/i18n";
+import { noProvidersMatchMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { modelCountsByProvider } from "/src/management-api/serving";
@@ -54,15 +56,17 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Providers"
-                description="Upstream accounts. Open one for its models and usage — editing lives one step further in."
+                title={translation()(($) => $.screens.providersScreen.providers)}
+                description={translation()(
+                    ($) => $.screens.providersScreen.upstreamAccountsOpenOneForItsModelsAndMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.providerNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    Create provider
+                    {translation()(($) => $.screens.providersScreen.createProvider)}
                 </ButtonLink>
             </PageHeader>
 
@@ -83,22 +87,27 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                     fallback={
                         <EmptyState
                             glyph="plug"
-                            title="No providers yet"
-                            description="A provider is one upstream account."
+                            title={translation()(($) => $.screens.providersScreen.noProvidersYet)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.providersScreen.aProviderIsOneUpstreamAccountMessage,
+                            )}
                         >
                             <ButtonLink
                                 href={hrefs.providerNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                Create provider
+                                {translation()(($) => $.screens.providersScreen.createProvider)}
                             </ButtonLink>
                         </EmptyState>
                     }
                 >
                     <SearchInput
-                        label="Search providers"
-                        placeholder="Search by name, type, or format"
+                        label={translation()(($) => $.screens.providersScreen.searchProviders)}
+                        placeholder={translation()(
+                            ($) => $.screens.providersScreen.searchByNameTypeOrFormat,
+                        )}
                         value={search()}
                         onInput={setSearch}
                         class="sm:max-w-xs"
@@ -109,7 +118,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         fallback={
                             <Notice
                                 tone="info"
-                                title={`No providers match "${search().trim()}".`}
+                                title={noProvidersMatchMessage(search().trim())}
                             />
                         }
                     >

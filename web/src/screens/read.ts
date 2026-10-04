@@ -1,3 +1,4 @@
+import type { JSX } from "@solidjs/web";
 /**
  * The screens' shared read machinery (README §6.3): the cycle's parallel
  * reads under one signal (`readAll`), the named read calls, the per-screen
@@ -37,18 +38,30 @@ export type { FailureCall };
 /** What a screen states about its last read or action, rendered as a `Notice`. */
 export type ScreenNotice = {
     readonly tone: NoticeTone;
-    readonly title: string;
-    readonly detail?: string | null | undefined;
-    readonly fix?: string | null | undefined;
+    readonly title: JSX.Element;
+    readonly detail?: JSX.Element;
+    readonly fix?: JSX.Element;
+    readonly rawDetail?: string | undefined;
 };
 
 /** The bad notice a diagnosis states verbatim: its title, detail, and fix carried across unchanged. */
 export function noticeOf(diagnosis: Diagnosis): ScreenNotice {
     return {
         tone: "bad",
-        title: diagnosis.title,
-        detail: diagnosis.detail,
-        fix: diagnosis.fix,
+        ...(diagnosis.rawDetail === undefined
+            ? {}
+            : {
+                  rawDetail: diagnosis.rawDetail,
+              }),
+        get title() {
+            return diagnosis.title;
+        },
+        get detail() {
+            return diagnosis.detail;
+        },
+        get fix() {
+            return diagnosis.fix;
+        },
     };
 }
 

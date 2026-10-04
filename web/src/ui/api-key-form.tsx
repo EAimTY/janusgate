@@ -1,10 +1,10 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { Button, TextField } from "/src/ui/controls";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
 import { CopyButton } from "./clipboard";
 import { InlineConfirmQuestion } from "./inline-confirm-question";
-import { requiredHint } from "./required-hint";
 import { SecretRevealToggle } from "./secret-reveal";
 
 /**
@@ -32,7 +32,7 @@ function generateApiKey(): string {
  * trimmed here: rejecting more than the gateway would block a legal name.
  */
 export function apiKeyNameError(name: string): string | null {
-    return name === "" ? "Name cannot be empty." : null;
+    return name === "" ? translation()(($) => $.connectionValidation.nameEmpty) : null;
 }
 
 /**
@@ -49,13 +49,13 @@ export function ApiKeyNameField(props: {
 }): JSX.Element {
     return (
         <TextField
-            label="Name"
+            label={translation()(($) => $.controls.name)}
             value={props.name}
             onInput={props.onNameInput}
             isDisabled={props.isDisabled ?? false}
             isData={false}
             error={props.error}
-            hint={requiredHint("Which client holds this key.")}
+            hint={translation()(($) => $.additional.apiKeyForm.whichClientHoldsThisKeyMessage)}
         />
     );
 }
@@ -114,7 +114,8 @@ export function ApiKeySecretField(props: {
     // follows the same default: creation's typing.
     const generateConfirmSubject = (): GenerateConfirmSubject =>
         props.generateConfirmSubject ?? "typed";
-    const revealLabel = (): string => props.revealLabel ?? "Show the key while typing";
+    const revealLabel = (): string =>
+        props.revealLabel ?? translation()(($) => $.remainingText.showTheKeyWhileTyping);
 
     const generate = (): void => {
         props.onSecretInput(generateApiKey());
@@ -124,17 +125,20 @@ export function ApiKeySecretField(props: {
     return (
         <div>
             <TextField
-                label="Key"
+                label={translation()(($) => $.controls.key)}
                 type={isSecretVisible() ? "text" : "password"}
                 value={props.secret}
                 onInput={props.onSecretInput}
                 isDisabled={props.isDisabled ?? false}
                 autocomplete="off"
-                placeholder="sk-… or Generate one"
+                placeholder={translation()(($) => $.controls.skOrGenerateOne)}
                 error={props.error}
                 hint={
                     props.hint ??
-                    requiredHint("A serving client authenticates with it on every surface.")
+                    translation()(
+                        ($) =>
+                            $.additional.apiKeyForm.aServingClientAuthenticatesWithItOnEveryMessage,
+                    )
                 }
             />
             <SecretRevealToggle
@@ -163,13 +167,15 @@ export function ApiKeySecretField(props: {
                                     }
                                 }}
                             >
-                                Generate
+                                {translation()(($) => $.controls.generate)}
                             </Button>
                         </span>
                     }
                 >
                     <InlineConfirmQuestion
-                        question={`Replace the ${generateConfirmSubject()} secret?`}
+                        question={translation()(
+                            ($) => $.domainMessages.replaceSecret[generateConfirmSubject()],
+                        )}
                         focusArmed={confirmFocus.focusArmed}
                     />
                     <Button
@@ -181,7 +187,7 @@ export function ApiKeySecretField(props: {
                             generate();
                         }}
                     >
-                        Replace it
+                        {translation()(($) => $.controls.replaceIt)}
                     </Button>
                     <Button
                         isDisabled={props.isDisabled ?? false}
@@ -190,13 +196,13 @@ export function ApiKeySecretField(props: {
                             setIsGenerateArmed(false);
                         }}
                     >
-                        Keep it
+                        {translation()(($) => $.controls.keepIt)}
                     </Button>
                 </Show>
                 <Show when={props.secret !== ""}>
                     <CopyButton
                         value={props.secret}
-                        subject="the secret here"
+                        subject={translation()(($) => $.controls.theSecretHere)}
                     />
                 </Show>
             </div>
@@ -213,7 +219,7 @@ export function ApiKeySecretValue(props: { readonly secret: string }): JSX.Eleme
             </p>
             <CopyButton
                 value={props.secret}
-                subject="the secret here"
+                subject={translation()(($) => $.controls.theSecretHere)}
             />
         </div>
     );

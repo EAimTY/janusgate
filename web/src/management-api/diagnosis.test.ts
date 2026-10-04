@@ -1,3 +1,4 @@
+import { type JSX, render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
@@ -9,6 +10,14 @@ const context: ActionContext = {
     baseUrl: "https://gateway.example.com",
     pageOrigin: "https://admin.example.com",
 };
+
+function textOf(value: JSX.Element): string {
+    const host = document.createElement("div");
+    const dispose = render(() => value, host);
+    const text = host.textContent ?? "";
+    dispose();
+    return text;
+}
 
 describe("diagnoseFailure", () => {
     it("preserves the gateway's own message as the detail of every rendered failure", () => {
@@ -28,7 +37,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("unauthorized");
-        expect(diagnosis.fix).toContain("management_api.token");
+        expect(textOf(diagnosis.fix)).toContain("management_api.token");
     });
 
     it("reports a gone row as having no recovery on this screen", () => {
@@ -51,7 +60,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toBe("Choose a provider name no other row holds.");
+        expect(textOf(diagnosis.fix)).toBe("Choose a provider name no other row holds.");
     });
 
     it("points a creation flow's completion conflict at Start over, the one control the live flow leaves reachable", () => {
@@ -64,7 +73,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toBe(
+        expect(textOf(diagnosis.fix)).toBe(
             "Another provider took this name before the flow could finish. Start over ends this flow and unlocks the name; then create again with a name no other row holds.",
         );
     });
@@ -79,7 +88,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toBe(
+        expect(textOf(diagnosis.fix)).toBe(
             "The stored version moved — use Refresh in the bar above; it re-reads the stored versions and leaves this form untouched — then submit again.",
         );
     });
@@ -94,7 +103,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toContain("exact upstream model");
+        expect(textOf(diagnosis.fix)).toContain("exact upstream model");
     });
 
     it("points a taken key secret at generating a fresh one", () => {
@@ -107,7 +116,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toContain("fresh one");
+        expect(textOf(diagnosis.fix)).toContain("fresh one");
     });
 
     it("keeps an upstream refusal during discovery agnostic when no provider type is known", () => {
@@ -120,7 +129,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("upstream");
-        expect(diagnosis.fix).toContain("provider's state");
+        expect(textOf(diagnosis.fix)).toContain("provider's state");
     });
 
     it("offers an OAuth provider's discovery refusal the reconnect and the manual add without claiming the cause", () => {
@@ -134,11 +143,11 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("upstream");
-        expect(diagnosis.fix).toContain("If the provider's authorization lapsed");
-        expect(diagnosis.fix).toContain("reconnect");
-        expect(diagnosis.fix).toContain("no models yet");
-        expect(diagnosis.fix).toContain("add one by hand");
-        expect(diagnosis.fix).not.toContain("API key");
+        expect(textOf(diagnosis.fix)).toContain("If the provider's authorization lapsed");
+        expect(textOf(diagnosis.fix)).toContain("reconnect");
+        expect(textOf(diagnosis.fix)).toContain("no models yet");
+        expect(textOf(diagnosis.fix)).toContain("add one by hand");
+        expect(textOf(diagnosis.fix)).not.toContain("API key");
     });
 
     it("offers a static-key provider's discovery refusal the credential fix and the manual add without claiming the cause", () => {
@@ -152,11 +161,11 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("upstream");
-        expect(diagnosis.fix).toContain("base URL");
-        expect(diagnosis.fix).toContain("API key");
-        expect(diagnosis.fix).toContain("no models yet");
-        expect(diagnosis.fix).toContain("add one by hand");
-        expect(diagnosis.fix).not.toContain("reconnect");
+        expect(textOf(diagnosis.fix)).toContain("base URL");
+        expect(textOf(diagnosis.fix)).toContain("API key");
+        expect(textOf(diagnosis.fix)).toContain("no models yet");
+        expect(textOf(diagnosis.fix)).toContain("add one by hand");
+        expect(textOf(diagnosis.fix)).not.toContain("reconnect");
     });
 
     it("keeps internal failures opaque and points at the gateway's log", () => {
@@ -166,7 +175,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("internal");
-        expect(diagnosis.fix).toContain("stderr");
+        expect(textOf(diagnosis.fix)).toContain("stderr");
     });
 
     it("treats a rejected field as the gateway's own statement", () => {
@@ -176,7 +185,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("rejected");
-        expect(diagnosis.title.length).toBeGreaterThan(0);
+        expect(textOf(diagnosis.title).length).toBeGreaterThan(0);
     });
 
     it("classifies a shape mismatch as a version disagreement", () => {
@@ -186,7 +195,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("contract");
-        expect(diagnosis.fix).toContain("bindings");
+        expect(textOf(diagnosis.fix)).toContain("bindings");
     });
 
     const reachabilityCases: ReadonlyArray<{
@@ -239,9 +248,9 @@ describe("diagnoseFailure", () => {
             },
         );
 
-        expect(blocked.fix).toContain("management_api.cors.allowed_origin");
-        expect(blocked.fix).toContain("https://admin.example.com");
-        expect(unreached.fix).not.toContain("management_api.cors.allowed_origin");
+        expect(textOf(blocked.fix)).toContain("management_api.cors.allowed_origin");
+        expect(textOf(blocked.fix)).toContain("https://admin.example.com");
+        expect(textOf(unreached.fix)).not.toContain("management_api.cors.allowed_origin");
     });
 
     it("renders the browser-refused network failures without the browser's jargon", () => {
@@ -290,13 +299,14 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("mixed-content");
-        expect(diagnosis.title).toBe(
+        expect(diagnosis.rawDetail).toBe("Network request failed: Failed to fetch");
+        expect(textOf(diagnosis.title)).toBe(
             "An HTTPS page cannot call the HTTP address http://gateway.example.com.",
         );
         expect(diagnosis.detail).toBe(
             "This page is served over HTTPS, and the browser blocks its calls to HTTP addresses outright, so the gateway was never contacted.",
         );
-        expect(diagnosis.fix).toBe(
+        expect(textOf(diagnosis.fix)).toBe(
             "Serve this app over HTTP as well, or add a `tls` section to that instance's configuration file so the gateway answers HTTPS.",
         );
     });
@@ -333,6 +343,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("mixed-content");
+        expect(diagnosis.rawDetail).toBe("Network request failed: Failed to fetch");
     });
 
     it("reads a trailing-dot loopback host as the loopback it resolves to", () => {
@@ -360,7 +371,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("unreachable");
-        expect(diagnosis.title).toBe("Nothing answered at http://gateway.example.com.");
+        expect(textOf(diagnosis.title)).toBe("Nothing answered at http://gateway.example.com.");
     });
 
     it("reports an unshaped HTTP failure with its status", () => {

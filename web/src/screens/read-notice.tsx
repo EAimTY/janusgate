@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { type Accessor, Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { Button } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import type { ScreenNotice, ScreenRead } from "./read";
@@ -30,6 +31,7 @@ export function StatedNotice(props: {
                         tone={current().tone}
                         title={current().title}
                         detail={current().detail}
+                        rawDetail={current().rawDetail}
                         fix={current().fix}
                         class={props.noticeClass}
                     />
@@ -92,7 +94,7 @@ export function ReadNotice(props: {
                     isBusy={props.read.isReading()}
                     onClick={() => props.retry?.()}
                 >
-                    Read again
+                    {translation()(($) => $.screens.readNotice.readAgain)}
                 </Button>
             </Show>
         </StatedNotice>

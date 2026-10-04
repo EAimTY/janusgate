@@ -1,3 +1,4 @@
+import { translation } from "/src/i18n";
 import type { DefinitionPayload } from "/src/management-api/definition-payload";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import { PRESET_QUOTAS } from "/src/preset-quotas";
@@ -66,7 +67,12 @@ const STATIC_KEY_PRESETS: readonly [
     {
         id: "generic-openai-responses",
         title: "OpenAI-compatible Responses API",
-        description: "Any endpoint speaking the OpenAI Responses protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets.anyEndpointSpeakingTheOpenAIResponsesProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "openai",
         provenance:
@@ -134,7 +140,12 @@ const STATIC_KEY_PRESETS: readonly [
     {
         id: "generic-openai-chat-completions",
         title: "OpenAI-compatible Chat Completions API",
-        description: "Any endpoint speaking the Chat Completions protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets.anyEndpointSpeakingTheChatCompletionsProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "openai",
         provenance:
@@ -202,7 +213,13 @@ const STATIC_KEY_PRESETS: readonly [
     {
         id: "generic-gemini-generate-content",
         title: "Gemini-compatible GenerateContent API",
-        description: "Any endpoint speaking the Gemini GenerateContent protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .anyEndpointSpeakingTheGeminiGenerateContentProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "gemini",
         provenance: "Gemini API reference (ai.google.dev/api/generate-content)",
@@ -307,7 +324,13 @@ const STATIC_KEY_PRESETS: readonly [
     {
         id: "generic-gemini-interactions",
         title: "Gemini-compatible Interactions API",
-        description: "Any endpoint speaking the Gemini Interactions protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .anyEndpointSpeakingTheGeminiInteractionsProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "gemini",
         provenance: "Gemini Interactions API reference (ai.google.dev/api/interactions-api)",
@@ -415,7 +438,12 @@ const STATIC_KEY_PRESETS: readonly [
     {
         id: "generic-anthropic-messages",
         title: "Anthropic-compatible Messages API",
-        description: "Any endpoint speaking the Anthropic Messages protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets.anyEndpointSpeakingTheAnthropicMessagesProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "anthropic",
         provenance: "Anthropic Messages API reference (docs.anthropic.com/en/api/messages)",
@@ -514,8 +542,13 @@ const STATIC_KEY_PRESETS: readonly [
     {
         id: "xai",
         title: "xAI (Grok) Responses API",
-        description:
-            "The xAI Responses endpoint with a static key: native compaction rides the standalone `/responses/compact` operation, while the explicit trigger and the automatic compaction are declared unsupported — a standalone compact endpoint does not imply native trigger or automatic compaction.",
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .theXAIResponsesEndpointWithAStaticKeyNativeCompactionRidesTheStandaloneResponsescompact,
+            );
+        },
         grant: null,
         suggestedName: "xai",
         provenance:
@@ -645,9 +678,16 @@ const OAUTH_PRESETS: readonly [
 ] = [
     {
         id: "claude-code",
-        title: "Claude Code (Claude account)",
-        description:
-            "A Claude subscription account over the Messages API: the OAuth token rides `Authorization: Bearer` beside the `oauth-2025-04-20` beta header, on inference and model discovery alike.",
+        get title() {
+            return translation()(($) => $.helpers.presets.claudeCodeClaudeAccount);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .aClaudeSubscriptionAccountOverTheMessagesAPITheOAuthTokenRidesAuthorizationBearer,
+            );
+        },
         grant: "authorization_code",
         suggestedName: "claude",
         provenance:
@@ -1013,9 +1053,12 @@ const OAUTH_PRESETS: readonly [
     },
     {
         id: "kimi-code",
-        title: "Kimi Code (Kimi account)",
-        description:
-            "A Kimi account over the Coding endpoint: a device-code flow whose device ID slot rides the custom `X-Msh-*` headers on authorization, polling, and refresh alike.",
+        get title() {
+            return translation()(($) => $.helpers.presets.kimiCodeKimiAccount);
+        },
+        get description() {
+            return translation()(($) => $.linkedMessages.kimiDescription);
+        },
         grant: "device",
         suggestedName: "kimi",
         provenance:
@@ -1425,9 +1468,12 @@ const OAUTH_PRESETS: readonly [
     },
     {
         id: "github-copilot",
-        title: "GitHub Copilot (GitHub account)",
-        description:
-            "A GitHub account whose durable token is exchanged by reprovisioning for the short-lived Copilot session token and the account's API endpoint.",
+        get title() {
+            return translation()(($) => $.helpers.presets.githubCopilotGitHubAccount);
+        },
+        get description() {
+            return translation()(($) => $.linkedMessages.githubDescription);
+        },
         grant: "device",
         suggestedName: "copilot",
         provenance:
@@ -1806,9 +1852,16 @@ const OAUTH_PRESETS: readonly [
     },
     {
         id: "devin",
-        title: "Devin (Devin account)",
-        description:
-            "A Devin account whose ConnectRPC token exchange answers a static API key and API server URL — no refresh, no expiry; models are added manually.",
+        get title() {
+            return translation()(($) => $.helpers.presets.devinDevinAccount);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .aDevinAccountWhoseConnectRPCTokenExchangeAnswersAStaticAPIKeyAndAPI,
+            );
+        },
         grant: "authorization_code",
         suggestedName: "devin",
         provenance:
@@ -1973,9 +2026,16 @@ const OAUTH_PRESETS: readonly [
 
     {
         id: "codex",
-        title: "Codex (ChatGPT account)",
-        description:
-            "A ChatGPT account over the Codex Responses endpoint. Streaming is forced upstream and responses render with the OpenAI Responses format. The compaction section declares the explicit trigger and the automatic threshold compaction the Codex backend accepts.",
+        get title() {
+            return translation()(($) => $.helpers.presets.codexChatGPTAccount);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .aChatGPTAccountOverTheCodexResponsesEndpointStreamingIsForcedUpstreamAndResponses,
+            );
+        },
         grant: "authorization_code",
         suggestedName: "codex",
         provenance:
@@ -2350,9 +2410,16 @@ const OAUTH_PRESETS: readonly [
     },
     {
         id: "antigravity",
-        title: "Antigravity (Google account)",
-        description:
-            "A Google account over the Antigravity Gemini endpoint, with project onboarding and an enveloped GenerateContent request.",
+        get title() {
+            return translation()(($) => $.helpers.presets.antigravityGoogleAccount);
+        },
+        get description() {
+            return translation()(
+                ($) =>
+                    $.helpers.presets
+                        .aGoogleAccountOverTheAntigravityGeminiEndpointWithProjectOnboardingAndAnEnveloped,
+            );
+        },
         grant: "authorization_code",
         suggestedName: "antigravity",
         provenance:
@@ -2906,7 +2973,11 @@ const ZEN_PRESETS: readonly [
     {
         id: "zen-openai-chat-completions",
         title: "OpenCode Zen — Chat Completions",
-        description: "Zen over the OpenAI Chat Completions protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) => $.helpers.presets.zenOverTheOpenAIChatCompletionsProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "zen",
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
@@ -2985,7 +3056,11 @@ const ZEN_PRESETS: readonly [
     {
         id: "zen-openai-responses",
         title: "OpenCode Zen — Responses",
-        description: "Zen over the OpenAI Responses protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) => $.helpers.presets.zenOverTheOpenAIResponsesProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "zen",
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
@@ -3064,7 +3139,11 @@ const ZEN_PRESETS: readonly [
     {
         id: "zen-anthropic-messages",
         title: "OpenCode Zen — Anthropic Messages",
-        description: "Zen over the Anthropic Messages protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) => $.helpers.presets.zenOverTheAnthropicMessagesProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "zen",
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
@@ -3144,7 +3223,11 @@ const ZEN_PRESETS: readonly [
     {
         id: "zen-gemini-generate-content",
         title: "OpenCode Zen — Gemini GenerateContent",
-        description: "Zen over the Gemini GenerateContent protocol with a static key.",
+        get description() {
+            return translation()(
+                ($) => $.helpers.presets.zenOverTheGeminiGenerateContentProtocolWithAStaticKey,
+            );
+        },
         grant: null,
         suggestedName: "zen",
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",

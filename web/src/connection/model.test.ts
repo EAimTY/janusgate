@@ -41,33 +41,33 @@ describe("normalizeBaseUrl", () => {
     it("rejects an empty input", () => {
         expect(normalizeBaseUrl("   ")).toEqual({
             ok: false,
-            reason: "Enter the JanusGate base URL.",
+            reason: "empty",
         });
     });
 
     it("rejects input that is not an absolute URL", () => {
         expect(normalizeBaseUrl("gateway.example.com")).toEqual({
             ok: false,
-            reason: "Enter an absolute URL, for example https://gateway.example.com.",
+            reason: "not-absolute",
         });
     });
 
     it("rejects a non-http scheme", () => {
         expect(normalizeBaseUrl("ftp://gateway.example.com")).toEqual({
             ok: false,
-            reason: "Use an http:// or https:// URL.",
+            reason: "scheme",
         });
     });
 
     it("rejects embedded credentials", () => {
         expect(normalizeBaseUrl("https://user:secret@gateway.example.com")).toEqual({
             ok: false,
-            reason: "Remove the credentials from the URL.",
+            reason: "credentials",
         });
     });
 
     it("rejects anything but an origin", () => {
-        const reason = "Enter only the gateway origin, without a path, query, or fragment.";
+        const reason = "not-origin";
 
         expect(normalizeBaseUrl("https://gateway.example.com/management-api/v0")).toEqual({
             ok: false,

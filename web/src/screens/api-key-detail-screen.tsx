@@ -2,6 +2,8 @@ import type { JSX } from "@solidjs/web";
 import { createSignal } from "solid-js";
 import type { AccessInventory } from "/src/access-control";
 import { formatTimestamp } from "/src/format";
+import { translation } from "/src/i18n";
+import { keyEndpointMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
@@ -17,8 +19,6 @@ import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeyAccess } from "/src/ui/api-key-access";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
-import { AppLink } from "/src/ui/app-link";
-import { proseLinkClass } from "/src/ui/attributes";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
@@ -64,18 +64,18 @@ export function ApiKeyDetailScreen(props: {
             row={apiKey}
             firstReadHeader={
                 <PageHeader
-                    title="API key"
+                    title={translation()(($) => $.screens.apiKeyDetailScreen.apiKey)}
                     backHref={hrefs.apiKeys()}
-                    backLabel="API keys"
+                    backLabel={translation()(($) => $.additional.apiKeyDetailScreen.apiKeys)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="api_key"
-                    headerTitle="API key"
+                    headerTitle={translation()(($) => $.additional.apiKeyDetailScreen.apiKey)}
                     createAction={{
                         href: hrefs.apiKeyNew(),
-                        label: "Create API key",
+                        label: translation()(($) => $.additional.apiKeyDetailScreen.createAPIKey),
                     }}
                 />
             }
@@ -84,19 +84,29 @@ export function ApiKeyDetailScreen(props: {
                 <>
                     <PageHeader
                         title={row.name}
-                        description={`Created ${formatTimestamp(row.created_at)}`}
+                        description={translation()(($) => $.domainMessages.created, {
+                            instant: formatTimestamp(row.created_at),
+                        })}
                         backHref={hrefs.apiKeys()}
-                        backLabel="API keys"
+                        backLabel={translation()(($) => $.additional.apiKeyDetailScreen.apiKeys)}
                     >
                         <Badge
                             tone={row.is_enabled ? "ok" : "muted"}
-                            label={row.is_enabled ? "Enabled" : "Disabled"}
+                            label={
+                                row.is_enabled
+                                    ? translation()(($) => $.additional.apiKeyDetailScreen.enabled)
+                                    : translation()(($) => $.additional.apiKeyDetailScreen.disabled)
+                            }
                         />
-                        <ButtonLink href={hrefs.apiKeyEdit(row.id)}>Edit API key</ButtonLink>
+                        <ButtonLink href={hrefs.apiKeyEdit(row.id)}>
+                            {translation()(($) => $.screens.apiKeyDetailScreen.editAPIKey)}
+                        </ButtonLink>
                     </PageHeader>
 
                     <Card>
-                        <CardHeader title="Secret" />
+                        <CardHeader
+                            title={translation()(($) => $.screens.apiKeyDetailScreen.secret)}
+                        />
                         <div class="mt-4">
                             <ApiKeySecretValue secret={row.key} />
                         </div>
@@ -105,27 +115,21 @@ export function ApiKeyDetailScreen(props: {
                             is aimed at live on the Overview's Endpoints card —
                             the fact the management API never states. */}
                         <p class="mt-3 text-[12.5px] text-ink-faint">
-                            Point your client at an endpoint — every surface serves permitted public
-                            entries; the URLs are on the{" "}
-                            <AppLink
-                                href={hrefs.home()}
-                                class={proseLinkClass}
-                            >
-                                Overview
-                            </AppLink>
-                            .
+                            {keyEndpointMessage(hrefs.home())}
                         </p>
                     </Card>
 
                     <Card>
-                        <CardHeader title="Details" />
+                        <CardHeader
+                            title={translation()(($) => $.screens.apiKeyDetailScreen.details)}
+                        />
                         <FactList>
                             <Fact
-                                label="Name"
+                                label={translation()(($) => $.screens.apiKeyDetailScreen.name)}
                                 value={row.name}
                             />
                             <Fact
-                                label="Created"
+                                label={translation()(($) => $.screens.apiKeyDetailScreen.created)}
                                 value={formatTimestamp(row.created_at)}
                                 isTabular
                             />
@@ -134,8 +138,16 @@ export function ApiKeyDetailScreen(props: {
                                 word exactly — the tight list-row "On/Off"
                                 never appears on a detail page. */}
                             <Fact
-                                label="Status"
-                                value={row.is_enabled ? "Enabled" : "Disabled"}
+                                label={translation()(($) => $.screens.apiKeyDetailScreen.status)}
+                                value={
+                                    row.is_enabled
+                                        ? translation()(
+                                              ($) => $.additional.apiKeyDetailScreen.enabled,
+                                          )
+                                        : translation()(
+                                              ($) => $.additional.apiKeyDetailScreen.disabled,
+                                          )
+                                }
                             />
                         </FactList>
                     </Card>
@@ -155,7 +167,7 @@ export function ApiKeyDetailScreen(props: {
                             />
                             <div class="mt-4">
                                 <ButtonLink href={hrefs.apiKeyEdit(row.id)}>
-                                    Edit API key
+                                    {translation()(($) => $.screens.apiKeyDetailScreen.editAPIKey)}
                                 </ButtonLink>
                             </div>
                         </Card>
@@ -165,7 +177,7 @@ export function ApiKeyDetailScreen(props: {
                         filter={{
                             api_key_id: row.id,
                         }}
-                        subjectKind="API key"
+                        subjectKind="api key"
                     />
                 </>
             )}

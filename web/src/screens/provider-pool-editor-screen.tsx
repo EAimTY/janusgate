@@ -1,5 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
+import { translation } from "/src/i18n";
+import { editNameMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
@@ -85,15 +87,21 @@ export function ProviderPoolEditorScreen(props: {
             row={edit.row}
             firstReadHeader={
                 <PageHeader
-                    title={props.poolId === null ? "Create pool" : "Edit pool"}
+                    title={
+                        props.poolId === null
+                            ? translation()(($) => $.additional.providerPoolEditorScreen.createPool)
+                            : translation()(($) => $.additional.providerPoolEditorScreen.editPool)
+                    }
                     backHref={hrefs.providerPools()}
-                    backLabel="Pools"
+                    backLabel={translation()(($) => $.additional.providerPoolEditorScreen.pools)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="pool"
-                    headerTitle="Edit pool"
+                    headerTitle={translation()(
+                        ($) => $.additional.providerPoolEditorScreen.editPool,
+                    )}
                 />
             }
         >
@@ -108,10 +116,22 @@ export function ProviderPoolEditorScreen(props: {
                 return (
                     <>
                         <PageHeader
-                            title={pool.id === null ? "Create pool" : `Edit ${pool.name}`}
-                            description="Interchangeable accounts for the same upstream service, tried in priority order."
+                            title={
+                                pool.id === null
+                                    ? translation()(
+                                          ($) => $.additional.providerPoolEditorScreen.createPool,
+                                      )
+                                    : editNameMessage(pool.name)
+                            }
+                            description={translation()(
+                                ($) =>
+                                    $.screens.providerPoolEditorScreen
+                                        .interchangeableAccountsForTheSameUpstreamServiceTriedMessage,
+                            )}
                             backHref={hrefs.providerPools()}
-                            backLabel="Pools"
+                            backLabel={translation()(
+                                ($) => $.additional.providerPoolEditorScreen.pools,
+                            )}
                         />
                         <HoldNotice
                             isHeld={edit.isRowHeld()}
@@ -132,10 +152,18 @@ export function ProviderPoolEditorScreen(props: {
                             {(savedPool) => (
                                 <>
                                     <TextField
-                                        label="Inspect upstream ID"
+                                        label={translation()(
+                                            ($) =>
+                                                $.screens.providerPoolEditorScreen
+                                                    .inspectUpstreamID,
+                                        )}
                                         value={inspectionId()}
                                         onInput={setInspectionId}
-                                        hint="Inspects saved membership. Leaving this empty shows account-wide restrictions only."
+                                        hint={translation()(
+                                            ($) =>
+                                                $.screens.providerPoolEditorScreen
+                                                    .inspectsSavedMembershipLeavingThisEmptyShowsAccountwideMessage,
+                                        )}
                                     />
                                     <PoolAvailabilityCard
                                         api={props.api}
@@ -177,9 +205,17 @@ function PoolDelete(props: {
     });
     return (
         <ConfirmDeleteCard
-            title="Delete this pool"
-            description="Deleting removes automatic pool entries and restores standalone member prefixes. Authored routes must be removed or retargeted first."
-            question="Delete this pool? Its membership is removed."
+            title={translation()(($) => $.screens.providerPoolEditorScreen.deleteThisPool)}
+            description={translation()(
+                ($) =>
+                    $.screens.providerPoolEditorScreen
+                        .deletingRemovesAutomaticPoolEntriesAndRestoresStandaloneMessage,
+            )}
+            question={translation()(
+                ($) =>
+                    $.additional.providerPoolEditorScreen
+                        .deleteThisPoolItsMembershipIsRemovedMessage,
+            )}
             onConfirm={remove}
         />
     );
@@ -248,7 +284,9 @@ function PoolForm(props: {
             if (props.seed.id === null) navigate(hrefs.providerPoolEdit(id));
             return {
                 tone: "ok",
-                title: "Pool saved.",
+                get title() {
+                    return translation()(($) => $.notices.poolSaved);
+                },
                 detail: null,
             };
         },
@@ -257,7 +295,9 @@ function PoolForm(props: {
     });
     const accountName = (id: number): string =>
         props.providers.find((provider) => provider.id === id)?.name ??
-        `Account #${id} (no longer listed)`;
+        translation()(($) => $.domainMessages.accountUnlisted, {
+            id,
+        });
     // Swapping priority values preserves authored gaps and commits no partial write.
     const move = (index: number, offset: number): void => {
         const next = [
@@ -304,69 +344,101 @@ function PoolForm(props: {
     };
     return (
         <Card>
-            <CardHeader title="Pool settings" />
+            <CardHeader
+                title={translation()(($) => $.screens.providerPoolEditorScreen.poolSettings)}
+            />
             <form
                 novalidate
                 class="mt-4 flex max-w-2xl flex-col gap-5"
                 onSubmit={form.submit}
             >
                 <Switch
-                    label="Enabled"
+                    label={translation()(($) => $.screens.providerPoolEditorScreen.enabled)}
                     isOn={isEnabled()}
                     onToggle={setIsEnabled}
                     isDisabled={form.isSaving()}
                 />
                 <TextField
-                    label="Name"
+                    label={translation()(($) => $.screens.providerPoolEditorScreen.name)}
                     value={name()}
                     onInput={setName}
-                    error={name() === "" ? "Name is required." : null}
+                    error={
+                        name() === ""
+                            ? translation()(
+                                  ($) =>
+                                      $.additional.providerPoolEditorScreen.nameIsRequiredMessage,
+                              )
+                            : null
+                    }
                     isDisabled={form.isSaving()}
                 />
                 <TextField
-                    label="Model prefix"
+                    label={translation()(($) => $.screens.providerPoolEditorScreen.modelPrefix)}
                     value={resolvedPrefix()}
                     onInput={setModelPrefix}
-                    error={routingTokenError(resolvedPrefix(), "Model prefix")}
+                    error={routingTokenError(resolvedPrefix(), "modelPrefix")}
                     isDisabled={form.isSaving()}
-                    hint="The pool automatically exposes member models as this prefix + upstream ID. Leave empty to use exact upstream IDs. Changing the prefix renames existing automatic entries."
+                    hint={translation()(
+                        ($) =>
+                            $.screens.providerPoolEditorScreen
+                                .thePoolAutomaticallyExposesMemberModelsAsThisMessage,
+                    )}
                 />
                 <div class="flex flex-col gap-3">
-                    <h3 class="text-[13px] font-medium">Accounts in priority order</h3>
+                    <h3 class="text-[13px] font-medium">
+                        {translation()(
+                            ($) => $.screens.providerPoolEditorScreen.accountsInPriorityOrder,
+                        )}
+                    </h3>
                     <p class="text-[12.5px] text-ink-faint">
-                        Members must serve the same upstream service. Their own prefix entries are
-                        hidden while pooled. New models appear here automatically and route only to
-                        members that have them. Empty pools are allowed.
+                        {translation()(
+                            ($) =>
+                                $.screens.providerPoolEditorScreen
+                                    .membersMustServeTheSameUpstreamServiceTheirMessage,
+                        )}
                     </p>
                     <ol class="flex flex-col gap-3">
                         <For each={members()}>
                             {(member, index) => (
                                 <li class="flex flex-col items-start gap-3 border-b border-rule pb-3 sm:flex-row sm:items-center">
                                     <span class="min-w-0 break-words text-[13px] sm:flex-1">
-                                        {accountName(member.provider_id)}{" "}
+                                        <bdi dir="auto">{accountName(member.provider_id)}</bdi>{" "}
                                         <span class="tnum text-ink-faint">
-                                            · Priority {member.priority}
+                                            ·{" "}
+                                            {translation()(($) => $.quotaMessages.priority, {
+                                                priority: member.priority,
+                                            })}
                                         </span>
                                     </span>
                                     <div class="flex shrink-0 flex-wrap gap-2">
                                         <Button
-                                            title={`Move ${accountName(member.provider_id)} up`}
+                                            title={translation()(($) => $.domainMessages.moveUp, {
+                                                name: accountName(member.provider_id),
+                                            })}
                                             isDisabled={form.isSaving() || index() === 0}
                                             onClick={() => move(index(), -1)}
                                         >
-                                            Move up
+                                            {translation()(
+                                                ($) => $.screens.providerPoolEditorScreen.moveUp,
+                                            )}
                                         </Button>
                                         <Button
-                                            title={`Move ${accountName(member.provider_id)} down`}
+                                            title={translation()(($) => $.domainMessages.moveDown, {
+                                                name: accountName(member.provider_id),
+                                            })}
                                             isDisabled={
                                                 form.isSaving() || index() === members().length - 1
                                             }
                                             onClick={() => move(index(), 1)}
                                         >
-                                            Move down
+                                            {translation()(
+                                                ($) => $.screens.providerPoolEditorScreen.moveDown,
+                                            )}
                                         </Button>
                                         <Button
-                                            title={`Remove ${accountName(member.provider_id)}`}
+                                            title={translation()(($) => $.domainMessages.remove, {
+                                                name: accountName(member.provider_id),
+                                            })}
                                             isDisabled={form.isSaving()}
                                             onClick={() =>
                                                 setMembers(
@@ -378,7 +450,9 @@ function PoolForm(props: {
                                                 )
                                             }
                                         >
-                                            Remove
+                                            {translation()(
+                                                ($) => $.screens.providerPoolEditorScreen.remove,
+                                            )}
                                         </Button>
                                     </div>
                                 </li>
@@ -386,12 +460,14 @@ function PoolForm(props: {
                         </For>
                     </ol>
                     <SelectField
-                        label="Add account"
+                        label={translation()(($) => $.screens.providerPoolEditorScreen.addAccount)}
                         value={selectedAccount()}
                         options={[
                             {
                                 value: "",
-                                label: "Choose an account",
+                                label: translation()(
+                                    ($) => $.additional.providerPoolEditorScreen.chooseAnAccount,
+                                ),
                             },
                             ...props.providers
                                 .filter(
@@ -413,7 +489,7 @@ function PoolForm(props: {
                             isDisabled={form.isSaving() || !canAdd()}
                             onClick={add}
                         >
-                            Add member
+                            {translation()(($) => $.screens.providerPoolEditorScreen.addMember)}
                         </Button>
                     </div>
                 </div>
@@ -425,7 +501,7 @@ function PoolForm(props: {
                             isDisabled={!canSave()}
                             isBusy={form.isSaving()}
                         >
-                            Create pool
+                            {translation()(($) => $.screens.providerPoolEditorScreen.createPool)}
                         </Button>
                     </div>
                 ) : (

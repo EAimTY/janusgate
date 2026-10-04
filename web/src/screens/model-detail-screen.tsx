@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
+import { translation } from "/src/i18n";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
@@ -98,15 +99,15 @@ export function ModelDetailScreen(props: {
             }}
             firstReadHeader={
                 <PageHeader
-                    title="Model"
+                    title={translation()(($) => $.screens.modelDetailScreen.model)}
                     backHref={hrefs.models(null)}
-                    backLabel="Models"
+                    backLabel={translation()(($) => $.additional.modelDetailScreen.models)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="model"
-                    headerTitle="Model"
+                    headerTitle={translation()(($) => $.additional.modelDetailScreen.model)}
                 />
             }
         >
@@ -149,33 +150,53 @@ function CapabilityFacts(props: {
             capabilitySource(props.model.thinking_levels_override, props.model.thinking_levels)
         ) {
             case "override":
-                return "Overridden by administrator.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
+                );
             case "discovered":
-                return "From the latest discovery.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
+                );
             case "unknown":
-                return "Unknown — omitted from model listings.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.unknownOmittedFromModelListingsMessage,
+                );
         }
     };
 
     const tokenSource = (override: number | null, base: number | null): string => {
         switch (capabilitySource(override, base)) {
             case "override":
-                return "Overridden by administrator.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
+                );
             case "discovered":
-                return "From the latest discovery.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
+                );
             case "unknown":
-                return "Unknown — omitted from model listings.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.unknownOmittedFromModelListingsMessage,
+                );
         }
     };
 
     const compactionSource = (fact: CompactionFact): string => {
         switch (fact.source) {
             case "override":
-                return "Overridden by administrator.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
+                );
             case "discovered":
-                return "From the latest discovery.";
+                return translation()(
+                    ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
+                );
             case "unknown":
-                return "No fact on this row — the definition's declaration decides.";
+                return translation()(
+                    ($) =>
+                        $.additional.modelDetailScreen
+                            .noFactOnThisRowTheDefinitionsDeclarationMessage,
+                );
         }
     };
 
@@ -183,10 +204,12 @@ function CapabilityFacts(props: {
         const effective = levels();
 
         if (effective === null) {
-            return "Unknown";
+            return translation()(($) => $.additional.modelDetailScreen.unknown);
         }
 
-        return effective.length === 0 ? "No levels" : effective.join(", ");
+        return effective.length === 0
+            ? translation()(($) => $.helpers.modelDetailScreen.noLevels)
+            : effective.join(", ");
     };
 
     // The mechanisms the owning provider's format can speak: the Responses
@@ -218,12 +241,15 @@ function CapabilityFacts(props: {
     return (
         <Card>
             <CardHeader
-                title="Capabilities"
-                description="What the model listings declare for this model. Nothing here gates a request — the upstream answers what it answers."
+                title={translation()(($) => $.screens.modelDetailScreen.capabilities)}
+                description={translation()(
+                    ($) =>
+                        $.screens.modelDetailScreen.whatTheModelListingsDeclareForThisModelMessage,
+                )}
             />
             <FactList>
                 <Fact
-                    label="Reasoning levels"
+                    label={translation()(($) => $.screens.modelDetailScreen.reasoningLevels)}
                     value={
                         <span>
                             <span class="tnum">{levelsDisplay()}</span>
@@ -233,7 +259,7 @@ function CapabilityFacts(props: {
                     class="break-all"
                 />
                 <Fact
-                    label="Max input tokens"
+                    label={translation()(($) => $.screens.modelDetailScreen.maxInputTokens)}
                     value={
                         <span>
                             <span class="tnum">{formatTokenCount(maxInput())}</span>
@@ -247,7 +273,7 @@ function CapabilityFacts(props: {
                     }
                 />
                 <Fact
-                    label="Max output tokens"
+                    label={translation()(($) => $.screens.modelDetailScreen.maxOutputTokens)}
                     value={
                         <span>
                             <span class="tnum">{formatTokenCount(maxOutput())}</span>
@@ -263,10 +289,15 @@ function CapabilityFacts(props: {
             </FactList>
             <Show when={compactionMechanisms().length > 0}>
                 <div class="mt-5">
-                    <h3 class="text-[13px] font-medium text-ink">Compaction</h3>
+                    <h3 class="text-[13px] font-medium text-ink">
+                        {translation()(($) => $.screens.modelDetailScreen.compaction)}
+                    </h3>
                     <p class="mt-1 max-w-[70ch] text-[13px] text-ink-faint">
-                        The row's own compaction facts — the override, else the latest discovery.
-                        The definition's declaration decides whatever both leave unstated.
+                        {translation()(
+                            ($) =>
+                                $.screens.modelDetailScreen
+                                    .theRowsOwnCompactionFactsTheOverrideElseMessage,
+                        )}
                     </p>
                     <FactList>
                         <For each={compactionMechanisms()}>
@@ -324,8 +355,12 @@ function ModelFacts(props: {
                     tone={discovery().tone}
                     label={discovery().label}
                 />
-                <ButtonLink href={hrefs.modelRouteNew(props.model.id)}>Add alias</ButtonLink>
-                <ButtonLink href={hrefs.modelEdit(props.model.id)}>Edit model</ButtonLink>
+                <ButtonLink href={hrefs.modelRouteNew(props.model.id)}>
+                    {translation()(($) => $.screens.modelDetailScreen.addAlias)}
+                </ButtonLink>
+                <ButtonLink href={hrefs.modelEdit(props.model.id)}>
+                    {translation()(($) => $.screens.modelDetailScreen.editModel)}
+                </ButtonLink>
             </PageHeader>
 
             <VanishedModelNotice
@@ -335,20 +370,21 @@ function ModelFacts(props: {
             />
 
             <Card>
-                <CardHeader title="Details" />
+                <CardHeader title={translation()(($) => $.screens.modelDetailScreen.details)} />
                 <FactList>
                     <Fact
-                        label="Public model names"
+                        label={translation()(($) => $.screens.modelDetailScreen.publicModelNames)}
                         value={
                             automaticModelNames(props.model, props.modelRoutes, props.pools).join(
                                 ", ",
-                            ) || "No automatic entry"
+                            ) ||
+                            translation()(($) => $.additional.modelDetailScreen.noAutomaticEntry)
                         }
                         isTabular
                         class="break-all"
                     />
                     <Fact
-                        label="Direct routes"
+                        label={translation()(($) => $.screens.modelDetailScreen.directRoutes)}
                         value={String(
                             props.modelRoutes.filter(
                                 (route) =>
@@ -359,13 +395,13 @@ function ModelFacts(props: {
                         isTabular
                     />
                     <Fact
-                        label="Upstream ID"
+                        label={translation()(($) => $.screens.modelDetailScreen.upstreamID)}
                         value={props.model.upstream_id}
                         isTabular
                         class="break-all"
                     />
                     <Fact
-                        label="Provider"
+                        label={translation()(($) => $.screens.modelDetailScreen.provider)}
                         value={
                             props.provider === null ? (
                                 <span class="text-ink-dim">{props.model.provider}</span>
@@ -380,7 +416,7 @@ function ModelFacts(props: {
                         }
                     />
                     <Fact
-                        label="Discovery"
+                        label={translation()(($) => $.screens.modelDetailScreen.discovery)}
                         value={DISCOVERY_STATE.label(props.model.discovery_state)}
                         class="text-ink-dim"
                     />
@@ -390,8 +426,12 @@ function ModelFacts(props: {
                         appears here, while the header badge stays the
                         effective-serving ladder above. */}
                     <Fact
-                        label="Status"
-                        value={props.model.is_enabled ? "Enabled" : "Disabled"}
+                        label={translation()(($) => $.screens.modelDetailScreen.status)}
+                        value={
+                            props.model.is_enabled
+                                ? translation()(($) => $.additional.modelDetailScreen.enabled)
+                                : translation()(($) => $.additional.modelDetailScreen.disabled)
+                        }
                     />
                 </FactList>
             </Card>

@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
+import { translation } from "/src/i18n";
 import { AppLink } from "/src/ui/app-link";
 import { joinClass } from "/src/ui/attributes";
 import { Glyph } from "/src/ui/glyph";
@@ -12,7 +13,7 @@ export function Card(props: {
     return (
         <section
             class={joinClass(
-                "rounded-2xl border border-rule bg-surface px-5 py-5",
+                "min-w-0 rounded-2xl border border-rule bg-surface px-5 py-5",
                 props.class ?? "",
             )}
         >
@@ -52,8 +53,8 @@ export function Fact(props: {
 
 /** A card's own heading row: title plus the actions that belong to it. */
 export function CardHeader(props: {
-    readonly title: string;
-    readonly description?: string | undefined;
+    readonly title: JSX.Element;
+    readonly description?: JSX.Element;
     readonly children?: JSX.Element | undefined;
 }): JSX.Element {
     return (
@@ -75,8 +76,8 @@ export function CardHeader(props: {
 
 /** A screen's heading: back link, title, description, and primary actions. */
 export function PageHeader(props: {
-    readonly title: string;
-    readonly description?: string | undefined;
+    readonly title: JSX.Element;
+    readonly description?: JSX.Element;
     readonly backHref?: string | undefined;
     readonly backLabel?: string | undefined;
     readonly children?: JSX.Element | undefined;
@@ -90,7 +91,7 @@ export function PageHeader(props: {
                         class="inline-flex w-fit items-center gap-1 text-[13px] font-medium text-ink-dim transition-colors duration-150 ease-out hover:text-ink"
                     >
                         <Glyph name="chev-left" />
-                        {props.backLabel ?? "Back"}
+                        {props.backLabel ?? translation()(($) => $.additional.layout.back)}
                     </AppLink>
                 )}
             </Show>

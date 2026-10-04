@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { formatDuration, formatTimestamp, formatTokenCount, nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiLogOutcome, ApiLogResponse, UsageFilter } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
@@ -269,14 +270,18 @@ export function UsageScreen(props: {
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="Usage"
-                description="Every dispatched request, newest first — numbers only, never content. A row reporting none of the optional usage figures leaves them off whole: an all-zero tail and an unreported one cannot be told apart here."
+                title={translation()(($) => $.screens.usageScreen.usage)}
+                description={translation()(
+                    ($) =>
+                        $.screens.usageScreen
+                            .everyDispatchedRequestNewestFirstNumbersOnlyNeverMessage,
+                )}
             >
                 <ButtonLink
                     href={hrefs.usageQuery(aggregatesSubject())}
                     glyph="activity"
                 >
-                    View aggregates
+                    {translation()(($) => $.screens.usageScreen.viewAggregates)}
                     <Show when={isFilterLeftBehind()}>
                         {/* The stated trade, muted but visible — the same
                             pattern as the aggregates page's own door: the
@@ -297,8 +302,10 @@ export function UsageScreen(props: {
 
             <Card>
                 <CardHeader
-                    title="Filter"
-                    description="The shared accounting filter — the same one the aggregates page narrows."
+                    title={translation()(($) => $.screens.usageScreen.filter)}
+                    description={translation()(
+                        ($) => $.screens.usageScreen.theSharedAccountingFilterTheSameOneTheMessage,
+                    )}
                 />
                 <form
                     novalidate={true}
@@ -310,7 +317,7 @@ export function UsageScreen(props: {
                 >
                     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <SelectField
-                            label="Window"
+                            label={translation()(($) => $.screens.usageScreen.window)}
                             value={draft().window}
                             options={USAGE_WINDOW_OPTIONS}
                             onChange={(window) =>
@@ -325,7 +332,10 @@ export function UsageScreen(props: {
                                 }))
                             }
                             isDisabled={read.isReading()}
-                            hint="Rolling, resolved when the stream is read."
+                            hint={translation()(
+                                ($) =>
+                                    $.screens.usageScreen.rollingResolvedWhenTheStreamIsReadMessage,
+                            )}
                         />
                         <UsageFilterControls
                             fields={draft()}
@@ -351,7 +361,9 @@ export function UsageScreen(props: {
                             isBusy={read.isReading()}
                             isDisabled={statusError(draft().statusInput) !== null}
                         >
-                            {read.isReading() ? "Reading…" : "Apply filters"}
+                            {read.isReading()
+                                ? translation()(($) => $.additional.usageScreen.reading)
+                                : translation()(($) => $.additional.usageScreen.applyFilters)}
                         </Button>
                         <Show when={hasUsageFilter(draft())}>
                             <Button
@@ -359,7 +371,7 @@ export function UsageScreen(props: {
                                 isDisabled={read.isReading()}
                                 onClick={clearFilter}
                             >
-                                Clear filters
+                                {translation()(($) => $.screens.usageScreen.clearFilters)}
                             </Button>
                         </Show>
                     </div>
@@ -381,8 +393,14 @@ export function UsageScreen(props: {
                             fallback={
                                 <EmptyState
                                     glyph="activity"
-                                    title="No requests recorded yet"
-                                    description="One row appears per dispatched serving request — the moment the gateway sends upstream. If traffic flows and nothing appears, check the api_logs section in the gateway's configuration file."
+                                    title={translation()(
+                                        ($) => $.screens.usageScreen.noRequestsRecordedYet,
+                                    )}
+                                    description={translation()(
+                                        ($) =>
+                                            $.screens.usageScreen
+                                                .oneRowAppearsPerDispatchedServingRequestTheMessage,
+                                    )}
                                 >
                                     {/* This door exists only for the unfiltered
                                         stream — a filtered answer that matches
@@ -393,16 +411,28 @@ export function UsageScreen(props: {
                                         href={hrefs.usageQuery()}
                                         glyph="activity"
                                     >
-                                        View aggregates
+                                        {translation()(($) => $.screens.usageScreen.viewAggregates)}
                                     </ButtonLink>
                                 </EmptyState>
                             }
                         >
                             <Notice
                                 tone="info"
-                                title="No recorded requests match this filter."
-                                detail="Widen the window, drop a filter, or read the whole stream — Clear filters sits in the form above."
-                                fix="The gateway's filter locates rows; it never validates a value against them, so an unknown id or a status never recorded simply matches nothing."
+                                title={translation()(
+                                    ($) =>
+                                        $.screens.usageScreen
+                                            .noRecordedRequestsMatchThisFilterMessage,
+                                )}
+                                detail={translation()(
+                                    ($) =>
+                                        $.additional.usageScreen
+                                            .widenTheWindowDropAFilterOrReadMessage,
+                                )}
+                                fix={translation()(
+                                    ($) =>
+                                        $.additional.usageScreen
+                                            .theGatewaysFilterLocatesRowsItNeverValidatesMessage,
+                                )}
                             />
                         </Show>
                     }
@@ -423,8 +453,16 @@ export function UsageScreen(props: {
                         fallback={
                             <p class="text-[12.5px] text-ink-faint">
                                 {hasUsageFilter(props.filter)
-                                    ? "That is every row this filter matches."
-                                    : "That is every recorded row."}
+                                    ? translation()(
+                                          ($) =>
+                                              $.additional.usageScreen
+                                                  .thatIsEveryRowThisFilterMatchesMessage,
+                                      )
+                                    : translation()(
+                                          ($) =>
+                                              $.additional.usageScreen
+                                                  .thatIsEveryRecordedRowMessage,
+                                      )}
                             </p>
                         }
                     >
@@ -443,12 +481,18 @@ export function UsageScreen(props: {
                                     isDisabled={read.isReading()}
                                     title={
                                         read.isReading()
-                                            ? "A read cycle is replacing the stream — extend it once the cycle lands."
+                                            ? translation()(
+                                                  ($) =>
+                                                      $.additional.usageScreen
+                                                          .aReadCycleIsReplacingTheStreamExtendMessage,
+                                              )
                                             : undefined
                                     }
                                     onClick={() => void loadMore()}
                                 >
-                                    {isLoadingMore() ? "Loading…" : "Load more"}
+                                    {isLoadingMore()
+                                        ? translation()(($) => $.additional.usageScreen.loading)
+                                        : translation()(($) => $.additional.usageScreen.loadMore)}
                                 </Button>
                             </div>
                         </div>
@@ -589,12 +633,20 @@ function UsageRow(props: {
                 </span>
             </p>
             <p class="tnum mt-1 text-[12.5px] text-ink-faint">
-                {`Client ${props.row.http_status ?? "—"} · Upstream ${props.row.upstream_http_status ?? "—"}`}
-                {` · ${formatDuration(props.row.duration)} · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)}${optionalTokenTail(
-                    props.row.cached_tokens,
-                    props.row.cache_write_tokens,
-                    props.row.reasoning_tokens,
-                )}`}
+                {translation()(($) => $.domainMessages.status, {
+                    client: props.row.http_status ?? "—",
+                    upstream: props.row.upstream_http_status ?? "—",
+                })}
+                {translation()(($) => $.domainMessages.metrics, {
+                    duration: formatDuration(props.row.duration),
+                    input: formatTokenCount(props.row.input_tokens),
+                    output: formatTokenCount(props.row.output_tokens),
+                    tail: optionalTokenTail(
+                        props.row.cached_tokens,
+                        props.row.cache_write_tokens,
+                        props.row.reasoning_tokens,
+                    ),
+                })}
             </p>
         </li>
     );
@@ -621,11 +673,16 @@ function optionalTokenTail(
     return isReportedNonZero(cachedTokens) ||
         isReportedNonZero(cacheWriteTokens) ||
         isReportedNonZero(reasoningTokens)
-        ? ` · cached ${formatTokenCount(cachedTokens)} · cache write ${formatTokenCount(cacheWriteTokens)} · reasoning ${formatTokenCount(reasoningTokens)}`
+        ? translation()(($) => $.domainMessages.optionalTokens, {
+              cached: formatTokenCount(cachedTokens),
+              write: formatTokenCount(cacheWriteTokens),
+              reasoning: formatTokenCount(reasoningTokens),
+          })
         : "";
 }
 
-const DELETED_ENTITY_TITLE = "This row is no longer listed.";
+const deletedEntityTitle = () =>
+    translation()(($) => $.helpers.usageScreen.thisRowIsNoLongerListed);
 
 /**
  * One entity label on a usage row: a door to the entity's own page while the
@@ -640,7 +697,7 @@ function UsageEntityLabel(props: {
     return (
         <Show
             when={props.isListed}
-            fallback={<span title={DELETED_ENTITY_TITLE}>{props.text}</span>}
+            fallback={<span title={deletedEntityTitle()}>{props.text}</span>}
         >
             <AppLink
                 href={props.href}
