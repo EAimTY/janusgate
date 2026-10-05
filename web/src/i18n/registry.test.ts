@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveBrowserLocale } from "./registry";
+import { languageDefaults, localeRegistry, resolveBrowserLocale } from "./registry";
 
 describe("browser locale intent", () => {
     it("uses browser order, canonical bases, and explicit language defaults", () => {
@@ -90,5 +90,59 @@ describe("browser locale intent", () => {
                 defaults,
             ),
         ).toBe("zh-Hant");
+    });
+    it("resolves the shipped registry across regions and scripts", () => {
+        const tags = Object.keys(localeRegistry) as Array<keyof typeof localeRegistry>;
+        for (const [languages, expected] of [
+            [
+                [
+                    "zh-TW",
+                ],
+                "zh-Hant",
+            ],
+            [
+                [
+                    "zh-HK",
+                ],
+                "zh-Hant",
+            ],
+            [
+                [
+                    "zh-SG",
+                ],
+                "zh-CN",
+            ],
+            [
+                [
+                    "zh",
+                ],
+                "zh-CN",
+            ],
+            [
+                [
+                    "ja-JP",
+                ],
+                "ja",
+            ],
+            [
+                [
+                    "ko-KR",
+                ],
+                "ko",
+            ],
+            [
+                [
+                    "es-419",
+                ],
+                "es",
+            ],
+            [
+                [
+                    "de-DE",
+                ],
+                "en",
+            ],
+        ] as const)
+            expect(resolveBrowserLocale(languages, tags, languageDefaults)).toBe(expected);
     });
 });

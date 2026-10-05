@@ -1,11 +1,14 @@
 import { appConfig } from "/src/config";
 import { createLocalizationController } from "./controller";
-import { languageDefaults, localeRegistry } from "./registry";
+import { languageDefaults, localeRegistry, type SupportedLocale } from "./registry";
 
 export type { LanguagePreference, SupportedLocale } from "./registry";
 export { localeRegistry } from "./registry";
 
-const controller = createLocalizationController({
+// The generic is pinned so the controller's preference type is the registry's
+// full tag set; `languageDefaults` names one default per language and is
+// deliberately narrower than the registry.
+const controller = createLocalizationController<SupportedLocale>({
     registry: localeRegistry,
     defaults: languageDefaults,
     readPreference: () => window.localStorage.getItem(appConfig.languageStorageKey),

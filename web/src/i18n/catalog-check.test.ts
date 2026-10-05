@@ -1,16 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { checkCatalog, checkRegistry } from "./catalog-check";
 import english from "./catalogs/en";
+import spanish from "./catalogs/es";
+import japanese from "./catalogs/ja";
+import korean from "./catalogs/ko";
 import chinese from "./catalogs/zh-CN";
+import traditionalChinese from "./catalogs/zh-Hant";
 import { languageDefaults, localeRegistry } from "./registry";
+
+/** Every shipped catalog, keyed by its registry tag. */
+const shippedCatalogs = [
+    {
+        tag: "en",
+        catalog: english,
+    },
+    {
+        tag: "zh-CN",
+        catalog: chinese,
+    },
+    {
+        tag: "zh-Hant",
+        catalog: traditionalChinese,
+    },
+    {
+        tag: "ja",
+        catalog: japanese,
+    },
+    {
+        tag: "ko",
+        catalog: korean,
+    },
+    {
+        tag: "es",
+        catalog: spanish,
+    },
+] as const;
 
 describe("production catalog contracts", () => {
     it("validates all shipped resources and registry metadata", async () => {
-        expect(checkCatalog(english, english, "en")).toEqual([]);
-        expect(checkCatalog(english, chinese, "zh-CN")).toEqual([]);
+        for (const { tag, catalog } of shippedCatalogs)
+            expect(checkCatalog(english, catalog, tag), tag).toEqual([]);
         expect(await checkRegistry(localeRegistry, languageDefaults)).toEqual([]);
-        expect(await localeRegistry.en.load()).toBe(english);
-        expect(await localeRegistry["zh-CN"].load()).toBe(chinese);
+        for (const { tag, catalog } of shippedCatalogs)
+            expect(await localeRegistry[tag].load(), tag).toBe(catalog);
     });
     it.each([
         {
