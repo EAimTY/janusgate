@@ -273,6 +273,160 @@ describe("validateDefinitionPayload", () => {
         }
     });
 
+    it("names each quota rejection reason at its JSON path", () => {
+        const rule = {
+            name: "weekly",
+            statuses: [
+                429,
+            ],
+            code: {
+                at: [
+                    "error",
+                    "code",
+                ],
+                value: "quota",
+            },
+            restriction_key: [
+                {
+                    type: "literal",
+                    value: "account",
+                },
+            ],
+            applies_to: {
+                type: "all_models",
+            },
+        };
+        const probes: ReadonlyArray<
+            [
+                unknown,
+                RegExp,
+            ]
+        > = [
+            [
+                {
+                    rules: [],
+                },
+                /quota_exhaustion\.rules must not be empty/,
+            ],
+            [
+                {
+                    rules: [
+                        rule,
+                        rule,
+                    ],
+                },
+                /rules\[1\]\.name must not repeat an earlier rule name/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            name: "",
+                        },
+                    ],
+                },
+                /rules\[0\]\.name must not be empty/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            statuses: [
+                                200,
+                            ],
+                        },
+                    ],
+                },
+                /rules\[0\]\.statuses\[0\] is not a rejected status: 200/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            statuses: [
+                                429.5,
+                            ],
+                        },
+                    ],
+                },
+                /rules\[0\]\.statuses\[0\] must be an integer/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            code: {
+                                at: [],
+                                value: "quota",
+                            },
+                        },
+                    ],
+                },
+                /rules\[0\]\.code\.at must not be empty/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            restriction_key: [
+                                {
+                                    type: "literal",
+                                    value: "",
+                                },
+                            ],
+                        },
+                    ],
+                },
+                /restriction_key\[0\]\.value must not be empty/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            applies_to: {
+                                type: "models",
+                            },
+                        },
+                    ],
+                },
+                /applies_to\.type is not a rejection applicability: models/,
+            ],
+            [
+                {
+                    rules: [
+                        {
+                            ...rule,
+                            bogus: true,
+                        },
+                    ],
+                },
+                /rules\[0\]\.bogus is not a declared field/,
+            ],
+        ];
+        for (const [quota_exhaustion, expected] of probes) {
+            const parsed = validateDefinitionPayload({
+                format: storedDefinition.format,
+                credential: storedDefinition.credential,
+                inference: {
+                    ...storedDefinition.inference,
+                    quota_exhaustion,
+                },
+            });
+            if (!("error" in parsed)) {
+                throw new Error(
+                    `the payload should have been rejected: ${JSON.stringify(quota_exhaustion)}`,
+                );
+            }
+            expect(parsed.error, JSON.stringify(quota_exhaustion)).toMatch(expected);
+        }
+    });
+
     it("accepts every catalog payload verbatim", () => {
         for (const preset of PROVIDER_PRESETS) {
             const result = validateDefinitionPayload(preset.payload);

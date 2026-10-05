@@ -19,7 +19,7 @@
 
 use crate::database::{Database, Error as DatabaseError, IntoParams, Row, Transaction, TursoError};
 
-/// How many times [`in_retryable_transaction!`] runs one read-then-write attempt, counting the
+/// How many times `in_retryable_transaction!` runs one read-then-write attempt, counting the
 /// first: three attempts absorb two intervening commits on top of the initial one.
 ///
 /// A stale-snapshot refusal needs a concurrent commit to land inside one attempt's own
@@ -163,7 +163,12 @@ pub(crate) enum Error {
         detail: String,
     },
 
-    /// Stored data violated an invariant written by the validated management path — database drift.
+    /// Stored data violated an invariant written by the validated management path — database
+    /// drift — or a database file is not interpretable under its schema registry: an api-log
+    /// day file carrying an unknown schema version or another registry's application-id stamp
+    /// answers drift here, so its write is swallowed as a recording failure (README §8) and
+    /// its read fails that one request instead of killing the process (README §3 *ApiLog
+    /// Store*).
     #[error("{message}")]
     Drift {
         /// Human-readable failure message.
@@ -191,6 +196,11 @@ impl From<DatabaseError> for Error {
             // contention kinds apart after the conversion (see [`Error::is_stale_snapshot`]),
             // and every rendered surface treats both as internal failures either way.
             DatabaseError::Turso(TursoError::Busy(detail)) => Self::Busy { detail },
+
+            // A database file this build cannot interpret under its registry — an api-log day
+            // file carrying an unknown version or a foreign stamp — is stored file state, not
+            // an engine failure: it classifies as drift so its request fails explicitly.
+            DatabaseError::SchemaDrift { detail } => Self::Drift { message: detail },
 
             error => Self::Database(error),
         }

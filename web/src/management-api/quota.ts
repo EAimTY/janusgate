@@ -1,3 +1,5 @@
+import { expectDeclaredKeys, expectOneOf } from "./definitions/validation";
+import { ContractViolationError } from "./errors";
 import type {
     QuotaExhaustion,
     QuotaExhaustionRule,
@@ -8,23 +10,97 @@ import type {
     QuotaWindow,
     RestrictionKeySegment,
 } from "./generated/v0";
+import { isRoutingToken } from "./identifiers";
 import {
-    amount,
-    choice,
-    integer,
-    invalid,
-    isQuotaDate,
-    modelIdentifier,
-    parseQuotaPath,
-    shape,
-    text,
-} from "./quota-validation";
-import { expectArray, expectRecord, expectString } from "./validation-primitives";
+    expectArray,
+    expectDeclaredRecord,
+    expectInteger,
+    expectNonEmptyString,
+    expectRecord,
+    expectString,
+} from "./validation-primitives";
+
+/** Exact authored model token; selectors never derive IDs from a presentation label. */
+export function expectModelIdentifier(value: unknown, context: string): string {
+    const identifier = expectNonEmptyString(value, context);
+
+    if (!isRoutingToken(identifier)) {
+        throw new ContractViolationError(`${context} is not a routing token: ${identifier}`);
+    }
+
+    return identifier;
+}
+
+/**
+ * Object-member paths share the existing descriptor language (README §5.1),
+ * with every member named and none empty: a quota identity segment is never
+ * the empty string.
+ */
+export function expectQuotaPath(value: unknown, context: string): string[] {
+    return expectArray(value, context).map((member, index) =>
+        expectNonEmptyString(member, `${context}[${index}]`),
+    );
+}
+
+/** A frontend-safe integer, optionally positive; scale values survive JavaScript exactly. */
+function safeInteger(value: unknown, context: string, isPositive = false): number {
+    const integer = expectInteger(value, context);
+
+    if (!Number.isSafeInteger(integer) || (isPositive && integer <= 0)) {
+        throw new ContractViolationError(
+            `${context} must be a safe ${isPositive ? "positive " : ""}integer`,
+        );
+    }
+
+    return integer;
+}
+
+/** Finite informational amounts keep decimals, over-limit use, and normalize negative zero. */
+function amount(value: unknown, context: string, isPositive = false): number {
+    if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        (isPositive && value === 0) ||
+        (Number.isInteger(value) && !Number.isSafeInteger(value))
+    ) {
+        throw new ContractViolationError(
+            `${context} must be a finite ${isPositive ? "positive" : "non-negative"} amount`,
+        );
+    }
+
+    return value === 0 ? 0 : value;
+}
+
+/** Validates an exact real calendar date without constructing a timezone-dependent instant. */
+function isQuotaDate(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const year = Number(value.slice(0, 4));
+    const month = Number(value.slice(5, 7));
+    const day = Number(value.slice(8, 10));
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const days = [
+        31,
+        leap ? 29 : 28,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    const maximum = days[month - 1];
+    return maximum !== undefined && day >= 1 && day <= maximum;
+}
 
 /** Concrete routing applicability is required on every complete observation. */
 export function parseQuotaRouting(value: unknown, context: string): QuotaRouting {
     const record = expectRecord(value, context);
-    const type = choice(
+    const type = expectOneOf(
         Reflect.get(record, "type"),
         [
             "monitoring_only",
@@ -32,9 +108,10 @@ export function parseQuotaRouting(value: unknown, context: string): QuotaRouting
             "models",
         ],
         `${context}.type`,
+        "a routing applicability",
     );
-    shape(
-        value,
+    expectDeclaredKeys(
+        record,
         type === "models"
             ? [
                   "type",
@@ -52,9 +129,12 @@ export function parseQuotaRouting(value: unknown, context: string): QuotaRouting
     const upstream_ids = expectArray(
         Reflect.get(record, "upstream_ids"),
         `${context}.upstream_ids`,
-    ).map((value, index) => modelIdentifier(value, `${context}.upstream_ids[${index}]`));
-    if (upstream_ids.length === 0 || new Set(upstream_ids).size !== upstream_ids.length)
-        invalid(context);
+    ).map((value, index) => expectModelIdentifier(value, `${context}.upstream_ids[${index}]`));
+    if (upstream_ids.length === 0 || new Set(upstream_ids).size !== upstream_ids.length) {
+        throw new ContractViolationError(
+            `${context}.upstream_ids must be a nonempty set of unique model identifiers`,
+        );
+    }
     return {
         type,
         upstream_ids,
@@ -63,7 +143,7 @@ export function parseQuotaRouting(value: unknown, context: string): QuotaRouting
 
 /** Exact rejection policies share quota identities while retaining authored rule order. */
 export function parseQuotaExhaustion(value: unknown, context: string): QuotaExhaustion {
-    const record = shape(
+    const record = expectDeclaredRecord(
         value,
         [
             "rules",
@@ -74,7 +154,7 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
     const rules = expectArray(Reflect.get(record, "rules"), `${context}.rules`).map(
         (value, index): QuotaExhaustionRule => {
             const ruleContext = `${context}.rules[${index}]`;
-            const rule = shape(
+            const rule = expectDeclaredRecord(
                 value,
                 [
                     "name",
@@ -85,24 +165,33 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
                 ],
                 ruleContext,
             );
-            const name = text(Reflect.get(rule, "name"), `${ruleContext}.name`);
-            if (names.has(name)) invalid(`${ruleContext}.name`);
+            const name = expectNonEmptyString(Reflect.get(rule, "name"), `${ruleContext}.name`);
+            if (names.has(name)) {
+                throw new ContractViolationError(
+                    `${ruleContext}.name must not repeat an earlier rule name`,
+                );
+            }
             names.add(name);
             const statuses = Array.from(
                 new Set(
                     expectArray(Reflect.get(rule, "statuses"), `${ruleContext}.statuses`).map(
                         (value, index) => {
                             const statusContext = `${ruleContext}.statuses[${index}]`;
-                            const status = integer(value, statusContext);
-                            if (status < 100 || status > 999 || (status >= 200 && status < 300))
-                                invalid(statusContext);
+                            const status = safeInteger(value, statusContext);
+                            if (status < 100 || status > 999 || (status >= 200 && status < 300)) {
+                                throw new ContractViolationError(
+                                    `${statusContext} is not a rejected status: ${status}`,
+                                );
+                            }
                             return status;
                         },
                     ),
                 ),
             ).sort((left, right) => left - right);
-            if (statuses.length === 0) invalid(`${ruleContext}.statuses`);
-            const code = shape(
+            if (statuses.length === 0) {
+                throw new ContractViolationError(`${ruleContext}.statuses must not be empty`);
+            }
+            const code = expectDeclaredRecord(
                 Reflect.get(rule, "code"),
                 [
                     "at",
@@ -110,24 +199,27 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
                 ],
                 `${ruleContext}.code`,
             );
-            const at = parseQuotaPath(Reflect.get(code, "at"), `${ruleContext}.code.at`);
-            if (at.length === 0) invalid(`${ruleContext}.code.at`);
+            const at = expectQuotaPath(Reflect.get(code, "at"), `${ruleContext}.code.at`);
+            if (at.length === 0) {
+                throw new ContractViolationError(`${ruleContext}.code.at must not be empty`);
+            }
             const restriction_key = expectArray(
                 Reflect.get(rule, "restriction_key"),
                 `${ruleContext}.restriction_key`,
             ).map((value, index): RestrictionKeySegment => {
                 const segmentContext = `${ruleContext}.restriction_key[${index}]`;
                 const segment = expectRecord(value, segmentContext);
-                const type = choice(
+                const type = expectOneOf(
                     Reflect.get(segment, "type"),
                     [
                         "literal",
                         "requested_model",
                     ],
                     `${segmentContext}.type`,
+                    "a restriction key segment",
                 );
-                shape(
-                    value,
+                expectDeclaredKeys(
+                    segment,
                     type === "literal"
                         ? [
                               "type",
@@ -141,14 +233,21 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
                 return type === "literal"
                     ? {
                           type,
-                          value: text(Reflect.get(segment, "value"), `${segmentContext}.value`),
+                          value: expectNonEmptyString(
+                              Reflect.get(segment, "value"),
+                              `${segmentContext}.value`,
+                          ),
                       }
                     : {
                           type,
                       };
             });
-            if (restriction_key.length === 0) invalid(`${ruleContext}.restriction_key`);
-            const applies = shape(
+            if (restriction_key.length === 0) {
+                throw new ContractViolationError(
+                    `${ruleContext}.restriction_key must not be empty`,
+                );
+            }
+            const applies = expectDeclaredRecord(
                 Reflect.get(rule, "applies_to"),
                 [
                     "type",
@@ -164,19 +263,22 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
                 },
                 restriction_key,
                 applies_to: {
-                    type: choice(
+                    type: expectOneOf(
                         Reflect.get(applies, "type"),
                         [
                             "all_models",
                             "requested_model",
                         ],
                         `${ruleContext}.applies_to.type`,
+                        "a rejection applicability",
                     ),
                 },
             };
         },
     );
-    if (rules.length === 0) invalid(`${context}.rules`);
+    if (rules.length === 0) {
+        throw new ContractViolationError(`${context}.rules must not be empty`);
+    }
     return {
         rules,
     };
@@ -185,21 +287,22 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
 /** A normalized scope variant. */
 export function scope(value: unknown, context: string): QuotaScope {
     const record = expectRecord(value, context);
-    switch (Reflect.get(record, "type")) {
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    switch (type) {
         case "unknown":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                 ],
                 context,
             );
             return {
-                type: "unknown",
+                type,
             };
         case "named":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "name",
@@ -207,32 +310,33 @@ export function scope(value: unknown, context: string): QuotaScope {
                 context,
             );
             return {
-                type: "named",
-                name: text(Reflect.get(record, "name"), `${context}.name`),
+                type,
+                name: expectNonEmptyString(Reflect.get(record, "name"), `${context}.name`),
             };
         default:
-            return invalid(context);
+            throw new ContractViolationError(`${context}.type is not a quota scope: ${type}`);
     }
 }
 
 /** A normalized period, independent of its reset metadata. */
 export function window(value: unknown, context: string): QuotaWindow {
     const record = expectRecord(value, context);
-    switch (Reflect.get(record, "type")) {
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    switch (type) {
         case "unknown":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                 ],
                 context,
             );
             return {
-                type: "unknown",
+                type,
             };
         case "duration":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "seconds",
@@ -240,12 +344,12 @@ export function window(value: unknown, context: string): QuotaWindow {
                 context,
             );
             return {
-                type: "duration",
-                seconds: integer(Reflect.get(record, "seconds"), `${context}.seconds`, true),
+                type,
+                seconds: safeInteger(Reflect.get(record, "seconds"), `${context}.seconds`, true),
             };
         case "calendar":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "unit",
@@ -253,49 +357,41 @@ export function window(value: unknown, context: string): QuotaWindow {
                 context,
             );
             return {
-                type: "calendar",
-                unit: choice(
+                type,
+                unit: expectOneOf(
                     Reflect.get(record, "unit"),
                     [
                         "month",
                     ],
                     `${context}.unit`,
+                    "a calendar unit",
                 ),
             };
         default:
-            return invalid(context);
+            throw new ContractViolationError(`${context}.type is not a quota window: ${type}`);
     }
 }
 
 /** A normalized measurement; no totals or remaining percentages are invented. */
 export function measurement(value: unknown, context: string): QuotaMeasurement {
     const record = expectRecord(value, context);
-    switch (Reflect.get(record, "type")) {
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    switch (type) {
         case "unknown":
-            shape(
-                value,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "unknown",
-            };
         case "unlimited":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                 ],
                 context,
             );
             return {
-                type: "unlimited",
+                type,
             };
         case "ratio":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "used_fraction",
@@ -303,15 +399,15 @@ export function measurement(value: unknown, context: string): QuotaMeasurement {
                 context,
             );
             return {
-                type: "ratio",
+                type,
                 used_fraction: amount(
                     Reflect.get(record, "used_fraction"),
                     `${context}.used_fraction`,
                 ),
             };
         case "counter":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "used",
@@ -321,14 +417,14 @@ export function measurement(value: unknown, context: string): QuotaMeasurement {
                 context,
             );
             return {
-                type: "counter",
+                type,
                 used: amount(Reflect.get(record, "used"), `${context}.used`),
                 limit: amount(Reflect.get(record, "limit"), `${context}.limit`, true),
-                unit: text(Reflect.get(record, "unit"), `${context}.unit`),
+                unit: expectNonEmptyString(Reflect.get(record, "unit"), `${context}.unit`),
             };
         case "remaining":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "remaining",
@@ -337,33 +433,34 @@ export function measurement(value: unknown, context: string): QuotaMeasurement {
                 context,
             );
             return {
-                type: "remaining",
+                type,
                 remaining: amount(Reflect.get(record, "remaining"), `${context}.remaining`),
-                unit: text(Reflect.get(record, "unit"), `${context}.unit`),
+                unit: expectNonEmptyString(Reflect.get(record, "unit"), `${context}.unit`),
             };
         default:
-            return invalid(context);
+            throw new ContractViolationError(`${context}.type is not a quota measurement: ${type}`);
     }
 }
 
 /** An exact instant or calendar date, never a guessed midnight. */
 export function reset(value: unknown, context: string): QuotaReset {
     const record = expectRecord(value, context);
-    switch (Reflect.get(record, "type")) {
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    switch (type) {
         case "unknown":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                 ],
                 context,
             );
             return {
-                type: "unknown",
+                type,
             };
         case "at":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "at",
@@ -371,26 +468,28 @@ export function reset(value: unknown, context: string): QuotaReset {
                 context,
             );
             return {
-                type: "at",
-                at: integer(Reflect.get(record, "at"), `${context}.at`),
+                type,
+                at: safeInteger(Reflect.get(record, "at"), `${context}.at`),
             };
         case "date": {
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "date",
                 ],
                 context,
             );
-            const date = text(Reflect.get(record, "date"), `${context}.date`);
-            if (!isQuotaDate(date)) invalid(`${context}.date`);
+            const date = expectNonEmptyString(Reflect.get(record, "date"), `${context}.date`);
+            if (!isQuotaDate(date)) {
+                throw new ContractViolationError(`${context}.date is not a calendar date: ${date}`);
+            }
             return {
-                type: "date",
+                type,
                 date,
             };
         }
         default:
-            return invalid(context);
+            throw new ContractViolationError(`${context}.type is not a quota reset: ${type}`);
     }
 }

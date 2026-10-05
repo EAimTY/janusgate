@@ -81,6 +81,44 @@ export function expectString(value: unknown, context: string): string {
     return value;
 }
 
+/**
+ * One string the contract renders or stores verbatim: identity segments,
+ * labels, and units are meaningful only when nonempty — an empty value is a
+ * missing fact, so it is named instead of stored.
+ */
+export function expectNonEmptyString(value: unknown, context: string): string {
+    const text = expectString(value, context);
+
+    if (text === "") {
+        throw new ContractViolationError(`${context} must not be empty`);
+    }
+
+    return text;
+}
+
+/**
+ * One closed record: the value narrowed to an object, then every present key
+ * checked against `declared` — the record+declared-keys composition behind
+ * every shape whose rebuild would silently drop an unknown field (the quota
+ * contracts). The rejection message matches `expectDeclaredKeys` in
+ * `definitions/validation.ts`, so one grammar names undeclared fields family-wide.
+ */
+export function expectDeclaredRecord(
+    value: unknown,
+    declared: ReadonlyArray<string>,
+    context: string,
+): object {
+    const record = expectRecord(value, context);
+
+    for (const key of Object.keys(record)) {
+        if (!declared.includes(key)) {
+            throw new ContractViolationError(`${context}.${key} is not a declared field`);
+        }
+    }
+
+    return record;
+}
+
 export function expectBoolean(value: unknown, context: string): boolean {
     if (typeof value !== "boolean") {
         throw new ContractViolationError(`${context} must be a boolean`);

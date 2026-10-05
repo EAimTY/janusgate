@@ -5,28 +5,30 @@ use std::error::Error as StdError;
 
 /// Bootstrap refuses versions beyond the registered schema history.
 ///
+/// # Errors
+///
+/// Returns fixture errors.
+///
 /// # Panics
 ///
-/// Intentionally panics when bootstrap observes unregistered version three.
+/// Panics if the observed drift diverges from the registry's naming.
 #[tokio::test]
-#[should_panic(expected = "unknown schema version 3")]
-async fn obsolete_development_version_is_refused() {
-    #[expect(
-        clippy::expect_used,
-        reason = "the immutable initial schema must apply"
-    )]
-    let connection = open_fresh(version_1::SCHEMA.schema)
-        .await
-        .expect("fresh schema");
-    #[expect(
-        clippy::expect_used,
-        reason = "the fixture stamps a positive schema version"
-    )]
-    connection
-        .execute_batch("PRAGMA user_version = 3;")
-        .await
-        .expect("version stamp");
-    super::migrate(&connection, super::Registry::Main, "development").await;
+async fn obsolete_development_version_answers_schema_drift() -> Result<(), Box<dyn StdError>> {
+    let connection = open_fresh(version_1::SCHEMA.schema).await?;
+    connection.execute_batch("PRAGMA user_version = 3;").await?;
+
+    let outcome = super::migrate(&connection, super::Registry::Main, "development").await;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(super::Error::SchemaDrift { detail })
+                if detail.contains("unknown schema version 3")
+        ),
+        "a database version beyond the registry must answer schema drift, not serve"
+    );
+
+    Ok(())
 }
 
 /// Seeds one physical model and one owning pool under the requested schema.

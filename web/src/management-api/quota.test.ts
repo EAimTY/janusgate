@@ -56,39 +56,65 @@ describe("quota response validation", () => {
             };
             expect(parseGetProviderQuotaResponse(snapshot)).toEqual(snapshot);
         }
-        for (const routing of [
-            undefined,
-            null,
-            {
-                type: "models",
-                upstream_ids: [],
-            },
-            {
-                type: "models",
-                upstream_ids: [
-                    "M",
-                    "M",
-                ],
-            },
-            {
-                type: "models",
-                upstream_ids: [
-                    "bad id",
-                ],
-            },
-            {
-                type: "all_models",
-                upstream_ids: [
-                    "M",
-                ],
-            },
-            {
-                type: "model",
-                upstream_ids: [
-                    "M",
-                ],
-            },
-        ]) {
+        for (const [routing, expected] of [
+            [
+                undefined,
+                /response\.quotas\[0\]\.routing must be an object/,
+            ],
+            [
+                null,
+                /response\.quotas\[0\]\.routing must be an object/,
+            ],
+            [
+                {
+                    type: "models",
+                    upstream_ids: [],
+                },
+                /routing\.upstream_ids must be a nonempty set of unique model identifiers/,
+            ],
+            [
+                {
+                    type: "models",
+                    upstream_ids: [
+                        "M",
+                        "M",
+                    ],
+                },
+                /routing\.upstream_ids must be a nonempty set of unique model identifiers/,
+            ],
+            [
+                {
+                    type: "models",
+                    upstream_ids: [
+                        "bad id",
+                    ],
+                },
+                /routing\.upstream_ids\[0\] is not a routing token: bad id/,
+            ],
+            [
+                {
+                    type: "all_models",
+                    upstream_ids: [
+                        "M",
+                    ],
+                },
+                /routing\.upstream_ids is not a declared field/,
+            ],
+            [
+                {
+                    type: "model",
+                    upstream_ids: [
+                        "M",
+                    ],
+                },
+                /routing\.type is not a routing applicability: model/,
+            ],
+        ] as Array<
+            [
+                unknown,
+                RegExp,
+            ]
+        >) {
             expect(() =>
                 parseGetProviderQuotaResponse({
                     observed_at: 1,
@@ -99,7 +125,7 @@ describe("quota response validation", () => {
                         },
                     ],
                 }),
-            ).toThrow();
+            ).toThrow(expected);
         }
     });
 
@@ -128,98 +154,152 @@ describe("quota response validation", () => {
         ).toEqual([]);
     });
     it("rejects the whole snapshot for malformed nested facts or duplicate tuple identities", () => {
-        for (const bad of [
-            {
-                ...entry,
-                measurement: {
-                    type: "unknown",
-                    used_fraction: 0,
+        for (const [bad, expected] of [
+            [
+                {
+                    ...entry,
+                    measurement: {
+                        type: "unknown",
+                        used_fraction: 0,
+                    },
                 },
-            },
-            {
-                ...entry,
-                scope: {
-                    type: "unknown",
-                    name: "Model",
+                /measurement\.used_fraction is not a declared field/,
+            ],
+            [
+                {
+                    ...entry,
+                    scope: {
+                        type: "unknown",
+                        name: "Model",
+                    },
                 },
-            },
-            {
-                ...entry,
-                window: {
-                    type: "duration",
-                    seconds: 1,
-                    unit: "month",
+                /scope\.name is not a declared field/,
+            ],
+            [
+                {
+                    ...entry,
+                    window: {
+                        type: "duration",
+                        seconds: 1,
+                        unit: "month",
+                    },
                 },
-            },
-            {
-                ...entry,
-                reset: {
-                    type: "date",
-                    date: "2030-02-28",
-                    at: 1,
+                /window\.unit is not a declared field/,
+            ],
+            [
+                {
+                    ...entry,
+                    reset: {
+                        type: "date",
+                        date: "2030-02-28",
+                        at: 1,
+                    },
                 },
-            },
-            {
-                ...entry,
-                measurement: {
-                    type: "ratio",
-                    used_fraction: -1,
+                /reset\.at is not a declared field/,
+            ],
+            [
+                {
+                    ...entry,
+                    measurement: {
+                        type: "ratio",
+                        used_fraction: -1,
+                    },
                 },
-            },
-            {
-                ...entry,
-                measurement: {
-                    type: "ratio",
-                    used_fraction: Infinity,
+                /measurement\.used_fraction must be a finite non-negative amount/,
+            ],
+            [
+                {
+                    ...entry,
+                    measurement: {
+                        type: "ratio",
+                        used_fraction: Infinity,
+                    },
                 },
-            },
-            {
-                ...entry,
-                measurement: {
-                    type: "counter",
-                    used: 1,
-                    limit: 0,
-                    unit: "requests",
+                /measurement\.used_fraction must be a finite non-negative amount/,
+            ],
+            [
+                {
+                    ...entry,
+                    measurement: {
+                        type: "counter",
+                        used: 1,
+                        limit: 0,
+                        unit: "requests",
+                    },
                 },
-            },
-            {
-                ...entry,
-                measurement: {
-                    type: "remaining",
-                    remaining: NaN,
-                    unit: "tokens",
+                /measurement\.limit must be a finite positive amount/,
+            ],
+            [
+                {
+                    ...entry,
+                    measurement: {
+                        type: "remaining",
+                        remaining: NaN,
+                        unit: "tokens",
+                    },
                 },
-            },
-            {
-                ...entry,
-                window: {
-                    type: "duration",
-                    seconds: 1.5,
+                /measurement\.remaining must be a finite non-negative amount/,
+            ],
+            [
+                {
+                    ...entry,
+                    window: {
+                        type: "duration",
+                        seconds: 1.5,
+                    },
                 },
-            },
-            {
-                ...entry,
-                reset: {
-                    type: "at",
-                    at: Number.MAX_SAFE_INTEGER + 1,
+                /window\.seconds must be an integer/,
+            ],
+            [
+                {
+                    ...entry,
+                    reset: {
+                        type: "at",
+                        at: Number.MAX_SAFE_INTEGER + 1,
+                    },
                 },
-            },
-            {
-                ...entry,
-                reset: {
-                    type: "date",
-                    date: "2030-02-29",
+                /reset\.at must be a safe integer/,
+            ],
+            [
+                {
+                    ...entry,
+                    window: {
+                        type: "duration",
+                        seconds: 0,
+                    },
                 },
-            },
-            {
-                ...entry,
-                key: [],
-            },
-            {
-                ...entry,
-                scope: null,
-            },
-        ]) {
+                /window\.seconds must be a safe positive integer/,
+            ],
+            [
+                {
+                    ...entry,
+                    reset: {
+                        type: "date",
+                        date: "2030-02-29",
+                    },
+                },
+                /reset\.date is not a calendar date: 2030-02-29/,
+            ],
+            [
+                {
+                    ...entry,
+                    key: [],
+                },
+                /\.key must not be empty or repeat another quota's key/,
+            ],
+            [
+                {
+                    ...entry,
+                    scope: null,
+                },
+                /\.scope must be an object/,
+            ],
+        ] as Array<
+            [
+                Record<string, unknown>,
+                RegExp,
+            ]
+        >) {
             expect(() =>
                 parseGetProviderQuotaResponse({
                     observed_at: 1,
@@ -227,7 +307,7 @@ describe("quota response validation", () => {
                         bad,
                     ],
                 }),
-            ).toThrow();
+            ).toThrow(expected);
         }
         expect(() =>
             parseGetProviderQuotaResponse({
@@ -237,7 +317,7 @@ describe("quota response validation", () => {
                     entry,
                 ],
             }),
-        ).toThrow();
+        ).toThrow(/quotas\[1\]\.key must not be empty or repeat another quota's key/);
     });
 });
 
@@ -318,7 +398,9 @@ describe("authored quota routing", () => {
             ],
         };
         expect(parse(routing).sources[0]?.entries[0]?.routing).toEqual(routing);
-        expect(() => parse(routing, "object")).toThrow();
+        expect(() => parse(routing, "object")).toThrow(
+            /upstream_ids\[0\]\.type must not be `map_key` outside a map/,
+        );
         for (const upstream_ids of [
             [],
             [

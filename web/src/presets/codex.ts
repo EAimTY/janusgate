@@ -1,6 +1,19 @@
 import { translation } from "../i18n";
 import type { QuotaEntryExtraction } from "../management-api/generated/v0";
-import { bearer, field, numberField, ratioEntry } from "./quota-helpers";
+import {
+    authorizationCode,
+    bearer,
+    clientId,
+    codeVerifier,
+    literal,
+    paramRow,
+    redirectUri,
+    refreshToken,
+    requestUuid,
+    secret,
+    slot,
+} from "./expressions";
+import { field, numberField, ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Codex uses upstream durations; window names do not imply five hours or seven days. */
@@ -60,15 +73,9 @@ export const codexPreset: ProviderPreset = {
                 ...bearer("https://chatgpt.com/backend-api/wham/usage"),
                 headers: [
                     ...(bearer("").headers ?? []),
-                    {
-                        name: "ChatGPT-Account-Id",
-                        value: [
-                            {
-                                type: "slot",
-                                name: "account_id",
-                            },
-                        ],
-                    },
+                    paramRow("ChatGPT-Account-Id", [
+                        slot("account_id"),
+                    ]),
                 ],
             },
             sources: [
@@ -125,59 +132,25 @@ export const codexPreset: ProviderPreset = {
         format: "openai_response",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://chatgpt.com/backend-api/codex/responses",
-                },
+                literal("https://chatgpt.com/backend-api/codex/responses"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "chatgpt-account-id",
-                    value: [
-                        {
-                            type: "slot",
-                            name: "account_id",
-                        },
-                    ],
-                },
-                {
-                    name: "Originator",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "codex_cli_rs",
-                        },
-                    ],
-                },
-                {
-                    name: "User-Agent",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "codex_cli_rs/0.147.0",
-                        },
-                    ],
-                },
-                {
-                    name: "Session-Id",
-                    value: [
-                        {
-                            type: "request_uuid",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
+                paramRow("chatgpt-account-id", [
+                    slot("account_id"),
+                ]),
+                paramRow("Originator", [
+                    literal("codex_cli_rs"),
+                ]),
+                paramRow("User-Agent", [
+                    literal("codex_cli_rs/0.147.0"),
+                ]),
+                paramRow("Session-Id", [
+                    requestUuid(),
+                ]),
             ],
             upstream_streaming: "always",
             render_options: [
@@ -190,105 +163,51 @@ export const codexPreset: ProviderPreset = {
             grant: {
                 type: "authorization_code",
                 authorize_url: [
-                    {
-                        type: "literal",
-                        value: "https://auth.openai.com/oauth/authorize",
-                    },
+                    literal("https://auth.openai.com/oauth/authorize"),
                 ],
                 redirect_uri: "http://localhost:1455/auth/callback",
                 pkce: "s256",
                 extra_params: [
-                    {
-                        name: "scope",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "openid profile email offline_access api.connectors.read api.connectors.invoke",
-                            },
-                        ],
-                    },
-                    {
-                        name: "id_token_add_organizations",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "true",
-                            },
-                        ],
-                    },
-                    {
-                        name: "codex_cli_simplified_flow",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "true",
-                            },
-                        ],
-                    },
-                    {
-                        name: "originator",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "codex_cli_rs",
-                            },
-                        ],
-                    },
+                    paramRow("scope", [
+                        literal(
+                            "openid profile email offline_access api.connectors.read api.connectors.invoke",
+                        ),
+                    ]),
+                    paramRow("id_token_add_organizations", [
+                        literal("true"),
+                    ]),
+                    paramRow("codex_cli_simplified_flow", [
+                        literal("true"),
+                    ]),
+                    paramRow("originator", [
+                        literal("codex_cli_rs"),
+                    ]),
                 ],
             },
             exchange: {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://auth.openai.com/oauth/token",
-                        },
+                        literal("https://auth.openai.com/oauth/token"),
                     ],
                     body: {
                         kind: "form",
                         fields: [
-                            {
-                                name: "grant_type",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "authorization_code",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "code",
-                                value: [
-                                    {
-                                        type: "authorization_code",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "redirect_uri",
-                                value: [
-                                    {
-                                        type: "redirect_uri",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_id",
-                                value: [
-                                    {
-                                        type: "client_id",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "code_verifier",
-                                value: [
-                                    {
-                                        type: "code_verifier",
-                                    },
-                                ],
-                            },
+                            paramRow("grant_type", [
+                                literal("authorization_code"),
+                            ]),
+                            paramRow("code", [
+                                authorizationCode(),
+                            ]),
+                            paramRow("redirect_uri", [
+                                redirectUri(),
+                            ]),
+                            paramRow("client_id", [
+                                clientId(),
+                            ]),
+                            paramRow("code_verifier", [
+                                codeVerifier(),
+                            ]),
                         ],
                     },
                 },
@@ -354,21 +273,12 @@ export const codexPreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://auth.openai.com/oauth/token",
-                        },
+                        literal("https://auth.openai.com/oauth/token"),
                     ],
                     headers: [
-                        {
-                            name: "User-Agent",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "codex_cli_rs/0.147.0",
-                                },
-                            ],
-                        },
+                        paramRow("User-Agent", [
+                            literal("codex_cli_rs/0.147.0"),
+                        ]),
                     ],
                     body: {
                         kind: "json",
@@ -378,26 +288,19 @@ export const codexPreset: ProviderPreset = {
                                 client_id: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "client_id",
-                                        },
+                                        clientId(),
                                     ],
                                 },
                                 grant_type: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "literal",
-                                            value: "refresh_token",
-                                        },
+                                        literal("refresh_token"),
                                     ],
                                 },
                                 refresh_token: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "refresh_token",
-                                        },
+                                        refreshToken(),
                                     ],
                                 },
                             },
@@ -418,44 +321,21 @@ export const codexPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://chatgpt.com/backend-api/codex/models",
-                    },
+                    literal("https://chatgpt.com/backend-api/codex/models"),
                 ],
                 query: [
-                    {
-                        name: "client_version",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "0.147.0",
-                            },
-                        ],
-                    },
+                    paramRow("client_version", [
+                        literal("0.147.0"),
+                    ]),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
-                    {
-                        name: "chatgpt-account-id",
-                        value: [
-                            {
-                                type: "slot",
-                                name: "account_id",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
+                    paramRow("chatgpt-account-id", [
+                        slot("account_id"),
+                    ]),
                 ],
             },
             extract: {

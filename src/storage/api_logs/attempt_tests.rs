@@ -12,18 +12,7 @@ use super::*;
 #[test]
 fn only_first_unaccepted_dispatch_can_fail_over() {
     crate::test_support::install_global_configuration();
-    let draft = || ApiLogDraft {
-        started_at: None,
-        api_key_id: 1,
-        provider_id: 2,
-        model_id: 3,
-        model_route_id: 4,
-        upstream_http_status: None,
-        progress: AttemptProgress::default(),
-        endpoint_type: ApiLogEndpointType::OpenaiResponses,
-        is_stream: false,
-        billed_usage: None,
-    };
+    let draft = || ApiLogDraft::predispatch(1, 2, 3, 4, ApiLogEndpointType::OpenaiResponses, false);
     let mut rejection = draft();
     assert!(!rejection.can_abandon_quota_rejection());
     rejection.stamp();

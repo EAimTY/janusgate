@@ -1,11 +1,16 @@
+import { ContractViolationError } from "../errors";
 import type { GetProviderQuotaResponse, QuotaEntry } from "../generated/v0";
-import { measurement, parseQuotaRouting, reset, scope, window } from "../quota";
-import { integer, invalid, shape, text } from "../quota-validation";
-import { expectArray } from "../validation-primitives";
+import { expectQuotaPath, measurement, parseQuotaRouting, reset, scope, window } from "../quota";
+import {
+    expectArray,
+    expectDeclaredRecord,
+    expectInteger,
+    expectNonEmptyString,
+} from "../validation-primitives";
 
 /** Validates the entire observation before any row reaches the UI. */
 export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaResponse {
-    const record = shape(
+    const record = expectDeclaredRecord(
         value,
         [
             "observed_at",
@@ -17,7 +22,7 @@ export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaR
     const quotas = expectArray(Reflect.get(record, "quotas"), "response.quotas").map(
         (value, index): QuotaEntry => {
             const context = `response.quotas[${index}]`;
-            const record = shape(
+            const record = expectDeclaredRecord(
                 value,
                 [
                     "key",
@@ -30,14 +35,17 @@ export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaR
                 ],
                 context,
             );
-            const key = expectArray(Reflect.get(record, "key"), `${context}.key`).map(
-                (part, index) => text(part, `${context}.key[${index}]`),
-            );
-            if (key.length === 0 || identities.has(JSON.stringify(key))) invalid(`${context}.key`);
-            identities.add(JSON.stringify(key));
+            const key = expectQuotaPath(Reflect.get(record, "key"), `${context}.key`);
+            const identity = JSON.stringify(key);
+            if (key.length === 0 || identities.has(identity)) {
+                throw new ContractViolationError(
+                    `${context}.key must not be empty or repeat another quota's key`,
+                );
+            }
+            identities.add(identity);
             return {
                 key,
-                label: text(Reflect.get(record, "label"), `${context}.label`),
+                label: expectNonEmptyString(Reflect.get(record, "label"), `${context}.label`),
                 scope: scope(Reflect.get(record, "scope"), `${context}.scope`),
                 routing: parseQuotaRouting(Reflect.get(record, "routing"), `${context}.routing`),
                 window: window(Reflect.get(record, "window"), `${context}.window`),
@@ -49,8 +57,12 @@ export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaR
             };
         },
     );
+    const observed_at = expectInteger(Reflect.get(record, "observed_at"), "response.observed_at");
+    if (!Number.isSafeInteger(observed_at)) {
+        throw new ContractViolationError("response.observed_at must be a safe integer");
+    }
     return {
-        observed_at: integer(Reflect.get(record, "observed_at"), "response.observed_at"),
+        observed_at,
         quotas,
     };
 }

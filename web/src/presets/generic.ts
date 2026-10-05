@@ -1,4 +1,5 @@
 import { translation } from "../i18n";
+import { base, literal, model, paramRow, secret } from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for generic-openai-responses. */
@@ -18,13 +19,8 @@ export const genericOpenaiResponsesPreset: ProviderPreset = {
         format: "openai_response",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/responses",
-                },
+                base(),
+                literal("/responses"),
             ],
             upstream_streaming: "match_client",
         },
@@ -35,27 +31,14 @@ export const genericOpenaiResponsesPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/models",
-                    },
+                    base(),
+                    literal("/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -92,13 +75,8 @@ export const genericOpenaiChatCompletionsPreset: ProviderPreset = {
         format: "openai_chat_completion",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/chat/completions",
-                },
+                base(),
+                literal("/chat/completions"),
             ],
             upstream_streaming: "match_client",
         },
@@ -109,27 +87,14 @@ export const genericOpenaiChatCompletionsPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/models",
-                    },
+                    base(),
+                    literal("/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -166,38 +131,19 @@ export const genericGeminiGenerateContentPreset: ProviderPreset = {
         format: "gemini_generate_content",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "model",
-                },
-                {
-                    type: "literal",
-                    value: ":generateContent",
-                },
+                base(),
+                model(),
+                literal(":generateContent"),
             ],
             stream_url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "model",
-                },
-                {
-                    type: "literal",
-                    value: ":streamGenerateContent?alt=sse",
-                },
+                base(),
+                model(),
+                literal(":streamGenerateContent?alt=sse"),
             ],
             headers: [
-                {
-                    name: "x-goog-api-key",
-                    value: [
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
+                paramRow("x-goog-api-key", [
+                    secret(),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -208,34 +154,18 @@ export const genericGeminiGenerateContentPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/models",
-                    },
+                    base(),
+                    literal("/models"),
                 ],
                 query: [
-                    {
-                        name: "pageSize",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "1000",
-                            },
-                        ],
-                    },
+                    paramRow("pageSize", [
+                        literal("1000"),
+                    ]),
                 ],
                 headers: [
-                    {
-                        name: "x-goog-api-key",
-                        value: [
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("x-goog-api-key", [
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -277,32 +207,16 @@ export const genericGeminiInteractionsPreset: ProviderPreset = {
         format: "gemini_interaction",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/v1beta/interactions",
-                },
+                base(),
+                literal("/v1beta/interactions"),
             ],
             headers: [
-                {
-                    name: "x-goog-api-key",
-                    value: [
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "Api-Revision",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "2026-09-01",
-                        },
-                    ],
-                },
+                paramRow("x-goog-api-key", [
+                    secret(),
+                ]),
+                paramRow("Api-Revision", [
+                    literal("2026-09-01"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -313,43 +227,21 @@ export const genericGeminiInteractionsPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/v1beta/models",
-                    },
+                    base(),
+                    literal("/v1beta/models"),
                 ],
                 query: [
-                    {
-                        name: "pageSize",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "1000",
-                            },
-                        ],
-                    },
+                    paramRow("pageSize", [
+                        literal("1000"),
+                    ]),
                 ],
                 headers: [
-                    {
-                        name: "x-goog-api-key",
-                        value: [
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
-                    {
-                        name: "Api-Revision",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "2026-09-01",
-                            },
-                        ],
-                    },
+                    paramRow("x-goog-api-key", [
+                        secret(),
+                    ]),
+                    paramRow("Api-Revision", [
+                        literal("2026-09-01"),
+                    ]),
                 ],
             },
             extract: {
@@ -391,32 +283,16 @@ export const genericAnthropicMessagesPreset: ProviderPreset = {
         format: "anthropic_messages",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/v1/messages",
-                },
+                base(),
+                literal("/v1/messages"),
             ],
             headers: [
-                {
-                    name: "x-api-key",
-                    value: [
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "anthropic-version",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "2023-06-01",
-                        },
-                    ],
-                },
+                paramRow("x-api-key", [
+                    secret(),
+                ]),
+                paramRow("anthropic-version", [
+                    literal("2023-06-01"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -427,32 +303,16 @@ export const genericAnthropicMessagesPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/v1/models",
-                    },
+                    base(),
+                    literal("/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "x-api-key",
-                        value: [
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
-                    {
-                        name: "anthropic-version",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "2023-06-01",
-                            },
-                        ],
-                    },
+                    paramRow("x-api-key", [
+                        secret(),
+                    ]),
+                    paramRow("anthropic-version", [
+                        literal("2023-06-01"),
+                    ]),
                 ],
             },
             extract: {

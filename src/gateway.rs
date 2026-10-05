@@ -480,7 +480,7 @@ fn observe_internal_usage(
 /// Folds one internal upstream response into an aggregation through the given
 /// parser, reporting whether a *real* terminal finish arrived: a finish the
 /// parser emitted from a terminal event or body. The clean-end-of-stream flush's
-/// degraded finish ([`crate::format::degrade_finish_once`]) does not count — the
+/// degraded finish (`crate::format::degrade_finish_once`) does not count — the
 /// caller decides what a missing terminal means for its own contract.
 ///
 /// # Errors

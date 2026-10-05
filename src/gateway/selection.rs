@@ -8,7 +8,7 @@ use crate::{
     format::ParsedRequest,
     storage::{
         self,
-        api_logs::{ApiLogDraft, AttemptProgress},
+        api_logs::{ApiLogDraft, ApiLogGuard},
         quota_blocks::QuotaBlock,
         route_snapshot::{MemberSnapshot, RouteSnapshot, TargetSnapshot},
     },
@@ -459,23 +459,21 @@ impl CompactionSelection {
             return Err(selection.bound_quota_failure());
         }
 
-        // The detached write owns the abandoned draft before any cancellable await. Clearing
-        // the guard's draft prevents departure or failed next selection from recording it twice.
-        let abandoned = draft.clone();
-        draft.started_at = None;
-        draft.progress = AttemptProgress::default();
-        draft.upstream_http_status = None;
-        draft.billed_usage = None;
-        let store = context.api_log_store.clone();
-        if let Some(task) = storage::api_logs::spawn_api_log_finalization(
-            store,
-            abandoned,
-            ApiLogOutcome::UpstreamError,
-            None,
-            None,
-        ) {
-            let _ = task.await;
-        }
+        // The detached write owns the abandoned facts before any cancellable await. Re-arming the
+        // coordinator's draft as a fresh predispatch one prevents departure or failed next
+        // selection from recording the abandoned attempt twice.
+        let re_armed = ApiLogDraft::predispatch(
+            draft.api_key_id,
+            draft.provider_id,
+            draft.model_id,
+            draft.model_route_id,
+            draft.endpoint_type,
+            draft.is_stream,
+        );
+        let abandoned = std::mem::replace(draft, re_armed);
+        ApiLogGuard::new(context.api_log_store.clone(), abandoned)
+            .finalize(ApiLogOutcome::UpstreamError, None)
+            .await;
         selection.has_quota_restrictions = true;
         if let Some(state) =
             storage::quota_blocks::load_state(&context.database, self.routing.provider.id).await?
@@ -614,18 +612,14 @@ pub(crate) async fn execute_selection(
             Ownership::Bound(lease) => selection.bound(context, lease.provider_id()).await?,
             Ownership::Direct | Ownership::Fresh(_) => selection.next(context).await?,
         };
-        let draft = ApiLogDraft {
-            model_route_id: routing.model_route_id,
-            provider_id: routing.provider.id,
-            model_id: routing.model.id,
+        let draft = ApiLogDraft::predispatch(
             api_key_id,
+            routing.provider.id,
+            routing.model.id,
+            routing.model_route_id,
             endpoint_type,
-            is_stream: is_client_streaming,
-            upstream_http_status: None,
-            progress: AttemptProgress::default(),
-            started_at: None,
-            billed_usage: None,
-        };
+            is_client_streaming,
+        );
         let outcome = execute_attempt(
             context,
             routing.clone(),

@@ -1,3 +1,4 @@
+import { ContractViolationError } from "../errors";
 import type {
     CredentialAcquisition,
     ProvisioningStep,
@@ -15,10 +16,17 @@ import type {
     StringExpr,
     TemplateNode,
 } from "../generated/v0";
-import { window } from "../quota";
-import { choice, invalid, modelIdentifier, parseQuotaPath, shape, text } from "../quota-validation";
-import { expectArray, expectBoolean, expectRecord } from "../validation-primitives";
+import { expectModelIdentifier, expectQuotaPath, window } from "../quota";
+import {
+    expectArray,
+    expectBoolean,
+    expectDeclaredRecord,
+    expectNonEmptyString,
+    expectRecord,
+    expectString,
+} from "../validation-primitives";
 import { expectControlRequest } from "./control";
+import { expectDeclaredKeys, expectOneOf, isPresentValue } from "./validation";
 
 /** Authored omission defaults to monitoring; unresolved optional model fields are forbidden. */
 function routingSource(value: unknown, context: string, isMap: boolean): QuotaRoutingSource {
@@ -27,7 +35,7 @@ function routingSource(value: unknown, context: string, isMap: boolean): QuotaRo
             type: "monitoring_only",
         };
     const record = expectRecord(value, context);
-    const type = choice(
+    const type = expectOneOf(
         Reflect.get(record, "type"),
         [
             "monitoring_only",
@@ -35,9 +43,10 @@ function routingSource(value: unknown, context: string, isMap: boolean): QuotaRo
             "models",
         ],
         `${context}.type`,
+        "a routing applicability",
     );
-    shape(
-        value,
+    expectDeclaredKeys(
+        record,
         type === "models"
             ? [
                   "type",
@@ -58,11 +67,15 @@ function routingSource(value: unknown, context: string, isMap: boolean): QuotaRo
     ).map((value, index) => {
         const sourceContext = `${context}.upstream_ids[${index}]`;
         const source = textSource(value, sourceContext, isMap, true);
-        if (source.type === "field" && !source.field.is_required) invalid(sourceContext);
-        if (source.type === "literal") modelIdentifier(source.value, sourceContext);
+        if (source.type === "field" && !source.field.is_required) {
+            throw new ContractViolationError(`${sourceContext} must be a required field`);
+        }
+        if (source.type === "literal") expectModelIdentifier(source.value, sourceContext);
         return source;
     });
-    if (upstream_ids.length === 0) invalid(context);
+    if (upstream_ids.length === 0) {
+        throw new ContractViolationError(`${context}.upstream_ids must not be empty`);
+    }
     return {
         type,
         upstream_ids,
@@ -71,7 +84,7 @@ function routingSource(value: unknown, context: string, isMap: boolean): QuotaRo
 
 /** A scalar selection with a stage-available context. */
 function field(value: unknown, context: string, canUseEntry = true): QuotaField {
-    const record = shape(
+    const record = expectDeclaredRecord(
         value,
         [
             "base",
@@ -80,7 +93,7 @@ function field(value: unknown, context: string, canUseEntry = true): QuotaField 
         ],
         context,
     );
-    const base = choice(
+    const base = expectOneOf(
         Reflect.get(record, "base"),
         [
             "root",
@@ -88,11 +101,14 @@ function field(value: unknown, context: string, canUseEntry = true): QuotaField 
             "entry",
         ],
         `${context}.base`,
+        "a field base",
     );
-    if (!canUseEntry && base === "entry") invalid(`${context}.base`);
+    if (!canUseEntry && base === "entry") {
+        throw new ContractViolationError(`${context}.base must not be \`entry\` here`);
+    }
     return {
         base,
-        path: parseQuotaPath(Reflect.get(record, "path"), `${context}.path`),
+        path: expectQuotaPath(Reflect.get(record, "path"), `${context}.path`),
         is_required: expectBoolean(Reflect.get(record, "is_required"), `${context}.is_required`),
     };
 }
@@ -105,10 +121,11 @@ function textSource(
     canUseEntry = false,
 ): QuotaTextSource {
     const record = expectRecord(value, context);
-    switch (Reflect.get(record, "type")) {
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    switch (type) {
         case "literal":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "value",
@@ -116,12 +133,12 @@ function textSource(
                 context,
             );
             return {
-                type: "literal",
-                value: text(Reflect.get(record, "value"), `${context}.value`),
+                type,
+                value: expectNonEmptyString(Reflect.get(record, "value"), `${context}.value`),
             };
         case "field":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                     "field",
@@ -130,47 +147,53 @@ function textSource(
                 context,
             );
             return {
-                type: "field",
+                type,
                 field: field(Reflect.get(record, "field"), `${context}.field`, canUseEntry),
-                encoding: choice(
+                encoding: expectOneOf(
                     Reflect.get(record, "encoding"),
                     [
                         "string",
                         "integer",
                     ],
                     `${context}.encoding`,
+                    "a text encoding",
                 ),
             };
         case "map_key":
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 [
                     "type",
                 ],
                 context,
             );
-            if (!isMap) invalid(context);
+            if (!isMap) {
+                throw new ContractViolationError(
+                    `${context}.type must not be \`map_key\` outside a map`,
+                );
+            }
             return {
-                type: "map_key",
+                type,
             };
         default:
-            return invalid(context);
+            throw new ContractViolationError(`${context}.type is not a text source: ${type}`);
     }
 }
 
 /** Scope accepts unknown in addition to the shared text vocabulary. */
 function scopeSource(value: unknown, context: string, isMap: boolean): QuotaScopeSource {
     const record = expectRecord(value, context);
-    if (Reflect.get(record, "type") === "unknown") {
-        shape(
-            value,
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    if (type === "unknown") {
+        expectDeclaredKeys(
+            record,
             [
                 "type",
             ],
             context,
         );
         return {
-            type: "unknown",
+            type,
         };
     }
     return textSource(value, context, isMap);
@@ -178,7 +201,7 @@ function scopeSource(value: unknown, context: string, isMap: boolean): QuotaScop
 
 /** The numeric encoding is explicit rather than guessed from a foreign value. */
 function numberField(value: unknown, context: string): QuotaNumberField {
-    const record = shape(
+    const record = expectDeclaredRecord(
         value,
         [
             "field",
@@ -188,7 +211,7 @@ function numberField(value: unknown, context: string): QuotaNumberField {
     );
     return {
         field: field(Reflect.get(record, "field"), `${context}.field`),
-        encoding: choice(
+        encoding: expectOneOf(
             Reflect.get(record, "encoding"),
             [
                 "number",
@@ -196,6 +219,7 @@ function numberField(value: unknown, context: string): QuotaNumberField {
                 "number_or_numeric_string",
             ],
             `${context}.encoding`,
+            "a number encoding",
         ),
     };
 }
@@ -203,9 +227,10 @@ function numberField(value: unknown, context: string): QuotaNumberField {
 /** The authored period mapping. */
 function windowSource(value: unknown, context: string): QuotaWindowSource {
     const record = expectRecord(value, context);
-    if (Reflect.get(record, "type") === "duration_field") {
-        shape(
-            value,
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    if (type === "duration_field") {
+        expectDeclaredKeys(
+            record,
             [
                 "type",
                 "value",
@@ -214,9 +239,9 @@ function windowSource(value: unknown, context: string): QuotaWindowSource {
             context,
         );
         return {
-            type: "duration_field",
+            type,
             value: numberField(Reflect.get(record, "value"), `${context}.value`),
-            unit: choice(
+            unit: expectOneOf(
                 Reflect.get(record, "unit"),
                 [
                     "seconds",
@@ -226,6 +251,7 @@ function windowSource(value: unknown, context: string): QuotaWindowSource {
                     "weeks",
                 ],
                 `${context}.unit`,
+                "a duration unit",
             ),
         };
     }
@@ -235,10 +261,10 @@ function windowSource(value: unknown, context: string): QuotaWindowSource {
 /** The authored measurement mapping, whose optional facts stay unknown together. */
 function measurementSource(value: unknown, context: string): QuotaMeasurementSource {
     const record = expectRecord(value, context);
-    const type = Reflect.get(record, "type");
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     if (type === "unknown") {
-        shape(
-            value,
+        expectDeclaredKeys(
+            record,
             [
                 "type",
             ],
@@ -249,8 +275,8 @@ function measurementSource(value: unknown, context: string): QuotaMeasurementSou
         };
     }
     if (type === "ratio") {
-        shape(
-            value,
+        expectDeclaredKeys(
+            record,
             [
                 "type",
                 "value",
@@ -262,27 +288,29 @@ function measurementSource(value: unknown, context: string): QuotaMeasurementSou
         return {
             type,
             value: numberField(Reflect.get(record, "value"), `${context}.value`),
-            scale: choice(
+            scale: expectOneOf(
                 Reflect.get(record, "scale"),
                 [
                     "fraction",
                     "percent",
                 ],
                 `${context}.scale`,
+                "a ratio scale",
             ),
-            direction: choice(
+            direction: expectOneOf(
                 Reflect.get(record, "direction"),
                 [
                     "used",
                     "remaining",
                 ],
                 `${context}.direction`,
+                "a direction",
             ),
         };
     }
     if (type === "counter") {
-        shape(
-            value,
+        expectDeclaredKeys(
+            record,
             [
                 "type",
                 "value",
@@ -296,20 +324,21 @@ function measurementSource(value: unknown, context: string): QuotaMeasurementSou
             type,
             value: numberField(Reflect.get(record, "value"), `${context}.value`),
             limit: numberField(Reflect.get(record, "limit"), `${context}.limit`),
-            direction: choice(
+            direction: expectOneOf(
                 Reflect.get(record, "direction"),
                 [
                     "used",
                     "remaining",
                 ],
                 `${context}.direction`,
+                "a direction",
             ),
-            unit: text(Reflect.get(record, "unit"), `${context}.unit`),
+            unit: expectNonEmptyString(Reflect.get(record, "unit"), `${context}.unit`),
         };
     }
     if (type === "remaining") {
-        shape(
-            value,
+        expectDeclaredKeys(
+            record,
             [
                 "type",
                 "value",
@@ -320,30 +349,33 @@ function measurementSource(value: unknown, context: string): QuotaMeasurementSou
         return {
             type,
             value: numberField(Reflect.get(record, "value"), `${context}.value`),
-            unit: text(Reflect.get(record, "unit"), `${context}.unit`),
+            unit: expectNonEmptyString(Reflect.get(record, "unit"), `${context}.unit`),
         };
     }
-    return invalid(context);
+    throw new ContractViolationError(`${context}.type is not a measurement source: ${type}`);
 }
 
 /** The authored reset encoding. */
 function resetSource(value: unknown, context: string): QuotaResetSource {
     const record = expectRecord(value, context);
-    if (Reflect.get(record, "type") === "unknown") {
-        shape(
-            value,
+    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
+    if (type === "unknown") {
+        expectDeclaredKeys(
+            record,
             [
                 "type",
             ],
             context,
         );
         return {
-            type: "unknown",
+            type,
         };
     }
-    if (Reflect.get(record, "type") !== "field") invalid(context);
-    shape(
-        value,
+    if (type !== "field") {
+        throw new ContractViolationError(`${context}.type is not a reset source: ${type}`);
+    }
+    expectDeclaredKeys(
+        record,
         [
             "type",
             "field",
@@ -352,9 +384,9 @@ function resetSource(value: unknown, context: string): QuotaResetSource {
         context,
     );
     return {
-        type: "field",
+        type,
         field: field(Reflect.get(record, "field"), `${context}.field`),
-        encoding: choice(
+        encoding: expectOneOf(
             Reflect.get(record, "encoding"),
             [
                 "unix_seconds",
@@ -363,13 +395,14 @@ function resetSource(value: unknown, context: string): QuotaResetSource {
                 "date",
             ],
             `${context}.encoding`,
+            "a reset encoding",
         ),
     };
 }
 
 /** An entry's complete mapping, including explicit unlimited precedence. */
 function extraction(value: unknown, context: string, isMap: boolean): QuotaEntryExtraction {
-    const record = shape(
+    const record = expectDeclaredRecord(
         value,
         [
             "key",
@@ -385,9 +418,9 @@ function extraction(value: unknown, context: string, isMap: boolean): QuotaEntry
         context,
     );
     const entry: QuotaEntryExtraction = {
-        key: text(Reflect.get(record, "key"), `${context}.key`),
-        label: text(Reflect.get(record, "label"), `${context}.label`),
-        at: parseQuotaPath(Reflect.get(record, "at"), `${context}.at`),
+        key: expectNonEmptyString(Reflect.get(record, "key"), `${context}.key`),
+        label: expectNonEmptyString(Reflect.get(record, "label"), `${context}.label`),
+        at: expectQuotaPath(Reflect.get(record, "at"), `${context}.at`),
         is_required: expectBoolean(Reflect.get(record, "is_required"), `${context}.is_required`),
         window: windowSource(Reflect.get(record, "window"), `${context}.window`),
         measurement: measurementSource(
@@ -397,11 +430,10 @@ function extraction(value: unknown, context: string, isMap: boolean): QuotaEntry
         reset: resetSource(Reflect.get(record, "reset"), `${context}.reset`),
         routing: routingSource(Reflect.get(record, "routing"), `${context}.routing`, isMap),
     };
-    if (
-        Reflect.get(record, "is_unlimited") !== undefined &&
-        Reflect.get(record, "is_unlimited") !== null
-    )
-        entry.is_unlimited = field(Reflect.get(record, "is_unlimited"), `${context}.is_unlimited`);
+    const isUnlimited = Reflect.get(record, "is_unlimited");
+    if (isPresentValue(isUnlimited)) {
+        entry.is_unlimited = field(isUnlimited, `${context}.is_unlimited`);
+    }
     return entry;
 }
 
@@ -411,14 +443,15 @@ function unique<
         key: string;
     },
 >(values: T[], context: string): T[] {
-    if (values.length === 0 || new Set(values.map((value) => value.key)).size !== values.length)
-        invalid(context);
+    if (values.length === 0 || new Set(values.map((value) => value.key)).size !== values.length) {
+        throw new ContractViolationError(`${context} must be a nonempty list of unique keys`);
+    }
     return values;
 }
 
 /** Rebuilds the closed quota vocabulary through the existing control-request parser. */
 export function parseQuotaDescriptor(value: unknown, context: string): QuotaDescriptor {
-    const record = shape(
+    const record = expectDeclaredRecord(
         value,
         [
             "request",
@@ -430,7 +463,7 @@ export function parseQuotaDescriptor(value: unknown, context: string): QuotaDesc
         (value, index): QuotaSource => {
             const contextPath = `${context}.sources[${index}]`;
             const record = expectRecord(value, contextPath);
-            const type = choice(
+            const type = expectOneOf(
                 Reflect.get(record, "type"),
                 [
                     "object",
@@ -438,9 +471,10 @@ export function parseQuotaDescriptor(value: unknown, context: string): QuotaDesc
                     "map",
                 ],
                 `${contextPath}.type`,
+                "a source kind",
             );
-            shape(
-                value,
+            expectDeclaredKeys(
+                record,
                 type === "array"
                     ? [
                           "type",
@@ -462,8 +496,8 @@ export function parseQuotaDescriptor(value: unknown, context: string): QuotaDesc
                 contextPath,
             );
             const common = {
-                key: text(Reflect.get(record, "key"), `${contextPath}.key`),
-                at: parseQuotaPath(Reflect.get(record, "at"), `${contextPath}.at`),
+                key: expectNonEmptyString(Reflect.get(record, "key"), `${contextPath}.key`),
+                at: expectQuotaPath(Reflect.get(record, "at"), `${contextPath}.at`),
                 is_required: expectBoolean(
                     Reflect.get(record, "is_required"),
                     `${contextPath}.is_required`,
@@ -494,8 +528,11 @@ export function parseQuotaDescriptor(value: unknown, context: string): QuotaDesc
                 identity.length === 0 ||
                 !identity.some((part) => part.type === "field" && part.field.base === "item") ||
                 identity.some((part) => part.type === "field" && !part.field.is_required)
-            )
-                invalid(`${contextPath}.identity`);
+            ) {
+                throw new ContractViolationError(
+                    `${contextPath}.identity must list required fields, at least one item-based`,
+                );
+            }
             return {
                 type,
                 identity,
@@ -533,22 +570,36 @@ export function validateQuotaRequest(
     const expression = (value: StringExpr): void => {
         for (const part of value) {
             if (part.type === "coalesce") {
-                if (part.parts.some((value) => value.type === "coalesce")) invalid(context);
+                if (part.parts.some((value) => value.type === "coalesce")) {
+                    throw new ContractViolationError(
+                        `${context} must not nest a coalesce expression`,
+                    );
+                }
                 expression(part.parts);
             } else if (part.type === "slot") {
-                if (!slots.has(part.name)) invalid(context);
+                if (!slots.has(part.name)) {
+                    throw new ContractViolationError(
+                        `${context} must not reference an undeclared slot: ${part.name}`,
+                    );
+                }
             } else if (
                 ![
                     "literal",
                     "secret",
                     "base",
                 ].includes(part.type)
-            )
-                invalid(context);
+            ) {
+                // The quota request is its own stage: the OAuth-flow and
+                // inference-stage values an expression may otherwise name are
+                // not available to it.
+                throw new ContractViolationError(`${context} must not reference \`${part.type}\``);
+            }
         }
     };
     const node = (value: TemplateNode): void => {
-        if (value.type === "body") invalid(context);
+        if (value.type === "body") {
+            throw new ContractViolationError(`${context} must not reference the inference body`);
+        }
         if (value.type === "string") expression(value.expr);
         if (value.type === "array") value.items.forEach(node);
         if (value.type === "object") Object.values(value.fields).forEach(node);
@@ -562,5 +613,7 @@ export function validateQuotaRequest(
         expression(row.value);
     if (request.body?.kind === "form") for (const row of request.body.fields) expression(row.value);
     if (request.body?.kind === "json") node(request.body.node);
-    if (request.method === "GET" && request.body != null) invalid(context);
+    if (request.method === "GET" && request.body != null) {
+        throw new ContractViolationError(`${context} must not carry a body on a GET request`);
+    }
 }

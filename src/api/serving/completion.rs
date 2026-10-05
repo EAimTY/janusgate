@@ -5,7 +5,7 @@ use super::delivery::{
     sse_response,
 };
 use crate::{
-    accounting::{ApiLogEndpointType, ApiLogOutcome},
+    accounting::ApiLogEndpointType,
     api::{Error, log_error},
     compaction::{
         accounting::CompactionLedger,
@@ -21,7 +21,7 @@ use crate::{
     },
     gateway::{self, CompactionDispatch, IrEventStream},
     ir::{IrAggregation, IrEvent, IrUsage},
-    storage::api_logs::{self, ApiLogDraft},
+    storage::api_logs::{ApiLogDraft, ApiLogGuard},
 };
 use axum::response::Response;
 use serde::Serialize;
@@ -160,18 +160,14 @@ where
     // The accounting draft: every fact known before dispatch, built from the authenticated key,
     // the routing row, and the surface's endpoint type; `gateway::execute` stamps the dispatch
     // instant into it (README §3 *ApiLog*).
-    let log = ApiLogDraft {
-        started_at: None,
+    let log = ApiLogDraft::predispatch(
         api_key_id,
-        provider_id: routing.provider.id,
-        model_id: routing.model.id,
-        model_route_id: routing.model_route_id,
-        upstream_http_status: None,
-        progress: crate::storage::api_logs::AttemptProgress::default(),
+        routing.provider.id,
+        routing.model.id,
+        routing.model_route_id,
         endpoint_type,
-        is_stream: is_streaming,
-        billed_usage: None,
-    };
+        is_streaming,
+    );
 
     // A request carrying compaction controls or compaction state routes
     // through the compaction pipeline: restore, strategy, and the outcome
@@ -247,7 +243,10 @@ where
 
     let outcome = async {
         let (events, log) = match selected.outcome {
-            gateway::AttemptOutcome::Accepted { events, attempt } => (events, attempt.transfer()),
+            gateway::AttemptOutcome::Accepted {
+                events,
+                mut attempt,
+            } => (events, attempt.take()),
             gateway::AttemptOutcome::PredispatchFailure { error, attempt }
             | gateway::AttemptOutcome::Rejected { error, attempt }
             | gateway::AttemptOutcome::DispatchedFailure { error, attempt } => {
@@ -374,71 +373,6 @@ fn compaction_surface(parsed: &crate::format::ParsedRequest) -> CompactionSurfac
 /// the executor's artifact ahead of the live continuation events, so a
 /// streaming client waits for the compaction to complete before its answer
 /// streams — the gateway-emulated threshold contract (README §6.8).
-/// Owns accounting until a compaction response task takes over, including handler cancellation.
-pub(super) struct CompactionAccounting {
-    /// The active draft; delivery takes this value exactly once.
-    pub(super) draft: Option<ApiLogDraft>,
-    /// Store independent of the departing request.
-    pub(super) store: Option<api_logs::ApiLogStore>,
-}
-
-impl CompactionAccounting {
-    /// Borrows the draft while execution still owns accounting.
-    ///
-    /// # Panics
-    ///
-    /// Panics if execution accesses a draft already transferred to delivery.
-    fn draft_mut(&mut self) -> &mut ApiLogDraft {
-        #[expect(
-            clippy::expect_used,
-            reason = "execution retains accounting until delivery starts"
-        )]
-        self.draft.as_mut().expect("execution owns the draft")
-    }
-
-    /// Transfers the draft to its final response or failure owner.
-    ///
-    /// # Panics
-    ///
-    /// Panics if execution attempts a second ownership transfer.
-    pub(super) fn take(&mut self) -> ApiLogDraft {
-        #[expect(
-            clippy::expect_used,
-            reason = "delivery takes the execution draft exactly once"
-        )]
-        self.draft.take().expect("execution owns the draft")
-    }
-}
-
-impl Drop for CompactionAccounting {
-    fn drop(&mut self) {
-        if let Some(draft) = self.draft.take() {
-            api_logs::spawn_api_log_finalization(
-                self.store.clone(),
-                draft,
-                ApiLogOutcome::ClientAborted,
-                None,
-                None,
-            );
-        }
-    }
-}
-
-/// Finalizes a compaction error independently of a canceled handler.
-async fn finalize_compaction_failure(context: &Context, log: ApiLogDraft, error: &Error) {
-    let (outcome, status) = error.accounting();
-    if let Some(task) = api_logs::spawn_api_log_finalization(
-        context.api_log_store.clone(),
-        log,
-        outcome,
-        Some(status),
-        None,
-    ) {
-        let _ = task.await;
-    }
-}
-
-/// Coordinates compaction accounting until the response takes ownership of it.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_compaction_pipeline<TFormat>(
     context: &Context,
@@ -456,10 +390,7 @@ where
     TFormat: ClientFormat + 'static,
     TFormat::JsonResponse: Serialize,
 {
-    let mut guard = CompactionAccounting {
-        draft: Some(log),
-        store: context.api_log_store.clone(),
-    };
+    let mut guard = ApiLogGuard::new(context.api_log_store.clone(), log);
     let outcome = loop {
         let routing = selection.routing.clone();
         let outcome = run_compaction_pipeline_inner::<TFormat>(
@@ -496,10 +427,9 @@ where
         }
         break outcome;
     };
-    if let Err(error) = &outcome
-        && let Some(draft) = guard.draft.take()
-    {
-        finalize_compaction_failure(context, draft, error).await;
+    if let Err(error) = &outcome {
+        let (log_outcome, http_status) = error.accounting();
+        guard.finalize(log_outcome, Some(http_status)).await;
     }
     outcome
 }
@@ -512,7 +442,7 @@ async fn run_compaction_pipeline_inner<TFormat>(
     preparation: &BoundaryPreparation,
     selection: &mut gateway::CompactionSelection,
     routing: crate::provider::ModelRouting,
-    accounting: &mut CompactionAccounting,
+    accounting: &mut ApiLogGuard,
     log_context: String,
     is_streaming: bool,
     should_include_usage: bool,
@@ -772,7 +702,7 @@ async fn ordinary_completion<TFormat>(
     context: &Context,
     routing: crate::provider::ModelRouting,
     ir: crate::ir::IrRequest,
-    accounting: &mut CompactionAccounting,
+    accounting: &mut ApiLogGuard,
     log_context: String,
     is_streaming: bool,
     should_include_usage: bool,
@@ -902,7 +832,7 @@ async fn checkpoint_completion<TFormat>(
     context: &Context,
     routing: crate::provider::ModelRouting,
     ir: crate::ir::IrRequest,
-    accounting: &mut CompactionAccounting,
+    accounting: &mut ApiLogGuard,
     log_context: String,
     is_streaming: bool,
     should_include_usage: bool,
@@ -1250,23 +1180,16 @@ pub(in crate::api) async fn run_compact(
     // on success, so a row exists exactly when a dispatch occurred and the
     // finalized row carries the participating calls' totals (README §3
     // *ApiLog*).
-    let log = ApiLogDraft {
-        started_at: None,
+    let log = ApiLogDraft::predispatch(
         api_key_id,
-        provider_id: routing.provider.id,
-        model_id: routing.model.id,
-        model_route_id: routing.model_route_id,
-        upstream_http_status: None,
-        progress: crate::storage::api_logs::AttemptProgress::default(),
-        endpoint_type: ApiLogEndpointType::OpenaiResponsesCompact,
-        is_stream: false,
-        billed_usage: None,
-    };
+        routing.provider.id,
+        routing.model.id,
+        routing.model_route_id,
+        ApiLogEndpointType::OpenaiResponsesCompact,
+        false,
+    );
 
-    let mut guard = CompactionAccounting {
-        draft: Some(log),
-        store: context.api_log_store.clone(),
-    };
+    let mut guard = ApiLogGuard::new(context.api_log_store.clone(), log);
     let outcome = loop {
         let outcome = executor::execute_responses_compact(
             context,
@@ -1289,15 +1212,19 @@ pub(in crate::api) async fn run_compact(
         }
         break outcome;
     };
-    let log = guard.take();
     match outcome {
         Ok(body) => {
             selection.register_compacted(&body);
-            Ok(finalize_buffered(context.api_log_store.clone(), log, &body))
+            Ok(finalize_buffered(
+                context.api_log_store.clone(),
+                guard.take(),
+                &body,
+            ))
         }
 
         Err(error) => {
-            finalize_compaction_failure(context, log, &error).await;
+            let (log_outcome, http_status) = error.accounting();
+            guard.finalize(log_outcome, Some(http_status)).await;
             log_error(
                 &format!(
                     "compact for model `{}` via provider `{}`",

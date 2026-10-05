@@ -1,4 +1,5 @@
 import { translation } from "../i18n";
+import { base, literal, paramRow, secret } from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for xai. */
@@ -21,27 +22,14 @@ export const xaiPreset: ProviderPreset = {
         format: "openai_response",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/responses",
-                },
+                base(),
+                literal("/responses"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -52,27 +40,14 @@ export const xaiPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/models",
-                    },
+                    base(),
+                    literal("/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -98,27 +73,14 @@ export const xaiPreset: ProviderPreset = {
                     default: "supported",
                     operation: {
                         url: [
-                            {
-                                type: "base",
-                            },
-                            {
-                                type: "literal",
-                                value: "/responses/compact",
-                            },
+                            base(),
+                            literal("/responses/compact"),
                         ],
                         headers: [
-                            {
-                                name: "Authorization",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "Bearer ",
-                                    },
-                                    {
-                                        type: "secret",
-                                    },
-                                ],
-                            },
+                            paramRow("Authorization", [
+                                literal("Bearer "),
+                                secret(),
+                            ]),
                         ],
                     },
                 },

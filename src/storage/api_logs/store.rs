@@ -36,6 +36,19 @@ pub(super) fn write_pool_connections() -> NonZero<usize> {
     connections
 }
 
+/// The fixed api-log file connection pool size for reads: one read query runs per file at a
+/// time; a performance choice, not configuration.
+///
+/// # Panics
+///
+/// Never: the literal 1 is nonzero, and the `expect` states that invariant.
+fn read_pool_connections() -> NonZero<usize> {
+    #[expect(clippy::expect_used, reason = "the literal 1 is nonzero")]
+    let connections = NonZero::new(1).expect("1 is nonzero");
+
+    connections
+}
+
 /// One UTC calendar day: the key of the day's api-log file, derived purely from a row's
 /// `started_at`. There is no manifest or registry anywhere — the store directory's listing is
 /// the only truth.
@@ -205,10 +218,10 @@ impl ApiLogStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the day's file cannot be opened or the insert fails — a file open
-    /// that panics, a damaged file's failed schema bootstrap most commonly, classifies as a
-    /// recording failure like any other open failure. The caller logs and swallows every
-    /// failure: recording never enters any HTTP error domain.
+    /// Returns [`Error`] when the day's file cannot be opened or the insert fails — a drifted
+    /// file, one whose stored schema version or application-id stamp the api_logs registry
+    /// cannot interpret, classifies as a recording failure like any other open failure. The
+    /// caller logs and swallows every failure: recording never enters any HTTP error domain.
     pub(super) async fn record(&self, write: ApiLogWrite) -> Result<(), Error> {
         let database = self
             .database_for_write(ApiLogDay::of_started_at(write.started_at))
@@ -238,25 +251,7 @@ impl ApiLogStore {
             return Ok(database);
         }
 
-        let path = self.day_file_path(day);
-        let (database, is_new) = Self::open_day_file_classifying_panics(day, async move {
-            // The existence probe sits directly before the open — both polled on the blocking
-            // thread, the open creating the file and its parent directory — so a file that
-            // appears or vanishes between the probe and the open keeps exactly the documented
-            // edge behavior of the probe's answer.
-            let is_new = !path.exists();
-
-            let database = Database::open(
-                path,
-                Registry::ApiLogs,
-                write_pool_connections(),
-                FILE_POOL_WAIT,
-            )
-            .await?;
-
-            Ok::<_, crate::database::Error>((database, is_new))
-        })
-        .await?;
+        let (database, is_new) = self.open_day_file_for_write(day).await?;
 
         if is_new {
             // Creating a new file is the sweep's only trigger; opening an existing file for
@@ -301,67 +296,104 @@ impl ApiLogStore {
         Ok(database)
     }
 
-    /// Runs one day's api-log database open on the blocking thread pool and classifies a
-    /// panicked open — a damaged file failing its schema bootstrap, most commonly — as
-    /// [`Error::Drift`] naming the day. The open future is created by the caller and
-    /// polled inside the blocking task via [`tokio::runtime::Handle::block_on`], so every
-    /// filesystem effect of the open — an existence probe composed ahead of it, the engine open
-    /// and its schema bootstrap — happens off the async executor thread, in the future's own
-    /// order. Both file opens share this containment: the write path swallows the
-    /// classification as a best-effort recording failure (README §8), and the read path fails
-    /// its request explicitly with it, a corrupt file never killing the process (README §3
-    /// *ApiLog Store*).
+    /// Opens one day's api-log file for the write path, creating the file and its parent
+    /// directory when absent and answering whether the file is newly created — the retention
+    /// sweep's only trigger (README §3 *ApiLog Store*). The open runs off the worker threads;
+    /// a drifted file, one the api_logs registry cannot interpret, answers [`Error::Drift`],
+    /// which the write path swallows as a best-effort recording failure like any other open
+    /// failure (README §8).
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the open fails, and classifies a panicked open as drift — stored
-    /// file state that violates the api_logs registry's contract. The startup and
-    /// main-database open paths are unaffected and stay fatal.
+    /// Returns [`Error`] when the open fails; a file this build cannot interpret under the
+    /// api_logs registry answers [`Error::Drift`].
+    async fn open_day_file_for_write(&self, day: ApiLogDay) -> Result<(Database, bool), Error> {
+        let path = self.day_file_path(day);
+
+        Self::open_day_file_off_thread(async move {
+            // The existence probe sits directly before the open — both polled on the blocking
+            // thread, the open creating the file and its parent directory — so a file that
+            // appears or vanishes between the probe and the open keeps exactly the documented
+            // edge behavior of the probe's answer.
+            let is_new = !path.exists();
+
+            let database = Database::open(
+                path,
+                Registry::ApiLogs,
+                write_pool_connections(),
+                FILE_POOL_WAIT,
+            )
+            .await?;
+
+            Ok((database, is_new))
+        })
+        .await
+    }
+
+    /// Opens one day's api-log file for the read paths, refusing to create: the open is
+    /// [`Database::open_existing`], so a file absent at the open — one the retention sweep
+    /// deleted between the directory listing and this open — reads as the empty partition it
+    /// became (README §3 *ApiLog Store*), and a read never recreates an api-log file or its
+    /// directory. The open runs off the worker threads like the write path's; a drifted file
+    /// answers [`Error::Drift`] — the explicit failure this read fails its request with,
+    /// never a process-killing panic. Reads hold no store lock: only the writers serialize.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] when the open fails; a file this build cannot interpret under the
+    /// api_logs registry answers [`Error::Drift`].
+    pub(super) async fn open_day_file_for_read(
+        &self,
+        day: ApiLogDay,
+    ) -> Result<Option<Database>, Error> {
+        let path = self.day_file_path(day);
+
+        Self::open_day_file_off_thread(async move {
+            Database::open_existing(
+                path,
+                Registry::ApiLogs,
+                read_pool_connections(),
+                FILE_POOL_WAIT,
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Runs one api-log file open off the worker threads: the caller's open future is polled
+    /// inside a blocking task via [`tokio::runtime::Handle::block_on`], so every filesystem
+    /// effect of the open — the engine open, its schema bootstrap, and an existence probe
+    /// composed ahead of either — happens off the async executor, in the future's own order.
+    /// The open's failures are typed: a drifted file, one the api_logs registry cannot
+    /// interpret, converts to [`Error::Drift`] — the write path swallows it as a recording
+    /// failure (README §8) and a read fails its request with it, a corrupt file never killing
+    /// the process (README §3 *ApiLog Store*).
     ///
     /// # Panics
     ///
-    /// Never in practice: the underlying open's panics are classified as drift above, and the
-    /// final arm only marks the open task's cancellation — possible only while the runtime is
-    /// shutting down — as unreachable.
-    pub(super) async fn open_day_file_classifying_panics<T, F>(
-        day: ApiLogDay,
-        open: F,
-    ) -> Result<T, Error>
+    /// A panic inside the open task resumes on the caller's thread: a panic there is a bug —
+    /// file drift is a typed error, never a panic — and fails fast instead of being masked as
+    /// tolerated damage, the same policy the retention sweep and the retained-days walk hold.
+    async fn open_day_file_off_thread<T, F>(open: F) -> Result<T, Error>
     where
         T: Send + 'static,
         F: Future<Output = Result<T, crate::database::Error>> + Send + 'static,
     {
         let runtime = tokio::runtime::Handle::current();
 
-        let opened = tokio::task::spawn_blocking(move || runtime.block_on(open)).await;
-
-        match opened {
+        match tokio::task::spawn_blocking(move || runtime.block_on(open)).await {
             Ok(outcome) => outcome.map_err(Error::from),
 
-            // A panicked open is contained at this boundary: the panic payload's message, when
-            // it carries one, classifies as drift — stored file state that violates the
-            // api_logs registry's contract — naming the day for the surface that renders it.
+            // A panic in the open is a bug: resume it on this thread, where it fails fast
+            // instead of being masked as tolerated maintenance damage.
             Err(join_error) if join_error.is_panic() => {
-                let payload = join_error.into_panic();
-
-                let detail = payload
-                    .downcast_ref::<&str>()
-                    .map(|message| (*message).to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "unknown panic payload".to_string());
-
-                Err(Error::Drift {
-                    message: format!(
-                        "the {} api-log database open panicked: {detail}",
-                        day.file_stem()
-                    ),
-                })
+                std::panic::resume_unwind(join_error.into_panic());
             }
 
             #[expect(
                 clippy::unreachable,
-                reason = "the open task is never aborted, and a panic inside it is classified \
-                          in the arm above; only runtime shutdown can cancel the task"
+                reason = "the open task is never aborted, and a panic inside it is resumed in \
+                          the arm above; only runtime shutdown can cancel the task"
             )]
             Err(join_error) => {
                 unreachable!("the api-log open blocking task cannot be cancelled: {join_error}")
@@ -1122,11 +1154,11 @@ mod tests {
     }
 
     /// Verifies the best-effort accounting boundary against a damaged api-log file (README §3
-    /// *ApiLog Store*): a file whose open panics inside its schema bootstrap — here a
-    /// file stamped for the main registry, which the api-log open's stamp verification rejects
-    /// fatally — classifies as a recording failure. `record` answers `Err` instead of resuming
-    /// the panic into the caller's task, the finalization swallows it without surfacing
-    /// anywhere, and a write into a healthy file still succeeds afterwards.
+    /// *ApiLog Store*): a file whose open answers typed schema drift — here a file stamped
+    /// for the main registry, which the api-log open's stamp verification rejects —
+    /// classifies as a recording failure. `record` answers `Err`, the finalization swallows
+    /// it without surfacing anywhere, and a write into a healthy file still succeeds
+    /// afterwards.
     ///
     /// # Errors
     ///
@@ -1134,15 +1166,17 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if the damaged file's panic resumes anywhere or a later operation fails.
+    /// Panics if the damaged file's classification diverges from drift or a later operation
+    /// fails.
     #[tokio::test]
-    async fn swallows_a_panicked_day_file_open() -> Result<(), Box<dyn StdError>> {
+    async fn swallows_a_drifted_day_file_open() -> Result<(), Box<dyn StdError>> {
         let (store, _guard) = test_support::create_test_store(90);
         let damaged_day = ApiLogDay::of_started_at(unix_time::unix_now_micros());
 
         // Plant a main-registry database at the day's file path and drop its pool: the
         // store's api_logs-registry open of this file then hits the stamp verification,
-        // which panics by contract (README §3 *Database Abstraction & Connection Pooling*).
+        // which answers typed schema drift (README §3 *Database Abstraction & Connection
+        // Pooling*).
         drop(
             Database::open(
                 store.day_file_path(damaged_day),
@@ -1153,7 +1187,7 @@ mod tests {
             .await?,
         );
 
-        // The write path reports the panicked open as an ordinary recording failure.
+        // The write path reports the drifted open as an ordinary recording failure.
         let outcome = store
             .record(test_support::write(
                 day_start(damaged_day) + 100,
@@ -1165,8 +1199,8 @@ mod tests {
             .await;
 
         assert!(
-            outcome.is_err(),
-            "a panicked api-log open must classify as a recording failure, not resume"
+            matches!(outcome, Err(Error::Drift { .. })),
+            "a drifted api-log open must classify as a recording failure"
         );
 
         // The finalization boundary swallows it: this call returns no Result and must not panic.

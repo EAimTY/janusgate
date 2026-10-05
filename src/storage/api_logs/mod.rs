@@ -12,8 +12,10 @@
 //! the hot connection cache, file creation, the retention sweep, and the INSERT write path — and
 //! [`usage`] is the management read engine — the shared filter, the per-file queries, and the
 //! aggregation merge. This module carries the write contract the pipeline sees: the draft
-//! lifecycle ([`ApiLogDraft`]) and finalization, either by an existing response owner
-//! ([`finalize_api_log`]) or a cancellation-independent writer ([`spawn_api_log_finalization`]).
+//! lifecycle ([`ApiLogDraft`]) with its predispatch construction, the cancellation-safe draft
+//! owner ([`ApiLogGuard`]) that carries one attempt to its single finalization or transfer, and
+//! finalization, either by an existing response owner ([`finalize_api_log`]) or a
+//! cancellation-independent writer ([`spawn_api_log_finalization`]).
 //!
 //! Recording survives a departing client by settled boundary, not by accident: both response
 //! finalization tasks own their request's draft, so a client disconnecting mid-generation records
@@ -162,6 +164,32 @@ pub(crate) struct ApiLogDraft {
 }
 
 impl ApiLogDraft {
+    /// Builds the draft from every fact known before dispatch: the authenticated key, the routed
+    /// physical target, and the surface the request arrived on. Every dispatch-derived fact —
+    /// the stamp, the progress, the first headers, and the billed usage — starts empty for
+    /// [`ApiLogDraft::stamp`], the response observation, and the compaction ledger to fill.
+    pub(crate) fn predispatch(
+        api_key_id: i64,
+        provider_id: i64,
+        model_id: i64,
+        model_route_id: i64,
+        endpoint_type: ApiLogEndpointType,
+        is_stream: bool,
+    ) -> Self {
+        Self {
+            model_route_id,
+            provider_id,
+            model_id,
+            api_key_id,
+            endpoint_type,
+            is_stream,
+            upstream_http_status: None,
+            progress: AttemptProgress::default(),
+            started_at: None,
+            billed_usage: None,
+        }
+    }
+
     /// Advances data-plane progress immediately before `send()`. The first stage fixes duration
     /// origin and the live recording switch: `started_at` is stamped only when `api_logs` is
     /// present then. Later stages preserve that origin and switch, including across reloads.
@@ -218,6 +246,102 @@ impl ApiLogDraft {
     /// while an explicit zero measurement remains a reported total.
     pub(crate) fn stamp_billed_usage(&mut self, usage: Option<IrUsage>) {
         self.billed_usage = usage;
+    }
+}
+
+/// Exactly one owner of an attempt's draft until finalization or transfer to a response task,
+/// shared by every pipeline boundary — the account coordinator of an ordinary selection and the
+/// compaction coordinators alike. Dropping an unfinished owner closes dispatched work as a client
+/// cancellation.
+///
+/// The ownership policy:
+///
+/// - [`ApiLogGuard::draft`] and [`ApiLogGuard::draft_mut`] lend the untransferred draft into the
+///   data-plane stages and routing decisions that stamp and observe it; the guard itself records
+///   nothing.
+/// - [`ApiLogGuard::take`] hands the draft to a response owner exactly once.
+/// - [`ApiLogGuard::finalize`] closes a failed attempt with the boundary's chosen outward facts
+///   through the detached writer, which keeps ownership even if cancellation interrupts its await.
+/// - Dropping a guard that still holds a stamped draft records the row as a client cancellation
+///   with no outward status; an unstamped draft — or one already taken or finalized — records
+///   nothing, because [`spawn_api_log_finalization`] returns before spawning without the dispatch
+///   stamp.
+pub(crate) struct ApiLogGuard {
+    /// The current attempt's draft; absent once taken or explicitly finalized.
+    draft: Option<ApiLogDraft>,
+    /// Store retained independently of the request handler's lifetime.
+    store: Option<ApiLogStore>,
+}
+
+impl ApiLogGuard {
+    /// Starts owning `draft`, retaining `store` independently of the request handler's lifetime —
+    /// a departing client drops the handler, never the finalization.
+    pub(crate) fn new(store: Option<ApiLogStore>, draft: ApiLogDraft) -> Self {
+        Self {
+            draft: Some(draft),
+            store,
+        }
+    }
+
+    /// Borrows the untransferred draft for routing decisions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the draft was already taken, prevented by exactly-once call sites.
+    pub(crate) fn draft(&self) -> &ApiLogDraft {
+        #[expect(clippy::expect_used, reason = "an active owner has its draft")]
+        self.draft.as_ref().expect("an active owner has its draft")
+    }
+
+    /// Lends the draft into one attempt's data-plane stages, which stamp and observe it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the draft was already taken, prevented by exactly-once call sites.
+    pub(crate) fn draft_mut(&mut self) -> &mut ApiLogDraft {
+        #[expect(clippy::expect_used, reason = "an active owner has its draft")]
+        self.draft.as_mut().expect("an active owner has its draft")
+    }
+
+    /// Hands the draft to a response owner, disabling cancellation finalization here.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the draft was already handed away, prevented by exactly-once call sites.
+    pub(crate) fn take(&mut self) -> ApiLogDraft {
+        #[expect(
+            clippy::expect_used,
+            reason = "a response owner takes the draft exactly once"
+        )]
+        self.draft.take().expect("an active owner has its draft")
+    }
+
+    /// Closes a failed attempt with the boundary's chosen outward facts. The detached writer keeps
+    /// ownership even if cancellation interrupts this await, and a draft a response owner already
+    /// took finalizes nothing here.
+    pub(crate) async fn finalize(mut self, outcome: ApiLogOutcome, http_status: Option<i64>) {
+        if let Some(draft) = self.draft.take()
+            && let Some(task) =
+                spawn_api_log_finalization(self.store.clone(), draft, outcome, http_status, None)
+        {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for ApiLogGuard {
+    /// Records a still-held stamped draft as a client cancellation with no outward status.
+    fn drop(&mut self) {
+        let Some(draft) = self.draft.take() else {
+            return;
+        };
+        spawn_api_log_finalization(
+            self.store.clone(),
+            draft,
+            ApiLogOutcome::ClientAborted,
+            None,
+            None,
+        );
     }
 }
 

@@ -29,6 +29,17 @@ pub(crate) enum Error {
     #[error("database path is not valid UTF-8: {0}")]
     InvalidPath(String),
 
+    /// The database file is not interpretable under its schema registry: it carries an
+    /// unknown schema version, a foreign `PRAGMA application_id` stamp, or a schema batch
+    /// that failed to apply. Stored file state, not a first-party contract violation: the
+    /// main database's startup open turns it fatal, while an api-log day file answers it
+    /// through the failing request instead (README §3).
+    #[error("database schema drift: {detail}")]
+    SchemaDrift {
+        /// Human-readable drift detail naming the file, its stored state, and the expectation.
+        detail: String,
+    },
+
     /// Underlying filesystem or I/O failure.
     #[error("database I/O error: {0}")]
     Io(#[from] IoError),
@@ -100,20 +111,16 @@ impl Database {
     ///
     /// Before the pool is created, the schema version stored in `PRAGMA user_version` is verified
     /// and the database is migrated forward to the latest schema version of the registry: a fresh
-    /// database receives the initial schema, an outdated one is migrated step by step, and an
-    /// unknown version is fatal. The registry's `PRAGMA application_id` stamp is verified on an
-    /// existing database, so a file belonging to the other registry is fatal too. See the
-    /// [`schema`] module for the versioning and migration design.
+    /// database receives the initial schema, an outdated one is migrated step by step, and a
+    /// database this build cannot interpret — an unknown version, a foreign registry's
+    /// application-id stamp, or a failed schema batch — fails with [`Error::SchemaDrift`]. See
+    /// the [`schema`] module for the versioning and migration design.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if opening the database or creating the connection pool fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the schema bootstrap connection fails, the migration workflow fails, the stored
-    /// schema version is unknown, or the database is stamped for another schema registry (or
-    /// predates the stamp).
+    /// Returns [`Error`] if opening the database, creating the connection pool, or bringing the
+    /// schema up to the registry's latest version fails; a database file this build cannot
+    /// interpret answers [`Error::SchemaDrift`].
     pub(crate) async fn open(
         path: impl AsRef<Path>,
         registry: schema::Registry,
@@ -150,14 +157,9 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if the path is not valid UTF-8, opening the database fails, or the
-    /// connection pool cannot be built.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the schema bootstrap connection fails, the migration workflow fails, the stored
-    /// schema version is unknown, or the database is stamped for another schema registry (or
-    /// predates the stamp).
+    /// Returns [`Error`] if the path is not valid UTF-8, opening the database, creating the
+    /// connection pool, or bringing the schema up to the registry's latest version fails; a
+    /// database file this build cannot interpret answers [`Error::SchemaDrift`].
     pub(crate) async fn open_existing(
         path: impl AsRef<Path>,
         registry: schema::Registry,
@@ -181,13 +183,9 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if opening the database or creating the connection pool fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the schema bootstrap connection fails, the migration workflow fails, the stored
-    /// schema version is unknown, or the database is stamped for another schema registry (or
-    /// predates the stamp).
+    /// Returns [`Error`] if opening the database, creating the connection pool, or bringing the
+    /// schema up to the registry's latest version fails; a database file this build cannot
+    /// interpret answers [`Error::SchemaDrift`].
     async fn open_pooled(
         path_str: &str,
         registry: schema::Registry,
@@ -196,7 +194,7 @@ impl Database {
     ) -> Result<Self, Error> {
         let database = TursoBuilder::new_local(path_str).build().await?;
 
-        bootstrap_schema(&database, registry, path_str).await;
+        bootstrap_schema(&database, registry, path_str).await?;
 
         let manager = Manager { database };
 
@@ -529,33 +527,26 @@ async fn configure_connection(connection: &Connection) -> Result<(), TursoError>
 /// created, logging progress under the database's path. See the [`schema`] module for the
 /// versioning and migration design.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if connecting fails, configuring the bootstrap connection fails, or the migration
-/// workflow fails.
-async fn bootstrap_schema(database: &TursoDatabase, registry: schema::Registry, path: &str) {
-    #[expect(
-        clippy::expect_used,
-        reason = "opening the bootstrap connection for schema migration is fatal on failure"
-    )]
-    let connection = database
-        .connect()
-        .expect("failed to connect to the database for schema migration");
+/// Returns [`Error`] if connecting the bootstrap connection, configuring it, or running the
+/// migration workflow fails; a database file this build cannot interpret under `registry`
+/// answers [`Error::SchemaDrift`].
+async fn bootstrap_schema(
+    database: &TursoDatabase,
+    registry: schema::Registry,
+    path: &str,
+) -> Result<(), Error> {
+    let connection = database.connect()?;
 
-    #[expect(
-        clippy::expect_used,
-        reason = "configuring the schema migration connection is fatal on failure"
-    )]
-    configure_connection(&connection)
-        .await
-        .expect("failed to configure database connection");
+    configure_connection(&connection).await?;
 
-    schema::migrate(&connection, registry, path).await;
+    schema::migrate(&connection, registry, path).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, schema::Registry};
+    use super::{Database, Error, schema::Registry};
     use crate::test_support::TempDirGuard;
     use std::{error::Error as StdError, num::NonZero, time::Duration};
 
@@ -618,16 +609,21 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the application-id fatality through the real open path: a file created under the
-    /// api_logs registry panics at open under the main registry — the startup-time fatal, not a
-    /// pool that serves and fails later on first query.
+    /// Verifies the application-id refusal through the real open path: a file created under the
+    /// api_logs registry answers its open under the main registry with typed schema drift — the
+    /// open-time refusal, not a pool that serves and fails later on first query. The main
+    /// database's startup open turns the error fatal (README §3).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database open or the assertion fixture fails.
     ///
     /// # Panics
     ///
-    /// Panics if the second open does not panic.
+    /// Panics if the open classification diverges from typed schema drift.
     #[tokio::test]
-    #[should_panic(expected = "but the main registry stamps")]
-    async fn open_panics_when_an_api_log_file_opens_under_the_main_registry() {
+    async fn open_refuses_an_api_log_file_under_the_main_registry() -> Result<(), Box<dyn StdError>>
+    {
         let directory =
             std::env::temp_dir().join(format!("janusgate-db-registry-{}", rand::random::<u64>()));
         let _guard = TempDirGuard(directory.clone());
@@ -636,11 +632,19 @@ mod tests {
         let connections = pool_connections();
         let wait = Duration::from_secs(5);
 
-        #[expect(clippy::expect_used, reason = "the creating api-log open must succeed")]
-        Database::open(&path, Registry::ApiLogs, connections, wait)
-            .await
-            .expect("the creating api-log open succeeds");
+        Database::open(&path, Registry::ApiLogs, connections, wait).await?;
 
-        let _ = Database::open(&path, Registry::Main, connections, wait).await;
+        let outcome = Database::open(&path, Registry::Main, connections, wait).await;
+
+        assert!(
+            matches!(
+                outcome,
+                Err(Error::SchemaDrift { detail })
+                    if detail.contains("but the main registry stamps")
+            ),
+            "opening an api-log file under the main registry must answer typed schema drift"
+        );
+
+        Ok(())
     }
 }

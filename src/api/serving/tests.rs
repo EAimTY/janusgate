@@ -11,7 +11,7 @@ use crate::{
     ir::{IrEvent, IrFinishReason, IrUsage},
     provider::StoredCredentials,
     storage::{
-        api_logs::{self, ApiLogDraft, list_api_logs},
+        api_logs::{self, ApiLogDraft, ApiLogGuard, list_api_logs},
         models::{ModelCreate, insert_model_checked},
     },
     test_support::{
@@ -70,18 +70,10 @@ fn test_store() -> (api_logs::ApiLogStore, TempDirGuard) {
 /// non-streaming flag — the shape the draft carries once [`gateway::execute`] has stamped it
 /// at dispatch.
 fn stamped_draft() -> ApiLogDraft {
-    ApiLogDraft {
-        started_at: Some(1_000_000_000),
-        api_key_id: 3,
-        provider_id: 5,
-        model_id: 7,
-        model_route_id: 7,
-        upstream_http_status: None,
-        progress: crate::storage::api_logs::AttemptProgress::default(),
-        endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
-        is_stream: false,
-        billed_usage: None,
-    }
+    let mut draft =
+        ApiLogDraft::predispatch(3, 5, 7, 7, ApiLogEndpointType::OpenaiChatCompletions, false);
+    draft.started_at = Some(1_000_000_000);
+    draft
 }
 
 /// The response-boundary log context fixture, composed as [`run_completion`] composes it.
@@ -253,10 +245,7 @@ async fn finalizes_client_aborted_when_the_handler_departs_before_completion() {
             }),
             events,
         ));
-        let mut accounting = CompactionAccounting {
-            draft: Some(stamped_draft()),
-            store: Some(store.clone()),
-        };
+        let mut accounting = ApiLogGuard::new(Some(store.clone()), stamped_draft());
         let handler = tokio::spawn(detached_aggregation::<ChatCompletionFormat>(
             events,
             "public-model".into(),
@@ -720,10 +709,7 @@ async fn compaction_cancellation_preserves_billed_work() {
         output_tokens: 5,
         ..IrUsage::default()
     }));
-    drop(CompactionAccounting {
-        draft: Some(draft),
-        store: Some(store.clone()),
-    });
+    drop(ApiLogGuard::new(Some(store.clone()), draft));
     #[expect(clippy::expect_used, reason = "a dispatched draft finalizes promptly")]
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while recorded_rows(&store).await.is_empty() {

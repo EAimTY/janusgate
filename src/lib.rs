@@ -54,7 +54,10 @@ static CONFIG: OnceLock<ConfigLoader> = OnceLock::new();
 /// # Panics
 ///
 /// Panics if command-line arguments are invalid, the configuration cannot be
-/// loaded, or the global configuration has already been initialized.
+/// loaded, the global configuration has already been initialized, or the main database cannot be
+/// opened or brought up to the latest schema version — a schema-drifted main database file is
+/// fatal at startup, unlike an api-log day file, whose drift fails only its own request (README
+/// §3).
 pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     let config_path = parse_config_path(args);
 

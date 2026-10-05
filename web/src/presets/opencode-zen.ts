@@ -1,4 +1,5 @@
 import { translation } from "../i18n";
+import { literal, model, paramRow, secret } from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for zen-openai-chat-completions. */
@@ -18,28 +19,14 @@ export const zenOpenaiChatCompletionsPreset: ProviderPreset = {
         format: "openai_chat_completion",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://opencode.ai/zen/v1",
-                },
-                {
-                    type: "literal",
-                    value: "/chat/completions",
-                },
+                literal("https://opencode.ai/zen/v1"),
+                literal("/chat/completions"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -50,24 +37,13 @@ export const zenOpenaiChatCompletionsPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://opencode.ai/zen/v1/models",
-                    },
+                    literal("https://opencode.ai/zen/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -103,28 +79,14 @@ export const zenOpenaiResponsesPreset: ProviderPreset = {
         format: "openai_response",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://opencode.ai/zen/v1",
-                },
-                {
-                    type: "literal",
-                    value: "/responses",
-                },
+                literal("https://opencode.ai/zen/v1"),
+                literal("/responses"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -135,24 +97,13 @@ export const zenOpenaiResponsesPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://opencode.ai/zen/v1/models",
-                    },
+                    literal("https://opencode.ai/zen/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -188,33 +139,16 @@ export const zenAnthropicMessagesPreset: ProviderPreset = {
         format: "anthropic_messages",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://opencode.ai/zen/v1",
-                },
-                {
-                    type: "literal",
-                    value: "/v1/messages",
-                },
+                literal("https://opencode.ai/zen/v1"),
+                literal("/v1/messages"),
             ],
             headers: [
-                {
-                    name: "x-api-key",
-                    value: [
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "anthropic-version",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "2023-06-01",
-                        },
-                    ],
-                },
+                paramRow("x-api-key", [
+                    secret(),
+                ]),
+                paramRow("anthropic-version", [
+                    literal("2023-06-01"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -225,20 +159,12 @@ export const zenAnthropicMessagesPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://opencode.ai/zen/v1/models",
-                    },
+                    literal("https://opencode.ai/zen/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "x-api-key",
-                        value: [
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("x-api-key", [
+                        secret(),
+                    ]),
                 ],
             },
             extract: {
@@ -274,40 +200,19 @@ export const zenGeminiGenerateContentPreset: ProviderPreset = {
         format: "gemini_generate_content",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://opencode.ai/zen/v1",
-                },
-                {
-                    type: "model",
-                },
-                {
-                    type: "literal",
-                    value: ":generateContent",
-                },
+                literal("https://opencode.ai/zen/v1"),
+                model(),
+                literal(":generateContent"),
             ],
             stream_url: [
-                {
-                    type: "literal",
-                    value: "https://opencode.ai/zen/v1",
-                },
-                {
-                    type: "model",
-                },
-                {
-                    type: "literal",
-                    value: ":streamGenerateContent?alt=sse",
-                },
+                literal("https://opencode.ai/zen/v1"),
+                model(),
+                literal(":streamGenerateContent?alt=sse"),
             ],
             headers: [
-                {
-                    name: "x-goog-api-key",
-                    value: [
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
+                paramRow("x-goog-api-key", [
+                    secret(),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -318,20 +223,12 @@ export const zenGeminiGenerateContentPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://opencode.ai/zen/v1/models",
-                    },
+                    literal("https://opencode.ai/zen/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "x-goog-api-key",
-                        value: [
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("x-goog-api-key", [
+                        secret(),
+                    ]),
                 ],
             },
             extract: {

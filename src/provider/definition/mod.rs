@@ -5,7 +5,7 @@
 //! configuration (data, the descriptors in this module), and credentials (data, the provider
 //! rows). The engines never special-case a provider; these descriptor vocabularies are the only
 //! extension surface, and the management write boundary validates a payload once, at write time
-//! ([`validate::DefinitionPayload::validate`]).
+//! ([`DefinitionPayload::validate`]).
 
 pub(crate) mod compaction;
 pub(crate) mod credential;

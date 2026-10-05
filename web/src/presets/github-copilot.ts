@@ -1,4 +1,5 @@
 import { translation } from "../i18n";
+import { base, clientId, deviceCode, literal, paramRow, secret, slot } from "./expressions";
 import { field, numberField } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
@@ -21,34 +22,16 @@ export const githubCopilotPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://api.github.com/copilot_internal/user",
-                    },
+                    literal("https://api.github.com/copilot_internal/user"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "token ",
-                            },
-                            {
-                                type: "slot",
-                                name: "github_token",
-                            },
-                        ],
-                    },
-                    {
-                        name: "X-GitHub-Api-Version",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "2025-04-01",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("token "),
+                        slot("github_token"),
+                    ]),
+                    paramRow("X-GitHub-Api-Version", [
+                        literal("2025-04-01"),
+                    ]),
                 ],
             },
             sources: [
@@ -113,54 +96,23 @@ export const githubCopilotPreset: ProviderPreset = {
         format: "openai_chat_completion",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/chat/completions",
-                },
+                base(),
+                literal("/chat/completions"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "Copilot-Integration-Id",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "vscode-chat",
-                        },
-                    ],
-                },
-                {
-                    name: "Editor-Version",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "vscode/1.99.0",
-                        },
-                    ],
-                },
-                {
-                    name: "User-Agent",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "GitHubCopilotChat/1.0.0",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
+                paramRow("Copilot-Integration-Id", [
+                    literal("vscode-chat"),
+                ]),
+                paramRow("Editor-Version", [
+                    literal("vscode/1.99.0"),
+                ]),
+                paramRow("User-Agent", [
+                    literal("GitHubCopilotChat/1.0.0"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -179,33 +131,19 @@ export const githubCopilotPreset: ProviderPreset = {
                     request: {
                         method: "POST",
                         url: [
-                            {
-                                type: "literal",
-                                value: "https://github.com/login/device/code",
-                            },
+                            literal("https://github.com/login/device/code"),
                         ],
                         headers: [
-                            {
-                                name: "Accept",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "application/json",
-                                    },
-                                ],
-                            },
+                            paramRow("Accept", [
+                                literal("application/json"),
+                            ]),
                         ],
                         body: {
                             kind: "form",
                             fields: [
-                                {
-                                    name: "client_id",
-                                    value: [
-                                        {
-                                            type: "client_id",
-                                        },
-                                    ],
-                                },
+                                paramRow("client_id", [
+                                    clientId(),
+                                ]),
                             ],
                         },
                     },
@@ -266,50 +204,25 @@ export const githubCopilotPreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://github.com/login/oauth/access_token",
-                        },
+                        literal("https://github.com/login/oauth/access_token"),
                     ],
                     headers: [
-                        {
-                            name: "Accept",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "application/json",
-                                },
-                            ],
-                        },
+                        paramRow("Accept", [
+                            literal("application/json"),
+                        ]),
                     ],
                     body: {
                         kind: "form",
                         fields: [
-                            {
-                                name: "grant_type",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "urn:ietf:params:oauth:grant-type:device_code",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_id",
-                                value: [
-                                    {
-                                        type: "client_id",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "device_code",
-                                value: [
-                                    {
-                                        type: "device_code",
-                                    },
-                                ],
-                            },
+                            paramRow("grant_type", [
+                                literal("urn:ietf:params:oauth:grant-type:device_code"),
+                            ]),
+                            paramRow("client_id", [
+                                clientId(),
+                            ]),
+                            paramRow("device_code", [
+                                deviceCode(),
+                            ]),
                         ],
                     },
                 },
@@ -347,43 +260,19 @@ export const githubCopilotPreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://api.github.com/copilot_internal/v2/token",
-                        },
+                        literal("https://api.github.com/copilot_internal/v2/token"),
                     ],
                     headers: [
-                        {
-                            name: "Authorization",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "Bearer ",
-                                },
-                                {
-                                    type: "slot",
-                                    name: "github_token",
-                                },
-                            ],
-                        },
-                        {
-                            name: "Editor-Version",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "vscode/1.99.0",
-                                },
-                            ],
-                        },
-                        {
-                            name: "Copilot-Integration-Id",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "vscode-chat",
-                                },
-                            ],
-                        },
+                        paramRow("Authorization", [
+                            literal("Bearer "),
+                            slot("github_token"),
+                        ]),
+                        paramRow("Editor-Version", [
+                            literal("vscode/1.99.0"),
+                        ]),
+                        paramRow("Copilot-Integration-Id", [
+                            literal("vscode-chat"),
+                        ]),
                     ],
                 },
                 response_encoding: "json",
@@ -432,36 +321,17 @@ export const githubCopilotPreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "base",
-                    },
-                    {
-                        type: "literal",
-                        value: "/models",
-                    },
+                    base(),
+                    literal("/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
-                    {
-                        name: "Copilot-Integration-Id",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "vscode-chat",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
+                    paramRow("Copilot-Integration-Id", [
+                        literal("vscode-chat"),
+                    ]),
                 ],
             },
             extract: {

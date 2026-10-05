@@ -1,5 +1,4 @@
 import type {
-    ControlRequest,
     QuotaEntryExtraction,
     QuotaField,
     QuotaNumberEncoding,
@@ -63,32 +62,5 @@ export function ratioEntry(
             field: field(resetPath),
             encoding: resetEncoding,
         },
-    };
-}
-
-/** Standard current-token bearer request, with headers entirely in preset data. */
-export function bearer(url: string): ControlRequest {
-    return {
-        method: "GET",
-        url: [
-            {
-                type: "literal",
-                value: url,
-            },
-        ],
-        headers: [
-            {
-                name: "Authorization",
-                value: [
-                    {
-                        type: "literal",
-                        value: "Bearer ",
-                    },
-                    {
-                        type: "secret",
-                    },
-                ],
-            },
-        ],
     };
 }

@@ -1,84 +1,7 @@
-//! Single-account attempt ownership before the outward response task takes over.
+//! Single-account dispatch outcomes before the outward response task takes over.
 
 use super::{Context, Error, IrEventStream, IrRequest, ModelRouting, execute};
-use crate::{
-    accounting::ApiLogOutcome,
-    storage::api_logs::{ApiLogDraft, ApiLogStore, AttemptProgress, spawn_api_log_finalization},
-};
-
-/// Exactly one owner of an attempt's draft until finalization or response-task transfer.
-/// Dropping an unfinished owner closes dispatched work as a client cancellation.
-pub(crate) struct AccountAttempt {
-    /// Present until an explicit consuming transfer; never copied for two finalizers.
-    draft: Option<ApiLogDraft>,
-    /// Store retained independently of the request handler's lifetime.
-    store: Option<ApiLogStore>,
-}
-
-impl AccountAttempt {
-    /// Starts an unfinalized attempt, including its predispatch cancellation window.
-    fn new(context: &Context, draft: ApiLogDraft) -> Self {
-        Self {
-            draft: Some(draft),
-            store: context.api_log_store.clone(),
-        }
-    }
-
-    /// Borrows the untransferred facts for routing decisions.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an already consumed owner is accessed, prevented by consuming transfers.
-    pub(crate) fn draft(&self) -> &ApiLogDraft {
-        #[expect(clippy::expect_used, reason = "transfers consume the attempt owner")]
-        self.draft.as_ref().expect("an active owner has its draft")
-    }
-
-    /// Borrows the draft for one account's data-plane stages.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an already consumed owner is accessed, prevented by consuming transfers.
-    fn draft_mut(&mut self) -> &mut ApiLogDraft {
-        #[expect(clippy::expect_used, reason = "transfers consume the attempt owner")]
-        self.draft.as_mut().expect("an active owner has its draft")
-    }
-
-    /// Hands the draft to the existing response task, disabling cancellation finalization here.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the draft was already handed away, prevented by consuming this owner.
-    pub(crate) fn transfer(mut self) -> ApiLogDraft {
-        #[expect(
-            clippy::expect_used,
-            reason = "a consuming transfer occurs exactly once"
-        )]
-        self.draft
-            .take()
-            .expect("the owner transfers its draft once")
-    }
-
-    /// Closes an abandoned or final failed attempt with the coordinator's chosen outward facts.
-    /// The detached writer keeps ownership even if cancellation interrupts this await.
-    pub(crate) async fn finalize(self, outcome: ApiLogOutcome, http_status: Option<i64>) {
-        let store = self.store.clone();
-        let draft = self.transfer();
-        if let Some(task) = spawn_api_log_finalization(store, draft, outcome, http_status, None) {
-            let _ = task.await;
-        }
-    }
-}
-
-impl Drop for AccountAttempt {
-    fn drop(&mut self) {
-        let Some(draft) = self.draft.take() else {
-            return;
-        };
-        let store = self.store.clone();
-        spawn_api_log_finalization(store, draft, ApiLogOutcome::ClientAborted, None, None);
-    }
-}
+use crate::storage::api_logs::{ApiLogDraft, ApiLogGuard, AttemptProgress};
 
 /// Typed result of exactly one account dispatch. No variant has finalized its draft.
 pub(crate) enum AttemptOutcome {
@@ -87,28 +10,28 @@ pub(crate) enum AttemptOutcome {
         /// Original failure, never authorization to select another account.
         error: Error,
         /// Unstamped owner; no accounting row exists.
-        attempt: AccountAttempt,
+        attempt: ApiLogGuard,
     },
     /// Rejected headers with bounded, positively classified quota evidence when available.
     Rejected {
         /// Typed quota rejection or ordinary mirrored rejection.
         error: Error,
         /// Unfinalized owner carrying first headers and dispatch commitment.
-        attempt: AccountAttempt,
+        attempt: ApiLogGuard,
     },
     /// A dispatched transport or storage failure with an ambiguous execution outcome.
     DispatchedFailure {
         /// Failure that ends account selection immediately.
         error: Error,
         /// Unfinalized owner; no invented successful usage.
-        attempt: AccountAttempt,
+        attempt: ApiLogGuard,
     },
     /// Accepted headers commit the account before parsing or exposing events.
     Accepted {
         /// Parsed events, whose later errors never re-enter selection.
         events: IrEventStream,
-        /// Owner to transfer exactly once to the result task.
-        attempt: AccountAttempt,
+        /// Owner to hand to the result task exactly once.
+        attempt: ApiLogGuard,
     },
 }
 
@@ -121,7 +44,7 @@ pub(crate) async fn execute_attempt(
     draft: ApiLogDraft,
     affinity: Option<&mut crate::affinity::Ownership>,
 ) -> AttemptOutcome {
-    let mut attempt = AccountAttempt::new(context, draft);
+    let mut attempt = ApiLogGuard::new(context.api_log_store.clone(), draft);
     match execute(
         context,
         routing,

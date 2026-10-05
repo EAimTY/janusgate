@@ -1,5 +1,16 @@
 import { translation } from "../i18n";
-import { bearer, ratioEntry } from "./quota-helpers";
+import {
+    authorizationCode,
+    bearer,
+    clientId,
+    codeVerifier,
+    literal,
+    paramRow,
+    redirectUri,
+    refreshToken,
+    secret,
+} from "./expressions";
+import { ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for claude-code. */
@@ -26,24 +37,12 @@ export const claudeCodePreset: ProviderPreset = {
                 ...bearer("https://api.anthropic.com/api/oauth/usage"),
                 headers: [
                     ...(bearer("").headers ?? []),
-                    {
-                        name: "anthropic-beta",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "oauth-2025-04-20",
-                            },
-                        ],
-                    },
-                    {
-                        name: "User-Agent",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "claude-cli/2.1.0 (external, cli)",
-                            },
-                        ],
-                    },
+                    paramRow("anthropic-beta", [
+                        literal("oauth-2025-04-20"),
+                    ]),
+                    paramRow("User-Agent", [
+                        literal("claude-cli/2.1.0 (external, cli)"),
+                    ]),
                 ],
             },
             sources: [
@@ -118,51 +117,22 @@ export const claudeCodePreset: ProviderPreset = {
         format: "anthropic_messages",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://api.anthropic.com/v1/messages",
-                },
+                literal("https://api.anthropic.com/v1/messages"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "anthropic-beta",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "oauth-2025-04-20",
-                        },
-                    ],
-                },
-                {
-                    name: "anthropic-version",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "2023-06-01",
-                        },
-                    ],
-                },
-                {
-                    name: "User-Agent",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "claude-cli/1.0.0 (external, cli)",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
+                paramRow("anthropic-beta", [
+                    literal("oauth-2025-04-20"),
+                ]),
+                paramRow("anthropic-version", [
+                    literal("2023-06-01"),
+                ]),
+                paramRow("User-Agent", [
+                    literal("claude-cli/1.0.0 (external, cli)"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -172,53 +142,29 @@ export const claudeCodePreset: ProviderPreset = {
             grant: {
                 type: "authorization_code",
                 authorize_url: [
-                    {
-                        type: "literal",
-                        value: "https://claude.ai/oauth/authorize",
-                    },
+                    literal("https://claude.ai/oauth/authorize"),
                 ],
                 redirect_uri: "https://console.anthropic.com/oauth/code/callback",
                 pkce: "s256",
                 extra_params: [
-                    {
-                        name: "code",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "true",
-                            },
-                        ],
-                    },
-                    {
-                        name: "scope",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "org:create_api_key user:profile user:inference",
-                            },
-                        ],
-                    },
+                    paramRow("code", [
+                        literal("true"),
+                    ]),
+                    paramRow("scope", [
+                        literal("org:create_api_key user:profile user:inference"),
+                    ]),
                 ],
             },
             exchange: {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://console.anthropic.com/v1/oauth/token",
-                        },
+                        literal("https://console.anthropic.com/v1/oauth/token"),
                     ],
                     headers: [
-                        {
-                            name: "User-Agent",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "claude-cli/1.0.0 (external, cli)",
-                                },
-                            ],
-                        },
+                        paramRow("User-Agent", [
+                            literal("claude-cli/1.0.0 (external, cli)"),
+                        ]),
                     ],
                     body: {
                         kind: "json",
@@ -228,42 +174,31 @@ export const claudeCodePreset: ProviderPreset = {
                                 grant_type: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "literal",
-                                            value: "authorization_code",
-                                        },
+                                        literal("authorization_code"),
                                     ],
                                 },
                                 client_id: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "client_id",
-                                        },
+                                        clientId(),
                                     ],
                                 },
                                 code: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "authorization_code",
-                                        },
+                                        authorizationCode(),
                                     ],
                                 },
                                 code_verifier: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "code_verifier",
-                                        },
+                                        codeVerifier(),
                                     ],
                                 },
                                 redirect_uri: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "redirect_uri",
-                                        },
+                                        redirectUri(),
                                     ],
                                 },
                             },
@@ -314,21 +249,12 @@ export const claudeCodePreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://console.anthropic.com/v1/oauth/token",
-                        },
+                        literal("https://console.anthropic.com/v1/oauth/token"),
                     ],
                     headers: [
-                        {
-                            name: "User-Agent",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "claude-cli/1.0.0 (external, cli)",
-                                },
-                            ],
-                        },
+                        paramRow("User-Agent", [
+                            literal("claude-cli/1.0.0 (external, cli)"),
+                        ]),
                     ],
                     body: {
                         kind: "json",
@@ -338,26 +264,19 @@ export const claudeCodePreset: ProviderPreset = {
                                 grant_type: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "literal",
-                                            value: "refresh_token",
-                                        },
+                                        literal("refresh_token"),
                                     ],
                                 },
                                 client_id: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "client_id",
-                                        },
+                                        clientId(),
                                     ],
                                 },
                                 refresh_token: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "refresh_token",
-                                        },
+                                        refreshToken(),
                                     ],
                                 },
                             },
@@ -374,42 +293,19 @@ export const claudeCodePreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://api.anthropic.com/v1/models",
-                    },
+                    literal("https://api.anthropic.com/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
-                    {
-                        name: "anthropic-beta",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "oauth-2025-04-20",
-                            },
-                        ],
-                    },
-                    {
-                        name: "anthropic-version",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "2023-06-01",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
+                    paramRow("anthropic-beta", [
+                        literal("oauth-2025-04-20"),
+                    ]),
+                    paramRow("anthropic-version", [
+                        literal("2023-06-01"),
+                    ]),
                 ],
             },
             extract: {
@@ -442,29 +338,17 @@ export const claudeCodePreset: ProviderPreset = {
                 messages_on_demand_compaction: {
                     default: "supported",
                     overlay_headers: [
-                        {
-                            name: "anthropic-beta",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "compact-2026-09-04",
-                                },
-                            ],
-                        },
+                        paramRow("anthropic-beta", [
+                            literal("compact-2026-09-04"),
+                        ]),
                     ],
                 },
                 messages_threshold_compaction: {
                     default: "supported",
                     overlay_headers: [
-                        {
-                            name: "anthropic-beta",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "compact-2026-01-12",
-                                },
-                            ],
-                        },
+                        paramRow("anthropic-beta", [
+                            literal("compact-2026-01-12"),
+                        ]),
                     ],
                 },
             },

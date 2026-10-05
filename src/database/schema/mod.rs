@@ -14,11 +14,14 @@
 //!
 //! Each registry stamps its identity into the database header: version 1's SQL sets
 //! `PRAGMA application_id` to the registry's fourcc — `JGMD` for the main database, `JGAL` for
-//! an api-log file. Before walking an existing database, the bootstrap verifies the stamp and
-//! panics on a mismatch, so a file opened under the wrong registry fails at startup instead of
-//! surfacing later as missing-table errors on first query. A database file predating the stamp
-//! carries the default `0` and fails the same startup verification — an unreleased development
-//! artifact the operator recreates.
+//! an api-log file. Before walking an existing database, the bootstrap verifies the stamp, and
+//! a mismatch — like an unknown stored version or a failed schema batch — answers the typed
+//! schema-drift error ([`Error::SchemaDrift`]) instead of a panic, so a file opened under the
+//! wrong registry fails its open rather than surfacing later as missing-table errors on first
+//! query. A database file predating the stamp carries the default `0` and fails the same
+//! verification — an unreleased development artifact the operator recreates. The main
+//! database's startup open treats the error as fatal, while an api-log day file answering with
+//! drift fails only its own request (README §3).
 //!
 //! Migration texts run under foreign key enforcement: the bootstrap connection enables
 //! `PRAGMA foreign_keys` before the walk, and each text executes inside its own transaction, where
@@ -38,6 +41,7 @@ mod routing_tests;
 mod version_1;
 mod version_2;
 
+use super::Error;
 use log::{debug, info};
 #[cfg(test)]
 use std::error::Error as StdError;
@@ -132,11 +136,16 @@ impl Registry {
 /// Delegates to [`bring_up_to_latest`] over the registry's versions; see that function for the
 /// workflow.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics under the same conditions as [`bring_up_to_latest`].
-pub(super) async fn migrate(connection: &Connection, registry: Registry, path: &str) {
-    bring_up_to_latest(connection, registry, registry.schemas(), path).await;
+/// Returns [`Error`] under the same conditions as [`bring_up_to_latest`]; a database this build
+/// cannot interpret under `registry` answers [`Error::SchemaDrift`].
+pub(super) async fn migrate(
+    connection: &Connection,
+    registry: Registry,
+    path: &str,
+) -> Result<(), Error> {
+    bring_up_to_latest(connection, registry, registry.schemas(), path).await
 }
 
 /// Walks `schemas` — schema versions in ascending order — forward from the database's stored
@@ -153,46 +162,47 @@ pub(super) async fn migrate(connection: &Connection, registry: Registry, path: &
 /// the stored version inside its own transaction the same way, so two opens walking one
 /// outdated file apply each migration exactly once between them. A database at a known version
 /// first has its application id verified against `registry` — a mismatch, or the default `0` on
-/// a file predating the stamp, is fatal — and then applies the migrations of every later version
-/// in order; a database already at the latest version does nothing. Each step — one schema or
-/// migration text plus its `user_version` write — commits atomically, so a crash mid-chain
-/// leaves the database on its last committed version and the next startup resumes from there.
+/// a file predating the stamp, answers drift — and then applies the migrations of every later
+/// version in order; a database already at the latest version does nothing. Each step — one
+/// schema or migration text plus its `user_version` write — commits atomically, so a crash
+/// mid-chain leaves the database on its last committed version and the next startup resumes
+/// from there.
 ///
 /// The schema versions and the registry are parameters rather than [`MAIN_SCHEMAS`],
 /// [`API_LOGS_SCHEMAS`], and their [`Registry`] values themselves so tests can exercise the walk
 /// over chains with more versions than a registry currently contains; a synthetic chain carries
 /// the application-id stamp in its version 1 exactly like a real registry.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if reading `user_version`, beginning or aborting a bootstrap transaction, verifying
-/// the registry's application-id stamp, applying a schema or migration batch, or advancing
-/// `user_version` fails, if the stored version is negative or newer than the latest known
-/// version — a database this build cannot interpret — or if the database's application id is not
-/// the one `registry` stamps.
+/// Returns [`Error`] if reading `user_version`, beginning or aborting a bootstrap transaction,
+/// verifying the registry's application-id stamp, or applying a schema or migration batch fails.
+/// A stored version negative or newer than the latest known, or an application id other than the
+/// one `registry` stamps, answers [`Error::SchemaDrift`] — a database this build cannot
+/// interpret.
 async fn bring_up_to_latest(
     connection: &Connection,
     registry: Registry,
     schemas: &[Schema],
     path: &str,
-) {
-    let mut current_version = query_user_version(connection).await;
+) -> Result<(), Error> {
+    let mut current_version = query_user_version(connection).await?;
 
     if current_version == 0 {
         // A fresh database receives the first version's DDL — stamping the registry — and joins
         // the walk from there, exactly like a database already at version 1 — whatever later
         // versions exist still apply.
-        current_version = apply_first_version(connection, registry, schemas, path).await;
+        current_version = apply_first_version(connection, registry, schemas, path).await?;
     } else {
         // An existing database carries a schema version, so it must carry this registry's
         // application-id stamp; verify it before any DDL runs against the file.
-        verify_application_id(connection, registry, path).await;
+        verify_application_id(connection, registry, path).await?;
     }
 
     match schemas.binary_search_by(|schema| schema.version.cmp(&current_version)) {
         Ok(index) => {
             for schema in schemas.iter().skip(index + 1) {
-                apply(connection, schema.migration, schema.version, path).await;
+                apply(connection, schema.migration, schema.version, path).await?;
             }
 
             if current_version == last_schema(schemas).version {
@@ -202,22 +212,21 @@ async fn bring_up_to_latest(
 
         Err(_) => {
             // Versions are contiguous from 1, so a binary-search miss among positive versions
-            // can only be a version newer than the latest this build knows.
+            // can only be a version newer than the latest this build knows. Stored file state
+            // this build cannot interpret: typed drift, fatal at the main database's startup
+            // open and request-scoped for an api-log day file (README §3).
             let latest_version = last_schema(schemas).version;
 
-            #[expect(
-                clippy::panic,
-                reason = "an unknown schema version is fatal: this build cannot interpret \
-                          the database"
-            )]
-            {
-                panic!(
+            return Err(Error::SchemaDrift {
+                detail: format!(
                     "database {path} has unknown schema version {current_version}; this build \
                      knows versions 1..={latest_version}"
-                );
-            }
+                ),
+            });
         }
     }
+
+    Ok(())
 }
 
 /// Applies the first version's DDL to a database whose stored version read `0`, returning the
@@ -229,34 +238,34 @@ async fn bring_up_to_latest(
 /// write-locked bootstrap transaction — [`begin_write_transaction`] serializes it against every
 /// other writer of the file: a connection still reading `0` inside the transaction is the
 /// bootstrapper and applies the DDL; one finding the version a racing bootstrap committed aborts
-/// its empty transaction and verifies that database's application id — a mismatch stays fatal —
-/// returning the found version to continue the walk from.
+/// its empty transaction and verifies that database's application id — a mismatch still answers
+/// drift — returning the found version to continue the walk from.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if beginning or aborting the transaction, reading `user_version`, applying the DDL
-/// batch, or verifying the application id fails, or if the database's application id is not the
-/// one `registry` stamps.
+/// Returns [`Error`] if beginning or aborting the transaction, reading `user_version`, applying
+/// the DDL batch, or verifying the application id fails; a database whose application id is not
+/// the one `registry` stamps answers [`Error::SchemaDrift`].
 async fn apply_first_version(
     connection: &Connection,
     registry: Registry,
     schemas: &[Schema],
     path: &str,
-) -> i64 {
-    begin_write_transaction(connection).await;
+) -> Result<i64, Error> {
+    begin_write_transaction(connection).await?;
 
-    if query_user_version(connection).await == 0 {
+    if query_user_version(connection).await? == 0 {
         let first = first_schema(schemas);
-        apply_batch(connection, first.schema, first.version, path).await;
+        apply_batch(connection, first.schema, first.version, path).await?;
 
-        first.version
+        Ok(first.version)
     } else {
-        let raced_version = query_user_version(connection).await;
+        let raced_version = query_user_version(connection).await?;
 
-        rollback_write_transaction(connection).await;
-        verify_application_id(connection, registry, path).await;
+        rollback_write_transaction(connection).await?;
+        verify_application_id(connection, registry, path).await?;
 
-        raced_version
+        Ok(raced_version)
     }
 }
 
@@ -276,176 +285,160 @@ async fn apply_first_version(
 /// outcome; the stored version can only have moved forward since the caller's read, so
 /// at-or-past the target means this migration is already applied.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if beginning or aborting the transaction, reading `user_version`, or executing the
-/// batch fails.
-async fn apply(connection: &Connection, text: &str, version: i64, path: &str) {
-    begin_write_transaction(connection).await;
+/// Returns [`Error`] if beginning or aborting the transaction, reading `user_version`, or
+/// executing the batch fails.
+async fn apply(connection: &Connection, text: &str, version: i64, path: &str) -> Result<(), Error> {
+    begin_write_transaction(connection).await?;
 
-    if query_user_version(connection).await >= version {
-        rollback_write_transaction(connection).await;
+    if query_user_version(connection).await? >= version {
+        rollback_write_transaction(connection).await?;
         debug!(
             "database {path} already carries schema version {version}; a racing bootstrap \
                 applied its migration"
         );
 
-        return;
+        return Ok(());
     }
 
-    apply_batch(connection, text, version, path).await;
+    apply_batch(connection, text, version, path).await
 }
 
 /// Executes the version batch — the schema or migration text plus the `user_version` advance —
 /// on the caller's open bootstrap transaction, committing it, and logs the step.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if executing the batch fails.
-async fn apply_batch(connection: &Connection, text: &str, version: i64, path: &str) {
+/// Returns [`Error::SchemaDrift`] if executing the batch fails. Every batch failure classifies
+/// as drift — an engine error during the DDL or the `COMMIT` no less than a refusal by the
+/// file's stored objects — because a partially applied batch leaves the file uninterpretable,
+/// which is the condition drift names.
+async fn apply_batch(
+    connection: &Connection,
+    text: &str,
+    version: i64,
+    path: &str,
+) -> Result<(), Error> {
     let batch = format!("{text}PRAGMA user_version = {version};\nCOMMIT;",);
 
-    #[expect(
-        clippy::expect_used,
-        reason = "applying a schema version batch is fatal on failure"
-    )]
     connection
         .execute_batch(batch)
         .await
-        .expect("failed to apply a database schema version");
+        .map_err(|failure| Error::SchemaDrift {
+            detail: format!(
+                "failed to apply a database schema version {version} to database {path}: \
+                 {failure}"
+            ),
+        })?;
 
     info!("brought database {path} to schema version {version}");
+
+    Ok(())
 }
 
 /// Begins the bootstrap's immediate transaction, taking the database's write lock so the
 /// caller's version reads and DDL decisions hold against every concurrent writer of the file.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if beginning the transaction fails.
-async fn begin_write_transaction(connection: &Connection) {
-    #[expect(
-        clippy::expect_used,
-        reason = "beginning a schema bootstrap transaction is fatal on failure"
-    )]
-    connection
-        .execute_batch("BEGIN IMMEDIATE;")
-        .await
-        .expect("failed to begin a database schema bootstrap transaction");
+/// Returns [`Error`] if beginning the transaction fails.
+async fn begin_write_transaction(connection: &Connection) -> Result<(), Error> {
+    connection.execute_batch("BEGIN IMMEDIATE;").await?;
+
+    Ok(())
 }
 
 /// Aborts the caller's empty bootstrap transaction — the raced fresh-bootstrap loser's only
 /// outcome — leaving the racing bootstrap's committed schema untouched.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if aborting the transaction fails.
-async fn rollback_write_transaction(connection: &Connection) {
-    #[expect(
-        clippy::expect_used,
-        reason = "aborting the empty schema bootstrap transaction is fatal on failure"
-    )]
-    connection
-        .execute_batch("ROLLBACK;")
-        .await
-        .expect("failed to abort a database schema bootstrap transaction");
+/// Returns [`Error`] if aborting the transaction fails.
+async fn rollback_write_transaction(connection: &Connection) -> Result<(), Error> {
+    connection.execute_batch("ROLLBACK;").await?;
+
+    Ok(())
 }
 
 /// Retrieves the schema version stored in `PRAGMA user_version`.
 ///
+/// # Errors
+///
+/// Returns [`Error`] if executing the pragma query or extracting its value fails.
+///
 /// # Panics
 ///
-/// Panics if executing the pragma query or extracting its value fails.
-async fn query_user_version(connection: &Connection) -> i64 {
-    #[expect(
-        clippy::expect_used,
-        reason = "querying PRAGMA user_version is fatal on failure"
-    )]
-    let mut rows = connection
-        .query("PRAGMA user_version", ())
-        .await
-        .expect("failed to query user_version");
+/// Panics if the pragma query yields no row: `PRAGMA user_version` always produces exactly one
+/// row, an engine-language guarantee independent of file state.
+async fn query_user_version(connection: &Connection) -> Result<i64, Error> {
+    let mut rows = connection.query("PRAGMA user_version", ()).await?;
 
     #[expect(
         clippy::expect_used,
-        reason = "the PRAGMA user_version query always produces a row"
+        reason = "the PRAGMA user_version query always produces a row, an engine-language \
+                  guarantee independent of file state"
     )]
-    let row = rows
-        .next()
-        .await
-        .expect("failed to read the user_version row")
-        .expect("missing user_version row");
+    let row = rows.next().await?.expect("missing user_version row");
 
-    #[expect(
-        clippy::expect_used,
-        reason = "the user_version column is an integer value"
-    )]
-    row.get(0)
-        .expect("failed to get the user_version integer value")
+    Ok(row.get(0)?)
 }
 
 /// Verifies that the database behind `connection` carries `registry`'s `PRAGMA application_id`
-/// stamp, panicking with the stored and the expected value named when they disagree.
+/// stamp, answering drift with the stored and the expected value named when they disagree.
 ///
 /// The stamp is written by the registry's own version-1 SQL and never again, so the stored value
 /// is the file's registry identity; a disagreement means the file belongs to the other registry
 /// — or predates the stamp, carrying the default `0` — and no statement may run against it.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if reading the pragma fails, or if the stored application id is not the one `registry`
-/// stamps.
-async fn verify_application_id(connection: &Connection, registry: Registry, path: &str) {
-    let stored = query_application_id(connection).await;
+/// Returns [`Error`] if reading the pragma fails, or [`Error::SchemaDrift`] if the stored
+/// application id is not the one `registry` stamps.
+async fn verify_application_id(
+    connection: &Connection,
+    registry: Registry,
+    path: &str,
+) -> Result<(), Error> {
+    let stored = query_application_id(connection).await?;
     let expected = registry.application_id();
 
     if stored != expected {
-        #[expect(
-            clippy::panic,
-            reason = "an application-id mismatch is fatal: the file is another registry's \
-                      database, or predates the stamp"
-        )]
-        {
-            panic!(
+        // Stored file state this build cannot interpret: typed drift, fatal at the main
+        // database's startup open and request-scoped for an api-log day file (README §3).
+        return Err(Error::SchemaDrift {
+            detail: format!(
                 "database {path} carries the application_id {stored:#x}, but the {name} registry \
                  stamps {expected:#x}; the main and api-log registries live in separate files",
                 name = registry.name(),
-            );
-        }
+            ),
+        });
     }
+
+    Ok(())
 }
 
 /// Retrieves the application id stored in `PRAGMA application_id`.
 ///
+/// # Errors
+///
+/// Returns [`Error`] if executing the pragma query or extracting its value fails.
+///
 /// # Panics
 ///
-/// Panics if executing the pragma query or extracting its value fails.
-async fn query_application_id(connection: &Connection) -> i64 {
-    #[expect(
-        clippy::expect_used,
-        reason = "reading the application id of a versioned database is fatal on failure"
-    )]
-    let mut rows = connection
-        .query("PRAGMA application_id", ())
-        .await
-        .expect("failed to query the database's application id");
+/// Panics if the pragma query yields no row: `PRAGMA application_id` always produces exactly one
+/// row, an engine-language guarantee independent of file state.
+async fn query_application_id(connection: &Connection) -> Result<i64, Error> {
+    let mut rows = connection.query("PRAGMA application_id", ()).await?;
 
     #[expect(
         clippy::expect_used,
-        reason = "the PRAGMA application_id query always produces a row"
+        reason = "the PRAGMA application_id query always produces a row, an engine-language \
+                  guarantee independent of file state"
     )]
-    let row = rows
-        .next()
-        .await
-        .expect("failed to read the application id row")
-        .expect("missing application id row");
+    let row = rows.next().await?.expect("missing application id row");
 
-    #[expect(
-        clippy::expect_used,
-        reason = "the application id column is an integer value"
-    )]
-    row.get(0)
-        .expect("failed to get the application id integer value")
+    Ok(row.get(0)?)
 }
 
 /// Returns the first schema version of `schemas`.
@@ -651,23 +644,27 @@ mod tests {
     /// now-current database is a no-op. The second run exercises the application-id verification
     /// on an existing database: the stamp the fresh run wrote must satisfy the same registry.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow or a `user_version` read fails.
+    ///
     /// # Panics
     ///
-    /// Panics if the workflow fails or `user_version` does not reach the latest version.
+    /// Panics if `user_version` does not reach the latest version.
     #[tokio::test]
     async fn migrate_bringup_is_complete_and_idempotent() -> Result<(), Box<dyn StdError>> {
         for registry in [Registry::Main, Registry::ApiLogs] {
             let connection = open_memory_connection().await;
 
-            migrate(&connection, registry, ":memory:").await;
+            migrate(&connection, registry, ":memory:").await?;
             assert_eq!(
-                query_user_version(&connection).await,
+                query_user_version(&connection).await?,
                 last_schema(registry.schemas()).version,
             );
 
-            migrate(&connection, registry, ":memory:").await;
+            migrate(&connection, registry, ":memory:").await?;
             assert_eq!(
-                query_user_version(&connection).await,
+                query_user_version(&connection).await?,
                 last_schema(registry.schemas()).version,
             );
         }
@@ -701,26 +698,30 @@ mod tests {
     /// because the real registry holds a single version and cannot exercise the walk past it. A
     /// second run over the now-current database is a no-op.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow or a schema assertion fails.
+    ///
     /// # Panics
     ///
-    /// Panics if the workflow fails, the database does not end at the latest version's declared
-    /// schema, or the second run changes anything.
+    /// Panics if the database does not end at the latest version's declared schema, or the
+    /// second run changes anything.
     #[tokio::test]
     async fn fresh_database_walks_the_whole_chain_to_the_latest_version()
     -> Result<(), Box<dyn StdError>> {
         let connection = open_memory_connection().await;
         let schemas = synthetic_schemas();
 
-        bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await;
+        bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await?;
         assert_eq!(
-            query_user_version(&connection).await,
+            query_user_version(&connection).await?,
             last_schema(&schemas).version,
         );
         assert_declared_schema(&connection, last_schema(&schemas)).await?;
 
-        bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await;
+        bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await?;
         assert_eq!(
-            query_user_version(&connection).await,
+            query_user_version(&connection).await?,
             last_schema(&schemas).version,
         );
 
@@ -736,9 +737,13 @@ mod tests {
     /// would otherwise both apply the first version, and the duplicate `CREATE TABLE` of the
     /// first table kills the loser.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow or a `user_version` read fails.
+    ///
     /// # Panics
     ///
-    /// Panics if the workflow fails or the database does not end at the registry's latest version.
+    /// Panics if the database does not end at the registry's latest version.
     #[tokio::test]
     async fn a_bootstrap_racing_a_committed_fresh_bootstrap_joins_its_version()
     -> Result<(), Box<dyn StdError>> {
@@ -754,18 +759,18 @@ mod tests {
 
         // The commit lands while the raced bootstrap waits on the lock inside its own
         // transaction, after its initial read.
-        tokio::join!(
-            async {
-                bring_up_to_latest(&raced, Registry::Main, MAIN_SCHEMAS, ":memory:").await;
-            },
+        let (walked, ()) = tokio::join!(
+            async { bring_up_to_latest(&raced, Registry::Main, MAIN_SCHEMAS, ":memory:").await },
             async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 stage(&racer, "COMMIT;").await;
             },
         );
 
+        walked?;
+
         assert_eq!(
-            query_user_version(&raced).await,
+            query_user_version(&raced).await?,
             last_schema(MAIN_SCHEMAS).version
         );
 
@@ -781,10 +786,14 @@ mod tests {
     /// same migration from the stale outer read, and the loser's duplicate `ALTER TABLE` dies in
     /// [`apply_batch`].
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow or a schema assertion fails.
+    ///
     /// # Panics
     ///
-    /// Panics if the workflow fails, the database does not end at version 2, or the database does
-    /// not carry version 2's declared schema.
+    /// Panics if the database does not end at version 2, or the database does not carry version
+    /// 2's declared schema.
     #[tokio::test]
     async fn a_bootstrap_racing_a_committed_migration_joins_its_version()
     -> Result<(), Box<dyn StdError>> {
@@ -805,17 +814,17 @@ mod tests {
 
         // The commit lands while the raced walk waits on the lock inside its own transaction,
         // after its initial read and stamp verification.
-        tokio::join!(
-            async {
-                bring_up_to_latest(&raced, Registry::Main, &schemas, ":memory:").await;
-            },
+        let (walked, ()) = tokio::join!(
+            async { bring_up_to_latest(&raced, Registry::Main, &schemas, ":memory:").await },
             async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 stage(&racer, "COMMIT;").await;
             },
         );
 
-        assert_eq!(query_user_version(&raced).await, 2);
+        walked?;
+
+        assert_eq!(query_user_version(&raced).await?, 2);
         assert_declared_schema(&raced, last_schema(&schemas)).await?;
 
         Ok(())
@@ -823,15 +832,14 @@ mod tests {
 
     /// Verifies that the loser of the fresh-bootstrap race still verifies the application id: a
     /// racer committing the api_logs registry's stamped version 1 into a database the bootstrap
-    /// is bringing up under the main registry is fatal, naming the opened registry — the race
-    /// must not bypass the startup stamp verification.
+    /// is bringing up under the main registry answers typed schema drift naming the opened
+    /// registry — the race must not bypass the stamp verification.
     ///
     /// # Panics
     ///
-    /// Panics if the bootstrap does not panic.
+    /// Panics if the drift classification diverges from the registry-naming detail.
     #[tokio::test]
-    #[should_panic(expected = "but the main registry stamps")]
-    async fn a_bootstrap_racing_a_foreign_registry_fresh_bootstrap_is_fatal() {
+    async fn a_bootstrap_racing_a_foreign_registry_fresh_bootstrap_answers_schema_drift() {
         let database = open_memory_database().await;
         let racer = connect_staging(&database).await;
         let raced = connect_staging(&database).await;
@@ -840,14 +848,21 @@ mod tests {
         stage(&racer, api_logs_version_1::SCHEMA.schema).await;
         stage(&racer, "PRAGMA user_version = 1;").await;
 
-        tokio::join!(
-            async {
-                bring_up_to_latest(&raced, Registry::Main, MAIN_SCHEMAS, ":memory:").await;
-            },
+        let (walked, ()) = tokio::join!(
+            async { bring_up_to_latest(&raced, Registry::Main, MAIN_SCHEMAS, ":memory:").await },
             async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 stage(&racer, "COMMIT;").await;
             },
+        );
+
+        assert!(
+            matches!(
+                walked,
+                Err(Error::SchemaDrift { detail })
+                    if detail.contains("but the main registry stamps")
+            ),
+            "the raced bootstrap must answer schema drift naming the opened registry"
         );
     }
 
@@ -926,46 +941,64 @@ mod tests {
         connection
     }
 
-    /// Verifies the application-id fatality in the api_logs-under-main direction: a database
-    /// stamped for the api_logs registry panics when the bootstrap brings it up under the main
-    /// registry, naming the opened registry — instead of passing validation and failing later
-    /// with a missing-table error on first query.
+    /// Verifies the application-id refusal in the api_logs-under-main direction: a database
+    /// stamped for the api_logs registry answers typed schema drift when the bootstrap brings it
+    /// up under the main registry, naming the opened registry — instead of passing validation
+    /// and failing later with a missing-table error on first query.
     ///
     /// # Panics
     ///
-    /// Panics if the bootstrap does not panic.
+    /// Panics if the drift classification diverges from the registry-naming detail.
     #[tokio::test]
-    #[should_panic(expected = "but the main registry stamps")]
-    async fn an_api_log_stamped_database_is_fatal_under_the_main_registry() {
+    async fn an_api_log_stamped_database_answers_schema_drift_under_the_main_registry() {
         let connection = open_stamped_memory_database(api_logs_version_1::SCHEMA.schema).await;
 
-        migrate(&connection, Registry::Main, ":memory:").await;
+        let outcome = migrate(&connection, Registry::Main, ":memory:").await;
+
+        assert!(
+            matches!(
+                outcome,
+                Err(Error::SchemaDrift { detail })
+                    if detail.contains("but the main registry stamps")
+            ),
+            "an api-log-stamped database must answer schema drift under the main registry"
+        );
     }
 
-    /// Verifies the application-id fatality in the mirror direction: a database stamped for the
-    /// main registry panics when the bootstrap brings it up under the api_logs registry.
+    /// Verifies the application-id refusal in the mirror direction: a database stamped for the
+    /// main registry answers typed schema drift when the bootstrap brings it up under the
+    /// api_logs registry.
     ///
     /// # Panics
     ///
-    /// Panics if the bootstrap does not panic.
+    /// Panics if the drift classification diverges from the registry-naming detail.
     #[tokio::test]
-    #[should_panic(expected = "but the api_logs registry stamps")]
-    async fn a_main_stamped_database_is_fatal_under_the_api_logs_registry() {
+    async fn a_main_stamped_database_answers_schema_drift_under_the_api_logs_registry() {
         let connection = open_stamped_memory_database(version_1::SCHEMA.schema).await;
 
-        migrate(&connection, Registry::ApiLogs, ":memory:").await;
+        let outcome = migrate(&connection, Registry::ApiLogs, ":memory:").await;
+
+        assert!(
+            matches!(
+                outcome,
+                Err(Error::SchemaDrift { detail })
+                    if detail.contains("but the api_logs registry stamps")
+            ),
+            "a main-stamped database must answer schema drift under the api_logs registry"
+        );
     }
 
     /// Verifies that a database carrying a schema version but no application-id stamp — a file
-    /// predating the stamp, from before this change — fails the startup verification like any
-    /// other database this build cannot interpret; the operator recreates the file.
+    /// predating the stamp, from before this change — fails the verification with typed schema
+    /// drift like any other database this build cannot interpret; the operator recreates the
+    /// file.
     ///
     /// # Panics
     ///
-    /// Panics if the bootstrap does not panic.
+    /// Panics if the fixture layout does not apply or the drift classification diverges from
+    /// the registry-naming detail.
     #[tokio::test]
-    #[should_panic(expected = "but the main registry stamps")]
-    async fn a_database_predating_the_application_id_stamp_is_fatal() {
+    async fn a_database_predating_the_application_id_stamp_answers_schema_drift() {
         let connection = open_memory_connection().await;
 
         // The era's layout without the stamp: one table, a stamped version, and the default
@@ -982,7 +1015,16 @@ mod tests {
             .await
             .expect("the pre-stamp layout applies to a fresh test database");
 
-        migrate(&connection, Registry::Main, ":memory:").await;
+        let outcome = migrate(&connection, Registry::Main, ":memory:").await;
+
+        assert!(
+            matches!(
+                outcome,
+                Err(Error::SchemaDrift { detail })
+                    if detail.contains("but the main registry stamps")
+            ),
+            "an unstamped database must answer schema drift naming the expected stamp"
+        );
     }
 
     /// Asserts that the database's current schema objects match the declared schema of `schema`.

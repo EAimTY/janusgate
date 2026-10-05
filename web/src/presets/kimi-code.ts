@@ -1,5 +1,15 @@
 import { translation } from "../i18n";
-import { bearer, numberField, ratioEntry } from "./quota-helpers";
+import {
+    bearer,
+    clientId,
+    deviceCode,
+    literal,
+    paramRow,
+    refreshToken,
+    secret,
+    slot,
+} from "./expressions";
+import { numberField, ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for kimi-code. */
@@ -22,15 +32,9 @@ export const kimiCodePreset: ProviderPreset = {
                 ...bearer("https://api.kimi.com/coding/v1/usages"),
                 headers: [
                     ...(bearer("").headers ?? []),
-                    {
-                        name: "Accept",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "application/json",
-                            },
-                        ],
-                    },
+                    paramRow("Accept", [
+                        literal("application/json"),
+                    ]),
                 ],
             },
             sources: [
@@ -181,55 +185,23 @@ export const kimiCodePreset: ProviderPreset = {
         format: "openai_chat_completion",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://api.kimi.com/coding/v1",
-                },
-                {
-                    type: "literal",
-                    value: "/chat/completions",
-                },
+                literal("https://api.kimi.com/coding/v1"),
+                literal("/chat/completions"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "X-Msh-Device-Id",
-                    value: [
-                        {
-                            type: "slot",
-                            name: "device_id",
-                        },
-                    ],
-                },
-                {
-                    name: "X-Msh-Platform",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "macos",
-                        },
-                    ],
-                },
-                {
-                    name: "User-Agent",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "KimiCLI/1.0.0",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
+                paramRow("X-Msh-Device-Id", [
+                    slot("device_id"),
+                ]),
+                paramRow("X-Msh-Platform", [
+                    literal("macos"),
+                ]),
+                paramRow("User-Agent", [
+                    literal("KimiCLI/1.0.0"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -248,51 +220,25 @@ export const kimiCodePreset: ProviderPreset = {
                     request: {
                         method: "POST",
                         url: [
-                            {
-                                type: "literal",
-                                value: "https://auth.kimi.com/oauth/device_authorization",
-                            },
+                            literal("https://auth.kimi.com/oauth/device_authorization"),
                         ],
                         headers: [
-                            {
-                                name: "X-Msh-Device-Id",
-                                value: [
-                                    {
-                                        type: "slot",
-                                        name: "device_id",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "X-Msh-Platform",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "macos",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "User-Agent",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "KimiCLI/1.0.0",
-                                    },
-                                ],
-                            },
+                            paramRow("X-Msh-Device-Id", [
+                                slot("device_id"),
+                            ]),
+                            paramRow("X-Msh-Platform", [
+                                literal("macos"),
+                            ]),
+                            paramRow("User-Agent", [
+                                literal("KimiCLI/1.0.0"),
+                            ]),
                         ],
                         body: {
                             kind: "form",
                             fields: [
-                                {
-                                    name: "client_id",
-                                    value: [
-                                        {
-                                            type: "client_id",
-                                        },
-                                    ],
-                                },
+                                paramRow("client_id", [
+                                    clientId(),
+                                ]),
                             ],
                         },
                     },
@@ -362,68 +308,31 @@ export const kimiCodePreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://auth.kimi.com/oauth/token",
-                        },
+                        literal("https://auth.kimi.com/oauth/token"),
                     ],
                     headers: [
-                        {
-                            name: "X-Msh-Device-Id",
-                            value: [
-                                {
-                                    type: "slot",
-                                    name: "device_id",
-                                },
-                            ],
-                        },
-                        {
-                            name: "X-Msh-Platform",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "macos",
-                                },
-                            ],
-                        },
-                        {
-                            name: "User-Agent",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "KimiCLI/1.0.0",
-                                },
-                            ],
-                        },
+                        paramRow("X-Msh-Device-Id", [
+                            slot("device_id"),
+                        ]),
+                        paramRow("X-Msh-Platform", [
+                            literal("macos"),
+                        ]),
+                        paramRow("User-Agent", [
+                            literal("KimiCLI/1.0.0"),
+                        ]),
                     ],
                     body: {
                         kind: "form",
                         fields: [
-                            {
-                                name: "grant_type",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "urn:ietf:params:oauth:grant-type:device_code",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_id",
-                                value: [
-                                    {
-                                        type: "client_id",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "device_code",
-                                value: [
-                                    {
-                                        type: "device_code",
-                                    },
-                                ],
-                            },
+                            paramRow("grant_type", [
+                                literal("urn:ietf:params:oauth:grant-type:device_code"),
+                            ]),
+                            paramRow("client_id", [
+                                clientId(),
+                            ]),
+                            paramRow("device_code", [
+                                deviceCode(),
+                            ]),
                         ],
                     },
                 },
@@ -469,68 +378,31 @@ export const kimiCodePreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://auth.kimi.com/oauth/token",
-                        },
+                        literal("https://auth.kimi.com/oauth/token"),
                     ],
                     headers: [
-                        {
-                            name: "X-Msh-Device-Id",
-                            value: [
-                                {
-                                    type: "slot",
-                                    name: "device_id",
-                                },
-                            ],
-                        },
-                        {
-                            name: "X-Msh-Platform",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "macos",
-                                },
-                            ],
-                        },
-                        {
-                            name: "User-Agent",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "KimiCLI/1.0.0",
-                                },
-                            ],
-                        },
+                        paramRow("X-Msh-Device-Id", [
+                            slot("device_id"),
+                        ]),
+                        paramRow("X-Msh-Platform", [
+                            literal("macos"),
+                        ]),
+                        paramRow("User-Agent", [
+                            literal("KimiCLI/1.0.0"),
+                        ]),
                     ],
                     body: {
                         kind: "form",
                         fields: [
-                            {
-                                name: "grant_type",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "refresh_token",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "refresh_token",
-                                value: [
-                                    {
-                                        type: "refresh_token",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_id",
-                                value: [
-                                    {
-                                        type: "client_id",
-                                    },
-                                ],
-                            },
+                            paramRow("grant_type", [
+                                literal("refresh_token"),
+                            ]),
+                            paramRow("refresh_token", [
+                                refreshToken(),
+                            ]),
+                            paramRow("client_id", [
+                                clientId(),
+                            ]),
                         ],
                     },
                 },
@@ -543,24 +415,13 @@ export const kimiCodePreset: ProviderPreset = {
             request: {
                 method: "GET",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://api.kimi.com/coding/v1/models",
-                    },
+                    literal("https://api.kimi.com/coding/v1/models"),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
                 ],
             },
             extract: {

@@ -1,4 +1,14 @@
 import { translation } from "../i18n";
+import {
+    authorizationCode,
+    base,
+    clientId,
+    codeVerifier,
+    literal,
+    paramRow,
+    redirectUri,
+    secret,
+} from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for devin. */
@@ -23,36 +33,17 @@ export const devinPreset: ProviderPreset = {
         format: "anthropic_messages",
         inference: {
             url: [
-                {
-                    type: "base",
-                },
-                {
-                    type: "literal",
-                    value: "/v1/messages",
-                },
+                base(),
+                literal("/v1/messages"),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "anthropic-version",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "2023-06-01",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
+                paramRow("anthropic-version", [
+                    literal("2023-06-01"),
+                ]),
             ],
             upstream_streaming: "match_client",
         },
@@ -62,10 +53,7 @@ export const devinPreset: ProviderPreset = {
             grant: {
                 type: "authorization_code",
                 authorize_url: [
-                    {
-                        type: "literal",
-                        value: "https://app.devin.ai/oauth/authorize",
-                    },
+                    literal("https://app.devin.ai/oauth/authorize"),
                 ],
                 redirect_uri: "http://localhost:1455/auth/callback",
                 pkce: "s256",
@@ -75,21 +63,12 @@ export const devinPreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://api.devin.ai/v1/oauth/exchange_token",
-                        },
+                        literal("https://api.devin.ai/v1/oauth/exchange_token"),
                     ],
                     headers: [
-                        {
-                            name: "connect-protocol-version",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "1",
-                                },
-                            ],
-                        },
+                        paramRow("connect-protocol-version", [
+                            literal("1"),
+                        ]),
                     ],
                     body: {
                         kind: "json",
@@ -99,42 +78,31 @@ export const devinPreset: ProviderPreset = {
                                 grantType: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "literal",
-                                            value: "authorization_code",
-                                        },
+                                        literal("authorization_code"),
                                     ],
                                 },
                                 clientId: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "client_id",
-                                        },
+                                        clientId(),
                                     ],
                                 },
                                 code: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "authorization_code",
-                                        },
+                                        authorizationCode(),
                                     ],
                                 },
                                 codeVerifier: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "code_verifier",
-                                        },
+                                        codeVerifier(),
                                     ],
                                 },
                                 redirectUri: {
                                     type: "string",
                                     expr: [
-                                        {
-                                            type: "redirect_uri",
-                                        },
+                                        redirectUri(),
                                     ],
                                 },
                             },

@@ -1,3 +1,4 @@
+import { expectOneOf } from "./definitions/validation";
 import { ContractViolationError } from "./errors";
 import type {
     CreateModelRouteResponse,
@@ -10,51 +11,48 @@ import type {
     ModelRouteTarget,
     ProviderPoolResponse,
     QuotaBlock,
-    RefreshFailure,
 } from "./generated/v0";
-import { parseQuotaRouting } from "./quota";
+import { expectModelIdentifier, parseQuotaRouting } from "./quota";
 import {
     expectArray,
     expectBoolean,
+    expectDeclaredRecord,
     expectInteger,
+    expectNonEmptyString,
     expectRecord,
     expectString,
     parseListResponse,
 } from "./validation-primitives";
 
-/** A management contract failure names only the safe structural path. */
-function invalid(context: string): never {
-    throw new ContractViolationError(`${context} violates the routing contract`);
-}
-
-/** Closed tagged values cannot hide a second target or foreign failure content. */
-function closed(value: unknown, keys: readonly string[], context: string): object {
-    const record = expectRecord(value, context);
-    for (const key of Object.keys(record)) if (!keys.includes(key)) invalid(`${context}.${key}`);
-    return record;
-}
-
 /** SQL row identifiers and priorities must survive JavaScript representation exactly. */
 function integer(value: unknown, context: string, minimum?: number): number {
     const result = expectInteger(value, context);
-    if (!Number.isSafeInteger(result) || (minimum !== undefined && result < minimum))
-        invalid(context);
-    return result;
-}
 
-/** Explicit public and physical model identifiers share the gateway's exact token contract. */
-function token(value: unknown, context: string): string {
-    const result = expectString(value, context);
-    if (!/^[!-~]+$/.test(result) || /[/:]/.test(result)) invalid(context);
+    if (!Number.isSafeInteger(result) || (minimum !== undefined && result < minimum)) {
+        throw new ContractViolationError(
+            minimum === undefined
+                ? `${context} must be a safe integer`
+                : `${context} must be a safe integer of at least ${minimum}`,
+        );
+    }
+
     return result;
 }
 
 /** One physical target, or one pool with its exact upstream identifier. */
 function target(value: unknown, context: string): ModelRouteTarget {
     const record = expectRecord(value, context);
-    const type = Reflect.get(record, "type");
+    const type = expectOneOf(
+        Reflect.get(record, "type"),
+        [
+            "direct",
+            "pool",
+        ],
+        `${context}.type`,
+        "a route target",
+    );
     if (type === "direct") {
-        closed(
+        expectDeclaredRecord(
             value,
             [
                 "type",
@@ -67,23 +65,23 @@ function target(value: unknown, context: string): ModelRouteTarget {
             model_id: integer(Reflect.get(record, "model_id"), `${context}.model_id`, 1),
         };
     }
-    if (type === "pool") {
-        closed(
-            value,
-            [
-                "type",
-                "pool_id",
-                "upstream_id",
-            ],
-            context,
-        );
-        return {
-            type,
-            pool_id: integer(Reflect.get(record, "pool_id"), `${context}.pool_id`, 1),
-            upstream_id: token(Reflect.get(record, "upstream_id"), `${context}.upstream_id`),
-        };
-    }
-    return invalid(`${context}.type`);
+    expectDeclaredRecord(
+        value,
+        [
+            "type",
+            "pool_id",
+            "upstream_id",
+        ],
+        context,
+    );
+    return {
+        type,
+        pool_id: integer(Reflect.get(record, "pool_id"), `${context}.pool_id`, 1),
+        upstream_id: expectModelIdentifier(
+            Reflect.get(record, "upstream_id"),
+            `${context}.upstream_id`,
+        ),
+    };
 }
 
 /** Complete authored membership retains missing or disabled accounts by identity. */
@@ -105,7 +103,11 @@ function pool(value: unknown, context: string): ProviderPoolResponse {
                 `${memberContext}.priority`,
                 0,
             );
-            if (providers.has(provider_id) || priorities.has(priority)) invalid(memberContext);
+            if (providers.has(provider_id) || priorities.has(priority)) {
+                throw new ContractViolationError(
+                    `${memberContext} must not repeat an earlier provider_id or priority`,
+                );
+            }
             providers.add(provider_id);
             priorities.add(priority);
             return {
@@ -128,7 +130,7 @@ function route(value: unknown, context: string): ModelRouteResponse {
     const record = expectRecord(value, context);
     return {
         id: integer(Reflect.get(record, "id"), `${context}.id`, 1),
-        public_id: token(Reflect.get(record, "public_id"), `${context}.public_id`),
+        public_id: expectModelIdentifier(Reflect.get(record, "public_id"), `${context}.public_id`),
         is_automatic: expectBoolean(Reflect.get(record, "is_automatic"), `${context}.is_automatic`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
         target: target(Reflect.get(record, "target"), `${context}.target`),
@@ -172,9 +174,20 @@ export function parseCreateModelRouteResponse(value: unknown): CreateModelRouteR
 /** Refresh metadata contains safe categories, never a foreign observation or error body. */
 function refresh(value: unknown, context: string): LastRefresh {
     const record = expectRecord(value, context);
-    const type = Reflect.get(record, "type");
+    const type = expectOneOf(
+        Reflect.get(record, "type"),
+        [
+            "not_observed",
+            "unsupported",
+            "reset",
+            "succeeded",
+            "failed",
+        ],
+        `${context}.type`,
+        "a refresh outcome",
+    );
     if (type === "not_observed") {
-        closed(
+        expectDeclaredRecord(
             value,
             [
                 "type",
@@ -187,7 +200,7 @@ function refresh(value: unknown, context: string): LastRefresh {
     }
     const attempted_at = integer(Reflect.get(record, "attempted_at"), `${context}.attempted_at`);
     if (type === "unsupported" || type === "reset") {
-        closed(
+        expectDeclaredRecord(
             value,
             [
                 "type",
@@ -201,7 +214,7 @@ function refresh(value: unknown, context: string): LastRefresh {
         };
     }
     if (type === "succeeded") {
-        closed(
+        expectDeclaredRecord(
             value,
             [
                 "type",
@@ -216,32 +229,31 @@ function refresh(value: unknown, context: string): LastRefresh {
             observed_at: integer(Reflect.get(record, "observed_at"), `${context}.observed_at`),
         };
     }
-    if (type === "failed") {
-        closed(
-            value,
+    expectDeclaredRecord(
+        value,
+        [
+            "type",
+            "attempted_at",
+            "reason",
+        ],
+        context,
+    );
+    return {
+        type,
+        attempted_at,
+        reason: expectOneOf(
+            Reflect.get(record, "reason"),
             [
-                "type",
-                "attempted_at",
-                "reason",
+                "credential_renewal",
+                "timeout",
+                "transport",
+                "upstream_rejected",
+                "malformed_observation",
             ],
-            context,
-        );
-        const reasons: readonly RefreshFailure[] = [
-            "credential_renewal",
-            "timeout",
-            "transport",
-            "upstream_rejected",
-            "malformed_observation",
-        ];
-        const reason = reasons.find((reason) => reason === Reflect.get(record, "reason"));
-        if (reason === undefined) invalid(`${context}.reason`);
-        return {
-            type,
-            attempted_at,
-            reason,
-        };
-    }
-    return invalid(`${context}.type`);
+            `${context}.reason`,
+            "a refresh failure",
+        ),
+    };
 }
 
 /** Complete durable restrictions are interpreted without treating a due reset as recovery. */
@@ -255,19 +267,24 @@ export function parseGetProviderAvailabilityResponse(
             const context = `response.blocks[${index}]`;
             const record = expectRecord(value, context);
             const key = expectArray(Reflect.get(record, "key"), `${context}.key`).map(
-                (value, index) => {
-                    const segment = expectString(value, `${context}.key[${index}]`);
-                    return segment.length > 0 ? segment : invalid(`${context}.key[${index}]`);
-                },
+                (value, index) => expectNonEmptyString(value, `${context}.key[${index}]`),
             );
             const identity = JSON.stringify(key);
-            if (key.length === 0 || keys.has(identity)) invalid(`${context}.key`);
+            if (key.length === 0 || keys.has(identity)) {
+                throw new ContractViolationError(
+                    `${context}.key must not be empty or repeat another block's key`,
+                );
+            }
             keys.add(identity);
             const applies_to = parseQuotaRouting(
                 Reflect.get(record, "applies_to"),
                 `${context}.applies_to`,
             );
-            if (applies_to.type === "monitoring_only") invalid(`${context}.applies_to`);
+            if (applies_to.type === "monitoring_only") {
+                throw new ContractViolationError(
+                    `${context}.applies_to must not be monitoring_only`,
+                );
+            }
             const observed_at = integer(
                 Reflect.get(record, "observed_at"),
                 `${context}.observed_at`,
@@ -275,8 +292,11 @@ export function parseGetProviderAvailabilityResponse(
             const rawReset = Reflect.get(record, "blocked_until");
             const blocked_until =
                 rawReset === null ? null : integer(rawReset, `${context}.blocked_until`);
-            if (blocked_until !== null && blocked_until <= observed_at)
-                invalid(`${context}.blocked_until`);
+            if (blocked_until !== null && blocked_until <= observed_at) {
+                throw new ContractViolationError(
+                    `${context}.blocked_until must be after observed_at`,
+                );
+            }
             return {
                 key,
                 applies_to,

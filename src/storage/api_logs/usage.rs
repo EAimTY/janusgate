@@ -15,10 +15,10 @@
 //! needs everything. The reads are never gated by the recording switch: an absent store
 //! answers empty (README §3 *ApiLog*).
 
-use super::store::{ApiLogDay, ApiLogStore, FILE_POOL_WAIT};
+use super::store::{ApiLogDay, ApiLogStore};
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
-    database::{Database, Row, Value, schema::Registry},
+    database::{Row, Value},
     storage::Error,
 };
 use serde::{Deserialize, Serialize};
@@ -31,44 +31,7 @@ const API_LOG_COLUMNS: &str = "started_at, api_key_id, provider_id, model_id, \
      output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, \
      model_route_id, upstream_http_status";
 
-/// The fixed api-log file connection pool size for reads: one read query runs per file at a
-/// time.
-///
-/// # Panics
-///
-/// Never: the literal 1 is nonzero, and the `expect` states that invariant.
-fn read_pool_connections() -> std::num::NonZero<usize> {
-    #[expect(clippy::expect_used, reason = "the literal 1 is nonzero")]
-    let connections = std::num::NonZero::new(1).expect("1 is nonzero");
-
-    connections
-}
-
 impl ApiLogStore {
-    /// Opens an existing api-log file for reading, refusing to create: the open is
-    /// [`Database::open_existing`], so a file absent at the open — one the retention sweep
-    /// deleted between the directory listing and this open — reads as the empty partition it
-    /// became (README §3 *ApiLog Store*), and a read never recreates an api-log file or its
-    /// directory. The open runs on the blocking thread pool through
-    /// [`ApiLogStore::open_day_file_classifying_panics`], so a panicked open — a damaged file
-    /// failing its schema bootstrap, most commonly — classifies as the explicit drift error
-    /// this read fails its request with, never a resumed panic into the request task (README
-    /// §3 *ApiLog Store*). Reads hold no store lock: only the writers serialize.
-    async fn open_day_file_for_read(&self, day: ApiLogDay) -> Result<Option<Database>, Error> {
-        let path = self.day_file_path(day);
-
-        Self::open_day_file_classifying_panics(day, async move {
-            Database::open_existing(
-                path,
-                Registry::ApiLogs,
-                read_pool_connections(),
-                FILE_POOL_WAIT,
-            )
-            .await
-        })
-        .await
-    }
-
     /// The retained days a read with `filter` must consider, ascending: the directory
     /// listing narrowed by the filter's time window — the window's `from` is inclusive and its
     /// `to` exclusive, so the last candidate day is the day of `to - 1`. The listing runs on
@@ -905,12 +868,17 @@ mod tests {
     use super::{
         super::{
             ApiLogWrite,
-            store::write_pool_connections,
+            store::{FILE_POOL_WAIT, write_pool_connections},
             test_support::{create_test_store, open_day_file, write},
         },
         *,
     };
-    use crate::{accounting::ApiLogEndpointType, database::params, test_support::list1, unix_time};
+    use crate::{
+        accounting::ApiLogEndpointType,
+        database::{Database, params, schema::Registry},
+        test_support::list1,
+        unix_time,
+    };
     use std::error::Error as StdError;
 
     /// Verifies `usage:list` over the api-log files (README §7.1): an empty store answers an
@@ -1953,11 +1921,10 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that a read whose file open panics — here a file stamped for the main registry,
-    /// which the api-log open's stamp verification rejects fatally — fails the request
-    /// explicitly instead of resuming the panic into the request task, where the startup
-    /// panic hook would kill the whole gateway (README §3 *ApiLog Store*, §2.2): the read
-    /// open classifies the panic as drift naming the day, and the full `usage:list` read over
+    /// Verifies that a read whose file open answers typed schema drift — here a file stamped
+    /// for the main registry, which the api-log open's stamp verification rejects — fails the
+    /// request explicitly instead of killing the process (README §3 *ApiLog Store*): the read
+    /// open classifies the drift naming the day's file, and the full `usage:list` read over
     /// the damaged directory surfaces that same explicit error.
     ///
     /// # Errors
@@ -1966,16 +1933,16 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if the damaged file's panic resumes anywhere or the classification diverges from
-    /// the documented drift error.
+    /// Panics if the damaged file's classification diverges from the documented drift error.
     #[tokio::test]
-    async fn fails_a_panicked_day_file_read_open_explicitly() -> Result<(), Box<dyn StdError>> {
+    async fn fails_a_drifted_day_file_read_open_explicitly() -> Result<(), Box<dyn StdError>> {
         let (store, _guard) = create_test_store(90);
         let damaged_day = ApiLogDay::of_started_at(unix_time::unix_now_micros());
 
         // Plant a main-registry database at the day's file path and drop its pool: the
         // read's api_logs-registry open of this file then hits the stamp verification,
-        // which panics by contract (README §3 *Database Abstraction & Connection Pooling*).
+        // which answers typed schema drift (README §3 *Database Abstraction & Connection
+        // Pooling*).
         drop(
             Database::open(
                 store.day_file_path(damaged_day),
@@ -1986,7 +1953,7 @@ mod tests {
             .await?,
         );
 
-        // The read open answers the explicit drift classification, naming the day.
+        // The read open answers the explicit drift classification, naming the day's file.
         let outcome = store.open_day_file_for_read(damaged_day).await;
 
         assert!(
@@ -1995,7 +1962,7 @@ mod tests {
                 Err(Error::Drift { message })
                     if message.contains(&damaged_day.file_stem())
             ),
-            "a panicked api-log read open must classify as explicit drift naming the day"
+            "a drifted api-log read open must classify as explicit drift naming the day's file"
         );
 
         // The full usage read fails explicitly with the same classification — never a panic.
@@ -2003,7 +1970,7 @@ mod tests {
 
         assert!(
             matches!(outcome, Err(Error::Drift { .. })),
-            "a usage read over a file whose open panics must fail explicitly, not panic"
+            "a usage read over a drifted file must fail explicitly, not kill the process"
         );
 
         Ok(())

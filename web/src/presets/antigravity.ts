@@ -1,5 +1,20 @@
 import { translation } from "../i18n";
-import { bearer, field, numberField } from "./quota-helpers";
+import {
+    authorizationCode,
+    bearer,
+    clientId,
+    clientSecret,
+    coalesce,
+    literal,
+    model,
+    paramRow,
+    redirectUri,
+    refreshToken,
+    requestUuid,
+    secret,
+    slot,
+} from "./expressions";
+import { field, numberField } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for antigravity. */
@@ -25,22 +40,15 @@ export const antigravityPreset: ProviderPreset = {
             request: {
                 method: "POST",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-                    },
+                    literal("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"),
                 ],
                 headers: [
                     ...(bearer("").headers ?? []),
-                    {
-                        name: "User-Agent",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/1.18.3 Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36",
-                            },
-                        ],
-                    },
+                    paramRow("User-Agent", [
+                        literal(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/1.18.3 Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36",
+                        ),
+                    ]),
                 ],
                 body: {
                     kind: "json",
@@ -50,10 +58,7 @@ export const antigravityPreset: ProviderPreset = {
                             project: {
                                 type: "string",
                                 expr: [
-                                    {
-                                        type: "slot",
-                                        name: "project",
-                                    },
+                                    slot("project"),
                                 ],
                             },
                         },
@@ -110,39 +115,21 @@ export const antigravityPreset: ProviderPreset = {
         format: "gemini_generate_content",
         inference: {
             url: [
-                {
-                    type: "literal",
-                    value: "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
-                },
+                literal("https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"),
             ],
             stream_url: [
-                {
-                    type: "literal",
-                    value: "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-                },
+                literal(
+                    "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+                ),
             ],
             headers: [
-                {
-                    name: "Authorization",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "Bearer ",
-                        },
-                        {
-                            type: "secret",
-                        },
-                    ],
-                },
-                {
-                    name: "User-Agent",
-                    value: [
-                        {
-                            type: "literal",
-                            value: "antigravity",
-                        },
-                    ],
-                },
+                paramRow("Authorization", [
+                    literal("Bearer "),
+                    secret(),
+                ]),
+                paramRow("User-Agent", [
+                    literal("antigravity"),
+                ]),
             ],
             upstream_streaming: "match_client",
             envelope: {
@@ -151,18 +138,13 @@ export const antigravityPreset: ProviderPreset = {
                     project: {
                         type: "string",
                         expr: [
-                            {
-                                type: "slot",
-                                name: "project",
-                            },
+                            slot("project"),
                         ],
                     },
                     model: {
                         type: "string",
                         expr: [
-                            {
-                                type: "model",
-                            },
+                            model(),
                         ],
                     },
                     request: {
@@ -179,13 +161,8 @@ export const antigravityPreset: ProviderPreset = {
                     requestId: {
                         type: "string",
                         expr: [
-                            {
-                                type: "literal",
-                                value: "agent-",
-                            },
-                            {
-                                type: "request_uuid",
-                            },
+                            literal("agent-"),
+                            requestUuid(),
                         ],
                     },
                 },
@@ -205,96 +182,48 @@ export const antigravityPreset: ProviderPreset = {
             grant: {
                 type: "authorization_code",
                 authorize_url: [
-                    {
-                        type: "literal",
-                        value: "https://accounts.google.com/o/oauth2/v2/auth",
-                    },
+                    literal("https://accounts.google.com/o/oauth2/v2/auth"),
                 ],
                 redirect_uri: "http://localhost:51121/oauth-callback",
                 pkce: "none",
                 extra_params: [
-                    {
-                        name: "access_type",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "offline",
-                            },
-                        ],
-                    },
-                    {
-                        name: "prompt",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "consent",
-                            },
-                        ],
-                    },
-                    {
-                        name: "scope",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
-                            },
-                        ],
-                    },
+                    paramRow("access_type", [
+                        literal("offline"),
+                    ]),
+                    paramRow("prompt", [
+                        literal("consent"),
+                    ]),
+                    paramRow("scope", [
+                        literal(
+                            "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
+                        ),
+                    ]),
                 ],
             },
             exchange: {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://oauth2.googleapis.com/token",
-                        },
+                        literal("https://oauth2.googleapis.com/token"),
                     ],
                     body: {
                         kind: "form",
                         fields: [
-                            {
-                                name: "grant_type",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "authorization_code",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "code",
-                                value: [
-                                    {
-                                        type: "authorization_code",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_id",
-                                value: [
-                                    {
-                                        type: "client_id",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_secret",
-                                value: [
-                                    {
-                                        type: "client_secret",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "redirect_uri",
-                                value: [
-                                    {
-                                        type: "redirect_uri",
-                                    },
-                                ],
-                            },
+                            paramRow("grant_type", [
+                                literal("authorization_code"),
+                            ]),
+                            paramRow("code", [
+                                authorizationCode(),
+                            ]),
+                            paramRow("client_id", [
+                                clientId(),
+                            ]),
+                            paramRow("client_secret", [
+                                clientSecret(),
+                            ]),
+                            paramRow("redirect_uri", [
+                                redirectUri(),
+                            ]),
                         ],
                     },
                 },
@@ -339,47 +268,23 @@ export const antigravityPreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://oauth2.googleapis.com/token",
-                        },
+                        literal("https://oauth2.googleapis.com/token"),
                     ],
                     body: {
                         kind: "form",
                         fields: [
-                            {
-                                name: "grant_type",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "refresh_token",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "refresh_token",
-                                value: [
-                                    {
-                                        type: "refresh_token",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_id",
-                                value: [
-                                    {
-                                        type: "client_id",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "client_secret",
-                                value: [
-                                    {
-                                        type: "client_secret",
-                                    },
-                                ],
-                            },
+                            paramRow("grant_type", [
+                                literal("refresh_token"),
+                            ]),
+                            paramRow("refresh_token", [
+                                refreshToken(),
+                            ]),
+                            paramRow("client_id", [
+                                clientId(),
+                            ]),
+                            paramRow("client_secret", [
+                                clientSecret(),
+                            ]),
                         ],
                     },
                 },
@@ -393,33 +298,18 @@ export const antigravityPreset: ProviderPreset = {
                 request: {
                     method: "POST",
                     url: [
-                        {
-                            type: "literal",
-                            value: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-                        },
+                        literal(
+                            "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+                        ),
                     ],
                     headers: [
-                        {
-                            name: "Authorization",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "Bearer ",
-                                },
-                                {
-                                    type: "secret",
-                                },
-                            ],
-                        },
-                        {
-                            name: "User-Agent",
-                            value: [
-                                {
-                                    type: "literal",
-                                    value: "antigravity",
-                                },
-                            ],
-                        },
+                        paramRow("Authorization", [
+                            literal("Bearer "),
+                            secret(),
+                        ]),
+                        paramRow("User-Agent", [
+                            literal("antigravity"),
+                        ]),
                     ],
                     body: {
                         kind: "json",
@@ -488,33 +378,18 @@ export const antigravityPreset: ProviderPreset = {
                     request: {
                         method: "POST",
                         url: [
-                            {
-                                type: "literal",
-                                value: "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
-                            },
+                            literal(
+                                "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
+                            ),
                         ],
                         headers: [
-                            {
-                                name: "Authorization",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "Bearer ",
-                                    },
-                                    {
-                                        type: "secret",
-                                    },
-                                ],
-                            },
-                            {
-                                name: "User-Agent",
-                                value: [
-                                    {
-                                        type: "literal",
-                                        value: "antigravity",
-                                    },
-                                ],
-                            },
+                            paramRow("Authorization", [
+                                literal("Bearer "),
+                                secret(),
+                            ]),
+                            paramRow("User-Agent", [
+                                literal("antigravity"),
+                            ]),
                         ],
                         body: {
                             kind: "json",
@@ -524,23 +399,11 @@ export const antigravityPreset: ProviderPreset = {
                                     tierId: {
                                         type: "string",
                                         expr: [
-                                            {
-                                                type: "coalesce",
-                                                parts: [
-                                                    {
-                                                        type: "slot",
-                                                        name: "paid_tier",
-                                                    },
-                                                    {
-                                                        type: "slot",
-                                                        name: "current_tier",
-                                                    },
-                                                    {
-                                                        type: "literal",
-                                                        value: "free-tier",
-                                                    },
-                                                ],
-                                            },
+                                            coalesce(
+                                                slot("paid_tier"),
+                                                slot("current_tier"),
+                                                literal("free-tier"),
+                                            ),
                                         ],
                                     },
                                     metadata: {
@@ -588,33 +451,18 @@ export const antigravityPreset: ProviderPreset = {
             request: {
                 method: "POST",
                 url: [
-                    {
-                        type: "literal",
-                        value: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-                    },
+                    literal(
+                        "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+                    ),
                 ],
                 headers: [
-                    {
-                        name: "Authorization",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "Bearer ",
-                            },
-                            {
-                                type: "secret",
-                            },
-                        ],
-                    },
-                    {
-                        name: "User-Agent",
-                        value: [
-                            {
-                                type: "literal",
-                                value: "antigravity",
-                            },
-                        ],
-                    },
+                    paramRow("Authorization", [
+                        literal("Bearer "),
+                        secret(),
+                    ]),
+                    paramRow("User-Agent", [
+                        literal("antigravity"),
+                    ]),
                 ],
                 body: {
                     kind: "json",

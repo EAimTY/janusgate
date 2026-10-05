@@ -2,7 +2,7 @@
 //! body deserialized into the IR request, speaking the official wire vocabulary the parent module
 //! pins.
 //!
-//! The endpoint handler lives in [`crate::api::gemini_v1beta::interactions`]; shared prefix
+//! The endpoint handler lives in `crate::api::gemini_v1beta::interactions`; shared prefix
 //! concerns (authentication, 404/405 bodies, body limit, accounting row id) live beside it.
 //!
 //! # Surface contract

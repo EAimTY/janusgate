@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome},
     provider::{DiscoveryState, definition::template::StringExpr},
-    storage::api_logs::{ApiLogStore, AttemptProgress, UsageFilter, list_api_logs},
+    storage::api_logs::{ApiLogStore, UsageFilter, list_api_logs},
     test_support::{self, MockAction, MockUpstream, TempDirGuard},
 };
 use std::{error::Error as StdError, num::NonZeroU32, sync::Arc, time::Duration};
@@ -37,18 +37,7 @@ fn routing(base: &str) -> ModelRouting {
 
 /// A draft whose stamp is controlled exclusively by the data-plane executor.
 fn draft() -> ApiLogDraft {
-    ApiLogDraft {
-        model_route_id: 7,
-        upstream_http_status: None,
-        progress: AttemptProgress::default(),
-        started_at: None,
-        api_key_id: 2,
-        provider_id: 1,
-        model_id: 3,
-        endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
-        is_stream: false,
-        billed_usage: None,
-    }
+    ApiLogDraft::predispatch(2, 1, 3, 7, ApiLogEndpointType::OpenaiChatCompletions, false)
 }
 
 /// Isolates request accounting while retaining the ordinary dispatch clients.
