@@ -11,7 +11,6 @@ use crate::{
     sse, unix_time,
 };
 use serde::Serialize;
-use serde_json::Value;
 use std::mem;
 
 /// Sequence number of the first rendered event.
@@ -49,7 +48,7 @@ pub(crate) struct SseRenderer {
     /// Compaction state items awaiting their added/done frame pairs, keyed by
     /// their output position; drained once the response has opened, ahead of
     /// every IR-derived item.
-    prefix_items: Vec<(usize, Value)>,
+    prefix_items: Vec<(usize, crate::format::compaction_wire::Checkpoint)>,
 
     /// Actual final prefix frame in the latest render batch.
     prefix_boundary: Option<usize>,
@@ -123,7 +122,7 @@ enum OutputItem {
     /// A vendor-shaped state item — a compaction item or native state replayed
     /// ahead of the IR-derived items — carried verbatim; its shape is the
     /// vendor's, not the gateway's.
-    State(Value),
+    State(crate::format::compaction_wire::Checkpoint),
 }
 
 /// The gateway-rendered output items in the official Responses shape.
@@ -235,12 +234,12 @@ enum OutputTextPart {
         /// Official `annotations` field. The gateway never annotates output text, so the array is
         /// always empty; its element shape is the official OpenAI shape, which the gateway never
         /// renders.
-        annotations: Vec<Value>,
+        annotations: [(); 0],
 
         /// Official `logprobs` field. The gateway tracks no token probabilities, so the array is
         /// always empty; its element shape is the official OpenAI shape, which the gateway never
         /// renders.
-        logprobs: Vec<Value>,
+        logprobs: [(); 0],
     },
 }
 
@@ -281,7 +280,7 @@ pub(crate) struct ResponseObject {
 
     /// Always empty: the gateway echoes no tool definitions back to the client. The element shape
     /// is the official OpenAI tool shape, which the gateway never renders here.
-    tools: Vec<Value>,
+    tools: [(); 0],
 
     /// Token accounting, carried by the terminal event and the aggregated body.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -479,7 +478,7 @@ struct OutputTextDelta {
     delta: String,
 
     /// Official `logprobs` field, always empty (see [`OutputTextPart`]).
-    logprobs: Vec<Value>,
+    logprobs: [(); 0],
 }
 
 /// Payload of `response.output_text.done`.
@@ -498,7 +497,7 @@ struct OutputTextDone {
     text: String,
 
     /// Official `logprobs` field, always empty (see [`OutputTextPart`]).
-    logprobs: Vec<Value>,
+    logprobs: [(); 0],
 }
 
 /// Payload of `response.function_call_arguments.delta`.
@@ -557,7 +556,10 @@ impl SseRenderer {
     /// has opened, and the terminal response object's output array opens with
     /// them in the same order — the checkpoint-before-answer ordering the
     /// automatic and trigger compaction flows require (README §6.8).
-    pub(crate) fn with_prefix_items(mut self, items: Vec<Value>) -> Self {
+    pub(crate) fn with_prefix_items(
+        mut self,
+        items: Vec<crate::format::compaction_wire::Checkpoint>,
+    ) -> Self {
         self.next_output_index = items.len();
 
         self.prefix_items = items.into_iter().enumerate().collect();
@@ -661,8 +663,8 @@ impl SseRenderer {
         if let Some(open) = self.message.take() {
             let content_part = OutputTextPart::OutputText {
                 text: open.text.clone(),
-                annotations: Vec::new(),
-                logprobs: Vec::new(),
+                annotations: [],
+                logprobs: [],
             };
 
             let completed_item = OutputItem::Rendered(RenderedOutputItem::Message {
@@ -679,7 +681,7 @@ impl SseRenderer {
                     output_index: open.output_index,
                     content_index: PRIMARY_INDEX,
                     text: open.text.clone(),
-                    logprobs: Vec::new(),
+                    logprobs: [],
                 },
             ));
 
@@ -721,7 +723,7 @@ impl SseRenderer {
             output,
             parallel_tool_calls: false,
             tool_choice: "auto",
-            tools: Vec::new(),
+            tools: [],
             usage: None,
             incomplete_details: None,
             error: None,
@@ -833,7 +835,7 @@ impl SseRenderer {
 
                 self.next_output_index += 1;
 
-                let rendered = OutputItem::State(payload.clone());
+                let rendered = OutputItem::State(payload.clone().into());
 
                 frames.extend(vec![
                     self.event_frame(
@@ -999,8 +1001,8 @@ impl SseRenderer {
                                     content_index: PRIMARY_INDEX,
                                     part: OutputTextPart::OutputText {
                                         text: String::new(),
-                                        annotations: Vec::new(),
-                                        logprobs: Vec::new(),
+                                        annotations: [],
+                                        logprobs: [],
                                     },
                                 },
                             ),
@@ -1028,7 +1030,7 @@ impl SseRenderer {
                         // `logprobs` is a required field of the official event shape (openai-python
                         // `ResponseTextDeltaEvent`), so the gateway always carries it, empty when
                         // untracked.
-                        logprobs: Vec::new(),
+                        logprobs: [],
                     },
                 ));
 
@@ -1278,7 +1280,7 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
     let mut output: Vec<OutputItem> = aggregation
         .compaction_states
         .iter()
-        .map(|item| OutputItem::State(item.clone()))
+        .map(|item| OutputItem::State(item.clone().into()))
         .collect();
 
     if !aggregation.reasoning.is_empty() {
@@ -1297,8 +1299,8 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             status: ItemStatus::Completed,
             content: vec![OutputTextPart::OutputText {
                 text: aggregation.text.clone(),
-                annotations: Vec::new(),
-                logprobs: Vec::new(),
+                annotations: [],
+                logprobs: [],
             }],
         }));
     }
@@ -1331,7 +1333,7 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
         output,
         parallel_tool_calls: false,
         tool_choice: "auto",
-        tools: Vec::new(),
+        tools: [],
         usage: Some(ResponseUsage::render(aggregation.usage.unwrap_or_default())),
         incomplete_details: incomplete_reason.map(|reason| IncompleteDetails { reason }),
         error: None,
@@ -1345,7 +1347,7 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 pub(super) fn render_json_response_with_prefix_items(
     model: &str,
     aggregation: &IrAggregation,
-    prefix_items: Vec<Value>,
+    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
 ) -> ResponseObject {
     let mut response = render_json_response(model, aggregation);
 
@@ -1368,6 +1370,74 @@ fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
 
         IrFinishReason::Stop | IrFinishReason::ToolCall => None,
     }
+}
+
+/// Projects actual ordered output items, excluding unencrypted reasoning dropped on replay.
+pub(super) fn project_json_response(
+    response: &ResponseObject,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    project_json_after_prefix(response, projector, 0)
+}
+
+/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
+pub(super) fn project_json_after_prefix(
+    response: &ResponseObject,
+    projector: &mut crate::affinity::fingerprint::Projector,
+    prefix_count: usize,
+) -> bool {
+    for item in response.output.iter().skip(prefix_count) {
+        match item {
+            OutputItem::Rendered(RenderedOutputItem::Message { content, .. }) => {
+                for OutputTextPart::OutputText { text, .. } in content {
+                    projector.text(
+                        crate::affinity::fingerprint::Role::Assistant,
+                        text.as_bytes(),
+                    );
+                }
+            }
+            OutputItem::Rendered(RenderedOutputItem::FunctionCall(call)) => {
+                if !crate::format::affinity::project_call(
+                    projector,
+                    &call.call_id,
+                    &call.name,
+                    &call.arguments,
+                    call.thought_signature.as_deref(),
+                ) {
+                    return false;
+                }
+            }
+            OutputItem::Rendered(RenderedOutputItem::Reasoning { .. }) => {}
+            OutputItem::State(crate::format::compaction_wire::Checkpoint::Native(value)) => {
+                let Some(state) = super::window_affinity::prepare_native_state(value, projector)
+                else {
+                    return false;
+                };
+                if super::compaction::native_artifact_anchor(value, projector).is_some() {
+                    *projector = crate::affinity::fingerprint::Projector::new();
+                }
+                projector.state_prepared(state);
+            }
+            OutputItem::State(_) => return false,
+        }
+    }
+    true
+}
+
+/// Identifies actual complete raw native checkpoints without treating reflected markers as ours.
+pub(super) fn completed_json_artifacts(response: &ResponseObject) -> Vec<crate::affinity::Anchor> {
+    let projector = crate::affinity::fingerprint::Projector::new();
+    response
+        .output
+        .iter()
+        .flat_map(|item| match item {
+            OutputItem::State(crate::format::compaction_wire::Checkpoint::Native(value)) => {
+                super::window_affinity::prepare_native_checkpoint(value, &projector)
+                    .map_or_else(Vec::new, |(_, anchors)| anchors)
+            }
+            OutputItem::Rendered(_) | OutputItem::State(_) => Vec::new(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1572,8 +1642,8 @@ mod tests {
         });
 
         let mut renderer = SseRenderer::new("m".to_string()).with_prefix_items(vec![
-            checkpoint.clone(),
-            serde_json::json!({"type": "reasoning", "encrypted_content": "cipher"}),
+            checkpoint.clone().into(),
+            serde_json::json!({"type": "reasoning", "encrypted_content": "cipher"}).into(),
         ]);
 
         let mut frames = renderer.render(&IrEvent::MessageStart {
@@ -1665,7 +1735,7 @@ mod tests {
         let body = aggregated_body_json(&render_json_response_with_prefix_items(
             "m",
             &aggregation,
-            prefix.clone(),
+            prefix.clone().into_iter().map(Into::into).collect(),
         ));
 
         #[expect(
@@ -1687,71 +1757,4 @@ mod tests {
 
         assert_eq!(output.len(), 2);
     }
-}
-
-/// Projects actual ordered output items, excluding unencrypted reasoning dropped on replay.
-pub(super) fn project_json_response(
-    response: &ResponseObject,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    project_json_after_prefix(response, projector, 0)
-}
-
-/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
-pub(super) fn project_json_after_prefix(
-    response: &ResponseObject,
-    projector: &mut crate::affinity::fingerprint::Projector,
-    prefix_count: usize,
-) -> bool {
-    for item in response.output.iter().skip(prefix_count) {
-        match item {
-            OutputItem::Rendered(RenderedOutputItem::Message { content, .. }) => {
-                for OutputTextPart::OutputText { text, .. } in content {
-                    projector.text(
-                        crate::affinity::fingerprint::Role::Assistant,
-                        text.as_bytes(),
-                    );
-                }
-            }
-            OutputItem::Rendered(RenderedOutputItem::FunctionCall(call)) => {
-                if !crate::format::affinity::project_call(
-                    projector,
-                    &call.call_id,
-                    &call.name,
-                    &call.arguments,
-                    call.thought_signature.as_deref(),
-                ) {
-                    return false;
-                }
-            }
-            OutputItem::Rendered(RenderedOutputItem::Reasoning { .. }) => {}
-            OutputItem::State(value) => {
-                let Some(state) = super::window_affinity::prepare_native_state(value, projector)
-                else {
-                    return false;
-                };
-                if super::compaction::native_artifact_anchor(value, projector).is_some() {
-                    *projector = crate::affinity::fingerprint::Projector::new();
-                }
-                projector.state_prepared(state);
-            }
-        }
-    }
-    true
-}
-
-/// Identifies actual complete raw native checkpoints without treating reflected markers as ours.
-pub(super) fn completed_json_artifacts(response: &ResponseObject) -> Vec<crate::affinity::Anchor> {
-    let projector = crate::affinity::fingerprint::Projector::new();
-    response
-        .output
-        .iter()
-        .flat_map(|item| match item {
-            OutputItem::State(value) => {
-                super::window_affinity::prepare_native_checkpoint(value, &projector)
-                    .map_or_else(Vec::new, |(_, anchors)| anchors)
-            }
-            OutputItem::Rendered(_) => Vec::new(),
-        })
-        .collect()
 }

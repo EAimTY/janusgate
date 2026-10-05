@@ -590,6 +590,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     Ok(ParsedRequest {
         affinity,
         ir: IrRequest {
+            has_compaction_trigger: false,
             state_items: Vec::new(),
             model: request.model,
             instructions: if instructions_parts.is_empty() {

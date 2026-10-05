@@ -818,10 +818,8 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     let control = if converted.has_trigger {
         Some(CompactionControl::ResponsesTrigger)
-    } else if let Some(entries) = context_management {
-        Some(CompactionControl::ResponsesAutomatic { entries })
     } else {
-        None
+        context_management.map(|entries| CompactionControl::ResponsesAutomatic { entries })
     };
 
     let compaction =
@@ -900,6 +898,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             &converted.messages,
         ),
         ir: IrRequest {
+            has_compaction_trigger: false,
             state_items: converted.state_items,
             model: request.model,
             instructions,
@@ -1770,7 +1769,7 @@ mod tests {
             reason = "the preceding length assertion guarantees one state item"
         )]
         {
-            assert_eq!(parsed.ir.state_items[0].is_gateway, false);
+            assert!(!parsed.ir.state_items[0].is_gateway);
 
             assert_eq!(
                 parsed.ir.state_items[0].item.get("type"),

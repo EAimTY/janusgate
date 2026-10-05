@@ -107,12 +107,16 @@ pub(super) fn resolve_expiry(
 /// JSON number is accepted and ceiled to the first whole second it still covers; a claim of any
 /// other JSON kind reads as absent.
 fn jwt_exp_claim(jwt: &str) -> Option<i64> {
-    let claims = jwt_claims(jwt)?;
-
-    let number = match claims.get("exp")? {
-        serde_json::Value::Number(number) => number,
-        _ => return None,
-    };
+    /// The only access-token claim the expiry contract consumes.
+    #[derive(Serialize, Deserialize)]
+    struct ExpirationClaims {
+        /// RFC 7519 NumericDate; a non-numeric value makes this claim unusable.
+        exp: Option<serde_json::Number>,
+    }
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: ExpirationClaims = serde_json::from_slice(&bytes).ok()?;
+    let number = claims.exp?;
 
     if let Some(seconds) = number.as_i64() {
         return Some(seconds);
@@ -259,29 +263,49 @@ pub(crate) enum ExchangeProduct {
 /// (RFC 6749 §5.2). A body carrying none yields `None`.
 #[must_use]
 fn token_error_code(body: &str) -> Option<String> {
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body)
-        && let Some(code) = error_code_of_json(&json)
+    if let Ok(response) = serde_json::from_str::<TokenErrorResponse>(body)
+        && let Some(error) = response.error
     {
-        return Some(code);
+        return Some(error.code());
     }
-
     control::parse_form(body).get("error").cloned()
 }
 
-/// The error code one parsed JSON body carries, in either wire shape the researched upstreams
-/// send: the RFC 6749 §5.2 string form and the object form carrying the machine-readable name in
-/// its `code` member. The payload is upstream-owned, so any other shape reads as no code.
-fn error_code_of_json(json: &serde_json::Value) -> Option<String> {
-    match json.get("error") {
-        Some(serde_json::Value::String(code)) => Some(code.clone()),
+/// The fixed token-endpoint rejection envelope; unrelated fields are ignored.
+#[derive(Serialize, Deserialize)]
+struct TokenErrorResponse {
+    /// RFC string form or the provider object carrying its machine code.
+    error: Option<TokenError>,
+}
 
-        Some(serde_json::Value::Object(object)) => object
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
+/// Supported token-endpoint error spellings; other forms establish no machine code.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum TokenError {
+    /// RFC 6749 string error code.
+    Text(String),
+    /// Provider object form carrying a string code.
+    Object {
+        /// Exact machine-readable rejection code.
+        code: String,
+    },
+}
 
-        _ => None,
+impl TokenError {
+    /// Extracts the machine code from either supported representation.
+    fn code(self) -> String {
+        match self {
+            Self::Text(code) | Self::Object { code } => code,
+        }
     }
+}
+
+/// Probes an already decoded arbitrary control response through the fixed error vocabulary.
+fn error_code_of_json(json: &serde_json::Value) -> Option<String> {
+    TokenErrorResponse::deserialize(json)
+        .ok()?
+        .error
+        .map(TokenError::code)
 }
 
 /// Executes one token exchange against the definition's exchange request and classifies the

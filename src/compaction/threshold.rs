@@ -178,6 +178,7 @@ mod tests {
         state_items: Vec<StateItem>,
     ) -> IrRequest {
         IrRequest {
+            has_compaction_trigger: false,
             model: String::new(),
             instructions: instructions.map(String::from),
             messages,

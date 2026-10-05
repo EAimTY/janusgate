@@ -81,7 +81,7 @@ impl Selection {
     }
 
     /// Constructs one structurally eligible physical target without retaining duplicate state.
-    fn pooled_target(&self, member: &MemberSnapshot, pool_id: i64) -> Option<ModelRouting> {
+    fn pooled_target(&self, member: &MemberSnapshot) -> Option<ModelRouting> {
         member
             .model
             .as_ref()
@@ -89,7 +89,6 @@ impl Selection {
             .map(|model| ModelRouting {
                 model_route_id: self.snapshot.route.id,
                 public_id: self.snapshot.route.public_id.clone(),
-                provider_pool_id: Some(pool_id),
                 provider: member.provider.clone(),
                 model: model.clone(),
             })
@@ -103,17 +102,13 @@ impl Selection {
                 Some(ModelRouting {
                     model_route_id: self.snapshot.route.id,
                     public_id: self.snapshot.route.public_id.clone(),
-                    provider_pool_id: None,
                     provider: provider.as_ref().clone(),
                     model: model.as_ref().clone(),
                 })
             }
-            TargetSnapshot::Pool { id, members, .. } => {
+            TargetSnapshot::Pool { members, .. } => {
                 let (index, target) = members.iter().enumerate().skip(self.next_member).find_map(
-                    |(index, member)| {
-                        self.pooled_target(member, *id)
-                            .map(|target| (index, target))
-                    },
+                    |(index, member)| self.pooled_target(member).map(|target| (index, target)),
                 )?;
                 self.next_member = index + 1;
                 Some(target)
@@ -199,10 +194,10 @@ impl Selection {
     /// Panics if a direct route reaches pool binding, prevented by namespace acquisition.
     fn required_target(&self, provider_id: i64) -> Result<ModelRouting, Error> {
         match &self.snapshot.target {
-            TargetSnapshot::Pool { id, members, .. } => members
+            TargetSnapshot::Pool { members, .. } => members
                 .iter()
                 .find(|member| member.provider.id == provider_id)
-                .and_then(|member| self.pooled_target(member, *id))
+                .and_then(|member| self.pooled_target(member))
                 .ok_or_else(|| Error::BoundAccountUnavailable {
                     model: self.snapshot.route.public_id.clone(),
                 }),
@@ -408,17 +403,15 @@ impl CompactionSelection {
         draft.upstream_http_status = None;
         draft.billed_usage = None;
         let store = context.api_log_store.clone();
-        let task = tokio::spawn(async move {
-            storage::api_logs::finalize_api_log(
-                store.as_ref(),
-                &abandoned,
-                ApiLogOutcome::UpstreamError,
-                None,
-                None,
-            )
-            .await;
-        });
-        let _ = task.await;
+        if let Some(task) = storage::api_logs::spawn_api_log_finalization(
+            store,
+            abandoned,
+            ApiLogOutcome::UpstreamError,
+            None,
+            None,
+        ) {
+            let _ = task.await;
+        }
         selection.has_quota_restrictions = true;
         if let Some(state) =
             storage::quota_blocks::load_state(&context.database, self.routing.provider.id).await?
@@ -434,7 +427,11 @@ impl CompactionSelection {
 
     /// Registers an actually rendered completed gateway checkpoint using its sealer-proven
     /// identity. The compact-only Responses codec carries these items verbatim in JSON/SSE.
-    pub(crate) fn register_gateway_window(&self, artifact_id: &str, items: &[serde_json::Value]) {
+    pub(crate) fn register_gateway_window(
+        &self,
+        artifact_id: &str,
+        items: &[crate::format::compaction_wire::Checkpoint],
+    ) {
         if let (Ownership::Bound(binding), Some(projector)) = (&self.ownership, &self.projector) {
             binding.register(&[crate::affinity::Anchor::Artifact(
                 projector.gateway_artifact(artifact_id),

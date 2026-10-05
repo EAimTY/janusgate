@@ -6,8 +6,7 @@
 //! client rendering) lives in the family's concern modules beside this one; this module holds
 //! only the pieces those directions share.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
 
 /// The fixed carrier description rendered as a gateway compaction block's `content` when the
 /// sealed envelope carries no readable summary — wrapped native state with no exported text. It
@@ -17,61 +16,26 @@ pub(crate) const GATEWAY_CARRIER_DESCRIPTION: &str =
 
 /// The tolerant typed view of a vendor `compaction` content block: every member optional, extra
 /// vendor members ignored. The block's shape is the vendor's to define, so upstream parsing
-/// captures the raw [`Value`] beside this view for replay fidelity; this struct only decides
+/// captures the raw vendor fragment beside this view for replay fidelity; this struct only decides
 /// which members the gateway reads.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(super) struct CompactionBlock {
     /// The readable summary content; `None` marks the native null-content no-op block.
     #[serde(default)]
     pub(super) content: Option<String>,
-
-    /// The vendor signature, or the gateway carrier string when the gateway rendered the block.
-    #[serde(default)]
-    pub(super) signature: Option<String>,
-
-    /// Opaque vendor ciphertext member, when the block carries one.
-    #[serde(default)]
-    pub(super) encrypted_content: Option<String>,
-
-    /// Tool-advertisement changes the compaction applied, when the block carries any.
-    #[serde(default)]
-    pub(super) tool_changes: Option<Vec<Value>>,
 }
 
-/// The typed outbound gateway carrier block: a protocol-shaped `compaction` block whose
-/// `signature` carries the sealed gateway envelope. `content` is the readable summary when the
-/// envelope exposes one, else [`GATEWAY_CARRIER_DESCRIPTION`]; no other member is ever added —
-/// a gateway block carries no `encrypted_content` and no absent member rendered as null.
-///
-/// # Panics
-///
-/// Panics if the first-party block type fails to serialize, which cannot occur.
-pub(crate) fn gateway_carrier_block(content: Option<&str>, signature: &str) -> Value {
-    #[derive(Debug, Serialize)]
-    struct GatewayCarrierBlock<'a> {
-        /// Always `compaction`.
-        #[serde(rename = "type")]
-        kind: &'static str,
-
-        /// The readable summary, else the fixed carrier description.
-        content: &'a str,
-
-        /// The sealed gateway carrier.
-        signature: &'a str,
-    }
-
-    let content = content.unwrap_or(GATEWAY_CARRIER_DESCRIPTION);
-
-    #[expect(
-        clippy::expect_used,
-        reason = "the carrier block is a first-party type whose serialization is total"
-    )]
-    serde_json::to_value(&GatewayCarrierBlock {
-        kind: "compaction",
-        content,
-        signature,
-    })
-    .expect("first-party wire types serialize")
+/// Builds a concrete Messages gateway carrier with readable content or the fixed marker.
+pub(crate) fn gateway_carrier_block(
+    content: Option<&str>,
+    signature: &str,
+) -> crate::format::compaction_wire::Checkpoint {
+    crate::format::compaction_wire::Checkpoint::Messages(
+        crate::format::compaction_wire::MessagesCheckpoint {
+            content: content.unwrap_or(GATEWAY_CARRIER_DESCRIPTION).to_owned(),
+            signature: signature.to_owned(),
+        },
+    )
 }
 
 /// Merges an operation's overlay header rows over the inference header rows: an overlay row
@@ -124,7 +88,7 @@ mod tests {
         let block = gateway_carrier_block(Some("the summary"), "janusgate.compaction.v1.k.ct");
 
         assert_eq!(
-            block,
+            crate::format::aggregated_body_json(&block),
             json!({
                 "type": "compaction",
                 "content": "the summary",
@@ -137,7 +101,7 @@ mod tests {
         let block = gateway_carrier_block(None, "carrier");
 
         assert_eq!(
-            block,
+            crate::format::aggregated_body_json(&block),
             json!({
                 "type": "compaction",
                 "content": GATEWAY_CARRIER_DESCRIPTION,

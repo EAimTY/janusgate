@@ -1270,6 +1270,7 @@ pub(super) fn parse_inbound_request(
             &messages,
         ),
         ir: IrRequest {
+            has_compaction_trigger: false,
             state_items: compaction_state.state_items,
             model: request.model,
             instructions,

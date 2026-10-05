@@ -1187,7 +1187,7 @@ async fn exact_model_blocks_and_direct_routes_preserve_their_distinct_contracts(
         ApiLogEndpointType::OpenaiChatCompletions,
     )
     .await?;
-    assert_eq!(selected.routing.provider_pool_id, None);
+    assert!(selected.affinity.is_none());
     #[expect(clippy::panic, reason = "a wrong outcome is the test failure report")]
     let AttemptOutcome::Rejected { error, attempt } = selected.outcome else {
         panic!("direct rejection remains an unfinalized final error");
@@ -1434,7 +1434,7 @@ async fn released_follower_reloads_its_route_target() -> Result<(), Box<dyn StdE
     .await?;
     drop(leader);
     let selected = tokio::time::timeout(std::time::Duration::from_secs(2), follower).await???;
-    assert_eq!(selected.routing.provider_pool_id, None);
+    assert!(selected.affinity.is_none());
     assert_eq!(selected.routing.provider.id, provider_id);
     #[expect(clippy::panic, reason = "a wrong outcome is the test failure report")]
     let AttemptOutcome::Rejected {
@@ -2352,9 +2352,18 @@ async fn discovered_models_dispatch_without_pool_membership_or_authored_aliases(
         )
         .await?;
         assert_eq!(selected.routing.provider.id, *provider_id);
+        #[expect(clippy::expect_used, reason = "the discovered public route exists")]
+        let snapshot =
+            storage::route_snapshot::find_route(&context.database, &selected.routing.public_id)
+                .await?
+                .expect("route exists");
         assert_eq!(
-            selected.routing.provider_pool_id,
-            (*provider_id == inside).then_some(pool_id)
+            snapshot.owner(),
+            if *provider_id == inside {
+                crate::access_control::RouteOwner::Pool(pool_id)
+            } else {
+                crate::access_control::RouteOwner::Provider(*provider_id)
+            }
         );
         assert_eq!(selected.routing.model.upstream_id, "new-model");
         #[expect(clippy::expect_used, reason = "mock request recording is unpoisoned")]

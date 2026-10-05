@@ -13,7 +13,7 @@ use crate::{
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Parses upstream Gemini Interactions responses — SSE frames or a full Interaction body — into IR
@@ -127,9 +127,9 @@ impl OpenStep {
 /// One upstream Interaction body or the partial resource an
 /// `interaction.created`/`interaction.completed` frame carries under its `interaction` member.
 ///
-/// Every member is optional and unmodeled members are ignored: upstreams are third-party. Steps are
-/// raw values — fragments whose per-kind shape the parser models separately — so a thought step's
-/// complete JSON survives as the block's opaque replay payload. The streaming lifecycle payloads
+/// Every member is optional and unmodeled members are ignored: upstreams are third-party. Ordinary
+/// steps use concrete per-kind fields; only a thought step's complete JSON survives as the block's
+/// opaque replay payload. The streaming lifecycle payloads
 /// may omit any field of the full resource ("Streaming lifecycle payloads may omit fields that are
 /// only available on full non-streaming Interaction responses"); the terminal
 /// `interaction.completed` resource carries its steps only when the upstream includes them, so the
@@ -153,7 +153,7 @@ struct InteractionBody {
     /// when the upstream includes it — recovered exactly once when no live step event delivered
     /// content.
     #[serde(default)]
-    steps: Vec<Value>,
+    steps: Vec<CompleteStep>,
 
     /// Token accounting.
     #[serde(default)]
@@ -162,6 +162,42 @@ struct InteractionBody {
     /// Failure the upstream may embed in a 2xx body.
     #[serde(default)]
     error: Option<UpstreamError>,
+}
+
+/// Complete model-visible step; only thoughts require opaque producer metadata for replay.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum CompleteStep {
+    /// Model text output.
+    ModelOutput(ModelOutputStep),
+    /// A thought's complete producer-owned fragment.
+    Thought(Value),
+    /// A model-requested function invocation.
+    FunctionCall(FunctionCallStep),
+    /// Request echoes and future non-output steps carry no representable content.
+    Ignored,
+}
+
+impl<'de> serde::Deserialize<'de> for CompleteStep {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+        let kind: StepProbe = serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+        match kind.step_type.as_str() {
+            STEP_MODEL_OUTPUT => serde_json::from_str(raw.get())
+                .map(Self::ModelOutput)
+                .map_err(serde::de::Error::custom),
+            STEP_THOUGHT => serde_json::from_str(raw.get())
+                .map(Self::Thought)
+                .map_err(serde::de::Error::custom),
+            STEP_FUNCTION_CALL => serde_json::from_str(raw.get())
+                .map(Self::FunctionCall)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(Self::Ignored),
+        }
+    }
 }
 
 /// Minimal probe reading a frame's official `event_type` member and any failure member the
@@ -189,7 +225,7 @@ struct StepProbe {
 }
 
 /// One content block of a body step, reduced to the members the IR can carry: only text survives.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct BodyBlock {
     /// Block kind tag; non-text blocks carry no IR-representable content.
     #[serde(rename = "type", default)]
@@ -212,7 +248,8 @@ impl BodyBlock {
 }
 
 /// A `model_output` step of an Interaction body: the content blocks, text ones only.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "model_output")]
 struct ModelOutputStep {
     /// The content blocks; every non-text block is dropped (the IR output channel is text).
     #[serde(default)]
@@ -237,7 +274,8 @@ struct ThoughtStep {
 }
 
 /// A `function_call` step of an Interaction body.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "function_call")]
 struct FunctionCallStep {
     /// Identifier of the invocation, empty when the upstream omits it.
     #[serde(default)]
@@ -517,12 +555,9 @@ impl UpstreamParser {
     /// # Errors
     ///
     /// Returns [`PayloadError`] for a step whose kind contradicts the contract.
-    fn ingest_complete_step(&mut self, step: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let probe: StepProbe = format::parse_body(&step)?;
-
-        match probe.step_type.as_str() {
-            STEP_MODEL_OUTPUT => {
-                let output: ModelOutputStep = format::parse_body(&step)?;
+    fn ingest_complete_step(&mut self, step: CompleteStep) -> Result<Vec<IrEvent>, PayloadError> {
+        match step {
+            CompleteStep::ModelOutput(output) => {
                 let text = output
                     .content
                     .into_iter()
@@ -532,8 +567,10 @@ impl UpstreamParser {
                 Ok(vec![IrEvent::TextDelta(text)])
             }
 
-            STEP_THOUGHT => {
-                let thought: ThoughtStep = format::parse_body(&step)?;
+            CompleteStep::Thought(step) => {
+                let thought = ThoughtStep::deserialize(&step).map_err(|error| {
+                    PayloadError::new(format!("malformed upstream payload: {error}"))
+                })?;
                 let text = thought
                     .summary
                     .unwrap_or_default()
@@ -548,8 +585,7 @@ impl UpstreamParser {
                 }])
             }
 
-            STEP_FUNCTION_CALL => {
-                let call: FunctionCallStep = format::parse_body(&step)?;
+            CompleteStep::FunctionCall(call) => {
                 let index = self.allocate_call_index();
 
                 let arguments = call
@@ -576,7 +612,7 @@ impl UpstreamParser {
 
             // Request-echo (`user_input`, `function_result`), the server-side tool kinds, and any
             // future kind carry no model output.
-            _ => Ok(Vec::new()),
+            CompleteStep::Ignored => Ok(Vec::new()),
         }
     }
 
@@ -852,12 +888,12 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for malformed JSON, upstream error members, and payloads whose
     /// kind contradicts the contract.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        // One lex per frame: the payload parses once, and both the probe and the matched arm
-        // borrow it without a re-parse.
-        let payload: Value = format::parse_frame(frame)?;
+        // Borrow the complete JSON document while the typed probe selects its event vocabulary;
+        // only producer-owned thought fragments need an arbitrary JSON representation.
+        let payload: &serde_json::value::RawValue = format::parse_frame(frame)?;
 
         // The probe is typed: any frame bearing a failure aborts, recognized event or not.
-        let probe: FrameProbe = FrameProbe::deserialize(&payload)
+        let probe: FrameProbe = serde_json::from_str::<FrameProbe>(payload.get())
             .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))?;
 
         if let Some(error) = probe.error {
@@ -868,31 +904,31 @@ impl UpstreamEventParser for UpstreamParser {
         // `event_type` member self-describes it. Neither present yields a heartbeat.
         match frame.event.as_deref().or(probe.event_type.as_deref()) {
             Some(EVENT_CREATED) => {
-                let created: CreatedFrame = format::parse_body(&payload)?;
+                let created: CreatedFrame = format::parse_body(payload.get().as_bytes())?;
 
                 Ok(self.open_events(created.interaction.id, created.interaction.model))
             }
 
             Some(EVENT_STEP_START) => {
-                let start: StepStartFrame = format::parse_body(&payload)?;
+                let start: StepStartFrame = format::parse_body(payload.get().as_bytes())?;
 
                 Ok(self.ingest_start(start))
             }
 
             Some(EVENT_STEP_DELTA) => {
-                let delta: StepDeltaFrame = format::parse_body(&payload)?;
+                let delta: StepDeltaFrame = format::parse_body(payload.get().as_bytes())?;
 
                 Ok(self.ingest_delta(delta))
             }
 
             Some(EVENT_STEP_STOP) => {
-                let stop: StepStopFrame = format::parse_body(&payload)?;
+                let stop: StepStopFrame = format::parse_body(payload.get().as_bytes())?;
 
                 self.ingest_stop(stop)
             }
 
             Some(EVENT_COMPLETED) => {
-                let completed: CompletedFrame = format::parse_body(&payload)?;
+                let completed: CompletedFrame = format::parse_body(payload.get().as_bytes())?;
 
                 self.ingest_completed(completed)
             }
@@ -912,10 +948,10 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for upstream error objects, malformed bodies, and the failed
     /// terminal status.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
+    fn parse_json_response(&mut self, body: &[u8]) -> Result<Vec<IrEvent>, PayloadError> {
         // Ingesting the body always ingests the terminal status, which emits the body's own finish
         // and marks the parser finished — the body closes its stream, never the finish hook.
-        self.ingest_body(format::parse_body(&value)?)
+        self.ingest_body(format::parse_body(body)?)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
@@ -1642,7 +1678,7 @@ mod tests {
             reason = "the fixture body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("the interaction body parses");
 
         assert_eq!(
@@ -1927,7 +1963,9 @@ mod tests {
             reason = "the failed body is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(serde_json::json!({"status": "failed"}))
+            .parse_json_response(&crate::format::test_json_body(
+                &(serde_json::json!({"status": "failed"})),
+            ))
             .expect_err("a failed body must abort");
 
         assert!(error.to_string().contains("failed"));
@@ -1978,7 +2016,9 @@ mod tests {
             reason = "the error body is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(serde_json::json!({"error": "quota exhausted"}))
+            .parse_json_response(&crate::format::test_json_body(
+                &(serde_json::json!({"error": "quota exhausted"})),
+            ))
             .expect_err("an embedded error must abort the body");
 
         assert_eq!(error.to_string(), "quota exhausted");
@@ -2000,11 +2040,13 @@ mod tests {
             reason = "the old spelling is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(serde_json::json!({
-                "status": "completed",
-                "steps": [{"type": "function_call", "id": "c", "name": "f",
-                           "arguments": r#"{"q":"hi"}"#}],
-            }))
+            .parse_json_response(&crate::format::test_json_body(
+                &(serde_json::json!({
+                    "status": "completed",
+                    "steps": [{"type": "function_call", "id": "c", "name": "f",
+                               "arguments": r#"{"q":"hi"}"#}],
+                })),
+            ))
             .expect_err("the old JSON-encoded-string arguments must fail");
 
         assert!(

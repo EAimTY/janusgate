@@ -21,10 +21,14 @@ use super::{
 use crate::compaction::accounting::{CompactionLedger, IterationKind};
 #[cfg(test)]
 use crate::database::Database;
-use log::{debug, error};
+use futures::{Stream, StreamExt as _};
+use log::debug;
 use reqwest::{Client, StatusCode};
 use std::pin::Pin;
-use tokio_stream::{Stream, StreamExt as _, wrappers::ReceiverStream};
+
+mod event_stream;
+mod response_body;
+use event_stream::{json_event_stream, sse_event_stream};
 
 mod attempt;
 pub(crate) use attempt::{AttemptOutcome, execute_attempt};
@@ -34,14 +38,9 @@ pub(crate) use selection::{CompactionSelection, execute_selection};
 #[cfg(test)]
 mod attempt_tests;
 #[cfg(test)]
+mod event_stream_tests;
+#[cfg(test)]
 mod selection_tests;
-
-/// The shared pipeline-stage buffer size: the capacity of the channel at every adjacent
-/// execution-pipeline hop — the IR event channel between the upstream pump task and the response
-/// stream here, and the SSE body channel between the render task and the client in
-/// `api::serving`. Adjacent stages buffer equally, so one slow stage cannot accumulate an
-/// asymmetric backlog in the other.
-pub(crate) const EVENT_CHANNEL_BUFFER: usize = 64;
 
 /// Outward completion pipeline failures, from routing resolution through upstream dispatch. The
 /// client request can fail validation here too — the upstream renderers reject requests the chosen
@@ -214,11 +213,11 @@ pub(crate) async fn resolve_compaction_routing(
 pub(crate) struct CompactionDispatch {
     /// The vendor-shaped Responses `context_management` entries riding the
     /// upstream body verbatim.
-    pub(crate) context_management: Option<Vec<serde_json::Value>>,
+    pub(crate) context_management: Option<Vec<crate::format::compaction_wire::AutomaticEntry>>,
 
     /// The vendor-shaped Messages threshold edits riding the upstream body
     /// verbatim.
-    pub(crate) threshold_edits: Option<Vec<serde_json::Value>>,
+    pub(crate) threshold_edits: Option<Vec<crate::format::compaction_wire::ThresholdEdit>>,
 
     /// Header rows overlaying the inference descriptor's own, replacing
     /// same-named rows — the operation betas a native passthrough requires.
@@ -256,11 +255,11 @@ pub(crate) async fn execute(
         });
     }
 
-    // Names the upstream in every error-level record the pump tasks emit. Which single site logs
+    // Names the upstream in every error-level record the lazy parser emits. Which single site logs
     // such a record is partitioned by the client's streaming mode (README §8): for a streaming
     // client the failure becomes a terminal mid-stream error frame that never passes a response
-    // boundary, so the detecting pump logs it; for a non-streaming client it becomes the aggregated
-    // HTTP error response, so the response boundary rendering it logs it and the pumps stay silent.
+    // boundary, so the detecting parser logs it; for a non-streaming client it becomes the
+    // aggregated HTTP error response, so the response boundary rendering it logs it.
     // The client's mode is distinct from the upstream's: an `always`-streaming definition streams
     // upstream while its client may not (README §5.2).
     let upstream_label = format!(
@@ -323,7 +322,7 @@ pub(crate) async fn execute(
             &body,
         )
         .await
-        .unwrap_or_else(|error| Some(error))
+        .unwrap_or_else(Some)
         .unwrap_or_else(|| Error::Upstream {
             status,
             detail: http_body::truncate_excerpt(&body.lossy_text()),
@@ -345,9 +344,6 @@ pub(crate) async fn execute(
     let is_upstream_streaming =
         is_upstream_streaming(&provider.definition.payload.inference, is_client_streaming);
 
-    let (sender, receiver) =
-        tokio::sync::mpsc::channel::<Result<IrEvent, Error>>(EVENT_CHANNEL_BUFFER);
-
     let parser = upstream_parser(upstream_format);
 
     let response_unwrap = provider
@@ -358,20 +354,26 @@ pub(crate) async fn execute(
         .clone();
 
     if is_upstream_streaming {
-        tokio::spawn(pump_sse(
-            response,
+        let body = response.bytes_stream().map(|chunk| {
+            chunk.map_err(|error| Error::Unavailable {
+                detail: format!("upstream stream failed: {error}"),
+            })
+        });
+        Ok(sse_event_stream(
+            body,
             parser,
-            SseParser::new(),
-            sender,
             upstream_label,
             is_client_streaming,
             response_unwrap,
-        ));
+        ))
     } else {
-        tokio::spawn(pump_json(response, parser, sender, response_unwrap));
+        let body = async move {
+            response.bytes().await.map_err(|error| Error::Unavailable {
+                detail: format!("upstream read failed: {error}"),
+            })
+        };
+        Ok(json_event_stream(body, parser, response_unwrap))
     }
-
-    Ok(Box::pin(ReceiverStream::new(receiver)))
 }
 
 /// The upstream streaming mode one dispatch requests: the definition's mode decides — always
@@ -626,15 +628,9 @@ where
             detail: format!("upstream read failed: {error}"),
         })?;
 
-        let mut value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
-            Error::Unavailable {
-                detail: format!("malformed upstream response: {error}"),
-            }
-        })?;
+        let body = unwrap_response(&bytes, &response_unwrap)?;
 
-        unwrap_response(&mut value, &response_unwrap);
-
-        for event in parser.parse_json_response(value)? {
+        for event in parser.parse_json_response(body)? {
             if matches!(event, IrEvent::Finish { .. }) {
                 is_terminal_real = true;
             }
@@ -665,14 +661,14 @@ where
 /// Returns [`Error::Internal`] when the connection's expressions reference a
 /// value this dispatch does not carry — stored drift — or when a header row
 /// carries an unrenderable name or value.
-pub(crate) fn build_internal_request(
+pub(crate) fn build_internal_request<T: serde::Serialize>(
     http: &Client,
     provider: &Provider,
     routing: &ModelRouting,
     url: &StringExpr,
     header_rows: &[ParamRow],
     envelope: Option<&TemplateNode>,
-    body: &serde_json::Value,
+    body: &T,
 ) -> Result<reqwest::RequestBuilder, Error> {
     let request_uuid = ids::new_uuid();
 
@@ -721,17 +717,16 @@ pub(crate) fn build_internal_request(
         headers.insert(name, value);
     }
 
-    let body = match envelope {
-        Some(envelope) => env
-            .render_json(envelope, body, "compaction operation envelope")
-            .map_err(|error| Error::Internal {
-                message: error.to_string(),
-            })?,
-
-        None => body.clone(),
+    let builder = http.post(url).headers(headers);
+    let Some(envelope) = envelope else {
+        return Ok(builder.json(body));
     };
-
-    Ok(http.post(url).headers(headers).json(&body))
+    let envelope = env
+        .render_json(envelope, body, "compaction operation envelope")
+        .map_err(|error| Error::Internal {
+            message: error.to_string(),
+        })?;
+    Ok(builder.json(&envelope))
 }
 
 /// Builds the upstream HTTP request for one dispatch, entirely from the provider definition
@@ -914,9 +909,8 @@ fn attach_upstream_body(
 }
 
 /// Attaches one codec-rendered body to the request builder: without an envelope the typed body
-/// rides to reqwest and serializes exactly once onto the wire; with one, the body converts into
-/// the JSON value the envelope's template DOM splices — the one fragment whose shape is not the
-/// gateway's to define — and the rendered envelope replaces the body wholesale.
+/// rides to reqwest and serializes exactly once onto the wire; with an envelope, the evaluated
+/// template borrows that same concrete body at its placeholder without constructing a JSON DOM.
 ///
 /// # Errors
 ///
@@ -932,30 +926,13 @@ fn attach_body<T: serde::Serialize>(
         return Ok(builder.json(body));
     };
 
-    let serialized = serialize_body(body);
-
     let body = env
-        .render_json(envelope, &serialized, "inference envelope")
+        .render_json(envelope, body, "inference envelope")
         .map_err(|error| Error::Internal {
             message: error.to_string(),
         })?;
 
     Ok(builder.json(&body))
-}
-
-/// Serializes one codec-rendered body into the JSON value the envelope's template DOM splices: a
-/// first-party serde type always renders, so the failure arm is the documented unreachable
-/// invariant.
-///
-/// # Panics
-///
-/// Panics if serialization fails, which cannot occur for a first-party serde type.
-fn serialize_body<T: serde::Serialize>(body: &T) -> serde_json::Value {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "a codec-rendered body is a first-party serde type, which always renders"
-    )]
-    serde_json::to_value(body).unwrap()
 }
 
 /// Boxes the upstream event parser for the given wire format.
@@ -973,310 +950,40 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
     }
 }
 
-/// Delivers an upstream stream failure as the stream's terminal error frame, marking the stream
-/// aborted so no events follow the error frame, and logs it only when the client is streaming: then
-/// the failure renders as a mid-stream error frame that never passes a response boundary, so the
-/// detecting pump is its single logger (README §8); a non-streaming client instead renders it as
-/// the aggregated HTTP error response, which the response boundary logs. The send is best-effort: a
-/// consumer that already went away must not fail or block the abort.
-async fn abort_stream(
-    is_aborted: &mut bool,
-    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    upstream_label: &str,
-    is_client_streaming: bool,
-    error: Error,
-) {
-    *is_aborted = true;
-
-    if is_client_streaming {
-        error!("{upstream_label}: {error}");
-    }
-
-    let _ = sender.send(Err(error)).await;
-}
-
-/// Aborts an SSE pump for a framing-layer rejection — an oversized frame — stating the policy
-/// once: a framing-layer rejection aborts identically wherever it surfaces, in the main chunk
-/// loop or at the trailing flush (README §6.3).
-async fn abort_oversized_frame(
-    is_aborted: &mut bool,
-    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    upstream_label: &str,
-    is_client_streaming: bool,
-) {
-    abort_stream(
-        is_aborted,
-        sender,
-        upstream_label,
-        is_client_streaming,
-        Error::Unavailable {
-            detail: "oversized SSE frame".to_string(),
-        },
-    )
-    .await;
-}
-
-/// Forwards parsed IR events to the consumer, reporting whether the consumer is still listening. A
-/// closed channel ends the forwarding without an error frame: the consumer left, so nobody is left
-/// to receive one.
-async fn forward_events(
-    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    events: Vec<IrEvent>,
-) -> bool {
-    for event in events {
-        if sender.send(Ok(event)).await.is_err() {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Feeds a batch of SSE frames through the upstream parser and forwards the produced events,
-/// reporting whether the stream is still live. A parser failure aborts the stream through
-/// [`abort_stream`]; a departed consumer stops the forwarding without touching the abort flag, so
-/// the caller's trailing flush still runs exactly as it does for a consumer that leaves anywhere
-/// else mid-stream.
-async fn forward_frames(
-    is_aborted: &mut bool,
-    parser: &mut Box<dyn UpstreamEventParser + Send>,
-    frames: Vec<SseFrame>,
-    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    upstream_label: &str,
-    is_client_streaming: bool,
-) -> bool {
-    for frame in frames {
-        match parser.ingest_frame(&frame) {
-            Ok(events) => {
-                if !forward_events(sender, events).await {
-                    return false;
-                }
-            }
-
-            // A malformed frame aborts the stream with an error exactly like any other upstream
-            // failure; the caller's final `Done` still terminates the event stream.
-            Err(parser_error) => {
-                abort_stream(
-                    is_aborted,
-                    sender,
-                    upstream_label,
-                    is_client_streaming,
-                    Error::from(parser_error),
-                )
-                .await;
-
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-/// Relays an upstream SSE stream into the IR event channel, always terminating with
-/// [`IrEvent::Done`].
+/// Selects the provider-configured response member without materializing protocol JSON.
 ///
-/// `upstream_label` names the upstream in the pump's error records. The pump logs a failure only
-/// for a streaming client, whose terminal error frame never reaches a response boundary, making the
-/// pump the failure's single logger (README §8); a non-streaming client receives the failure as the
-/// aggregated HTTP error response, which the response boundary logs.
-async fn pump_sse(
-    response: reqwest::Response,
-    mut parser: Box<dyn UpstreamEventParser + Send>,
-    mut sse_parser: SseParser,
-    sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    upstream_label: String,
-    is_client_streaming: bool,
-    response_unwrap: Option<String>,
-) {
-    let mut body = response.bytes_stream();
-
-    // Whether an error aborted the stream; only a clean end of stream lets the parser flush
-    // buffered state before the terminal `Done`.
-    let mut is_aborted = false;
-
-    'stream: while let Some(chunk) = body.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                abort_stream(
-                    &mut is_aborted,
-                    &sender,
-                    &upstream_label,
-                    is_client_streaming,
-                    Error::Unavailable {
-                        detail: format!("upstream stream failed: {error}"),
-                    },
-                )
-                .await;
-
-                break 'stream;
-            }
-        };
-
-        let frames = match sse_parser.ingest(&chunk) {
-            Ok(frames) => frames
-                .into_iter()
-                .map(|mut frame| {
-                    unwrap_frame(&mut frame, &response_unwrap);
-
-                    frame
-                })
-                .collect(),
-            Err(_) => {
-                abort_oversized_frame(
-                    &mut is_aborted,
-                    &sender,
-                    &upstream_label,
-                    is_client_streaming,
-                )
-                .await;
-
-                break 'stream;
-            }
-        };
-
-        let is_stream_live = forward_frames(
-            &mut is_aborted,
-            &mut parser,
-            frames,
-            &sender,
-            &upstream_label,
-            is_client_streaming,
-        )
-        .await;
-
-        if !is_stream_live {
-            break 'stream;
-        }
-    }
-
-    // Trailing frames buffered in the SSE parser are flushed through the parser only on a clean end
-    // of stream: replaying them after an abort would emit events after the stream's error and break
-    // the error-then-`Done` contract of the event stream.
-    if !is_aborted {
-        match sse_parser.finish() {
-            Ok(frames) => {
-                forward_frames(
-                    &mut is_aborted,
-                    &mut parser,
-                    frames,
-                    &sender,
-                    &upstream_label,
-                    is_client_streaming,
-                )
-                .await;
-            }
-
-            // Silently completing the stream here would drop the trailing frame on the floor. The
-            // final `Done` below still terminates the event stream.
-            Err(_) => {
-                abort_oversized_frame(
-                    &mut is_aborted,
-                    &sender,
-                    &upstream_label,
-                    is_client_streaming,
-                )
-                .await;
-            }
-        }
-    }
-
-    if !is_aborted {
-        forward_events(&sender, parser.finish()).await;
-    }
-
-    let _ = sender.send(Ok(IrEvent::Done)).await;
-}
-
-/// Relays an upstream JSON response into the IR event channel, always terminating with
-/// [`IrEvent::Done`].
+/// # Errors
 ///
-/// The JSON pump runs only for a non-streaming client — with [`is_upstream_streaming`] false
-/// the upstream mode is `MatchClient` and the client did not request streaming — so a pump
-/// failure is rendered as the aggregated HTTP error response and logged at the response
-/// boundary (README §8), never by the pump itself: unlike [`pump_sse`], it carries no
-/// `upstream_label` and logs nothing.
-async fn pump_json(
-    response: reqwest::Response,
-    mut parser: Box<dyn UpstreamEventParser + Send>,
-    sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
-    response_unwrap: Option<String>,
-) {
-    let outcome = async {
-        let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
-            detail: format!("upstream read failed: {error}"),
-        })?;
-
-        let mut value = serde_json::from_slice(&bytes).map_err(|error| Error::Unavailable {
-            detail: format!("malformed upstream response: {error}"),
-        })?;
-
-        unwrap_response(&mut value, &response_unwrap);
-
-        parser.parse_json_response(value).map_err(Error::from)
-    }
-    .await;
-
-    match outcome {
-        Ok(events) => {
-            forward_events(&sender, events).await;
-        }
-
-        Err(error) => {
-            let _ = sender.send(Err(error)).await;
-        }
-    }
-
-    let _ = sender.send(Ok(IrEvent::Done)).await;
+/// Returns an upstream failure for a malformed configured envelope.
+pub(crate) fn unwrap_response<'a>(
+    body: &'a [u8],
+    response_unwrap: &Option<String>,
+) -> Result<&'a [u8], Error> {
+    response_body::unwrap(body, response_unwrap.as_deref()).map_err(|error| Error::Unavailable {
+        detail: format!("malformed upstream response: {error}"),
+    })
 }
 
-/// Unwraps one JSON response through the definition's configured envelope member: when
-/// configured and present, the member's value becomes the parser's document. Absent or not
-/// configured, the document is ingested as-is (README §5.2 `response_unwrap`).
-pub(crate) fn unwrap_response(value: &mut serde_json::Value, response_unwrap: &Option<String>) {
-    let Some(member) = response_unwrap else {
-        return;
-    };
-
-    // The member is moved out of the parent object instead of cloned, so an unwrapped body is
-    // never copied a second time on this path.
-    if let serde_json::Value::Object(members) = value
-        && let Some(ingest) = members.remove(member)
-    {
-        *value = ingest;
-    }
-}
-
-/// Unwraps one SSE frame's payload the same way the JSON responses unwrap: the frame's data is
-/// rewritten to the configured member's value when the frame carries a JSON object with it.
-/// Frames whose data is not such a JSON object — a `[DONE]` sentinel, for instance — pass
-/// through unchanged.
-fn unwrap_frame(frame: &mut SseFrame, response_unwrap: &Option<String>) {
-    let Some(member) = response_unwrap else {
-        return;
-    };
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame.data) else {
-        return;
-    };
-
-    if let Some(wrapped) = value.get(member) {
-        frame.data = serialize_frame(wrapped);
-    }
-}
-
-/// Re-serializes one unwrapped frame payload.
+/// Selects a configured foreign SSE envelope; non-JSON sentinels pass through unchanged.
 ///
 /// # Panics
 ///
-/// Panics if serialization fails, which cannot occur for a parsed JSON value.
-fn serialize_frame(value: &serde_json::Value) -> String {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "a re-serialized JSON value always renders"
-    )]
-    serde_json::to_string(value).unwrap()
+/// Panics if bytes borrowed from a UTF-8 SSE string cease to be UTF-8, an internal invariant.
+fn unwrap_frame(frame: &mut SseFrame, response_unwrap: &Option<String>) {
+    if response_unwrap.is_none() {
+        return;
+    }
+    if let Ok(body) = unwrap_response(frame.data.as_bytes(), response_unwrap) {
+        // Selected bytes are a substring of valid UTF-8 frame data.
+        #[expect(
+            clippy::expect_used,
+            reason = "selected JSON bytes borrow a UTF-8 SSE string"
+        )]
+        let selected = std::str::from_utf8(body).expect("JSON frame is UTF-8");
+        if selected.len() != frame.data.len() {
+            frame.data = selected.to_owned();
+        }
+    }
 }
 
 /// Applies exact quota rules to a rejected generation/native body and orders durable evidence.
@@ -1383,6 +1090,7 @@ mod tests {
     /// Builds a minimal one-turn chat request the dispatch bodies render from.
     pub(super) fn fixture_ir() -> IrRequest {
         IrRequest {
+            has_compaction_trigger: false,
             state_items: Vec::new(),
             model: "upstream-model".to_string(),
             instructions: None,
@@ -1463,7 +1171,6 @@ mod tests {
         let routing = ModelRouting {
             model_route_id: 1,
             public_id: ir.model.clone(),
-            provider_pool_id: None,
             provider: provider.clone(),
             model: Model {
                 id: 1,

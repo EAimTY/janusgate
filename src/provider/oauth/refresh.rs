@@ -62,9 +62,13 @@ const _: () = assert!(
 );
 
 /// The result of a lease-owned refresh attempt.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one control-plane refresh result is moved to its caller, never stored in a collection"
+)]
 enum RefreshOutcome {
     /// The renewed credentials were persisted while the caller still owned the lease.
-    Renewed(Box<Provider>),
+    Renewed(Provider),
 
     /// The lease was lost while the grant was in flight; the refreshed credentials were derived
     /// from superseded credentials and were not persisted, leaving the newer state — its lease
@@ -208,7 +212,7 @@ pub(crate) async fn ensure_fresh_token(
             if let RefreshOutcome::Renewed(renewed) =
                 renew_and_store(database, http, &current, lease_started_at).await?
             {
-                return Ok(*renewed);
+                return Ok(renewed);
             }
         } else {
             tokio_time::sleep(REFRESH_WAIT_INTERVAL).await;
@@ -345,7 +349,7 @@ async fn renew_and_store(
     let renewed =
         storage::providers::reload_provider(database, provider.id, "token renewal").await?;
 
-    Ok(RefreshOutcome::Renewed(Box::new(renewed)))
+    Ok(RefreshOutcome::Renewed(renewed))
 }
 
 /// Clears the caller's own refresh lease after a failed renewal or persistence step, so

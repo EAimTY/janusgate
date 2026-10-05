@@ -841,6 +841,17 @@ impl ClientSseRenderer for SseRenderer {
     }
 }
 
+/// Projects emitted ordered steps through borrowed accepted-replay field views.
+pub(super) fn project_json_response(
+    response: &JsonResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    response
+        .steps
+        .iter()
+        .all(|step| super::json_affinity::project_step(step, projector))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1382,7 +1393,7 @@ mod tests {
             reason = "the signed upstream body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("the signed upstream body parses");
 
         let mut aggregator = Aggregator::default();
@@ -1559,15 +1570,4 @@ mod tests {
             Some(&serde_json::json!("UNAUTHENTICATED"))
         );
     }
-}
-
-/// Projects emitted ordered steps through borrowed accepted-replay field views.
-pub(super) fn project_json_response(
-    response: &JsonResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    response
-        .steps
-        .iter()
-        .all(|step| super::json_affinity::project_step(step, projector))
 }

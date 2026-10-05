@@ -13,6 +13,7 @@ use crate::{
     sse::SseFrame,
 };
 use serde::Deserialize;
+#[cfg(test)]
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -415,8 +416,8 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for upstream error payloads and malformed
     /// bodies.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let response = format::parse_body::<UpstreamResponse>(&value)?;
+    fn parse_json_response(&mut self, body: &[u8]) -> Result<Vec<IrEvent>, PayloadError> {
+        let response = format::parse_body::<UpstreamResponse>(body)?;
 
         Self::reject_embedded_error(&response)?;
 
@@ -753,16 +754,18 @@ mod tests {
             reason = "the fixture body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(serde_json::json!({
-                "id": "c2",
-                "model": "m",
-                "choices": [{
-                    "index": 0,
-                    "message": {"function_call": {"name": "get_weather",
-                                 "arguments": "{\"city\":\"Paris\"}"}},
-                    "finish_reason": "function_call",
-                }],
-            }))
+            .parse_json_response(&crate::format::test_json_body(
+                &(serde_json::json!({
+                    "id": "c2",
+                    "model": "m",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"function_call": {"name": "get_weather",
+                                     "arguments": "{\"city\":\"Paris\"}"}},
+                        "finish_reason": "function_call",
+                    }],
+                })),
+            ))
             .expect("the legacy body parses");
 
         assert_eq!(

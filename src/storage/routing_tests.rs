@@ -620,7 +620,6 @@ async fn dispatch_resolves_explicit_routes_with_ordered_physical_targets()
     .await?;
     let resolved = crate::gateway::resolve_routing(&database, "coding-M").await?;
     assert_eq!(resolved.model_route_id, route);
-    assert_eq!(resolved.provider_pool_id, Some(pool));
     assert_eq!(resolved.public_id, "coding-M");
     assert_eq!(resolved.model.upstream_id, "M");
     assert_eq!(resolved.provider.id, b);
@@ -628,7 +627,8 @@ async fn dispatch_resolves_explicit_routes_with_ordered_physical_targets()
     let snapshot = find_route(&database, "coding-M")
         .await?
         .expect("route exists");
-    if let TargetSnapshot::Pool { members, .. } = snapshot.target {
+    if let TargetSnapshot::Pool { id, members, .. } = snapshot.target {
+        assert_eq!(id, pool);
         assert_eq!(
             members
                 .iter()

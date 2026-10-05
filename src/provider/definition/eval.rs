@@ -8,8 +8,25 @@
 //! sequence actually placed.
 
 use super::template::{StringExpr, TemplateNode, ValueExpr};
+use serde::Serialize;
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
+
+/// A rendered provider-authored JSON template, retaining the codec body as a concrete borrow.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum RenderedJson<'a, T> {
+    /// Arbitrary operator-authored literal fragment.
+    Literal(&'a Json),
+    /// Evaluated string expression.
+    Text(String),
+    /// The codec's concrete request, serialized directly at its placeholder.
+    Body(&'a T),
+    /// Operator-authored member names and their evaluated values.
+    Object(BTreeMap<&'a str, Self>),
+    /// Ordered evaluated template elements.
+    Array(Vec<Self>),
+}
 
 /// One value the interpreter could not supply: the expression referenced a value its stage did
 /// not carry. Write-time validation rejects every such reference, so this is stored drift and
@@ -302,46 +319,31 @@ impl ValueEnv<'_> {
         Ok(rendered)
     }
 
-    /// Renders one typed JSON template tree into a JSON value, splicing the codec-rendered body
-    /// into the tree's single body placeholder.
+    /// Evaluates a template while borrowing its concrete codec body and authored literal leaves.
     ///
     /// # Errors
     ///
-    /// Returns [`EvalError`] when a string leaf references a value the stage does not carry.
-    pub(crate) fn render_json(
+    /// Returns an evaluation failure when a string expression references an unavailable value.
+    pub(crate) fn render_json<'a, T>(
         &self,
-        node: &TemplateNode,
-        body: &Json,
+        node: &'a TemplateNode,
+        body: &'a T,
         what: &str,
-    ) -> Result<Json, EvalError> {
+    ) -> Result<RenderedJson<'a, T>, EvalError> {
         match node {
-            TemplateNode::Json { value } => Ok(value.clone()),
-
-            TemplateNode::String { expr } => Ok(Json::String(self.evaluate(expr, what)?)),
-
-            // The write boundary pins exactly one body placeholder per envelope, so this is the
-            // walk's single clone of the spliced body; the container arms borrow it through.
-            TemplateNode::Body => Ok(body.clone()),
-
-            TemplateNode::Object { fields } => {
-                let mut object = serde_json::Map::new();
-
-                for (name, field) in fields {
-                    object.insert(name.clone(), self.render_json(field, body, what)?);
-                }
-
-                Ok(Json::Object(object))
-            }
-
-            TemplateNode::Array { items } => {
-                let mut array = Vec::with_capacity(items.len());
-
-                for item in items {
-                    array.push(self.render_json(item, body, what)?);
-                }
-
-                Ok(Json::Array(array))
-            }
+            TemplateNode::Json { value } => Ok(RenderedJson::Literal(value)),
+            TemplateNode::String { expr } => Ok(RenderedJson::Text(self.evaluate(expr, what)?)),
+            TemplateNode::Body => Ok(RenderedJson::Body(body)),
+            TemplateNode::Object { fields } => fields
+                .iter()
+                .map(|(name, field)| Ok((name.as_str(), self.render_json(field, body, what)?)))
+                .collect::<Result<_, _>>()
+                .map(RenderedJson::Object),
+            TemplateNode::Array { items } => items
+                .iter()
+                .map(|item| self.render_json(item, body, what))
+                .collect::<Result<_, _>>()
+                .map(RenderedJson::Array),
         }
     }
 
@@ -696,7 +698,8 @@ mod tests {
         let body = serde_json::json!({"contents": []});
 
         #[expect(clippy::unwrap_used, reason = "the test envelope always renders")]
-        let rendered = env.render_json(&node, &body, "test").unwrap();
+        let rendered =
+            serde_json::to_value(env.render_json(&node, &body, "test").unwrap()).unwrap();
 
         assert_eq!(
             rendered,

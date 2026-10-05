@@ -32,11 +32,15 @@ use sha2::{Digest, Sha256};
 /// The restored active boundary of a prepared request: the checkpoint the
 /// window was reconstructed from, when one stands.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one transient boundary is held per request; boxing adds a carrier allocation"
+)]
 pub(crate) enum RestoredBoundary {
     /// A decoded gateway checkpoint.
     Gateway {
         /// The decoded envelope.
-        envelope: Box<EnvelopeV1>,
+        envelope: EnvelopeV1,
     },
 
     /// Native compaction state replayed to a compatible producer; the gateway
@@ -102,13 +106,17 @@ enum StateDiscriminator {
 }
 
 /// One validated active boundary, retaining only what subsequent restoration needs.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one transient boundary is held per request; boxing adds a carrier allocation"
+)]
 enum PreparedBoundary {
     /// Authenticated gateway checkpoint at its original conversation offset.
     Gateway {
         /// Number of accepted conversation messages before this carrier.
         offset: usize,
         /// Already authenticated envelope, never unsealed again during this request.
-        envelope: Box<EnvelopeV1>,
+        envelope: EnvelopeV1,
     },
     /// Raw producer-native state whose compatibility remains target-dependent.
     Native {
@@ -296,7 +304,7 @@ impl BoundaryPreparation {
                     preparation.active_index = Some(index);
                     preparation.active = Some(PreparedBoundary::Gateway {
                         offset: *offset,
-                        envelope: Box::new(envelope),
+                        envelope,
                     });
                 }
                 CompactionBoundary::Native { offset, artifact } if !is_null_no_op(boundary) => {
@@ -1182,12 +1190,6 @@ pub(crate) fn seal_native_window(
     )
 }
 
-/// Builds the vendor-shaped state item of one wrapped Responses replay window.
-#[must_use]
-pub(crate) fn responses_window_payload(items: Vec<Value>) -> NativeReplayWindow {
-    NativeReplayWindow::ResponsesWindow { items }
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -1270,6 +1272,7 @@ mod tests {
     #[test]
     fn plans_retention_and_mandatory_state() {
         let ir = IrRequest {
+            has_compaction_trigger: false,
             model: String::new(),
             instructions: None,
             messages: vec![
@@ -1318,6 +1321,7 @@ mod tests {
         // A single-turn compact-and-continue request: the mandatory active
         // turn covers the whole history, and no older prefix remains.
         let single_turn = IrRequest {
+            has_compaction_trigger: false,
             model: String::new(),
             instructions: None,
             messages: vec![text(IrRole::User, "only turn")],
@@ -1345,6 +1349,7 @@ mod tests {
     #[test]
     fn plans_state_and_instruction_coverage() {
         let ir = IrRequest {
+            has_compaction_trigger: false,
             model: String::new(),
             instructions: None,
             messages: vec![
@@ -1404,6 +1409,7 @@ mod tests {
     /// Builds an empty prepared-request fixture pair.
     fn fixture_ir(messages: Vec<IrMessage>, state_items: Vec<StateItem>) -> IrRequest {
         IrRequest {
+            has_compaction_trigger: false,
             model: String::new(),
             instructions: Some(String::from("be terse")),
             messages,
@@ -1432,7 +1438,7 @@ mod tests {
         let _configuration = crate::test_support::install_global_configuration();
 
         // The checkpoint covers messages 0..2 and retains unit [1..2].
-        let checkpoint_messages = vec![text(IrRole::User, "old"), text(IrRole::User, "kept")];
+        let checkpoint_messages = [text(IrRole::User, "old"), text(IrRole::User, "kept")];
 
         let plan = GatewayCheckpointPlan {
             summary_input_messages: Vec::new(),
@@ -1533,7 +1539,9 @@ mod tests {
         let _configuration_guard = crate::test_support::configuration_lock();
         let _configuration = crate::test_support::install_global_configuration();
 
-        let window = super::responses_window_payload(vec![json!({"type": "compaction"})]);
+        let window = super::NativeReplayWindow::ResponsesWindow {
+            items: vec![json!({"type": "compaction"})],
+        };
 
         let (_envelope, carrier) = super::seal_envelope(
             EnvelopePayload::NativeWindow(super::NativeWindowPayload {
@@ -1597,9 +1605,9 @@ mod tests {
                                 crate::compaction::mechanism::Mechanism::MessagesOnDemandCompaction,
                             native_format: UpstreamFormat::AnthropicMessages,
                             required_prefix_identity: None,
-                            window: super::responses_window_payload(vec![json!({
-                                "type": "compaction",
-                            })]),
+                            window: super::NativeReplayWindow::ResponsesWindow {
+                                items: vec![json!({"type": "compaction"})],
+                            },
                         }),
                         ReplacementMode::CanonicalWindow,
                         None,

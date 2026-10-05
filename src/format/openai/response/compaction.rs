@@ -170,23 +170,6 @@ pub(crate) fn parse_compact_request(body: &[u8]) -> Result<ParsedRequest, Invali
     })
 }
 
-/// A `compaction` item as rendered outward and replayed inbound: the tag, the
-/// item identifier, the opaque state, and — on response items only, when
-/// known — the authoring provenance.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename = "compaction")]
-struct CompactionItemOut {
-    /// Gateway- or provider-minted item identifier.
-    id: String,
-
-    /// The opaque replay state.
-    encrypted_content: String,
-
-    /// Authoring provenance, carried only when known.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    created_by: Option<String>,
-}
-
 /// Accepted replay state, preserving an omitted wire ID instead of inventing one.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename = "compaction")]
@@ -223,32 +206,19 @@ pub(super) fn replayed_compaction_item_json(
     .expect("the accepted compaction item serializes")
 }
 
-/// Builds the JSON value of one `compaction` item in the official member
-/// order (`type`, `id`, `encrypted_content`, then `created_by` when present).
-///
-/// The item is a vendor-shaped fragment: its shape is the Responses protocol's,
-/// so the value is the wire form both the compacted response output and the
-/// replayed state item carry.
-///
-/// # Panics
-///
-/// Panics if the item fails to serialize, which cannot occur for a first-party
-/// serde type.
-pub(crate) fn compaction_item_json(
+/// Builds a concrete gateway-generated compaction item.
+pub(crate) fn compaction_item(
     id: Option<String>,
     encrypted_content: String,
     created_by: Option<String>,
-) -> Value {
-    #[expect(
-        clippy::expect_used,
-        reason = "a first-party rendered item serializes totally"
-    )]
-    serde_json::to_value(CompactionItemOut {
-        id: id.unwrap_or_else(|| format!("cmp_{}", ids::new_uuid())),
-        encrypted_content,
-        created_by,
-    })
-    .expect("a compaction item serializes")
+) -> crate::format::compaction_wire::Checkpoint {
+    crate::format::compaction_wire::Checkpoint::Responses(
+        crate::format::compaction_wire::ResponsesCheckpoint {
+            id: id.unwrap_or_else(|| format!("cmp_{}", ids::new_uuid())),
+            encrypted_content,
+            created_by,
+        },
+    )
 }
 
 /// Builds the JSON value of one replayed reasoning state item: the typed
@@ -293,7 +263,7 @@ pub(crate) struct CompactedResponseBody {
     created_at: i64,
 
     /// The canonical next window, in output order.
-    output: Vec<Value>,
+    output: Vec<crate::format::compaction_wire::Checkpoint>,
 
     /// Token accounting of the calls that produced the window.
     usage: CompactUsage,
@@ -350,7 +320,10 @@ impl CompactedResponseBody {
                 projector.gateway_artifact(artifact_id),
             ));
         }
-        for item in self.output.iter().rev() {
+        for checkpoint in self.output.iter().rev() {
+            let crate::format::compaction_wire::Checkpoint::Native(item) = checkpoint else {
+                continue;
+            };
             let Ok(artifact) = ReplayedArtifact::deserialize(item) else {
                 continue;
             };
@@ -369,7 +342,9 @@ impl CompactedResponseBody {
 
 /// Projects a newly sealed gateway checkpoint's actual completed Responses output. Callers
 /// must carry the sealer-proven identity separately; reflected upstream markers cannot use it.
-pub(crate) fn gateway_window_anchors(output: &[Value]) -> Vec<crate::affinity::Anchor> {
+pub(crate) fn gateway_window_anchors(
+    output: &[crate::format::compaction_wire::Checkpoint],
+) -> Vec<crate::affinity::Anchor> {
     completed_window_anchors(output, true)
 }
 
@@ -390,7 +365,7 @@ pub(super) fn native_artifact_anchor(
 
 /// Derives complete and latest-active history anchors without reconstructing response text.
 fn completed_window_anchors(
-    output: &[Value],
+    output: &[crate::format::compaction_wire::Checkpoint],
     has_gateway_provenance: bool,
 ) -> Vec<crate::affinity::Anchor> {
     let Some(window) = super::window_affinity::project(output, has_gateway_provenance, false)
@@ -514,7 +489,7 @@ pub(crate) fn render_compacted_response(native: CompactedResponseNative) -> Comp
             .unwrap_or_else(|| format!("resp_{}", ids::new_uuid())),
         object: CompactedResponseObject::Compaction,
         created_at: native.created_at.unwrap_or_else(unix_time::unix_now),
-        output: native.output,
+        output: native.output.into_iter().map(Into::into).collect(),
         usage: CompactUsage::from_upstream(native.usage.unwrap_or_default()),
         gateway_artifact_id: None,
     }
@@ -532,7 +507,7 @@ pub(crate) fn render_gateway_compacted_response(
         id: format!("resp_{}", ids::new_uuid()),
         object: CompactedResponseObject::Compaction,
         created_at: unix_time::unix_now(),
-        output: vec![compaction_item_json(None, carrier, None)],
+        output: vec![compaction_item(None, carrier, None)],
         usage: CompactUsage::from_ir(usage),
         gateway_artifact_id: Some(artifact_id),
     }
@@ -546,7 +521,7 @@ pub(crate) fn render_gateway_compacted_response(
 /// drift from the ordinary lifecycle's.
 pub(crate) fn render_trigger_stream_frames(
     model: String,
-    prefix_items: Vec<Value>,
+    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
     usage: IrUsage,
 ) -> Vec<String> {
     let mut renderer = SseRenderer::new(model).with_prefix_items(prefix_items);
@@ -578,7 +553,7 @@ mod tests {
     )]
 
     use super::{
-        compaction_item_json, parse_compact_request, render_compacted_response,
+        compaction_item, parse_compact_request, render_compacted_response,
         render_gateway_compacted_response, render_trigger_stream_frames,
     };
     use crate::{
@@ -774,7 +749,7 @@ mod tests {
         // Offsets: the reasoning item sat after one message, the two
         // compaction items after two.
         assert_eq!(parsed.ir.state_items[0].offset, 1);
-        assert_eq!(parsed.ir.state_items[0].is_gateway, false);
+        assert!(!parsed.ir.state_items[0].is_gateway);
         assert_eq!(parsed.ir.state_items[1].offset, 2);
         assert_eq!(parsed.ir.state_items[2].offset, 2);
 
@@ -828,7 +803,7 @@ mod tests {
 
         // The gateway carrier rides the state items flagged as gateway, so no
         // render ever forwards it as native state.
-        assert_eq!(parsed.ir.state_items[2].is_gateway, true);
+        assert!(parsed.ir.state_items[2].is_gateway);
     }
 
     /// A reasoning item without `encrypted_content` carries no replayable
@@ -860,22 +835,22 @@ mod tests {
     ///
     /// Panics if the built item diverges from the official member order.
     #[test]
-    fn compaction_item_json_renders_the_official_member_order() {
-        let plain = compaction_item_json(Some("cmp_1".to_string()), "state".to_string(), None);
+    fn compaction_item_renders_the_official_member_order() {
+        let plain = compaction_item(Some("cmp_1".to_string()), "state".to_string(), None);
 
         assert_eq!(
-            plain,
+            crate::format::aggregated_body_json(&plain),
             json!({"type": "compaction", "id": "cmp_1", "encrypted_content": "state"}),
         );
 
-        let attributed = compaction_item_json(
+        let attributed = compaction_item(
             Some("cmp_2".to_string()),
             "state".to_string(),
             Some("gateway".to_string()),
         );
 
         assert_eq!(
-            attributed,
+            crate::format::aggregated_body_json(&attributed),
             json!({
                 "type": "compaction",
                 "id": "cmp_2",
@@ -1017,7 +992,7 @@ mod tests {
 
         let frames = render_trigger_stream_frames(
             "m".to_string(),
-            vec![item.clone()],
+            vec![item.clone().into()],
             IrUsage {
                 input_tokens: 9,
                 output_tokens: 3,

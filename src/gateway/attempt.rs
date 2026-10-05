@@ -3,7 +3,7 @@
 use super::{Context, Error, IrEventStream, IrRequest, ModelRouting, execute};
 use crate::{
     accounting::ApiLogOutcome,
-    storage::api_logs::{ApiLogDraft, ApiLogStore, AttemptProgress, finalize_api_log},
+    storage::api_logs::{ApiLogDraft, ApiLogStore, AttemptProgress, spawn_api_log_finalization},
 };
 
 /// Exactly one owner of an attempt's draft until finalization or response-task transfer.
@@ -64,29 +64,19 @@ impl AccountAttempt {
     pub(crate) async fn finalize(self, outcome: ApiLogOutcome, http_status: Option<i64>) {
         let store = self.store.clone();
         let draft = self.transfer();
-        let task = tokio::spawn(async move {
-            finalize_api_log(store.as_ref(), &draft, outcome, http_status, None).await;
-        });
-        let _ = task.await;
+        if let Some(task) = spawn_api_log_finalization(store, draft, outcome, http_status, None) {
+            let _ = task.await;
+        }
     }
 }
 
 impl Drop for AccountAttempt {
     fn drop(&mut self) {
-        let Some(draft) = self.draft.take().filter(|draft| draft.started_at.is_some()) else {
+        let Some(draft) = self.draft.take() else {
             return;
         };
         let store = self.store.clone();
-        tokio::spawn(async move {
-            finalize_api_log(
-                store.as_ref(),
-                &draft,
-                ApiLogOutcome::ClientAborted,
-                None,
-                None,
-            )
-            .await;
-        });
+        spawn_api_log_finalization(store, draft, ApiLogOutcome::ClientAborted, None, None);
     }
 }
 

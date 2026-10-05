@@ -408,8 +408,6 @@ pub(crate) struct ModelRouting {
     pub(crate) model_route_id: i64,
     /// Public model name requested by the client, separate from physical inventory.
     pub(crate) public_id: String,
-    /// Pool selected by this route; direct routes have no pool.
-    pub(crate) provider_pool_id: Option<i64>,
 
     /// Owning provider.
     pub(crate) provider: Provider,

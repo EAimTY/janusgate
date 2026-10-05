@@ -87,7 +87,8 @@ pub(super) fn project_block(block: &OutBlock, projector: &mut Projector) -> bool
             project_redacted(projector, data);
         }
         OutBlock::Typed(_) => return false,
-        OutBlock::Verbatim(value) => {
+        OutBlock::Checkpoint(crate::format::compaction_wire::Checkpoint::Native(value))
+        | OutBlock::Verbatim(value) => {
             if super::compaction_affinity::is_native_no_op(value) {
                 return true;
             }
@@ -109,6 +110,7 @@ pub(super) fn project_block(block: &OutBlock, projector: &mut Projector) -> bool
                 Block::RedactedThinking { data } => project_redacted(projector, data),
             }
         }
+        OutBlock::Checkpoint(_) => return false,
     }
     true
 }

@@ -224,7 +224,6 @@ struct JsonSchema<'a> {
 
 /// Renders the upstream Chat Completions payload: the body only — the URL, the headers, and the
 /// streaming decision belong to the provider definition (README §5.2).
-#[must_use]
 pub(crate) fn render_request_body(
     ir: &IrRequest,
     is_streaming: bool,

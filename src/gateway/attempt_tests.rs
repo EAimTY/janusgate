@@ -17,7 +17,6 @@ fn routing(base: &str) -> ModelRouting {
     ModelRouting {
         model_route_id: 7,
         public_id: "public-model".into(),
-        provider_pool_id: None,
         provider,
         model: crate::provider::Model {
             id: 3,

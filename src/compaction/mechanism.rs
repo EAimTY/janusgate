@@ -84,15 +84,6 @@ pub(crate) enum MechanismSupport {
 }
 
 impl MechanismSupport {
-    /// The state's canonical storage and wire spelling.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Supported => "supported",
-            Self::Unsupported => "unsupported",
-            Self::Unknown => "unknown",
-        }
-    }
-
     /// Parses the canonical spelling.
     #[must_use]
     pub(crate) fn from_str(spelling: &str) -> Option<Self> {
@@ -103,26 +94,11 @@ impl MechanismSupport {
             _ => None,
         }
     }
-
-    /// Resolves a mechanism's effective support: the model's administrator
-    /// override, then the discovery-owned model fact, then the definition's
-    /// declaration; otherwise unknown.
-    ///
-    /// Each layer's absent fact is `None`; a present layer wins outright, so an
-    /// explicit `unknown` override suppresses a known discovered fact.
-    #[must_use]
-    pub(crate) fn resolve(
-        definition_default: Self,
-        model_base: Option<Self>,
-        model_override: Option<Self>,
-    ) -> Self {
-        model_override.or(model_base).unwrap_or(definition_default)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Mechanism, MechanismSupport};
+    use super::Mechanism;
 
     /// Pins the mechanism spellings against the [`Mechanism::ALL`] table.
     ///
@@ -136,48 +112,5 @@ mod tests {
         }
 
         assert_eq!(Mechanism::from_str("nonsense"), None);
-    }
-
-    /// Pins the support spellings and the resolution order: override, then
-    /// base, then the definition declaration, then unknown.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn support_resolution_order() {
-        for spelling in ["supported", "unsupported", "unknown"] {
-            let state = MechanismSupport::from_str(spelling);
-
-            assert_eq!(state.map(MechanismSupport::as_str), Some(spelling));
-        }
-
-        assert_eq!(MechanismSupport::from_str("nonsense"), None);
-
-        assert_eq!(
-            MechanismSupport::resolve(
-                MechanismSupport::Supported,
-                Some(MechanismSupport::Unsupported),
-                Some(MechanismSupport::Unknown),
-            ),
-            MechanismSupport::Unknown,
-            "an explicit unknown override suppresses both lower layers"
-        );
-        assert_eq!(
-            MechanismSupport::resolve(
-                MechanismSupport::Supported,
-                Some(MechanismSupport::Unsupported),
-                None,
-            ),
-            MechanismSupport::Unsupported,
-        );
-        assert_eq!(
-            MechanismSupport::resolve(MechanismSupport::Supported, None, None),
-            MechanismSupport::Supported,
-        );
-        assert_eq!(
-            MechanismSupport::resolve(MechanismSupport::Unknown, None, None),
-            MechanismSupport::Unknown,
-        );
     }
 }

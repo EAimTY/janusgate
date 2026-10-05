@@ -8,7 +8,6 @@ use crate::{
     sse, unix_time,
 };
 use serde::Serialize;
-use serde_json::Value;
 
 /// The aggregated, non-streaming Chat Completions response body.
 #[derive(Debug, Serialize)]
@@ -97,10 +96,10 @@ struct ResponseChoice {
 #[derive(Debug, Serialize)]
 struct ChoiceLogprobs {
     /// Log probabilities of the message content tokens.
-    content: Vec<Value>,
+    content: [(); 0],
 
     /// Log probabilities of the message refusal tokens.
-    refusal: Vec<Value>,
+    refusal: [(); 0],
 }
 
 /// The complete aggregated assistant message.
@@ -574,14 +573,13 @@ impl ClientSseRenderer for SseRenderer {
         };
         if let Some(projection) = self.projection.as_mut() {
             projection.observe(&frames);
-            if let IrEvent::ToolCallDone { index, .. } = event {
-                if let Some((_, outward_index)) = self
+            if let IrEvent::ToolCallDone { index, .. } = event
+                && let Some((_, outward_index)) = self
                     .outward_indexes
                     .iter()
                     .find(|(ir_index, _)| ir_index == index)
-                {
-                    projection.complete_call(*outward_index);
-                }
+            {
+                projection.complete_call(*outward_index);
             }
         }
         frames
@@ -652,6 +650,33 @@ pub(super) fn render_json_response(
         }],
         usage: TokenUsage::render(aggregation.usage.unwrap_or_default()),
     }
+}
+
+/// Projects the actual assistant message; reasoning_content is discarded by Chat replay.
+pub(super) fn project_json_response(
+    response: &ChatCompletionResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    for choice in &response.choices {
+        if let Some(text) = &choice.message.content {
+            projector.text(
+                crate::affinity::fingerprint::Role::Assistant,
+                text.as_bytes(),
+            );
+        }
+        for call in &choice.message.tool_calls {
+            if !crate::format::affinity::project_call(
+                projector,
+                &call.id,
+                &call.function.name,
+                &call.function.arguments,
+                call.thought_signature.as_deref(),
+            ) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1097,31 +1122,4 @@ mod tests {
             }))
         );
     }
-}
-
-/// Projects the actual assistant message; reasoning_content is discarded by Chat replay.
-pub(super) fn project_json_response(
-    response: &ChatCompletionResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    for choice in &response.choices {
-        if let Some(text) = &choice.message.content {
-            projector.text(
-                crate::affinity::fingerprint::Role::Assistant,
-                text.as_bytes(),
-            );
-        }
-        for call in &choice.message.tool_calls {
-            if !crate::format::affinity::project_call(
-                projector,
-                &call.id,
-                &call.function.name,
-                &call.function.arguments,
-                call.thought_signature.as_deref(),
-            ) {
-                return false;
-            }
-        }
-    }
-    true
 }

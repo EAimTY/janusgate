@@ -43,6 +43,7 @@ pub(crate) enum RouteOwner {
     Pool(i64),
 }
 
+#[cfg(test)]
 impl RouteOwner {
     /// Creates an explicit owner default with its typed identity.
     pub(crate) fn rule(self, access: AccessDecision) -> ApiKeyOwnerDefault {

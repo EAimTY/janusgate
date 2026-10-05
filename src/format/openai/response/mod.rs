@@ -22,7 +22,7 @@ mod window_affinity;
 
 pub(crate) use self::{
     compaction::{
-        CompactedResponseBody, compaction_item_json, gateway_window_anchors, parse_compact_request,
+        CompactedResponseBody, compaction_item, gateway_window_anchors, parse_compact_request,
         render_compacted_response, render_gateway_compacted_response, render_trigger_stream_frames,
     },
     upstream_parse::{
@@ -74,8 +74,8 @@ impl ClientFormat for Format {
     fn render_json_response_with_prefix(
         public_id: &str,
         aggregation: &IrAggregation,
-        prefix: &[serde_json::Value],
-        _iterations: &[serde_json::Value],
+        prefix: &[crate::format::compaction_wire::Checkpoint],
+        _iterations: &[crate::format::compaction_wire::UsageIteration],
     ) -> Self::JsonResponse {
         client_render::render_json_response_with_prefix_items(
             public_id,
@@ -87,7 +87,7 @@ impl ClientFormat for Format {
 
 /// Borrows one sealer-proven checkpoint window into its canonical active projection.
 pub(crate) fn gateway_checkpoint_projection(
-    items: &[serde_json::Value],
+    items: &[crate::format::compaction_wire::Checkpoint],
 ) -> Option<crate::affinity::fingerprint::Projector> {
     window_affinity::project(items, true, true)
 }

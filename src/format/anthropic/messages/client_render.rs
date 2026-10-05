@@ -76,7 +76,7 @@ struct ResponseUsage {
     /// compaction performed; omitted on every ordinary response, whose usage carries no
     /// iterations.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    iterations: Vec<Value>,
+    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 }
 
 /// The native output token breakdown.
@@ -135,7 +135,7 @@ impl ResponseUsage {
 #[derive(Debug, Clone)]
 pub(crate) struct CompactionOnlyUsage {
     /// Raw vendor iteration entries to render under `usage.iterations`, verbatim.
-    pub(crate) iterations: Vec<Value>,
+    pub(crate) iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 
     /// Top-level input tokens; zero for a compact-only reply per the protocol.
     pub(crate) input_tokens: u64,
@@ -150,45 +150,14 @@ pub(crate) struct CompactionOnlyUsage {
     pub(crate) cached_tokens: Option<u64>,
 }
 
-/// Builds the vendor-shaped `usage.iterations` entry of the message stage —
-/// the ordinary generation iteration whose usage is the top-level view — so a
-/// compact-and-continue lifecycle's rendered array stays authoritative for the
-/// billed totals (README §6.8).
-///
-/// # Panics
-///
-/// Panics if the entry fails to serialize, which cannot occur for the
-/// first-party iteration shape.
-pub(super) fn message_iteration_entry(usage: IrUsage) -> Value {
-    #[derive(Debug, Serialize)]
-    #[serde(tag = "type", rename = "message")]
-    struct MessageIterationOut {
-        /// Tokens consumed by the iteration input.
-        input_tokens: u64,
-
-        /// Tokens produced by the iteration output.
-        output_tokens: u64,
-
-        /// Input tokens written to the upstream prompt cache, when reported.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_creation_input_tokens: Option<u64>,
-
-        /// Input tokens served from the upstream prompt cache, when reported.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_read_input_tokens: Option<u64>,
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "a first-party rendered iteration serializes totally"
-    )]
-    serde_json::to_value(&MessageIterationOut {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_creation_input_tokens: usage.cache_write_tokens,
-        cache_read_input_tokens: usage.cached_tokens,
-    })
-    .expect("a message iteration serializes")
+/// Builds the concrete iteration report for an actual ordinary generation dispatch.
+pub(super) fn message_iteration_entry(
+    usage: IrUsage,
+) -> crate::format::compaction_wire::UsageIteration {
+    crate::format::compaction_wire::UsageIteration::gateway(
+        crate::format::compaction_wire::SamplingKind::Message,
+        usage,
+    )
 }
 
 /// Renders a compaction-only Messages response: the content carries exactly the given
@@ -198,14 +167,14 @@ pub(super) fn message_iteration_entry(usage: IrUsage) -> Value {
 /// compact-only lifecycle's aggregated body.
 pub(crate) fn render_compaction_only_response(
     public_id: &str,
-    block: Value,
+    block: crate::format::compaction_wire::Checkpoint,
     usage: &CompactionOnlyUsage,
 ) -> MessagesResponse {
     MessagesResponse {
         id: format!("msg_{}", ids::new_uuid()),
         kind: "message",
         role: "assistant",
-        content: vec![OutBlock::Verbatim(block)],
+        content: vec![OutBlock::Checkpoint(block)],
         model: public_id.to_string(),
         stop_reason: "compaction",
         stop_sequence: None,
@@ -291,8 +260,8 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 pub(super) fn render_json_response_with_prefix_blocks(
     model: &str,
     aggregation: &IrAggregation,
-    blocks: &[Value],
-    iterations: &[Value],
+    blocks: &[crate::format::compaction_wire::Checkpoint],
+    iterations: &[crate::format::compaction_wire::UsageIteration],
 ) -> MessagesResponse {
     let mut response = render_json_response(model, aggregation);
     if blocks.is_empty() && iterations.is_empty() {
@@ -301,7 +270,7 @@ pub(super) fn render_json_response_with_prefix_blocks(
 
     let mut content: Vec<OutBlock> = blocks
         .iter()
-        .map(|block| OutBlock::Verbatim(block.clone()))
+        .map(|block| OutBlock::Checkpoint(block.clone()))
         .collect();
 
     content.append(&mut response.content);
@@ -346,32 +315,73 @@ struct CompactionContentProbe {
 
 /// Reads the string content of a vendor compaction block: [`None`] when the block carries no
 /// string `content` member — a null-content no-op, or a shape without the member at all.
-fn compaction_block_content(block: &Value) -> Option<String> {
-    CompactionContentProbe::deserialize(block)
-        .ok()
-        .and_then(|probe| probe.content)
+fn compaction_block_content(block: &crate::format::compaction_wire::Checkpoint) -> Option<String> {
+    use crate::format::compaction_wire::Checkpoint;
+    match block {
+        Checkpoint::Messages(block) => Some(block.content.clone()),
+        Checkpoint::Native(value) => CompactionContentProbe::deserialize(value)
+            .ok()
+            .and_then(|probe| probe.content),
+        Checkpoint::Responses(_) => None,
+    }
 }
 
-/// Keeps all native block metadata while moving the readable summary into the threshold delta.
+/// A compaction opening block, with a null-content threshold form when the summary follows.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum CompactionStart {
+    /// An on-demand or no-op block delivered complete at the start.
+    Complete(crate::format::compaction_wire::Checkpoint),
+    /// Concrete gateway threshold state.
+    Gateway(ThresholdStart),
+    /// Native metadata that cannot be discarded while replacing its readable content.
+    Native(Value),
+}
+
+/// The concrete gateway threshold block opening, before its complete summary delta.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "compaction")]
+struct ThresholdStart {
+    /// Always null: the subsequent delta carries the summary once.
+    content: Option<String>,
+    /// Original authenticated gateway carrier.
+    signature: String,
+}
+
+/// Preserves opaque native metadata while moving summary text to the threshold delta.
 ///
 /// # Panics
 ///
-/// Panics if a concrete vendor fragment cannot serialize.
-fn threshold_block_start(block: &Value) -> Value {
-    #[derive(Serialize)]
-    struct ThresholdStart<'a> {
-        /// Foreign metadata including signatures and tool changes.
-        #[serde(flatten)]
-        original: &'a Value,
-        /// Threshold summaries are delivered by the subsequent delta.
-        content: Option<&'static str>,
+/// Panics if a foreign JSON fragment fails to serialize, which cannot occur.
+fn threshold_block_start(block: &crate::format::compaction_wire::Checkpoint) -> CompactionStart {
+    use crate::format::compaction_wire::Checkpoint;
+    match block {
+        Checkpoint::Messages(block) => CompactionStart::Gateway(ThresholdStart {
+            content: None,
+            signature: block.signature.clone(),
+        }),
+        Checkpoint::Native(value) => {
+            #[derive(Serialize)]
+            struct NativeStart<'a> {
+                /// Complete producer-owned metadata, with the content replaced below.
+                #[serde(flatten)]
+                original: &'a Value,
+                /// Summary is delivered by a separate compaction delta.
+                content: Option<String>,
+            }
+            #[expect(
+                clippy::expect_used,
+                reason = "a foreign JSON fragment serializes totally"
+            )]
+            let start = serde_json::to_value(NativeStart {
+                original: value,
+                content: None,
+            })
+            .expect("native block serializes");
+            CompactionStart::Native(start)
+        }
+        Checkpoint::Responses(_) => CompactionStart::Complete(block.clone()),
     }
-    #[expect(clippy::expect_used, reason = "a concrete vendor fragment serializes")]
-    serde_json::to_value(ThresholdStart {
-        original: block,
-        content: None,
-    })
-    .expect("the block start serializes")
 }
 
 /// Streaming client response renderer producing Messages SSE frames.
@@ -413,13 +423,13 @@ pub(crate) struct SseRenderer {
     /// `content_block_start`, one full-summary `compaction_delta` per block with string
     /// content, then `content_block_stop` — before any ordinary block. Drained right after the
     /// `message_start` head resolves.
-    pending_prefix: Vec<Value>,
+    pending_prefix: Vec<crate::format::compaction_wire::Checkpoint>,
 
     /// Whether summary content belongs in a threshold compaction delta.
     is_threshold_compaction: bool,
 
     /// Native cumulative iteration reports, separate from gateway prefix iterations.
-    native_iterations: Vec<Value>,
+    native_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 
     /// Stop reason forced onto the terminal `message_delta`, set for a compaction lifecycle
     /// whose outcome is the compaction stop (`"compaction"`); the finish-derived reason stands
@@ -435,7 +445,7 @@ pub(crate) struct SseRenderer {
 
     /// The vendor-shaped iteration entries of a compaction lifecycle, rendered
     /// under the terminal delta's `usage.iterations` (README §6.8).
-    compaction_iterations: Vec<Value>,
+    compaction_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 
     /// Whether the renderer carries a compaction lifecycle — a prefix, a
     /// forced stop, or carried iteration entries — whose terminal delta closes
@@ -493,7 +503,7 @@ struct StreamMessageHead {
     role: &'static str,
 
     /// Always empty: blocks stream in after the start.
-    content: Vec<Value>,
+    content: [(); 0],
 
     /// Public model name echoed to the client.
     model: String,
@@ -550,7 +560,7 @@ enum StartBlockOut {
         name: String,
 
         /// Always empty at the start.
-        input: Value,
+        input: crate::format::EmptyObject,
     },
 }
 
@@ -580,7 +590,7 @@ struct VerbatimBlockStartPayload {
     index: usize,
 
     /// The whole vendor block, verbatim.
-    content_block: Value,
+    content_block: CompactionStart,
 }
 
 /// One streamed content delta.
@@ -722,7 +732,10 @@ impl SseRenderer {
     /// terminal `message_delta`'s `usage.iterations` (README §6.8) and
     /// marks the stream a compaction lifecycle.
     #[must_use]
-    pub(crate) fn with_usage_iterations(mut self, iterations: Vec<Value>) -> Self {
+    pub(crate) fn with_usage_iterations(
+        mut self,
+        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    ) -> Self {
         self.is_compaction_lifecycle = self.is_compaction_lifecycle || !iterations.is_empty();
         self.compaction_iterations = iterations;
 
@@ -737,7 +750,7 @@ impl SseRenderer {
     /// stop reason (the `"compaction"` pause/compact-only outcome).
     pub(crate) fn with_compaction_prefix(
         model: String,
-        blocks: Vec<Value>,
+        blocks: Vec<crate::format::compaction_wire::Checkpoint>,
         forced_stop_reason: Option<String>,
     ) -> Self {
         Self {
@@ -787,7 +800,7 @@ impl SseRenderer {
                     {
                         threshold_block_start(block)
                     } else {
-                        block.clone()
+                        CompactionStart::Complete(block.clone())
                     },
                 },
             ));
@@ -826,7 +839,7 @@ impl SseRenderer {
         // State is a new content block. Closing the prior text/reasoning block keeps subsequent
         // answer deltas at positions after this checkpoint, exactly as ordinary replay sees them.
         let mut frames = self.close_open_block();
-        self.pending_prefix.push(payload.clone());
+        self.pending_prefix.push(payload.clone().into());
         frames.extend(self.drain_compaction_prefix());
         frames
     }
@@ -943,7 +956,7 @@ impl SseRenderer {
                     id: self.id.clone(),
                     kind: "message",
                     role: "assistant",
-                    content: Vec::new(),
+                    content: [],
                     model: self.model.clone(),
                     stop_reason: None,
                     stop_sequence: None,
@@ -1202,7 +1215,7 @@ impl SseRenderer {
                         content_block: StartBlockOut::ToolUse {
                             id: call_id.clone(),
                             name: name.clone(),
-                            input: Value::Object(Default::default()),
+                            input: crate::format::EmptyObject {},
                         },
                     },
                 ));
@@ -1365,6 +1378,47 @@ impl ClientSseRenderer for SseRenderer {
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         self.render_error_frame(error)
     }
+}
+
+/// Projects actual output blocks through the same accepted assistant-block conversion as replay.
+pub(super) fn project_json_response(
+    response: &MessagesResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+) -> bool {
+    project_json_after_prefix(response, projector, 0)
+}
+
+/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
+pub(super) fn project_json_after_prefix(
+    response: &MessagesResponse,
+    projector: &mut crate::affinity::fingerprint::Projector,
+    prefix_count: usize,
+) -> bool {
+    response
+        .content
+        .iter()
+        .skip(prefix_count)
+        .all(|block| super::json_affinity::project_block(block, projector))
+}
+
+/// Identifies actual replayable native blocks without inferring gateway provenance or origin.
+pub(super) fn completed_json_artifacts(
+    response: &MessagesResponse,
+) -> Vec<crate::affinity::Anchor> {
+    response
+        .content
+        .iter()
+        .flat_map(|block| match block {
+            OutBlock::Verbatim(value) => {
+                super::compaction_affinity::completed_projection(value, None)
+                    .map_or_else(Vec::new, |(_, anchors)| anchors)
+            }
+            OutBlock::Checkpoint(checkpoint) => {
+                super::compaction_affinity::completed_anchors(checkpoint, None)
+            }
+            OutBlock::Typed(_) => Vec::new(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1887,13 +1941,16 @@ mod tests {
         });
 
         let usage = CompactionOnlyUsage {
-            iterations: vec![json!({
-                "type": "compaction",
-                "input_tokens": 180_000,
-                "output_tokens": 3_500,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            })],
+            iterations: vec![
+                json!({
+                    "type": "compaction",
+                    "input_tokens": 180_000,
+                    "output_tokens": 3_500,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                })
+                .into(),
+            ],
             input_tokens: 0,
             output_tokens: 0,
             cache_write_tokens: None,
@@ -1902,7 +1959,7 @@ mod tests {
 
         let body = aggregated_body_json(&render_compaction_only_response(
             "claude-test",
-            block.clone(),
+            block.clone().into(),
             &usage,
         ));
 
@@ -1945,7 +2002,7 @@ mod tests {
 
         let mut renderer = SseRenderer::with_compaction_prefix(
             "claude-test".to_string(),
-            vec![block.clone()],
+            vec![block.clone().into()],
             Some("compaction".to_string()),
         );
 
@@ -2026,8 +2083,11 @@ mod tests {
     fn streams_the_prefix_without_a_forced_stop_reason() {
         let block = json!({"type": "compaction"});
 
-        let mut renderer =
-            SseRenderer::with_compaction_prefix("claude-test".to_string(), vec![block], None);
+        let mut renderer = SseRenderer::with_compaction_prefix(
+            "claude-test".to_string(),
+            vec![block.into()],
+            None,
+        );
 
         assert!(
             renderer
@@ -2065,39 +2125,4 @@ mod tests {
             &json!({"stop_reason": "end_turn", "stop_sequence": Value::Null}),
         );
     }
-}
-
-/// Projects actual output blocks through the same accepted assistant-block conversion as replay.
-pub(super) fn project_json_response(
-    response: &MessagesResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    project_json_after_prefix(response, projector, 0)
-}
-
-/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
-pub(super) fn project_json_after_prefix(
-    response: &MessagesResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-    prefix_count: usize,
-) -> bool {
-    response
-        .content
-        .iter()
-        .skip(prefix_count)
-        .all(|block| super::json_affinity::project_block(block, projector))
-}
-
-/// Identifies actual replayable native blocks without inferring gateway provenance or origin.
-pub(super) fn completed_json_artifacts(
-    response: &MessagesResponse,
-) -> Vec<crate::affinity::Anchor> {
-    response
-        .content
-        .iter()
-        .flat_map(|block| match block {
-            OutBlock::Verbatim(value) => super::compaction_affinity::completed_anchors(value, None),
-            OutBlock::Typed(_) => Vec::new(),
-        })
-        .collect()
 }

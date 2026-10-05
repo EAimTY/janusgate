@@ -31,6 +31,7 @@ use crate::{
 };
 use log::debug;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -279,6 +280,16 @@ fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
 /// form encoding, the one addressed member renders verbatim — it is already text. An absent or
 /// `null` payload reads as no failure.
 fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, Error> {
+    /// Known display fields inside an otherwise arbitrary upstream failure fragment.
+    #[derive(Serialize, Deserialize)]
+    struct ErrorDescription {
+        /// Machine status, used only when the upstream supplied text.
+        #[serde(default, deserialize_with = "crate::serde_helpers::string_or_none")]
+        status: Option<String>,
+        /// Human-readable detail, used only when the upstream supplied text.
+        #[serde(default, deserialize_with = "crate::serde_helpers::string_or_none")]
+        message: Option<String>,
+    }
     // The empty path is the configured no-error-inspection: it addresses nothing by design.
     if path.0.is_empty() {
         return Ok(None);
@@ -297,20 +308,15 @@ fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, E
                 return Ok(None);
             }
 
-            Some(match json {
-                serde_json::Value::Object(object) => {
-                    let status = object.get("status").and_then(serde_json::Value::as_str);
-                    let message = object.get("message").and_then(serde_json::Value::as_str);
-
-                    match (status, message) {
-                        (Some(status), Some(message)) => format!("{status}: {message}"),
-                        (Some(status), None) => status.to_string(),
-                        (None, Some(message)) => message.to_string(),
-                        (None, None) => json.to_string(),
-                    }
-                }
-
-                other => other.to_string(),
+            let description = ErrorDescription::deserialize(json).ok();
+            let (status, message) = description
+                .map(|description| (description.status, description.message))
+                .unwrap_or_default();
+            Some(match (status, message) {
+                (Some(status), Some(message)) => format!("{status}: {message}"),
+                (Some(status), None) => status,
+                (None, Some(message)) => message,
+                (None, None) => json.to_string(),
             })
         }
     })

@@ -180,10 +180,33 @@ struct Tagged<'a, T> {
     kind: &'static str,
 }
 
+/// Borrows a concrete gateway carrier directly or deserializes a producer-owned item.
+fn borrow_item(
+    value: &crate::format::compaction_wire::Checkpoint,
+) -> Result<Item<'_>, serde_json::Error> {
+    use crate::format::compaction_wire::Checkpoint;
+    match value {
+        Checkpoint::Responses(item) => Ok(Item::Compaction(Compaction {
+            id: OptionalText::Present(Some(&item.id)),
+            encrypted_content: &item.encrypted_content,
+            created_by: item
+                .created_by
+                .as_deref()
+                .map_or(OptionalText::Missing, |text| {
+                    OptionalText::Present(Some(text))
+                }),
+        })),
+        Checkpoint::Native(value) => Item::deserialize(value),
+        Checkpoint::Messages(_) => Err(<serde_json::Error as serde::de::Error>::custom(
+            "Messages checkpoint in a Responses window",
+        )),
+    }
+}
+
 /// Projects only a completely replayable actual output window, starting a new history root
 /// independently of the covered request. A gateway marker requires our sealer-proven sidecar.
 pub(super) fn project(
-    output: &[Value],
+    output: &[crate::format::compaction_wire::Checkpoint],
     has_gateway_provenance: bool,
     should_start_at_boundary: bool,
 ) -> Option<Projector> {
@@ -191,12 +214,12 @@ pub(super) fn project(
     let first_item = if should_start_at_boundary {
         output
             .iter()
-            .rposition(|value| matches!(Item::deserialize(value), Ok(Item::Compaction(_))))?
+            .rposition(|value| matches!(borrow_item(value), Ok(Item::Compaction(_))))?
     } else {
         0
     };
     for value in output.iter().skip(first_item) {
-        let item = Item::deserialize(value).ok()?;
+        let item = borrow_item(value).ok()?;
         match item {
             Item::Message { role, content, .. } => {
                 let role = match role {

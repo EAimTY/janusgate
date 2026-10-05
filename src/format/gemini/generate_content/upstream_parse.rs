@@ -347,8 +347,8 @@ impl UpstreamEventParser for UpstreamParser {
     /// # Errors
     ///
     /// Returns [`PayloadError`] for upstream error objects and malformed bodies.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let body = format::parse_body::<UpstreamBody>(&value)?;
+    fn parse_json_response(&mut self, body: &[u8]) -> Result<Vec<IrEvent>, PayloadError> {
+        let body = format::parse_body::<UpstreamBody>(body)?;
 
         self.ingest_response(body)
     }
@@ -461,7 +461,7 @@ mod tests {
             reason = "the flagged body is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect_err("a malformed function call turn must fail");
 
         assert_eq!(
@@ -519,7 +519,7 @@ mod tests {
             reason = "the signed thinking part is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("a signed thinking part parses");
 
         let delta_position = events
@@ -571,7 +571,7 @@ mod tests {
             reason = "the unsigned thinking part is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(unsigned)
+            .parse_json_response(&crate::format::test_json_body(&(unsigned)))
             .expect("an unsigned thinking part parses");
 
         assert!(
@@ -609,7 +609,7 @@ mod tests {
             reason = "the MAX_TOKENS turn is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("a MAX_TOKENS turn parses");
 
         assert!(events.contains(&IrEvent::finish(IrFinishReason::Length)));
@@ -635,7 +635,7 @@ mod tests {
             reason = "the prompt-blocked body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body.clone())
+            .parse_json_response(&crate::format::test_json_body(&(body.clone())))
             .expect("a prompt-blocked body parses");
 
         // The verbatim upstream block reason rides the finish so the native render surface
@@ -692,7 +692,7 @@ mod tests {
             reason = "the LANGUAGE-flagged body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body.clone())
+            .parse_json_response(&crate::format::test_json_body(&(body.clone())))
             .expect("a LANGUAGE-flagged body parses");
 
         assert!(events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
@@ -747,7 +747,7 @@ mod tests {
                 reason = "the flagged body is constructed to parse"
             )]
             let events = parser
-                .parse_json_response(body.clone())
+                .parse_json_response(&crate::format::test_json_body(&(body.clone())))
                 .expect("a flagged body parses");
 
             assert!(events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
@@ -797,7 +797,7 @@ mod tests {
             reason = "the flagged body is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect_err("an unexpected tool call turn must fail");
 
         assert_eq!(
@@ -856,7 +856,7 @@ mod tests {
             reason = "the flagged body is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect_err("a too-many-tool-calls turn must fail");
 
         assert_eq!(
@@ -907,7 +907,7 @@ mod tests {
             reason = "the unknown-reason body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body.clone())
+            .parse_json_response(&crate::format::test_json_body(&(body.clone())))
             .expect("an unknown finish reason parses");
 
         assert!(events.contains(&IrEvent::finish(IrFinishReason::Stop)));
@@ -955,7 +955,7 @@ mod tests {
             reason = "the finishing candidate is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("a finishing candidate parses");
 
         assert!(events.contains(&IrEvent::Finish {
@@ -996,7 +996,7 @@ mod tests {
             reason = "the usage-bearing body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("a usage-bearing body parses");
 
         let usage = events.iter().find_map(|event| match event {
@@ -1037,7 +1037,7 @@ mod tests {
             reason = "the embedded error object is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect_err("an embedded error object must fail");
 
         assert_eq!(
@@ -1054,7 +1054,7 @@ mod tests {
             reason = "the non-object error value is constructed to be rejected"
         )]
         let error = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect_err("a non-object error value must fail");
 
         assert_eq!(error.to_string(), "quota exhausted");

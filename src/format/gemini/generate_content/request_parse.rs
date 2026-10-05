@@ -371,6 +371,7 @@ pub(super) fn parse_request(
     Ok(ParsedRequest {
         affinity,
         ir: IrRequest {
+            has_compaction_trigger: false,
             state_items: Vec::new(),
             model: public_id,
             instructions,

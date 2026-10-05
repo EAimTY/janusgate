@@ -84,8 +84,8 @@ impl ClientFormat for Format {
     fn render_json_response_with_prefix(
         public_id: &str,
         aggregation: &IrAggregation,
-        prefix: &[serde_json::Value],
-        iterations: &[serde_json::Value],
+        prefix: &[crate::format::compaction_wire::Checkpoint],
+        iterations: &[crate::format::compaction_wire::UsageIteration],
     ) -> Self::JsonResponse {
         client_render::render_json_response_with_prefix_blocks(
             public_id,
@@ -107,6 +107,9 @@ impl ClientFormat for Format {
 enum OutBlock {
     /// A block the gateway constructed from IR parts.
     Typed(TypedBlock),
+
+    /// A concrete gateway checkpoint or an explicitly opaque native checkpoint.
+    Checkpoint(crate::format::compaction_wire::Checkpoint),
 
     /// A same-family block replayed verbatim from its stored opaque payload: the fragment's
     /// shape is the family's to define, so it travels as a [`Value`].
@@ -243,6 +246,9 @@ fn is_anthropic_block(opaque: &Value) -> bool {
     }
 }
 
+/// Digest-only actual checkpoint state beside its completed artifact/window anchors.
+pub(crate) use compaction_affinity::checkpoint_projection as completed_compaction_projection;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +303,3 @@ mod tests {
         })));
     }
 }
-
-/// Digest-only actual checkpoint state beside its completed artifact/window anchors.
-pub(crate) use compaction_affinity::completed_projection as completed_compaction_projection;

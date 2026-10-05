@@ -18,8 +18,7 @@
 use crate::{
     provider::{Error as ProviderError, definition::ValidationError},
     storage::{
-        Error as StorageError,
-        api_keys::{api_key_not_found_message, api_key_taken_message},
+        Error as StorageError, api_keys::api_key_not_found_message,
         provider_definition_not_found_message, provider_name_taken_message,
         provider_not_found_message,
     },
@@ -330,13 +329,6 @@ pub(super) enum Error {
         id: i64,
     },
 
-    /// A creation or rewrite names an API key secret another key already holds. The secret itself
-    /// is never named: it is a bearer credential and must stay out of rendered bodies and log
-    /// records. The display renders through [`api_key_taken_message`], the single home it shares
-    /// with the storage rejection the checked rewrite constructs, so both 409s read identically.
-    #[error("{}", api_key_taken_message())]
-    ApiKeyTaken,
-
     /// The completion's state token is unknown, expired, or already consumed.
     #[error("OAuth state is unknown, expired, or already consumed")]
     UnknownOauthState,
@@ -458,8 +450,7 @@ impl Error {
 
             Self::StaleDefinitionVersion { .. }
             | Self::DefinitionNameTaken { .. }
-            | Self::ProviderNameTaken { .. }
-            | Self::ApiKeyTaken => ErrorCode::Conflict,
+            | Self::ProviderNameTaken { .. } => ErrorCode::Conflict,
 
             Self::QuotaExtraction(_)
             | Self::UpstreamReportedNoModels
@@ -711,7 +702,9 @@ mod tests {
 
         // The taken-key conflict names no secret: the value is a bearer credential and must never
         // reach a rendered body.
-        let body = ErrorResponse::from(Error::ApiKeyTaken);
+        let body = ErrorResponse::from(Error::from(StorageError::Conflict {
+            message: crate::storage::api_keys::api_key_taken_message(),
+        }));
 
         #[expect(clippy::expect_used, reason = "the error body always serializes")]
         let rendered = serde_json::to_string(&body).expect("the error body serializes");
@@ -825,7 +818,12 @@ mod tests {
                 ErrorCode::NotFound,
             ),
             (Error::ApiKeyNotFound { id: 7 }, ErrorCode::NotFound),
-            (Error::ApiKeyTaken, ErrorCode::Conflict),
+            (
+                Error::from(StorageError::Conflict {
+                    message: crate::storage::api_keys::api_key_taken_message(),
+                }),
+                ErrorCode::Conflict,
+            ),
             (Error::UnknownOauthState, ErrorCode::NotFound),
             (Error::MalformedAuthorizationCode, ErrorCode::InvalidRequest),
             (
@@ -904,7 +902,12 @@ mod tests {
                 true,
             ),
             (Error::ApiKeyNotFound { id: 7 }, true),
-            (Error::ApiKeyTaken, true),
+            (
+                Error::from(StorageError::Conflict {
+                    message: crate::storage::api_keys::api_key_taken_message(),
+                }),
+                true,
+            ),
             (
                 Error::MethodNotAllowed {
                     method: Method::PATCH,

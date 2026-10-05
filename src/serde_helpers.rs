@@ -20,6 +20,31 @@ use std::{
     marker::PhantomData,
 };
 
+/// Reads a foreign field only when it carries a string, consuming every other JSON shape.
+/// This is for tolerant upstream probes, never for authored configuration or client contracts.
+///
+/// # Errors
+///
+/// Returns the deserializer's error for malformed input.
+pub(crate) fn string_or_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    /// A probe consumes uninterpreted external values without constructing arbitrary JSON.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Field {
+        /// The string representation the caller actually consumes.
+        Text(String),
+        /// Every other representation, discarded after complete decoding.
+        Ignored(serde::de::IgnoredAny),
+    }
+    Ok(match Field::deserialize(deserializer)? {
+        Field::Text(text) => Some(text),
+        Field::Ignored(_) => None,
+    })
+}
+
 /// A required, nullable wire field (README §7.0 rule 2): its value may be `null`, mirroring a
 /// nullable storage column exactly, and the TypeScript bindings render the key as required (`T |
 /// null`). A field of this type carries `#[ts(type = "<T's TypeScript spelling> | null")]`, because

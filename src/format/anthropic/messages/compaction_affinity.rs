@@ -42,12 +42,32 @@ struct Block<'a> {
 
 /// Derives artifact and returned-state history from the exact block rendered outward. A gateway
 /// identity must come from the sealer; reflected signatures cannot invent that provenance.
-///
-/// # Panics
-///
-/// Panics if a sealer-proven gateway block lacks the signature its builder always supplies.
-pub(crate) fn completed_anchors(block: &Value, artifact_id: Option<&str>) -> Vec<Anchor> {
-    completed_projection(block, artifact_id).map_or_else(Vec::new, |(_, anchors)| anchors)
+pub(crate) fn completed_anchors(
+    block: &crate::format::compaction_wire::Checkpoint,
+    artifact_id: Option<&str>,
+) -> Vec<Anchor> {
+    checkpoint_projection(block, artifact_id).map_or_else(Vec::new, |(_, anchors)| anchors)
+}
+
+/// Projects a generated carrier without serializing it back into a dynamic JSON document.
+pub(crate) fn checkpoint_projection(
+    checkpoint: &crate::format::compaction_wire::Checkpoint,
+    artifact_id: Option<&str>,
+) -> Option<(Projector, Vec<Anchor>)> {
+    match checkpoint {
+        crate::format::compaction_wire::Checkpoint::Messages(block) => {
+            let artifact_id = artifact_id?;
+            let mut projector = Projector::new();
+            projector.gateway_state(StateFamily::Messages, &block.signature);
+            let mut anchors = projector.completed_anchors();
+            anchors.push(Anchor::Artifact(projector.gateway_artifact(artifact_id)));
+            Some((projector, anchors))
+        }
+        crate::format::compaction_wire::Checkpoint::Native(value) => {
+            completed_projection(value, artifact_id)
+        }
+        crate::format::compaction_wire::Checkpoint::Responses(_) => None,
+    }
 }
 
 /// Prepares digest-only actual block state and anchors for a checkpoint followed by an answer.

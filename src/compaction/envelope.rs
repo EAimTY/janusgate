@@ -221,12 +221,6 @@ impl EnvelopeV1 {
             visible_content_digest,
         }
     }
-
-    /// Whether the envelope carries a gateway summary payload.
-    #[must_use]
-    pub(crate) const fn is_gateway_summary(&self) -> bool {
-        matches!(self.payload, EnvelopePayload::GatewaySummary(_))
-    }
 }
 
 /// Builds the user-role message the gateway summary's readable text restores
@@ -326,7 +320,10 @@ mod tests {
         let decoded: EnvelopeV1 = serde_json::from_str(&encoded).expect("decodes");
 
         assert_eq!(decoded, envelope);
-        assert!(decoded.is_gateway_summary());
+        assert!(matches!(
+            decoded.payload,
+            EnvelopePayload::GatewaySummary(_)
+        ));
         assert_eq!(decoded.version, EnvelopeV1::VERSION);
     }
 

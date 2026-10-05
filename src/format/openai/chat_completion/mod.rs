@@ -50,8 +50,8 @@ impl ClientFormat for Format {
     fn render_json_response_with_prefix(
         _public_id: &str,
         aggregation: &IrAggregation,
-        _prefix: &[serde_json::Value],
-        _iterations: &[serde_json::Value],
+        _prefix: &[crate::format::compaction_wire::Checkpoint],
+        _iterations: &[crate::format::compaction_wire::UsageIteration],
     ) -> Self::JsonResponse {
         // This surface has no compaction channel; its callers can never
         // produce a checkpoint prefix, so the ordinary rendering stands.

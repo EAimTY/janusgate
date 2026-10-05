@@ -711,19 +711,14 @@ struct CompactionLogGuard {
 
 impl Drop for CompactionLogGuard {
     fn drop(&mut self) {
-        if !self.has_transferred && self.draft.started_at.is_some() {
-            let draft = self.draft.clone();
-            let store = self.store.clone();
-            tokio::spawn(async move {
-                api_logs::finalize_api_log(
-                    store.as_ref(),
-                    &draft,
-                    ApiLogOutcome::ClientAborted,
-                    None,
-                    None,
-                )
-                .await;
-            });
+        if !self.has_transferred {
+            api_logs::spawn_api_log_finalization(
+                self.store.clone(),
+                self.draft.clone(),
+                ApiLogOutcome::ClientAborted,
+                None,
+                None,
+            );
         }
     }
 }
@@ -731,12 +726,15 @@ impl Drop for CompactionLogGuard {
 /// Finalizes a compaction error independently of a canceled handler.
 async fn finalize_compaction_failure(context: &Context, log: &ApiLogDraft, error: &Error) {
     let (outcome, status) = error.accounting();
-    let draft = log.clone();
-    let store = context.api_log_store.clone();
-    let task = tokio::spawn(async move {
-        api_logs::finalize_api_log(store.as_ref(), &draft, outcome, Some(status), None).await;
-    });
-    let _ = task.await;
+    if let Some(task) = api_logs::spawn_api_log_finalization(
+        context.api_log_store.clone(),
+        log.clone(),
+        outcome,
+        Some(status),
+        None,
+    ) {
+        let _ = task.await;
+    }
 }
 
 /// Coordinates compaction accounting until the response takes ownership of it.
@@ -1221,9 +1219,9 @@ async fn checkpoint_completion<TFormat>(
     is_streaming: bool,
     should_include_usage: bool,
     public_id: String,
-    prefix_items: Vec<serde_json::Value>,
-    prefix_blocks: Vec<serde_json::Value>,
-    iterations: Vec<serde_json::Value>,
+    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
+    prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
+    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
     overlay_headers: Vec<crate::provider::definition::template::ParamRow>,
     has_transferred: &mut bool,
     selection: &mut gateway::CompactionSelection,
@@ -1318,7 +1316,7 @@ where
 fn openai_sse_renderer_with_items(
     should_include_usage: bool,
     public_id: String,
-    prefix_items: Vec<serde_json::Value>,
+    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
 ) -> Box<dyn ClientSseRenderer + Send> {
     let _ = should_include_usage;
 
@@ -1332,8 +1330,8 @@ fn openai_sse_renderer_with_items(
 /// the lifecycle's iteration entries.
 fn anthropic_sse_renderer_with_blocks(
     public_id: String,
-    prefix_blocks: Vec<serde_json::Value>,
-    iterations: Vec<serde_json::Value>,
+    prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
+    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 ) -> Box<dyn ClientSseRenderer + Send> {
     Box::new(
         crate::format::anthropic::messages::SseRenderer::with_compaction_prefix(
@@ -1362,18 +1360,13 @@ fn finalize_buffered<T: Serialize>(context: &Context, log: &ApiLogDraft, body: &
 
     let response = json_response(axum::http::StatusCode::OK, body);
 
-    let log = log.clone();
-
-    tokio::spawn(async move {
-        api_logs::finalize_api_log(
-            store.as_ref(),
-            &log,
-            ApiLogOutcome::Completed,
-            Some(i64::from(axum::http::StatusCode::OK.as_u16())),
-            None,
-        )
-        .await;
-    });
+    api_logs::spawn_api_log_finalization(
+        store,
+        log.clone(),
+        ApiLogOutcome::Completed,
+        Some(i64::from(axum::http::StatusCode::OK.as_u16())),
+        None,
+    );
 
     response
 }
@@ -1384,7 +1377,7 @@ fn finalize_buffered<T: Serialize>(context: &Context, log: &ApiLogDraft, body: &
 fn compaction_only_responses_response(
     context: &Context,
     public_id: &str,
-    items: &[serde_json::Value],
+    items: &[crate::format::compaction_wire::Checkpoint],
     usage: IrUsage,
     is_streaming: bool,
     log: ApiLogDraft,
@@ -1419,8 +1412,8 @@ fn compaction_only_responses_response(
 fn compaction_only_messages_response(
     context: &Context,
     public_id: &str,
-    block: &serde_json::Value,
-    iterations: &[serde_json::Value],
+    block: &crate::format::compaction_wire::Checkpoint,
+    iterations: &[crate::format::compaction_wire::UsageIteration],
     is_streaming: bool,
     is_threshold_compaction: bool,
     log: ApiLogDraft,
@@ -1549,16 +1542,13 @@ fn prerendered_sse_response(
 ) -> Result<Response, Error> {
     let body = frames.concat();
 
-    tokio::spawn(async move {
-        api_logs::finalize_api_log(
-            api_log_store.as_ref(),
-            &log,
-            ApiLogOutcome::Completed,
-            Some(i64::from(axum::http::StatusCode::OK.as_u16())),
-            None,
-        )
-        .await;
-    });
+    api_logs::spawn_api_log_finalization(
+        api_log_store,
+        log,
+        ApiLogOutcome::Completed,
+        Some(i64::from(axum::http::StatusCode::OK.as_u16())),
+        None,
+    );
 
     let mut response = axum::response::Response::new(axum::body::Body::from(body));
 
@@ -1594,9 +1584,9 @@ async fn detached_aggregation<TFormat>(
     api_log_store: Option<api_logs::ApiLogStore>,
     log: ApiLogDraft,
     log_context: String,
-    prefix_items: Vec<serde_json::Value>,
-    prefix_blocks: Vec<serde_json::Value>,
-    iterations: Vec<serde_json::Value>,
+    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
+    prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
+    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
     affinity: Option<crate::affinity::Accepted>,
 ) -> Result<Response, Error>
 where
@@ -1648,9 +1638,9 @@ async fn aggregated_with_prefix_task<TFormat>(
     log: ApiLogDraft,
     log_context: String,
     outcome_sender: tokio::sync::oneshot::Sender<Result<Response, Error>>,
-    prefix_items: Vec<serde_json::Value>,
-    prefix_blocks: Vec<serde_json::Value>,
-    iterations: Vec<serde_json::Value>,
+    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
+    prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
+    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
     mut affinity: Option<crate::affinity::Accepted>,
 ) where
     TFormat: ClientFormat,
@@ -2000,6 +1990,9 @@ where
     }
 }
 
+/// Capacity of the SSE body channel; upstream parsing is driven directly by its render task.
+const SSE_BODY_CHANNEL_BUFFER: usize = 64;
+
 /// Wraps an IR event stream into a live `text/event-stream` response, carrying the request's
 /// accounting draft and api-log store handle into the render task: that task is the streaming
 /// finalization point (README §3 *ApiLog*) and records exactly one row when the stream closes —
@@ -2020,7 +2013,7 @@ fn sse_response(
     mut affinity: Option<crate::affinity::Accepted>,
 ) -> Response {
     let (sender, receiver) =
-        tokio::sync::mpsc::channel::<Result<Bytes, IoError>>(gateway::EVENT_CHANNEL_BUFFER);
+        tokio::sync::mpsc::channel::<Result<Bytes, IoError>>(SSE_BODY_CHANNEL_BUFFER);
 
     tokio::spawn(async move {
         let mut events = events;
@@ -2088,10 +2081,9 @@ fn sse_response(
                         if Some(index) == terminal_index
                             && !sender.is_closed()
                             && let Some(affinity) = affinity.as_mut()
+                            && let Some(projector) = renderer.take_projection()
                         {
-                            if let Some(projector) = renderer.take_projection() {
-                                affinity.complete_projection(projector);
-                            }
+                            affinity.complete_projection(projector);
                         }
                         if sender.send(Ok(frame.into())).await.is_err() {
                             // The client's body channel is gone: a client abort, keyed only on
@@ -2162,10 +2154,11 @@ fn sse_response(
             .await;
             return;
         }
-        if has_completed_output && let Some(affinity) = affinity.as_mut() {
-            if let Some(projector) = renderer.take_projection() {
-                affinity.complete_projection(projector);
-            }
+        if has_completed_output
+            && let Some(affinity) = affinity.as_mut()
+            && let Some(projector) = renderer.take_projection()
+        {
+            affinity.complete_projection(projector);
         }
 
         // A clean end of stream: every event rendered and the body closed normally.
@@ -2382,7 +2375,7 @@ mod tests {
     }
 
     /// The mid-stream upstream failure sequence — one start event, the transport failure, the
-    /// pump's terminal `Done`.
+    /// event stream's terminal `Done`.
     fn failing_events() -> [Result<IrEvent, gateway::Error>; 3] {
         [
             Ok(IrEvent::MessageStart {
@@ -2420,7 +2413,7 @@ mod tests {
         .await;
     }
 
-    /// Sends a mid-stream upstream failure — one start event, the transport failure, the pump's
+    /// Sends a mid-stream upstream failure — one start event, the transport failure, the stream's
     /// terminal `Done` — through the fixture channel and closes the stream.
     ///
     /// # Panics
@@ -2431,7 +2424,7 @@ mod tests {
     }
 
     /// Sends a mid-stream upstream failure that first delivers a usage observation — one start
-    /// event, the usage report, the transport failure, the pump's terminal `Done` — through the
+    /// event, the usage report, the transport failure, the stream's terminal `Done` — through the
     /// fixture channel and closes the stream.
     ///
     /// # Panics
@@ -2952,7 +2945,7 @@ mod tests {
                 Ok(IrEvent::Usage(IrUsage::default())),
                 Ok(IrEvent::CompactionMetadata {
                     is_paused: true,
-                    iterations: iterations.clone(),
+                    iterations: iterations.clone().into_iter().map(Into::into).collect(),
                 }),
                 Ok(IrEvent::finish(IrFinishReason::Stop)),
                 Ok(IrEvent::Done),
@@ -3291,7 +3284,7 @@ mod tests {
                     let (window, anchors) = if client_format == "responses_checkpoint" {
                         let window =
                             crate::format::openai::response::gateway_checkpoint_projection(
-                                std::slice::from_ref(&block),
+                                std::slice::from_ref(&block.clone().into()),
                             )
                             .expect("accepted Responses state");
                         let mut anchors = window.completed_anchors();
@@ -3301,7 +3294,8 @@ mod tests {
                         (window, anchors)
                     } else {
                         crate::format::anthropic::messages::completed_compaction_projection(
-                            &block, None,
+                            &block.clone().into(),
+                            None,
                         )
                         .expect("accepted Messages state")
                     };
@@ -3330,7 +3324,7 @@ mod tests {
                         if client_format == "responses_checkpoint" {
                             Box::new(
                                 crate::format::openai::response::SseRenderer::new("M".into())
-                                    .with_prefix_items(vec![block]),
+                                    .with_prefix_items(vec![block.into()]),
                             )
                         } else if client_format == "messages_native" {
                             Box::new(
@@ -3341,7 +3335,7 @@ mod tests {
                             Box::new(
                                 MessagesRenderer::with_compaction_prefix(
                                     "M".into(),
-                                    vec![block],
+                                    vec![block.into()],
                                     Some("compaction".into()),
                                 )
                                 .with_threshold_compaction(is_threshold),

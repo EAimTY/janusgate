@@ -610,6 +610,7 @@ pub(super) fn parse_request(
     Ok(ParsedRequest {
         affinity,
         ir: IrRequest {
+            has_compaction_trigger: false,
             state_items: Vec::new(),
             // The model rides the body on this surface: `POST /interactions` has no URL model
             // slot, so the route context carries no public id and the body's member decides.
@@ -926,6 +927,35 @@ fn reject_allowed_tools(
     }
 
     Ok(())
+}
+
+/// Converts an accepted inbound thought into its reasoning and normalized replay payload.
+///
+/// # Panics
+///
+/// Panics if a typed accepted thought cannot serialize, which its fields prevent.
+fn thought_part(summary: Option<Vec<ContentBlockIn>>, signature: Option<String>) -> IrPart {
+    let text = summary
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(ContentBlockIn::text)
+        .collect::<Vec<_>>()
+        .join("");
+    #[expect(
+        clippy::expect_used,
+        reason = "the typed accepted thought serializes totally"
+    )]
+    let opaque = serde_json::to_value(StepIn::Thought {
+        summary,
+        signature: signature.clone(),
+    })
+    .expect("accepted thought serializes");
+    IrPart::Reasoning {
+        text,
+        signature,
+        opaque,
+    }
 }
 
 #[cfg(test)]
@@ -1550,34 +1580,5 @@ mod tests {
         .expect("the buffered body must parse");
 
         assert!(!buffered.is_streaming);
-    }
-}
-
-/// Converts an accepted inbound thought into its reasoning and normalized replay payload.
-///
-/// # Panics
-///
-/// Panics if a typed accepted thought cannot serialize, which its fields prevent.
-fn thought_part(summary: Option<Vec<ContentBlockIn>>, signature: Option<String>) -> IrPart {
-    let text = summary
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(ContentBlockIn::text)
-        .collect::<Vec<_>>()
-        .join("");
-    #[expect(
-        clippy::expect_used,
-        reason = "the typed accepted thought serializes totally"
-    )]
-    let opaque = serde_json::to_value(StepIn::Thought {
-        summary,
-        signature: signature.clone(),
-    })
-    .expect("accepted thought serializes");
-    IrPart::Reasoning {
-        text,
-        signature,
-        opaque,
     }
 }

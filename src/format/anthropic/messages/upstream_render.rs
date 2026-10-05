@@ -18,7 +18,7 @@ use crate::{
         IrRole, IrToolChoice,
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Fixed synthesis constant rendered as `max_tokens` when the client sent no
@@ -106,7 +106,7 @@ struct OnDemandControl<'a> {
 #[derive(Debug, Serialize)]
 struct ContextManagementBody<'a> {
     /// The vendor-shaped edit objects.
-    edits: &'a [Value],
+    edits: &'a [crate::format::compaction_wire::ThresholdEdit],
 }
 
 /// One upstream conversation turn.
@@ -142,7 +142,7 @@ pub(crate) struct UpstreamTool<'a> {
 
     /// JSON Schema of the accepted arguments; the client's schema rides through, and a tool
     /// declared without one receives the empty object schema.
-    input_schema: Value,
+    input_schema: InputSchema,
 }
 
 /// A `tool_choice` restriction in the upstream shape.
@@ -201,25 +201,23 @@ struct ThinkingDisabled {
 
 /// Default input schema for a tool declared without parameters: the empty object schema, modelled
 /// as a concrete type rather than assembled JSON.
-#[derive(Debug, Serialize)]
-struct DefaultInputSchema {
-    /// Always `object`.
-    #[serde(rename = "type")]
-    kind: &'static str,
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "object", deny_unknown_fields)]
+struct DefaultInputSchema {}
+
+/// An advertised schema: a client's arbitrary JSON Schema or the concrete default object.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum InputSchema {
+    /// Closed default supplied when the caller declared no parameter schema.
+    Default(DefaultInputSchema),
+    /// Caller-authored JSON Schema, outside the gateway's vocabulary.
+    Authored(Value),
 }
 
-/// Renders the default input schema value.
-///
-/// # Panics
-///
-/// Panics if the first-party schema type fails to serialize, which cannot occur.
-fn default_input_schema() -> Value {
-    #[expect(
-        clippy::expect_used,
-        reason = "the default schema is a first-party type whose serialization is total"
-    )]
-    serde_json::to_value(&DefaultInputSchema { kind: "object" })
-        .expect("first-party wire types serialize")
+/// Builds the fixed empty object parameter schema.
+fn default_input_schema() -> InputSchema {
+    InputSchema::Default(DefaultInputSchema {})
 }
 
 /// Renders the upstream Anthropic Messages payload: the body only — the URL, the headers, and the
@@ -261,7 +259,11 @@ pub(crate) fn render_request_body<'a>(
         .map(|tool| UpstreamTool {
             name: &tool.name,
             description: tool.description.as_deref(),
-            input_schema: tool.parameters.clone().unwrap_or_else(default_input_schema),
+            input_schema: tool
+                .parameters
+                .clone()
+                .map(InputSchema::Authored)
+                .unwrap_or_else(default_input_schema),
         })
         .collect();
 
@@ -364,7 +366,11 @@ pub(crate) fn render_count_tokens_request(
             .map(|tool| UpstreamTool {
                 name: &tool.name,
                 description: tool.description.as_deref(),
-                input_schema: tool.parameters.clone().unwrap_or_else(default_input_schema),
+                input_schema: tool
+                    .parameters
+                    .clone()
+                    .map(InputSchema::Authored)
+                    .unwrap_or_else(default_input_schema),
             })
             .collect(),
     })
@@ -392,7 +398,7 @@ pub(crate) struct CountTokensBody<'a> {
 pub(crate) fn render_threshold_body<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
-    edits: &'a [Value],
+    edits: &'a [crate::format::compaction_wire::ThresholdEdit],
 ) -> Result<RequestBody<'a>, InvalidRequest> {
     let mut body = render_request_body(ir, is_streaming)?;
 
@@ -494,14 +500,13 @@ fn state_item_block(item: &Value) -> Result<OutBlock, InvalidRequest> {
     // the inverse one: a known foreign-family member marks it foreign.
     const FOREIGN_MEMBERS: [&str; 1] = ["id"];
 
-    if let Some(object) = item.as_object() {
-        if object.get("type").and_then(Value::as_str) == Some("compaction")
-            && FOREIGN_MEMBERS
-                .iter()
-                .all(|member| !object.contains_key(*member))
-        {
-            return Ok(OutBlock::Verbatim(item.clone()));
-        }
+    if let Some(object) = item.as_object()
+        && object.get("type").and_then(Value::as_str) == Some("compaction")
+        && FOREIGN_MEMBERS
+            .iter()
+            .all(|member| !object.contains_key(*member))
+    {
+        return Ok(OutBlock::Verbatim(item.clone()));
     }
 
     Err(InvalidRequest::request(
@@ -1257,7 +1262,16 @@ mod tests {
             clippy::expect_used,
             reason = "the fixture request renders; a failing render is the failure"
         )]
-        let body = render_threshold_body(&ir, false, &edits).expect("the threshold body renders");
+        let concrete_edits = serde_json::from_value::<
+            Vec<crate::format::compaction_wire::ThresholdEdit>,
+        >(serde_json::json!(edits))
+        .expect("threshold controls parse");
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture request renders; a failing render is the failure"
+        )]
+        let body =
+            render_threshold_body(&ir, false, &concrete_edits).expect("the threshold body renders");
 
         #[expect(
             clippy::expect_used,

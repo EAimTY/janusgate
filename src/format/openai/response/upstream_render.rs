@@ -67,7 +67,7 @@ pub(crate) struct RequestBody<'a> {
     /// one dispatch carries them. The entries are third-party wire fragments
     /// whose shapes the upstream defines.
     #[serde(skip_serializing_if = "Option::is_none")]
-    context_management: Option<&'a [Value]>,
+    context_management: Option<&'a [crate::format::compaction_wire::AutomaticEntry]>,
 }
 
 /// One conversation item of the upstream request.
@@ -88,6 +88,9 @@ enum InputItem<'a> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TypedInputItem<'a> {
+    /// Terminal control requesting exactly one native compaction artifact.
+    CompactionTrigger,
+
     /// A user or assistant message.
     Message {
         /// Participating role.
@@ -226,33 +229,19 @@ struct Reasoning<'a> {
 /// The `omit_max_output_tokens` render option drops the client-requested cap: the upstream
 /// rejects the parameter as unsupported, and the model's own output bound applies instead.
 ///
+/// Native automatic controls ride `context_management`; absence emits no compaction member.
+///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when a gateway carrier is present among the
 /// state items — such an item must be decoded and removed during compaction
 /// preparation, so its presence at render time is an invariant violation that
 /// fails fast instead of forwarding gateway state upstream.
-pub(crate) fn render_request_body<'a>(
-    ir: &'a IrRequest,
-    is_streaming: bool,
-    render_options: &[RenderOption],
-) -> Result<RequestBody<'a>, InvalidRequest> {
-    render_request_body_with_extensions(ir, is_streaming, render_options, None)
-}
-
-/// Renders the upstream Responses payload with the compaction executor's
-/// extensions: `context_management` carries the vendor-shaped automatic
-/// compaction controls a native automatic upstream receives; every other
-/// dispatch passes [`None`], rendering no such member.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] as [`render_request_body`].
 pub(crate) fn render_request_body_with_extensions<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
     render_options: &[RenderOption],
-    context_management: Option<&'a [Value]>,
+    context_management: Option<&'a [crate::format::compaction_wire::AutomaticEntry]>,
 ) -> Result<RequestBody<'a>, InvalidRequest> {
     let mut body = render_body(ir, is_streaming, context_management)?;
 
@@ -287,7 +276,7 @@ pub(crate) struct CompactUpstreamRequest<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] as [`render_request_body`].
+/// Returns [`InvalidRequest`] as [`render_request_body_with_extensions`].
 pub(crate) fn render_compact_request_body(
     ir: &IrRequest,
 ) -> Result<CompactUpstreamRequest<'_>, InvalidRequest> {
@@ -402,6 +391,9 @@ fn render_input_items(ir: &IrRequest) -> Result<Vec<InputItem<'_>>, InvalidReque
         next_state = state_items.next();
     }
 
+    if ir.has_compaction_trigger {
+        input.push(InputItem::Typed(TypedInputItem::CompactionTrigger));
+    }
     Ok(input)
 }
 
@@ -434,7 +426,7 @@ fn push_state_item<'a>(
 fn render_body<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
-    context_management: Option<&'a [Value]>,
+    context_management: Option<&'a [crate::format::compaction_wire::AutomaticEntry]>,
 ) -> Result<RequestBody<'a>, InvalidRequest> {
     let input = render_input_items(ir)?;
 
@@ -493,7 +485,7 @@ fn render_body<'a>(
 mod tests {
     use super::{
         CompactUpstreamRequest, InputItem, TypedInputItem, render_compact_request_body,
-        render_request_body, render_request_body_with_extensions,
+        render_request_body_with_extensions,
     };
     use crate::{
         format::RenderOption,
@@ -515,7 +507,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let body = render_request_body(&ir, false, &[]);
+        let body = render_request_body_with_extensions(&ir, false, &[], None);
 
         #[expect(
             clippy::expect_used,
@@ -577,7 +569,8 @@ mod tests {
                 reason = "the rendered payload is under test; a failing render is the failure"
             )]
             let body = serde_json::to_value(
-                render_request_body(&ir, false, &[]).expect("the fixture renders"),
+                render_request_body_with_extensions(&ir, false, &[], None)
+                    .expect("the fixture renders"),
             )
             .expect("the body serializes");
 
@@ -618,9 +611,10 @@ mod tests {
             clippy::expect_used,
             reason = "the rendered payload is under test; a failing render is the failure"
         )]
-        let body =
-            serde_json::to_value(render_request_body(ir, false, &[]).expect("the fixture renders"))
-                .expect("the body serializes");
+        let body = serde_json::to_value(
+            render_request_body_with_extensions(ir, false, &[], None).expect("the fixture renders"),
+        )
+        .expect("the body serializes");
 
         #[expect(
             clippy::expect_used,
@@ -701,7 +695,7 @@ mod tests {
             clippy::expect_used,
             reason = "the gateway carrier is constructed to be rejected"
         )]
-        let error = render_request_body(&ir, false, &[])
+        let error = render_request_body_with_extensions(&ir, false, &[], None)
             .expect_err("a gateway carrier must fail the render");
 
         assert!(error.to_string().contains("gateway compaction carrier"));
@@ -780,8 +774,18 @@ mod tests {
             reason = "the rendered payload is under test; a failing render is the failure"
         )]
         let extended = serde_json::to_value(
-            render_request_body_with_extensions(&ir, false, &[], Some(&entries))
-                .expect("the fixture renders"),
+            render_request_body_with_extensions(
+                &ir,
+                false,
+                &[],
+                Some(
+                    &serde_json::from_value::<Vec<crate::format::compaction_wire::AutomaticEntry>>(
+                        serde_json::json!(entries),
+                    )
+                    .expect("automatic controls parse"),
+                ),
+            )
+            .expect("the fixture renders"),
         )
         .expect("the body serializes");
 
@@ -795,7 +799,8 @@ mod tests {
             reason = "the rendered payload is under test; a failing render is the failure"
         )]
         let plain = serde_json::to_value(
-            render_request_body(&ir, false, &[]).expect("the fixture renders"),
+            render_request_body_with_extensions(&ir, false, &[], None)
+                .expect("the fixture renders"),
         )
         .expect("the body serializes");
 

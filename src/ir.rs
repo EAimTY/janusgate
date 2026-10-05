@@ -468,6 +468,9 @@ pub(crate) struct StateItem {
 /// A fully format-independent completion request.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct IrRequest {
+    /// Whether a selected native Responses trigger operation appends its terminal control item.
+    pub(crate) has_compaction_trigger: bool,
+
     /// Upstream model name rendered verbatim into upstream payloads.
     pub(crate) model: String,
 
@@ -604,7 +607,7 @@ pub(crate) enum IrEvent {
         /// Whether the upstream paused after compaction.
         is_paused: bool,
         /// Vendor iteration reports, preserved verbatim.
-        iterations: Vec<Value>,
+        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
     },
     /// Token accounting.
     Usage(IrUsage),
@@ -717,7 +720,7 @@ pub(crate) struct IrAggregation {
     /// Whether native compaction paused the response.
     pub(crate) is_compaction_paused: bool,
     /// Native sampling iteration reports, authoritative for billed usage.
-    pub(crate) compaction_iterations: Vec<Value>,
+    pub(crate) compaction_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
     /// Native compaction state items in arrival order (see
     /// [`IrEvent::CompactionState`]). The aggregated renderers emit them ahead
     /// of the derived output items — a native compaction precedes the answer

@@ -12,7 +12,8 @@
 //! the hot connection cache, file creation, the retention sweep, and the INSERT write path — and
 //! [`usage`] is the management read engine — the shared filter, the per-file queries, and the
 //! aggregation merge. This module carries the write contract the pipeline sees: the draft
-//! lifecycle ([`ApiLogDraft`]) and its single finalization entry point ([`finalize_api_log`]).
+//! lifecycle ([`ApiLogDraft`]) and finalization, either by an existing response owner
+//! ([`finalize_api_log`]) or a cancellation-independent writer ([`spawn_api_log_finalization`]).
 //!
 //! Recording survives a departing client by settled boundary, not by accident: both response
 //! finalization tasks own their request's draft, so a client disconnecting mid-generation records
@@ -218,6 +219,27 @@ impl ApiLogDraft {
     pub(crate) fn stamp_billed_usage(&mut self, usage: Option<IrUsage>) {
         self.billed_usage = usage;
     }
+}
+
+/// Starts a cancellation-independent writer only when dispatch enabled recording for this draft.
+/// The dispatch stamp, not the current configuration or store presence, decides whether to run:
+/// a reload cannot retract an existing row, and a stamped draft without a startup store must still
+/// log its missing-store diagnostic. Dropping the returned handle never cancels the writer.
+///
+/// # Panics
+///
+/// Panics if recording is enabled and this call runs outside the Tokio runtime.
+pub(crate) fn spawn_api_log_finalization(
+    store: Option<ApiLogStore>,
+    draft: ApiLogDraft,
+    outcome: ApiLogOutcome,
+    http_status: Option<i64>,
+    usage: Option<IrUsage>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    draft.started_at?;
+    Some(tokio::spawn(async move {
+        finalize_api_log(store.as_ref(), &draft, outcome, http_status, usage).await;
+    }))
 }
 
 /// Closes one dispatched request's accounting: builds the terminal write from `draft` plus the

@@ -12,7 +12,7 @@ use crate::{
         provisioning::ProvisionExtraction,
         template::{
             ControlBody, ControlMethod, ControlRequest, ExtractionShape, ResponseEncoding,
-            ResponseField, ResponsePath, ResponseTarget, TemplateNode,
+            ResponseField, ResponsePath, ResponseTarget,
         },
     },
 };
@@ -168,23 +168,6 @@ pub(crate) fn parse_form(body: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Renders one JSON template tree against the environment, splicing the rendered upstream body
-/// into the tree's single body placeholder.
-///
-/// # Errors
-///
-/// Returns [`ControlFailure::Unavailable`] when a string leaf references a value the stage does
-/// not carry.
-fn render_json_node(
-    node: &TemplateNode,
-    body: &Json,
-    env: &ValueEnv<'_>,
-    what: &str,
-) -> Result<Json, ControlFailure> {
-    env.render_json(node, body, what)
-        .map_err(ControlFailure::from)
-}
-
 /// Percent-encodes one URL query component with the RFC 3986 unreserved set: every byte outside
 /// `A–Z a–z 0–9 - . _ ~` renders as `%XX`, so a space renders `%20` and a literal plus `%2B`.
 /// This strict encoding is the one vocabulary every descriptor-rendered query component uses —
@@ -291,7 +274,7 @@ pub(crate) fn build_request(
         }
 
         Some(ControlBody::Json { node }) => {
-            let body = render_json_node(node, &Json::Null, env, what)?;
+            let body = env.render_json(node, &(), what)?;
 
             builder = builder.json(&body);
         }

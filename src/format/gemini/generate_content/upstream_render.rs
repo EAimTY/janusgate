@@ -720,7 +720,7 @@ mod tests {
             reason = "the id-bearing call is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("an id-bearing function call parses");
 
         let delta_id = events.iter().find_map(|event| match event {
@@ -823,7 +823,7 @@ mod tests {
             reason = "the id-less call is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("an id-less function call parses");
 
         let delta_id = events.iter().find_map(|event| match event {

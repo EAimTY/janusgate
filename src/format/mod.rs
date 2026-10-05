@@ -44,8 +44,14 @@ use thiserror::Error;
 
 pub(crate) mod affinity;
 pub(crate) mod anthropic;
+pub(crate) mod compaction_wire;
 pub(crate) mod gemini;
 pub(crate) mod openai;
+
+/// A JSON object whose declared protocol shape has no members.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::format) struct EmptyObject {}
 
 /// Wire formats an upstream provider may speak: the closed vocabulary from which a
 /// provider definition pins the one format every inference of the definition speaks
@@ -468,7 +474,7 @@ pub(crate) trait UpstreamEventParser {
     /// # Errors
     ///
     /// Returns [`PayloadError`] for malformed upstream payloads.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError>;
+    fn parse_json_response(&mut self, body: &[u8]) -> Result<Vec<IrEvent>, PayloadError>;
 
     /// Ends a cleanly terminated upstream stream, flushing state buffered across frames into final
     /// IR events.
@@ -661,8 +667,8 @@ pub(crate) trait ClientFormat {
     fn render_json_response_with_prefix(
         public_id: &str,
         aggregation: &IrAggregation,
-        prefix: &[serde_json::Value],
-        iterations: &[serde_json::Value],
+        prefix: &[crate::format::compaction_wire::Checkpoint],
+        iterations: &[crate::format::compaction_wire::UsageIteration],
     ) -> Self::JsonResponse;
 }
 
@@ -945,30 +951,24 @@ pub(in crate::format) fn arguments_to_object_or_empty(arguments: &str) -> Map<St
 ///
 /// Returns [`PayloadError`] when the frame data is not valid JSON or does not match the codec's
 /// upstream shape.
-pub(in crate::format) fn parse_frame<T>(frame: &SseFrame) -> Result<T, PayloadError>
+pub(in crate::format) fn parse_frame<'de, T>(frame: &'de SseFrame) -> Result<T, PayloadError>
 where
-    T: DeserializeOwned,
+    T: Deserialize<'de>,
 {
     serde_json::from_str(&frame.data)
         .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))
 }
 
-/// Parses one complete upstream JSON body into a codec's typed upstream shape.
-///
-/// The body is borrowed, not consumed: `&Value` is serde's borrowed JSON deserializer, so a probe
-/// can read a few fields out of an unbounded upstream payload without cloning the payload first.
-/// The parsed types are unaffected — the borrowed deserializer produces owned `String`s and can
-/// materialize nested `Value`s — and the rejection wording is identical, the value deserializer
-/// reporting at the same zero position as any other in-memory source.
+/// Deserializes a complete upstream document directly into a concrete codec payload.
 ///
 /// # Errors
 ///
-/// Returns [`PayloadError`] when the body does not match the codec's upstream shape.
-pub(in crate::format) fn parse_body<T>(value: &Value) -> Result<T, PayloadError>
+/// Returns a payload failure for malformed JSON or a mismatched protocol shape.
+pub(in crate::format) fn parse_body<T>(body: &[u8]) -> Result<T, PayloadError>
 where
     T: DeserializeOwned,
 {
-    T::deserialize(value)
+    serde_json::from_slice(body)
         .map_err(|error| PayloadError::new(format!("malformed upstream payload: {error}")))
 }
 
@@ -1056,6 +1056,17 @@ where
         reason = "rendered wire types are first-party and serialize totally"
     )]
     serde_json::to_string(value).expect("rendered wire payloads serialize")
+}
+
+/// Encodes a JSON fixture for the upstream parser's byte-oriented document boundary.
+///
+/// # Panics
+///
+/// Panics when a first-party test fixture fails to serialize.
+#[cfg(test)]
+pub(crate) fn test_json_body(body: &impl Serialize) -> Vec<u8> {
+    #[expect(clippy::expect_used, reason = "test fixtures serialize totally")]
+    serde_json::to_vec(body).expect("JSON fixture serializes")
 }
 
 /// Serializes an aggregated outward response body into the JSON value the codec test suites assert

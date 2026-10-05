@@ -27,7 +27,7 @@ use crate::{
     provider::{ModelRouting, definition::compaction::StandaloneCompactOperation},
     storage::api_logs::ApiLogDraft,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Why one native dispatch failed, before any artifact was committed.
@@ -127,8 +127,8 @@ pub(crate) async fn classify_failure(
     #[derive(Deserialize)]
     struct ErrorMember {
         /// Upstream error code.
-        #[serde(default)]
-        code: Option<Value>,
+        #[serde(default, deserialize_with = "crate::serde_helpers::string_or_none")]
+        code: Option<String>,
 
         /// Offending parameter.
         #[serde(default)]
@@ -140,10 +140,9 @@ pub(crate) async fn classify_failure(
     let error = shape.error?;
 
     if let Some(code) = &error.code
-        && let Some(code_text) = code.as_str()
-        && classifier.codes.iter().any(|listed| listed == code_text)
+        && classifier.codes.iter().any(|listed| listed == code)
     {
-        return Some(format!("{detail}, code `{code_text}`"));
+        return Some(format!("{detail}, code `{code}`"));
     }
 
     if let Some(param) = &error.param
@@ -198,12 +197,6 @@ pub(crate) async fn responses_standalone(
     ir.model = routing.model.upstream_id.clone();
     let ir = &ir;
     let body = render_compact_request_body(ir).map_err(GatewayError::from)?;
-
-    #[expect(
-        clippy::expect_used,
-        reason = "a codec-rendered body is a first-party serde type, which always renders"
-    )]
-    let body = serde_json::to_value(&body).expect("the compact body serializes");
 
     let request = gateway::build_internal_request(
         &context.data_plane,
@@ -283,19 +276,14 @@ pub(crate) async fn responses_standalone(
             detail: format!("upstream read failed: {error}"),
         })?;
 
-    let mut value =
-        serde_json::from_slice::<Value>(&bytes).map_err(|error| GatewayError::Unavailable {
-            detail: format!("malformed upstream response: {error}"),
-        })?;
-
-    gateway::unwrap_response(&mut value, &operation.response_unwrap);
+    let body = gateway::unwrap_response(&bytes, &operation.response_unwrap)?;
 
     #[derive(Deserialize)]
     struct UsageReport {
         /// Reported usage survives an invalid compacted window.
         usage: Option<UpstreamUsage>,
     }
-    if let Ok(report) = UsageReport::deserialize(&value) {
+    if let Ok(report) = serde_json::from_slice::<UsageReport>(body) {
         ledger.record(
             super::accounting::IterationKind::Compaction,
             report.usage.as_ref().map(usage_to_ir),
@@ -304,7 +292,7 @@ pub(crate) async fn responses_standalone(
             log.stamp_billed_usage(ledger.reported_billed_totals());
         }
     }
-    let native = parse_compact_response(value).map_err(GatewayError::from)?;
+    let native = parse_compact_response(body).map_err(GatewayError::from)?;
 
     Ok(native)
 }
@@ -347,12 +335,6 @@ pub(crate) async fn count_tokens(
     let ir = &ir;
     let body = crate::format::anthropic::messages::render_count_tokens_request(ir)
         .map_err(GatewayError::from)?;
-
-    #[expect(
-        clippy::expect_used,
-        reason = "a codec-rendered body is a first-party serde type, which always renders"
-    )]
-    let body = serde_json::to_value(&body).expect("the count body serializes");
 
     let request = gateway::build_internal_request(
         &context.data_plane,
@@ -398,12 +380,7 @@ pub(crate) async fn count_tokens(
             detail: format!("upstream read failed: {error}"),
         })?;
 
-    let mut value =
-        serde_json::from_slice::<Value>(&bytes).map_err(|error| GatewayError::Unavailable {
-            detail: format!("malformed upstream response: {error}"),
-        })?;
-
-    gateway::unwrap_response(&mut value, &operation.response_unwrap);
+    let body = gateway::unwrap_response(&bytes, &operation.response_unwrap)?;
 
     #[derive(Deserialize)]
     struct CountShape {
@@ -413,7 +390,7 @@ pub(crate) async fn count_tokens(
     }
 
     let shape: CountShape =
-        serde_json::from_value(value.clone()).map_err(|error| GatewayError::Unavailable {
+        serde_json::from_slice(body).map_err(|error| GatewayError::Unavailable {
             detail: format!("malformed count response: {error}"),
         })?;
 
@@ -437,7 +414,7 @@ pub(crate) enum OnDemandOutcome {
         block: Value,
 
         /// The raw `usage.iterations` entries the upstream reported.
-        iterations: Vec<Value>,
+        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
     },
 
     /// The documented native no-summary outcome: the upstream answered without
@@ -510,12 +487,6 @@ pub(crate) async fn messages_on_demand(
     let inference = &routing.provider.definition.payload.inference;
 
     let merged_headers = messages::overlay_header_rows(&inference.headers, overlay_headers);
-
-    #[expect(
-        clippy::expect_used,
-        reason = "a codec-rendered body is a first-party serde type, which always renders"
-    )]
-    let body = serde_json::to_value(&body).expect("the on-demand body serializes");
 
     let request = gateway::build_internal_request(
         &context.data_plane,
@@ -630,92 +601,20 @@ pub(crate) async fn messages_on_demand(
     }
 }
 
-/// Renders the vendor-shaped automatic `context_management` entry values the
-/// native Responses automatic passthrough carries upstream: one compaction
-/// entry per parsed control, with the threshold rendered only when stated.
-///
-/// # Panics
-///
-/// Panics if an entry fails to serialize, which cannot occur for the first-party
-/// entry shape.
+/// Converts parsed automatic controls to their concrete upstream wire representation.
 #[must_use]
-pub(crate) fn automatic_entry_values(
+pub(crate) fn automatic_entries(
     entries: &[crate::format::compaction_control::AutomaticEntry],
-) -> Vec<Value> {
-    #[derive(Serialize)]
-    #[serde(tag = "type", rename = "compaction")]
-    struct EntryOut {
-        /// The threshold, rendered only when the client stated one.
-        #[serde(skip_serializing_if = "Option::is_none", rename = "compact_threshold")]
-        threshold: Option<u64>,
-    }
-
-    entries
-        .iter()
-        .map(|entry| {
-            #[expect(
-                clippy::expect_used,
-                reason = "a first-party rendered entry serializes totally"
-            )]
-            serde_json::to_value(&EntryOut {
-                threshold: entry.compact_threshold,
-            })
-            .expect("a compaction entry serializes")
-        })
-        .collect()
+) -> Vec<crate::format::compaction_wire::AutomaticEntry> {
+    entries.iter().map(Into::into).collect()
 }
 
-/// Renders the vendor-shaped `context_management.edits` values the native
-/// Messages threshold passthrough carries upstream: one `compact_20260112`
-/// edit per parsed control, with the trigger, pause flag, and instructions
-/// rendered when present.
-///
-/// # Panics
-///
-/// Panics if an edit fails to serialize, which cannot occur for the first-party
-/// edit shape.
+/// Converts parsed threshold edits to their concrete upstream wire representation.
 #[must_use]
-pub(crate) fn threshold_edit_values(
+pub(crate) fn threshold_edits(
     edits: &[crate::format::compaction_control::ThresholdEdit],
-) -> Vec<Value> {
-    #[derive(Serialize)]
-    #[serde(tag = "type", rename = "compact_20260112")]
-    struct EditOut<'a> {
-        /// The input-token trigger, rendered when the client stated one.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger: Option<TriggerOut>,
-
-        /// The pause flag, rendered only when requested.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pause_after_compaction: Option<bool>,
-
-        /// Custom summarization instructions, rendered when supplied.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        instructions: Option<&'a str>,
-    }
-
-    #[derive(Serialize)]
-    #[serde(tag = "type", rename = "input_tokens")]
-    struct TriggerOut {
-        /// The trigger value in input tokens.
-        value: u64,
-    }
-
-    edits
-        .iter()
-        .map(|edit| {
-            #[expect(
-                clippy::expect_used,
-                reason = "a first-party rendered edit serializes totally"
-            )]
-            serde_json::to_value(&EditOut {
-                trigger: edit.trigger.map(|value| TriggerOut { value }),
-                pause_after_compaction: edit.pause_after_compaction.then_some(true),
-                instructions: edit.instructions.as_deref(),
-            })
-            .expect("a threshold edit serializes")
-        })
-        .collect()
+) -> Vec<crate::format::compaction_wire::ThresholdEdit> {
+    edits.iter().map(Into::into).collect()
 }
 
 #[cfg(test)]
@@ -725,7 +624,7 @@ mod tests {
         reason = "test fixtures parse and render values constructed to succeed"
     )]
 
-    use super::{CompactionBlockView, automatic_entry_values, threshold_edit_values, usage_to_ir};
+    use super::{CompactionBlockView, automatic_entries, threshold_edits, usage_to_ir};
     use crate::{
         format::{
             compaction_control::{AutomaticEntry, ThresholdEdit},
@@ -782,32 +681,32 @@ mod tests {
     #[test]
     fn passthrough_values_render_the_vendor_shapes() {
         assert_eq!(
-            automatic_entry_values(&[
+            serde_json::json!(automatic_entries(&[
                 AutomaticEntry {
                     compact_threshold: Some(90_000),
                 },
                 AutomaticEntry {
                     compact_threshold: None,
                 },
-            ]),
-            vec![
-                json!({"type": "compaction", "compact_threshold": 90_000}),
-                json!({"type": "compaction"}),
-            ]
+            ])),
+            json!([
+                {"type": "compaction", "compact_threshold": 90_000},
+                {"type": "compaction"},
+            ])
         );
 
         assert_eq!(
-            threshold_edit_values(&[ThresholdEdit {
+            serde_json::json!(threshold_edits(&[ThresholdEdit {
                 trigger: Some(120_000),
                 pause_after_compaction: true,
                 instructions: Some(String::from("focus")),
-            }]),
-            vec![json!({
+            }])),
+            json!([{
                 "type": "compact_20260112",
                 "trigger": {"type": "input_tokens", "value": 120_000},
                 "pause_after_compaction": true,
                 "instructions": "focus",
-            })]
+            }])
         );
     }
 

@@ -201,8 +201,6 @@ enum RetryValue {
     },
     /// A short-lived accepted account, no longer pinned.
     Committed {
-        /// Original reservation identity, retained with its committed hint.
-        token: NonZeroU64,
         /// Physical account fixed by accepted headers.
         provider_id: i64,
         /// Retry-specific idle expiration and LRU position.
@@ -670,7 +668,6 @@ impl FreshLease {
                     let previous = std::mem::replace(
                         &mut entry.value,
                         RetryValue::Committed {
-                            token: self.lease.token,
                             provider_id,
                             access,
                         },

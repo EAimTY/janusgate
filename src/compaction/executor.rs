@@ -42,11 +42,11 @@ use crate::{
         anthropic::messages::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block},
         compaction_control,
         openai::response::{
-            compaction_item_json, render_compacted_response, render_gateway_compacted_response,
+            compaction_item, render_compacted_response, render_gateway_compacted_response,
         },
     },
     gateway::{self, Error as GatewayError},
-    ir::{IrAggregation, IrFinishReason, IrRequest, IrUsage, StateItem},
+    ir::{IrAggregation, IrFinishReason, IrRequest, IrUsage},
     provider::{
         ModelRouting,
         definition::{
@@ -56,7 +56,6 @@ use crate::{
     },
     storage::api_logs::ApiLogDraft,
 };
-use serde_json::Value;
 
 /// The shipped default summary-output budget (README §5): applied when the
 /// definition carries no compaction section to state its own.
@@ -72,32 +71,6 @@ const DEFAULT_RETENTION_BUDGET_TOKENS: u64 = 8192;
 /// gateway domain in its own single place.
 fn api_error(error: CompactionError) -> ApiError {
     ApiError::from(GatewayError::from(error))
-}
-
-/// The vendor-shaped `compaction_trigger` control item the native trigger
-/// passthrough carries upstream at the input tail: the item is protocol state,
-/// not conversation text, so it rides the input verbatim.
-///
-/// # Panics
-///
-/// Panics if the item fails to serialize, which cannot occur for the first-party
-/// item shape.
-fn trigger_item_json() -> Value {
-    #[derive(serde::Serialize)]
-    struct TriggerItem {
-        /// The item kind tag.
-        #[serde(rename = "type")]
-        kind: &'static str,
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "a first-party rendered item serializes totally"
-    )]
-    serde_json::to_value(TriggerItem {
-        kind: "compaction_trigger",
-    })
-    .expect("the trigger item serializes")
 }
 
 /// The header rows an ordinary replay or native passthrough dispatch carries
@@ -247,64 +220,20 @@ fn native_window_payload(
     }
 }
 
-/// Builds the vendor-shaped `usage.iterations` entries of a gateway-produced
-/// compaction lifecycle: one entry per billed iteration the ledger recorded —
-/// the compaction calls and, on a compact-and-continue lifecycle, the message
-/// stage — so the rendered array stays authoritative for the billed totals
-/// (README §6.8). Counter iterations carry no usage and never render.
-///
-/// # Panics
-///
-/// Panics if an entry fails to serialize, which cannot occur for the first-party
-/// iteration shape.
-fn compaction_iteration_values(ledger: &CompactionLedger) -> Vec<Value> {
-    #[derive(serde::Serialize)]
-    struct IterationOut {
-        /// The iteration kind's vendor spelling.
-        #[serde(rename = "type")]
-        kind: &'static str,
-
-        /// Tokens consumed by the iteration input.
-        input_tokens: u64,
-
-        /// Tokens produced by the iteration output.
-        output_tokens: u64,
-
-        /// Input tokens written to the upstream prompt cache, when reported.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_creation_input_tokens: Option<u64>,
-
-        /// Input tokens served from the upstream prompt cache, when reported.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_read_input_tokens: Option<u64>,
-    }
-
+/// Converts billed sampling observations to concrete Messages iteration reports.
+fn compaction_iterations(
+    ledger: &CompactionLedger,
+) -> Vec<crate::format::compaction_wire::UsageIteration> {
+    use crate::format::compaction_wire::{SamplingKind, UsageIteration};
     ledger
         .iterations()
         .iter()
         .filter_map(|record| {
             let kind = match record.kind {
-                IterationKind::Compaction => "compaction",
-                IterationKind::Message => "message",
-                // A counter call without usage is never recorded; a recorded
-                // one is not a billed iteration and never renders.
+                IterationKind::Compaction => SamplingKind::Compaction,
                 IterationKind::Counter => return None,
             };
-
-            #[expect(
-                clippy::expect_used,
-                reason = "a first-party rendered iteration serializes totally"
-            )]
-            Some(
-                serde_json::to_value(&IterationOut {
-                    kind,
-                    input_tokens: record.usage.input_tokens,
-                    output_tokens: record.usage.output_tokens,
-                    cache_creation_input_tokens: record.usage.cache_write_tokens,
-                    cache_read_input_tokens: record.usage.cached_tokens,
-                })
-                .expect("a compaction iteration serializes"),
-            )
+            Some(UsageIteration::gateway(kind, record.usage))
         })
         .collect()
 }
@@ -484,11 +413,7 @@ async fn native_threshold_checkpoint(
             })
         }
         Mechanism::ResponsesExplicitTrigger => {
-            prefix.state_items.push(StateItem {
-                offset: prefix.messages.len(),
-                item: trigger_item_json(),
-                is_gateway: false,
-            });
+            prefix.has_compaction_trigger = true;
             match gateway::execute_internal(
                 context,
                 routing,
@@ -647,7 +572,7 @@ pub(crate) enum ResponsesOuterOutcome {
         ir: IrRequest,
 
         /// The automatic compaction controls, when passthrough carries them.
-        context_management: Option<Vec<Value>>,
+        context_management: Option<Vec<crate::format::compaction_wire::AutomaticEntry>>,
 
         /// The header rows the replayed native state's operation requires.
         overlay_headers: Vec<ParamRow>,
@@ -658,7 +583,7 @@ pub(crate) enum ResponsesOuterOutcome {
     /// beside the billed usage of the participating calls.
     CompactionOnly {
         /// The compaction output items, in output order.
-        items: Vec<Value>,
+        items: Vec<crate::format::compaction_wire::Checkpoint>,
 
         /// Sealer-proven identity of the newly emitted gateway carrier, never serialized.
         artifact_id: String,
@@ -686,7 +611,7 @@ pub(crate) enum ResponsesOuterOutcome {
     /// the restored window, controls stripped, original output budget.
     ContinueWithCheckpoint {
         /// The checkpoint items rendering ahead of the answer.
-        prefix_items: Vec<Value>,
+        prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
 
         /// Sealer-proven identity of the newly emitted checkpoint.
         artifact_id: String,
@@ -716,7 +641,7 @@ pub(crate) enum MessagesOuterOutcome {
         ir: IrRequest,
 
         /// The threshold edits, when passthrough carries them.
-        threshold_edits: Option<Vec<Value>>,
+        threshold_edits: Option<Vec<crate::format::compaction_wire::ThresholdEdit>>,
 
         /// The header rows the replayed native state's operation requires.
         overlay_headers: Vec<ParamRow>,
@@ -726,13 +651,13 @@ pub(crate) enum MessagesOuterOutcome {
     /// carrier block — with `stop_reason: "compaction"` and no answer.
     CompactionOnly {
         /// The compaction block.
-        block: Value,
+        block: crate::format::compaction_wire::Checkpoint,
 
         /// Sealer-authenticated identity for gateway carriers; absent for raw native blocks.
         artifact_id: Option<String>,
 
         /// The vendor-shaped `usage.iterations` entries to render.
-        iterations: Vec<Value>,
+        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 
         /// The request's ledger.
         ledger: CompactionLedger,
@@ -755,7 +680,7 @@ pub(crate) enum MessagesOuterOutcome {
     /// continuation.
     ContinueWithCheckpoint {
         /// The checkpoint blocks rendering ahead of the answer.
-        prefix_blocks: Vec<Value>,
+        prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
 
         /// Sealer-proven identity of the newly emitted checkpoint.
         artifact_id: String,
@@ -767,7 +692,7 @@ pub(crate) enum MessagesOuterOutcome {
         overlay_headers: Vec<ParamRow>,
 
         /// The vendor-shaped `usage.iterations` entries to render.
-        iterations: Vec<Value>,
+        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 
         /// The request's ledger.
         ledger: CompactionLedger,
@@ -1007,11 +932,7 @@ async fn responses_trigger_flow(
     {
         let mut passthrough = ir.clone();
 
-        passthrough.state_items.push(StateItem {
-            offset: passthrough.messages.len(),
-            item: trigger_item_json(),
-            is_gateway: false,
-        });
+        passthrough.has_compaction_trigger = true;
 
         let attempt = gateway::execute_internal(
             context,
@@ -1101,7 +1022,7 @@ async fn responses_trigger_flow(
                 log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(ResponsesOuterOutcome::CompactionOnly {
-                    items: vec![compaction_item_json(None, carrier, None)],
+                    items: vec![compaction_item(None, carrier, None)],
                     artifact_id: envelope.artifact_id,
                     usage: ledger.billed_totals(),
                     ledger: std::mem::take(ledger),
@@ -1168,7 +1089,7 @@ async fn responses_trigger_flow(
                 log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(ResponsesOuterOutcome::CompactionOnly {
-                    items: vec![compaction_item_json(None, carrier, None)],
+                    items: vec![compaction_item(None, carrier, None)],
                     artifact_id: envelope.artifact_id,
                     usage: ledger.billed_totals(),
                     ledger: std::mem::take(ledger),
@@ -1225,7 +1146,7 @@ async fn responses_trigger_flow(
     log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(ResponsesOuterOutcome::CompactionOnly {
-        items: vec![compaction_item_json(None, carrier, None)],
+        items: vec![compaction_item(None, carrier, None)],
         artifact_id,
         usage: ledger.billed_totals(),
         ledger: std::mem::take(ledger),
@@ -1264,7 +1185,7 @@ async fn responses_automatic_flow(
     {
         return Ok(ResponsesOuterOutcome::Ordinary {
             ir: ir.clone(),
-            context_management: Some(native::automatic_entry_values(entries)),
+            context_management: Some(native::automatic_entries(entries)),
             // The automatic passthrough rides the Responses wire; the replay
             // overlay is empty for it by construction.
             overlay_headers: replay_overlay,
@@ -1316,7 +1237,7 @@ async fn responses_automatic_flow(
     .await?
     {
         return Ok(ResponsesOuterOutcome::ContinueWithCheckpoint {
-            prefix_items: vec![compaction_item_json(None, checkpoint.carrier, None)],
+            prefix_items: vec![compaction_item(None, checkpoint.carrier, None)],
             artifact_id: checkpoint.artifact_id,
             ir: checkpoint.continuation,
             overlay_headers: checkpoint.overlay_headers,
@@ -1353,7 +1274,7 @@ async fn responses_automatic_flow(
     log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(ResponsesOuterOutcome::ContinueWithCheckpoint {
-        prefix_items: vec![compaction_item_json(None, carrier, None)],
+        prefix_items: vec![compaction_item(None, carrier, None)],
         artifact_id,
         ir: continuation_request(ir, &summary_text, &plan),
         overlay_headers: replay_overlay,
@@ -1560,7 +1481,7 @@ async fn messages_on_demand_flow(
                 log.stamp_billed_usage(ledger.reported_billed_totals());
 
                 return Ok(MessagesOuterOutcome::CompactionOnly {
-                    block,
+                    block: block.into(),
                     artifact_id: None,
                     iterations,
                     ledger: std::mem::take(ledger),
@@ -1634,7 +1555,7 @@ async fn messages_on_demand_flow(
                 return Ok(MessagesOuterOutcome::CompactionOnly {
                     block: gateway_carrier_block(None, &carrier),
                     artifact_id: Some(envelope.artifact_id),
-                    iterations: compaction_iteration_values(ledger),
+                    iterations: compaction_iterations(ledger),
                     ledger: std::mem::take(ledger),
                 });
             }
@@ -1680,7 +1601,7 @@ async fn messages_on_demand_flow(
     Ok(MessagesOuterOutcome::CompactionOnly {
         block: gateway_carrier_block(Some(&summary_text), &carrier),
         artifact_id: Some(artifact_id),
-        iterations: compaction_iteration_values(ledger),
+        iterations: compaction_iterations(ledger),
         ledger: std::mem::take(ledger),
     })
 }
@@ -1728,7 +1649,7 @@ async fn messages_threshold_flow(
 
         return Ok(MessagesOuterOutcome::Ordinary {
             ir: ir.clone(),
-            threshold_edits: Some(native::threshold_edit_values(edits)),
+            threshold_edits: Some(native::threshold_edits(edits)),
             overlay_headers: threshold_overlay,
         });
     }
@@ -1780,7 +1701,7 @@ async fn messages_threshold_flow(
     {
         let block =
             gateway_carrier_block(checkpoint.visible_content.as_deref(), &checkpoint.carrier);
-        let iterations = compaction_iteration_values(ledger);
+        let iterations = compaction_iterations(ledger);
         if first_edit.is_some_and(|edit| edit.pause_after_compaction) {
             return Ok(MessagesOuterOutcome::CompactionOnly {
                 block,
@@ -1823,7 +1744,7 @@ async fn messages_threshold_flow(
 
     let block = gateway_carrier_block(Some(&summary_text), &carrier);
 
-    let iterations = compaction_iteration_values(ledger);
+    let iterations = compaction_iterations(ledger);
 
     log.stamp_billed_usage(ledger.reported_billed_totals());
 
@@ -1863,7 +1784,7 @@ mod tests {
 
     use super::{
         api_error, continuation_request, effective_support, execute_responses_compact,
-        summary_output_limit, trigger_item_json,
+        summary_output_limit,
     };
     use crate::{
         compaction::{
@@ -1987,7 +1908,6 @@ mod tests {
         ModelRouting {
             model_route_id: 1,
             public_id: String::from("m"),
-            provider_pool_id: None,
             provider,
             model: Model {
                 id: 1,
@@ -2217,19 +2137,6 @@ mod tests {
         assert_eq!(summary_output_limit(None, Some(9_000)), 4096);
     }
 
-    /// The trigger control item renders the vendor shape.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn trigger_item_renders_the_vendor_tag() {
-        assert_eq!(
-            trigger_item_json(),
-            serde_json::json!({"type": "compaction_trigger"})
-        );
-    }
-
     /// The continuation request restores the compacted window: the summary
     /// message heads it, the retained units follow once, the riding state
     /// items recompute, and the output budget and instructions survive.
@@ -2240,6 +2147,7 @@ mod tests {
     #[test]
     fn continuation_carries_the_restored_window() {
         let restored = IrRequest {
+            has_compaction_trigger: false,
             model: String::from("m"),
             instructions: Some(String::from("be terse")),
             messages: vec![
@@ -2397,6 +2305,10 @@ mod tests {
     ///
     /// Panics if a fixture fails or an assertion fails — the failure report.
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "exclude the reload fixture; awaited paths never reacquire this test lock"
+    )]
     async fn a_compact_request_without_native_support_summarizes_internally() {
         let _configuration_guard = crate::test_support::configuration_lock();
         let _configuration = crate::test_support::install_global_configuration();
@@ -2516,6 +2428,10 @@ mod tests {
     ///
     /// Panics if a fixture fails or an assertion fails — the failure report.
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "exclude the reload fixture; awaited paths never reacquire this test lock"
+    )]
     async fn a_compact_request_through_a_supported_operation_compacts_natively() {
         let _configuration_guard = crate::test_support::configuration_lock();
         let _configuration = crate::test_support::install_global_configuration();
@@ -2605,6 +2521,10 @@ mod tests {
     ///
     /// Panics if a fixture fails or an assertion fails — the failure report.
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "exclude the reload fixture; awaited paths never reacquire this test lock"
+    )]
     async fn a_classified_unsupported_native_attempt_falls_back_to_summary_once() {
         let _configuration_guard = crate::test_support::configuration_lock();
         let _configuration = crate::test_support::install_global_configuration();

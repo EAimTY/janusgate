@@ -11,7 +11,7 @@ use crate::{
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Parses upstream Anthropic Messages responses — event-name-discriminated SSE streams or a
@@ -63,7 +63,7 @@ pub(crate) struct UpstreamParser {
     /// The last `usage.iterations` array the upstream reported, verbatim: one entry per
     /// sampling iteration a native compaction performed. Last observation wins, like every
     /// other usage column; the compaction outward render decides the entries' shape.
-    pub(crate) compaction_iterations: Vec<Value>,
+    pub(crate) compaction_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
 
     /// Whether the upstream reported the `compaction` stop reason. The canonical finish
     /// vocabulary has no compaction member, so the parser emits the ordinary `Stop` finish and
@@ -147,7 +147,7 @@ struct UpstreamUsage {
     /// Raw vendor iteration entries: one entry per sampling iteration a native compaction
     /// performed, captured verbatim for the compaction outward render.
     #[serde(default)]
-    iterations: Option<Vec<Value>>,
+    iterations: Option<Vec<crate::format::compaction_wire::UsageIteration>>,
 }
 
 /// The upstream output token breakdown.
@@ -192,6 +192,42 @@ struct MessageStartEvent {
     message: MessageHead,
 }
 
+/// A typed ordinary block or a complete producer-owned compaction fragment.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum CapturedBlock<T> {
+    /// Ordinary protocol fields consumed by the IR translator.
+    Ordinary(T),
+    /// Complete native compaction state, including unmodeled metadata.
+    Compaction(Value),
+}
+
+impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for CapturedBlock<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Selects the block vocabulary without interpreting foreign compaction members.
+        #[derive(Deserialize)]
+        struct Kind {
+            /// Required block discriminator.
+            #[serde(rename = "type")]
+            kind: String,
+        }
+        let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+        let kind: Kind = serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+        if kind.kind == "compaction" {
+            serde_json::from_str(raw.get())
+                .map(Self::Compaction)
+                .map_err(serde::de::Error::custom)
+        } else {
+            serde_json::from_str(raw.get())
+                .map(Self::Ordinary)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
 /// A content block as announced by `content_block_start`; unknown block kinds are tolerated and
 /// ignored so newer upstream block types never break parsing.
 #[derive(Debug, Deserialize)]
@@ -221,11 +257,6 @@ enum StartBlock {
         name: Option<String>,
     },
 
-    /// A compaction block: recorded verbatim in
-    /// [`UpstreamParser::compaction_blocks`],
-    /// emitted as an IR state event.
-    Compaction(CompactionBlock),
-
     /// Any newer block kind the gateway does not read.
     #[serde(other)]
     Other,
@@ -240,8 +271,7 @@ struct ContentBlockStartEvent {
 
     /// The announced block, captured raw: compaction blocks replay verbatim, so the typed view
     /// parses beside the untouched vendor JSON.
-    #[serde(default)]
-    content_block: Value,
+    content_block: CapturedBlock<StartBlock>,
 }
 
 /// One content delta; unknown delta kinds are tolerated and ignored like unknown blocks.
@@ -393,11 +423,6 @@ enum ResponseBlock {
         input: Option<Value>,
     },
 
-    /// A compaction block: recorded verbatim in
-    /// [`UpstreamParser::compaction_blocks`],
-    /// emitted as an IR state event.
-    Compaction(CompactionBlock),
-
     /// Any newer block kind the gateway does not read.
     #[serde(other)]
     Other,
@@ -417,7 +442,7 @@ struct ResponseMessage {
     /// Content blocks in order, kept raw: compaction blocks replay verbatim, so the typed view
     /// parses per block beside the untouched vendor JSON.
     #[serde(default)]
-    content: Vec<Value>,
+    content: Vec<CapturedBlock<ResponseBlock>>,
 
     /// Canonical stop reason string, when the turn reported one.
     #[serde(default)]
@@ -503,23 +528,19 @@ impl UpstreamParser {
     ) -> Result<Vec<IrEvent>, PayloadError> {
         let content_index = event.index as usize;
 
-        // The typed view parses beside the raw vendor JSON: a compaction block records verbatim
-        // here and emits a state event; the compaction outward render owns its lifecycle.
-        let block = StartBlock::deserialize(&event.content_block)
-            .map_err(|_error| PayloadError::new("malformed upstream payload in SSE frame"))?;
-
-        if let StartBlock::Compaction(view) = block {
-            if view.content.is_some() {
-                self.compaction_blocks
-                    .push((content_index, event.content_block.clone()));
-                return Ok(vec![IrEvent::CompactionState {
-                    payload: event.content_block,
-                }]);
+        let block = match event.content_block {
+            CapturedBlock::Ordinary(block) => block,
+            CapturedBlock::Compaction(raw) => {
+                let view = CompactionBlock::deserialize(&raw)
+                    .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))?;
+                if view.content.is_some() {
+                    self.compaction_blocks.push((content_index, raw.clone()));
+                    return Ok(vec![IrEvent::CompactionState { payload: raw }]);
+                }
+                self.pending_compaction_blocks.push((content_index, raw));
+                return Ok(Vec::new());
             }
-            self.pending_compaction_blocks
-                .push((content_index, event.content_block));
-            return Ok(Vec::new());
-        }
+        };
 
         let (kind, tool_ordinal, tool_id, tool_name, redacted_data) = match block {
             StartBlock::Text => (
@@ -561,7 +582,7 @@ impl UpstreamParser {
             }
 
             // The compaction case returned above; `serde(other)` covers the rest.
-            StartBlock::Compaction(_) | StartBlock::Other => {
+            StartBlock::Other => {
                 return Ok(Vec::new());
             }
         };
@@ -901,8 +922,8 @@ impl UpstreamEventParser for UpstreamParser {
     /// # Errors
     ///
     /// Returns [`PayloadError`] for bodies outside the upstream message shape.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let message = crate::format::parse_body::<ResponseMessage>(&value)?;
+    fn parse_json_response(&mut self, body: &[u8]) -> Result<Vec<IrEvent>, PayloadError> {
+        let message = crate::format::parse_body::<ResponseMessage>(body)?;
 
         let mut events = vec![IrEvent::MessageStart {
             id: message.id,
@@ -913,9 +934,19 @@ impl UpstreamEventParser for UpstreamParser {
 
         let mut tool_ordinal = 0;
 
-        for (content_index, raw) in message.content.iter().enumerate() {
-            let block = ResponseBlock::deserialize(raw)
-                .map_err(|_error| PayloadError::new("malformed upstream payload: content block"))?;
+        for (content_index, captured) in message.content.iter().enumerate() {
+            let block = match captured {
+                CapturedBlock::Ordinary(block) => block,
+                CapturedBlock::Compaction(raw) => {
+                    CompactionBlock::deserialize(raw)
+                        .map_err(|_| PayloadError::new("malformed upstream response body"))?;
+                    self.compaction_blocks.push((content_index, raw.clone()));
+                    events.push(IrEvent::CompactionState {
+                        payload: raw.clone(),
+                    });
+                    continue;
+                }
+            };
 
             match block {
                 ResponseBlock::Text { text } => {
@@ -964,16 +995,6 @@ impl UpstreamEventParser for UpstreamParser {
                     ));
 
                     tool_ordinal += 1;
-                }
-
-                // A compaction block records verbatim and rides the event
-                // stream at its content position.
-                ResponseBlock::Compaction(_) => {
-                    self.compaction_blocks.push((content_index, raw.clone()));
-
-                    events.push(IrEvent::CompactionState {
-                        payload: raw.clone(),
-                    });
                 }
 
                 ResponseBlock::Other => {}
@@ -1742,7 +1763,7 @@ mod tests {
             reason = "the fixture body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("the complete message parses");
 
         assert_eq!(
@@ -1840,14 +1861,17 @@ mod tests {
             reason = "the fixture body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("the complete message parses");
 
         // The compaction block recorded verbatim, including vendor-owned extra members; the
         // text block still rode its ordinary IR event.
         assert_eq!(parser.compaction_blocks, vec![(0, block.clone())]);
         assert!(parser.compaction_stop);
-        assert_eq!(parser.compaction_iterations, iterations);
+        assert_eq!(
+            crate::format::aggregated_body_json(&parser.compaction_iterations),
+            serde_json::json!(iterations)
+        );
 
         assert_eq!(
             events,
@@ -1870,7 +1894,7 @@ mod tests {
                 }),
                 IrEvent::CompactionMetadata {
                     is_paused: true,
-                    iterations: iterations.clone()
+                    iterations: iterations.clone().into_iter().map(Into::into).collect()
                 },
             ]
         );
@@ -1890,7 +1914,7 @@ mod tests {
             reason = "the null-block body is constructed to parse"
         )]
         let events = parser
-            .parse_json_response(body)
+            .parse_json_response(&crate::format::test_json_body(&(body)))
             .expect("the null-block message parses");
 
         assert_eq!(
@@ -1975,8 +1999,8 @@ mod tests {
         assert_eq!(parser.compaction_blocks, vec![(0, block.clone())]);
         assert!(parser.compaction_stop);
         assert_eq!(
-            parser.compaction_iterations,
-            vec![json!({"type": "compaction", "input_tokens": 9, "output_tokens": 4})]
+            crate::format::aggregated_body_json(&parser.compaction_iterations),
+            json!([{"type": "compaction", "input_tokens": 9, "output_tokens": 4}])
         );
 
         // The ordinary text block still delivered its event; the compaction block rode the

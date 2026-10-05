@@ -3,11 +3,10 @@
 //! request performs, one iteration at a time.
 //!
 //! The ledger is measurement, not billing policy: each dispatched call — a
-//! native compact attempt, a gateway summary inference, a threshold counter, a
-//! continuation generation — appends one iteration carrying the usage the
-//! upstream reported. The billed totals sum the iterations; the client-visible
-//! top-level usage is a separate view the codecs render from the ledger's
-//! message-stage observation. Numerical threshold estimates are never recorded:
+//! native compact attempt, a gateway summary inference, or a threshold counter — appends one
+//! iteration carrying the usage the upstream reported. Continuation usage belongs to its answer
+//! aggregation; the response task combines it with this ledger's billed totals. Numerical
+//! threshold estimates are never recorded:
 //! an estimate describes context size, not billed work.
 
 use crate::ir::IrUsage;
@@ -20,20 +19,9 @@ pub(crate) enum IterationKind {
     /// summary inference.
     Compaction,
 
-    /// An ordinary message generation — the continuation after a checkpoint.
-    Message,
-
     /// A native token-count call backing a threshold decision; accounted for
     /// according to its real endpoint contract, never as a billed generation.
     Counter,
-}
-
-impl IterationKind {
-    /// Whether the iteration is a compaction-producing call.
-    #[must_use]
-    pub(crate) const fn is_compaction(self) -> bool {
-        matches!(self, Self::Compaction)
-    }
 }
 
 /// One dispatched call's accounting record.
@@ -130,18 +118,6 @@ impl CompactionLedger {
         (!self.iterations.is_empty()).then(|| self.billed_totals())
     }
 
-    /// The usage of the last recorded message iteration — the top-level view a
-    /// Messages response renders: the non-compaction iteration the caller's
-    /// answer consumed, excluding compaction work.
-    #[must_use]
-    pub(crate) fn message_iteration_usage(&self) -> Option<IrUsage> {
-        self.iterations
-            .iter()
-            .rev()
-            .find(|record| record.kind == IterationKind::Message)
-            .map(|record| record.usage)
-    }
-
     /// The recorded iterations in dispatch order.
     #[must_use]
     pub(crate) fn iterations(&self) -> &[IterationRecord] {
@@ -150,7 +126,10 @@ impl CompactionLedger {
 }
 
 /// Sums a vendor's authoritative sampling iteration reports without inventing absent usage.
-pub(crate) fn reported_iteration_totals(iterations: &[serde_json::Value]) -> Option<IrUsage> {
+pub(crate) fn reported_iteration_totals(
+    iterations: &[crate::format::compaction_wire::UsageIteration],
+) -> Option<IrUsage> {
+    /// Known usage counters read from an otherwise producer-owned iteration report.
     #[derive(serde::Deserialize)]
     struct Report {
         /// Input tokens consumed in this sampling iteration.
@@ -166,7 +145,17 @@ pub(crate) fn reported_iteration_totals(iterations: &[serde_json::Value]) -> Opt
     }
     let mut total = None;
     for iteration in iterations {
-        let report = Report::deserialize(iteration).ok()?;
+        let report = match iteration {
+            crate::format::compaction_wire::UsageIteration::Gateway(report) => Report {
+                input_tokens: report.input_tokens,
+                output_tokens: report.output_tokens,
+                cache_read_input_tokens: report.cache_read_input_tokens,
+                cache_creation_input_tokens: report.cache_creation_input_tokens,
+            },
+            crate::format::compaction_wire::UsageIteration::Native(value) => {
+                Report::deserialize(value).ok()?
+            }
+        };
         let usage = IrUsage {
             input_tokens: report.input_tokens,
             output_tokens: report.output_tokens,
@@ -195,10 +184,9 @@ mod tests {
         }
     }
 
-    /// The ledger sums billed totals across compaction and message iterations,
+    /// The ledger sums billed totals across compaction iterations,
     /// and a call without a usage report acquires no fabricated counts
-    /// (README §6.8's accounting contract: 180000/3500 plus 23000/1000 bills
-    /// 203000/4500).
+    /// .
     ///
     /// # Panics
     ///
@@ -218,7 +206,7 @@ mod tests {
             }),
         );
 
-        ledger.record(IterationKind::Message, Some(usage(23_000, 1_000)));
+        ledger.record(IterationKind::Compaction, Some(usage(23_000, 1_000)));
 
         // A dispatch the upstream answered without usage: no fabricated row.
         ledger.record(IterationKind::Counter, None);
@@ -232,8 +220,6 @@ mod tests {
         assert_eq!(totals.cached_tokens, Some(500));
         assert_eq!(totals.cache_write_tokens, None);
         assert_eq!(totals.reasoning_tokens, None);
-
-        assert_eq!(ledger.message_iteration_usage(), Some(usage(23_000, 1_000)));
     }
 
     /// Breakdown columns only appear when at least one iteration reported them,
@@ -256,7 +242,7 @@ mod tests {
             }),
         );
         ledger.record(
-            IterationKind::Message,
+            IterationKind::Compaction,
             Some(IrUsage {
                 cached_tokens: Some(1),
                 cache_write_tokens: Some(2),
@@ -273,36 +259,12 @@ mod tests {
 
         // A ledger without any breakdown reports none.
         let mut plain = CompactionLedger::default();
-        plain.record(IterationKind::Message, Some(usage(1, 1)));
+        plain.record(IterationKind::Compaction, Some(usage(1, 1)));
 
         let totals = plain.billed_totals();
 
         assert_eq!(totals.cached_tokens, None);
         assert_eq!(totals.cache_write_tokens, None);
         assert_eq!(totals.reasoning_tokens, None);
-    }
-
-    /// The message-iteration view is the LAST message record, skipping later
-    /// compaction records, and is absent before any message dispatch.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn message_view_is_the_last_message_iteration() {
-        let mut ledger = CompactionLedger::default();
-
-        assert_eq!(ledger.message_iteration_usage(), None);
-
-        ledger.record(IterationKind::Message, Some(usage(1, 1)));
-        ledger.record(IterationKind::Compaction, Some(usage(2, 2)));
-
-        assert_eq!(ledger.message_iteration_usage(), Some(usage(1, 1)));
-
-        ledger.record(IterationKind::Message, Some(usage(3, 3)));
-
-        assert_eq!(ledger.message_iteration_usage(), Some(usage(3, 3)));
-        assert!(IterationKind::Compaction.is_compaction());
-        assert!(!IterationKind::Message.is_compaction());
     }
 }

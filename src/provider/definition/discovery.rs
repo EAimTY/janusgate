@@ -14,6 +14,10 @@ use std::num::NonZeroU64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "control-plane extraction descriptors do not allocate per streamed event"
+)]
 pub enum DiscoveryExtract {
     /// The identifiers are the entries of one upstream array.
     Array {
