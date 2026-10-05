@@ -631,6 +631,47 @@ describe("ProviderNewScreen creation", () => {
         expect(sent).toHaveLength(0);
     });
 
+    it("clears only action notices when creation starts while a read failure stands", async () => {
+        const rejections: Array<(error: unknown) => void> = [];
+        const api: ManagementApi = {
+            ...screenApi([], {
+                providers: () => Promise.reject(new Error("the listing refused")),
+            }),
+            createProviderDefinition: () =>
+                new Promise((_resolve, reject) => {
+                    rejections.push(reject);
+                }),
+        };
+        disposes.push(render(() => <ProviderNewScreen api={api} />, document.body));
+        await settle();
+        typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
+        typeInto(labeledInput("Upstream API key"), "sk-test");
+        await settle();
+
+        buttonWithText("Create provider").click();
+        await settle();
+        expect(document.body.textContent).toContain("the listing refused");
+        expect(buttonWithText("Read again").disabled).toBe(false);
+
+        rejections[0]?.(conflictFailure("definition name already stored"));
+        await settle();
+        expect(document.body.textContent).toContain("definition name already stored");
+        expect(document.body.textContent).not.toContain("the listing refused");
+        expect(
+            [
+                ...document.querySelectorAll("button"),
+            ].some((button) => button.textContent?.includes("Read again")),
+        ).toBe(false);
+
+        buttonWithText("Create provider").click();
+        await settle();
+        expect(rejections).toHaveLength(2);
+        expect(document.body.textContent).not.toContain("definition name already stored");
+        rejections[1]?.(conflictFailure("definition still stored"));
+        await settle();
+        expect(document.body.textContent).toContain("definition still stored");
+    });
+
     it("states a refused creation's diagnosis with no Read again, and it survives a boot re-read", async () => {
         const sent: CreateProviderRequest[] = [];
         const api: ManagementApi = {

@@ -15,7 +15,6 @@ import type { ManagementApi } from "/src/management-api/client";
 import { hasBaseReference } from "/src/management-api/definitions/base-reference";
 import { validateDefinitionPayload } from "/src/management-api/definitions/payload";
 import type { DefinitionPayloadResult } from "/src/management-api/definitions/types";
-import { isAbortFailure } from "/src/management-api/errors";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
@@ -29,7 +28,6 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { PROVIDER_PRESETS } from "/src/presets/catalog";
 import { matchStoredDefinition, presetDefinitionJson } from "/src/presets/definition";
 import type { ProviderPreset } from "/src/presets/types";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { createCreateAction } from "/src/screen-state/create-form";
 import {
@@ -37,7 +35,7 @@ import {
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screen-state/notices";
-import { ReadCallFailure, readAll } from "/src/screen-state/read";
+import { createScreenRead, readAll } from "/src/screen-state/read";
 import { Button, TextField } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
 import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
@@ -80,13 +78,6 @@ function FlowLockNotice(): JSX.Element {
 export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [presetId, setPresetId] = createSignal(PROVIDER_PRESETS[0].id);
     const [definitions, setDefinitions] = createSignal<ReadonlyArray<DefinitionResponse>>([]);
-    /**
-     * Whether a boot cycle answered whole, establishing what is stored: a
-     * cycle in which either call fails installs nothing, so the claims stay
-     * withheld until a whole cycle — the failure notice being the only
-     * state a failed cycle leaves.
-     */
-    const [isStoredKnown, setIsStoredKnown] = createSignal(false);
     const [name, setName] = createSignal("");
     const [modelPrefix, setModelPrefix] = createSignal<string | null>(null);
     const resolvedPrefix = (): string =>
@@ -100,15 +91,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const [hasBaseUrlInput, setHasBaseUrlInput] = createSignal(false);
     const [apiKey, setApiKey] = createSignal("");
     // The page's standing notice under the shared two-origin rule
-    // (`createStandingNotice` in `./read`): the boot read's failures carry
+    // (`createStandingNotice` in `/src/screen-state/notices`): the boot read's failures carry
     // the read origin and the static creation path's outcomes the action
     // one, so a boot cycle that answers clears only the former and the
     // creation's own clear only the latter. The OAuth flow's failures never
     // reach it — the flow fragment states its own inside the Connect card —
     // so the channels cannot render one outcome twice.
     const failure = createStandingNotice();
-    /** Whether the boot read's cycle is in flight — the read-again button's busy state. */
-    const [isBootReading, setIsBootReading] = createSignal(true);
 
     /** The catalog preset of the given id, falling back to the first entry. */
     const presetById = (id: string): ProviderPreset =>
@@ -161,113 +150,35 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             : (PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? null);
     });
 
-    // The taken names arrive after the boot read; until then the preset's
-    // base name stands in, and a hand-typed name is never overwritten. A read
-    // that fails is stated where every failure on this page stands — never
-    // silently swallowed into a suggestion that names a taken name again.
-    let bootController: AbortController | null = null;
+    // The page renders its form throughout the boot read, without a skeleton.
+    // Both inventories must answer before anything installs; the harness owns
+    // cancellation, refresh, and read failures, sharing the action's notice
+    // owner while leaving the OAuth flow's lifecycle independent.
+    const read = createScreenRead({
+        isNoticeKeptOnSuccess: true,
+        standingNotice: failure,
+        load: async (signal) => {
+            const [providers, definitions] = await readAll(
+                signal,
+                readProviders(props.api),
+                readProviderDefinitions(props.api),
+            );
+            if (signal.aborted) {
+                return;
+            }
 
-    /**
-     * The boot read: the taken provider names (the name suggestion's ground
-     * truth) and the preset's stored definition versions. It subscribes to
-     * the refresh pulse directly instead of through the shared read harness:
-     * the page renders fully without these reads — they refine the
-     * suggestion and the stored-version line, and own no skeleton — so the
-     * pulse re-runs them here, and the page's own Read again control beside
-     * the failure notice reruns them in place (README §6.3).
-     *
-     * Both calls run through the shared `readAll` under the cycle's signal,
-     * so the cycle settles once: both must answer for it to count as read.
-     * A cycle in which either call fails installs nothing — no listing, no
-     * stored-known stamp, no name seed — its diagnosis standing on the
-     * notice with the read origin, Read again retrying the whole cycle. A
-     * whole cycle installs both results, clears only the read-origin failure
-     * (a creation diagnosis the cycle never retried survives the re-read —
-     * the two-origin rule), and stamps the shell. The cycle writes only the
-     * listing signals and the notice, never the live OAuth flow's state:
-     * neither rerun may unlock or disturb a flow in flight.
-     */
-    const readBootState = (): void => {
-        bootController?.abort();
+            const taken = new Set(providers.providers.map((row) => row.name));
+            setTakenNames(taken);
+            setDefinitions(definitions.provider_definitions);
 
-        const cycle = new AbortController();
-        bootController = cycle;
-        setIsBootReading(true);
-
-        void readAll(
-            cycle.signal,
-            readProviders(props.api),
-            readProviderDefinitions(props.api),
-        ).then(
-            ([providers, definitions]) => {
-                if (cycle.signal.aborted) {
-                    // Superseded after the reads resolved but before this
-                    // continuation ran: the newer cycle owns the page —
-                    // nothing installs, not even the in-flight lift.
-                    return;
-                }
-
-                setIsBootReading(false);
-
-                const taken = new Set(providers.providers.map((row) => row.name));
-                setTakenNames(taken);
-                setDefinitions(definitions.provider_definitions);
-                setIsStoredKnown(true);
-
-                if (!isNameTouched()) {
-                    // The seed computes over the local `taken`, not the
-                    // `suggestion` memo: a write from this continuation
-                    // stages until the next flush, so a read-back of the
-                    // memo would still see the committed empty set and
-                    // seed a taken base name without its `-N` suffix.
-                    setName(suggestProviderName(preset().suggestedName, taken));
-                }
-
-                // The cycle read: it clears only the read-origin failure
-                // — a creation diagnosis the cycle never retried
-                // survives the re-read (the two-origin rule).
-                failure.clearOfOrigin("read");
-                reportRefresh();
-            },
-            (error: unknown): void => {
-                if (isAbortFailure(error) || cycle.signal.aborted) {
-                    // Superseded or disposed: an aborted cycle installs
-                    // nothing — not even its diagnosis, which belongs to
-                    // a cycle the page has already replaced.
-                    return;
-                }
-
-                setIsBootReading(false);
-
-                if (!(error instanceof ReadCallFailure)) {
-                    // `readAll` rejects with nothing else; anything here
-                    // is a bug and stays loud, the shared harness's own
-                    // contract for what escapes a load.
-                    throw error;
-                }
-
-                // The cycle failed: its diagnosis replaces whatever
-                // stands — the newest cycle's failure is the current
-                // fact, and the read-origin stamp brings the Read-again
-                // recovery with it.
-                failure.state("read", error.notice);
-            },
-        );
-    };
-
-    // One boot read per mount, repeated when *refresh* is pressed, the cycle
-    // in flight aborted when the pulse moves again or the screen goes away —
-    // the read harness's subscription, minus the skeleton.
-    createEffect(
-        () => refreshRequest(),
-        () => {
-            readBootState();
-
-            return () => {
-                bootController?.abort();
-            };
+            if (!isNameTouched()) {
+                // Solid stages these writes until the next flush. Seed from
+                // the local inventory rather than reading the suggestion
+                // memo, which still carries the previously committed names.
+                setName(suggestProviderName(preset().suggestedName, taken));
+            }
         },
-    );
+    });
 
     const suggestion = createMemo(() => suggestProviderName(preset().suggestedName, takenNames()));
 
@@ -659,8 +570,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <Button
                         glyph="refresh"
                         tone="ghost"
-                        isBusy={isBootReading()}
-                        onClick={readBootState}
+                        isBusy={read.isReading()}
+                        onClick={read.reload}
                     >
                         {translation()(($) => $.screens.providerNewScreen.readAgain)}
                     </Button>
@@ -946,7 +857,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             // the page states no fact about the stored
                             // versions; the failure notice is the only state
                             // a failed cycle leaves.
-                            <Show when={isStoredKnown()}>
+                            <Show when={read.hasRead()}>
                                 <p class="text-[12.5px] text-ink-faint">
                                     {translation()(
                                         ($) =>

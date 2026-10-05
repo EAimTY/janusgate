@@ -7,7 +7,7 @@ import { performManagementCall } from "../management-api/outcome";
 import { refreshRequest, reportRefresh } from "../refresh-state";
 import type { FailureCall } from "./failure";
 import { describeCallFailure } from "./failure";
-import type { ScreenNotice } from "./notices";
+import type { ScreenNotice, StandingNoticeController } from "./notices";
 import { createStandingNotice, screenFailureNotice } from "./notices";
 
 /**
@@ -179,10 +179,12 @@ export function createScreenRead(options: {
      * failure is cleared by the read that succeeds regardless).
      */
     readonly isNoticeKeptOnSuccess?: boolean;
+    /** An existing notice owner shared with actions that clear only their own origin. */
+    readonly standingNotice?: StandingNoticeController;
 }): ScreenRead {
     const [hasRead, setHasRead] = createSignal(false);
     const [isReading, setIsReading] = createSignal(true);
-    const standing = createStandingNotice();
+    const standing = options.standingNotice ?? createStandingNotice();
     const [isDisposed, setIsDisposed] = createSignal(false);
 
     let controller: AbortController | null = null;
@@ -231,10 +233,11 @@ export function createScreenRead(options: {
         // reads never clear an action's notice on a kept screen, and
         // actions never clear a read's except by stating their own or
         // dismissing explicitly (`showNotice(null)`).
-        const isNoticeShielded =
-            options.isNoticeKeptOnSuccess === true && standing.origin() === "action";
-
-        if (!isNoticeShielded) {
+        // Solid stages imperative writes: clear by origin through the
+        // owner's updater so a pending action notice is shielded too.
+        if (options.isNoticeKeptOnSuccess === true) {
+            standing.clearOfOrigin("read");
+        } else {
             standing.clear();
         }
 

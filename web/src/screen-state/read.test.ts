@@ -17,6 +17,7 @@ import {
     providerRow,
     settle,
 } from "../test-support/management-api";
+import { createStandingNotice } from "./notices";
 import { createScreenRead, type ReadCall, ReadCallFailure, readAll, readOne } from "./read";
 import { createEditRow, createHeldRow, createPinnedRow } from "./row-state";
 
@@ -226,6 +227,52 @@ function manualLoad(): {
 }
 
 describe("createScreenRead", () => {
+    it("shares one origin-aware notice with the action channel through read recovery", async () => {
+        const state = manualLoad();
+        const standing = createStandingNotice();
+        const { read } = mountedRead({
+            load: state.load,
+            isNoticeKeptOnSuccess: true,
+            standingNotice: standing,
+        });
+        await waitForCycles(state, 1);
+        state.cycles[0]?.fail();
+        await settle();
+
+        expect(standing.origin()).toBe("read");
+        expect(read.notice()).toBe(standing.notice());
+        standing.clearOfOrigin("action");
+        await settle();
+        expect(read.notice()).not.toBeNull();
+
+        read.reload();
+        await waitForCycles(state, 2);
+        expect(standing.origin()).toBe("read");
+        state.cycles[1]?.succeed();
+        await settle();
+        expect(standing.notice()).toBeNull();
+        expect(read.hasRead()).toBe(true);
+
+        read.reload();
+        await waitForCycles(state, 3);
+        // Queue the action failure immediately before the read answers,
+        // without settling Solid's staged notice write first.
+        void Promise.resolve().then(() => {
+            standing.state("action", {
+                tone: "bad",
+                title: "Creation refused.",
+            });
+        });
+        state.cycles[2]?.succeed();
+        await settle();
+        expect(read.notice()?.title).toBe("Creation refused.");
+        expect(standing.origin()).toBe("action");
+
+        standing.clearOfOrigin("action");
+        await settle();
+        expect(read.notice()).toBeNull();
+    });
+
     it("installs nothing from a superseded cycle's late failure", async () => {
         const state = manualLoad();
         const { read } = mountedRead({

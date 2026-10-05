@@ -55,7 +55,7 @@ type StandingNotice = {
 };
 
 /** The origin-paired standing notice one screen states its failures and outcomes through. */
-type StandingNoticeController = {
+export type StandingNoticeController = {
     /** The standing notice, or `null` while nothing stands. */
     readonly notice: Accessor<ScreenNotice | null>;
     /** The origin of the notice that stands, or `null` while nothing stands. */

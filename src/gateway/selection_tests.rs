@@ -2441,8 +2441,8 @@ async fn fresh_pool_selection_key(database: &Database) -> Result<i64, Error> {
     .id)
 }
 
-/// Affinity reevaluation reauthorizes policy/key state before any account work, while a bound
-/// selection deliberately retains its admission until its existing operation finishes.
+/// Ordinary and compaction affinity reevaluation reauthorize policy/key state before account
+/// work, while a bound selection retains its admission until its existing operation finishes.
 ///
 /// # Panics
 /// Panics if waiting requests dispatch after revocation, retarget denial, or key removal.
@@ -2454,7 +2454,10 @@ async fn fresh_pool_selection_key(database: &Database) -> Result<i64, Error> {
 async fn released_affinity_waiters_reauthorize_coherent_admission() -> Result<(), Box<dyn StdError>>
 {
     let _configuration = test_support::configuration_lock();
-    for change in 0..4 {
+    for (is_compaction, change) in [false, true]
+        .into_iter()
+        .flat_map(|is_compaction| (0..4).map(move |change| (is_compaction, change)))
+    {
         let (context, _database, _directory, servers, targets, route_id) =
             pool(vec![MockAction::Close]).await?;
         let pool_id = storage::routing::list_pools(&context.database)
@@ -2499,13 +2502,25 @@ async fn released_affinity_waiters_reauthorize_coherent_admission() -> Result<()
         };
         let task_context = context.clone();
         let follower = tokio::spawn(async move {
-            execute_selection(
-                &task_context,
-                request,
-                key.id,
-                ApiLogEndpointType::OpenaiChatCompletions,
-            )
-            .await
+            if is_compaction {
+                selection::select_compaction(
+                    &task_context,
+                    &request,
+                    &crate::compaction::history::BoundaryPreparation::default(),
+                    key.id,
+                )
+                .await
+                .map(|_| ())
+            } else {
+                execute_selection(
+                    &task_context,
+                    request,
+                    key.id,
+                    ApiLogEndpointType::OpenaiChatCompletions,
+                )
+                .await
+                .map(|_| ())
+            }
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !context.affinity_cache.has_waiting_request(namespace) {

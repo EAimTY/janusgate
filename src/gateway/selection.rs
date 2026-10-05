@@ -3,7 +3,7 @@
 use super::{AttemptOutcome, Context, Error, ModelRouting, execute_attempt};
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome},
-    affinity::{Accepted, Decision, Namespace, Ownership, WaitOutcome},
+    affinity::{Accepted, Decision, Evidence, Namespace, Ownership, WaitOutcome},
     database::Database,
     format::ParsedRequest,
     storage::{
@@ -77,6 +77,70 @@ impl Selection {
         match self.snapshot.target {
             TargetSnapshot::Pool { id, .. } => Some(id),
             _ => None,
+        }
+    }
+
+    /// Acquires request affinity and reauthorizes the route whenever a reservation is released.
+    /// Authenticated native requirements are resolved against each refreshed pool snapshot;
+    /// quota and structural availability remain the selected account's next step.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage, admission, native incompatibility, or conflicting affinity failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a coherent pooled snapshot violates its authored target invariant.
+    async fn acquire_affinity(
+        &mut self,
+        context: &Context,
+        api_key_id: i64,
+        mut evidence: Evidence,
+        preparation: Option<&crate::compaction::history::BoundaryPreparation>,
+    ) -> Result<Ownership, Error> {
+        loop {
+            let Some(pool_id) = self.pool_id() else {
+                return Ok(Ownership::Direct);
+            };
+            evidence.proven_provider = preparation
+                .map(|preparation| self.compaction_provider(preparation))
+                .transpose()?
+                .flatten();
+            let namespace = Namespace {
+                api_key_id,
+                pool_id,
+            };
+            let decision = context.affinity_cache.acquire(namespace, &evidence);
+            // Acquisition precedes this committed presence read: a deletion before acquisition
+            // is caught here, while a later deletion invalidates the already-created generation.
+            let presence =
+                storage::routing::namespace_presence(&context.database, api_key_id, pool_id)
+                    .await?;
+            if !presence.has_api_key {
+                context.affinity_cache.remove_api_key(api_key_id);
+            }
+            if !presence.has_pool {
+                context.affinity_cache.remove_pool(pool_id);
+            }
+            return match decision {
+                Decision::Fresh(lease) => Ok(Ownership::Fresh(lease)),
+                Decision::Bound(lease) => Ok(Ownership::Bound(lease)),
+                Decision::Conflict => Err(Error::RoutingStateConflict {
+                    model: self.snapshot.route.public_id.clone(),
+                }),
+                Decision::Wait(waiter) => match waiter.wait().await {
+                    WaitOutcome::Bound(lease) => Ok(Ownership::Bound(lease)),
+                    WaitOutcome::Reevaluate => {
+                        *self = Self::load(
+                            &context.database,
+                            &self.snapshot.route.public_id,
+                            api_key_id,
+                        )
+                        .await?;
+                        continue;
+                    }
+                },
+            };
         }
     }
 
@@ -490,56 +554,24 @@ pub(super) async fn select_compaction(
         return Ok(CompactionSelection::direct(selection.first_structural()?));
     }
     let projection = preparation.routing_preparation(parsed)?;
-    loop {
-        let Some(pool_id) = selection.pool_id() else {
-            return Ok(CompactionSelection::direct(selection.first_structural()?));
-        };
-        let required = selection.compaction_provider(preparation)?;
-        let mut evidence = projection.projector.evidence();
-        evidence.artifact = projection.artifact;
-        evidence.proven_provider = required;
-        let namespace = Namespace {
-            api_key_id,
-            pool_id,
-        };
-        let decision = context.affinity_cache.acquire(namespace, &evidence);
-        let presence =
-            storage::routing::namespace_presence(&context.database, api_key_id, pool_id).await?;
-        if !presence.has_api_key {
-            context.affinity_cache.remove_api_key(api_key_id);
-        }
-        if !presence.has_pool {
-            context.affinity_cache.remove_pool(pool_id);
-        }
-        let ownership = match decision {
-            Decision::Fresh(lease) => Ownership::Fresh(lease),
-            Decision::Bound(lease) => Ownership::Bound(lease),
-            Decision::Conflict => {
-                return Err(Error::RoutingStateConflict {
-                    model: parsed.ir.model.clone(),
-                });
-            }
-            Decision::Wait(waiter) => match waiter.wait().await {
-                WaitOutcome::Bound(lease) => Ownership::Bound(lease),
-                WaitOutcome::Reevaluate => {
-                    selection =
-                        Selection::load(&context.database, &parsed.ir.model, api_key_id).await?;
-                    continue;
-                }
-            },
-        };
-        let routing = match &ownership {
-            Ownership::Bound(lease) => selection.bound(context, lease.provider_id()).await?,
-            Ownership::Fresh(_) => selection.next(context).await?,
-            Ownership::Direct => selection.first_structural()?,
-        };
-        return Ok(CompactionSelection {
-            selection: Some(selection),
-            routing,
-            ownership,
-            projector: Some(projection.projector),
-        });
+    let mut evidence = projection.projector.evidence();
+    evidence.artifact = projection.artifact;
+    let ownership = selection
+        .acquire_affinity(context, api_key_id, evidence, Some(preparation))
+        .await?;
+    if matches!(ownership, Ownership::Direct) {
+        return Ok(CompactionSelection::direct(selection.first_structural()?));
     }
+    let routing = match &ownership {
+        Ownership::Bound(lease) => selection.bound(context, lease.provider_id()).await?,
+        Ownership::Fresh(_) | Ownership::Direct => selection.next(context).await?,
+    };
+    Ok(CompactionSelection {
+        selection: Some(selection),
+        routing,
+        ownership,
+        projector: Some(projection.projector),
+    })
 }
 
 /// A final single-account result and its real target; rejected results still own their drafts.
@@ -569,50 +601,14 @@ pub(crate) async fn execute_selection(
     let projector = selection
         .pool_id()
         .map(|_| parsed.affinity.project(&ir.messages));
-    let mut ownership = Ownership::Direct;
-    if let (Some(pool_id), Some(projector)) = (selection.pool_id(), projector.as_ref()) {
-        let mut namespace = Namespace {
-            api_key_id,
-            pool_id,
-        };
-        let evidence = projector.evidence();
-        loop {
-            let decision = context.affinity_cache.acquire(namespace, &evidence);
-            // Acquisition precedes this committed presence read: a deletion before acquisition
-            // is caught here, while a later deletion invalidates the already-created generation.
-            let presence = storage::routing::namespace_presence(
-                &context.database,
-                api_key_id,
-                namespace.pool_id,
-            )
-            .await?;
-            if !presence.has_api_key {
-                context.affinity_cache.remove_api_key(api_key_id);
-            }
-            if !presence.has_pool {
-                context.affinity_cache.remove_pool(namespace.pool_id);
-            }
-            ownership = match decision {
-                Decision::Fresh(lease) => Ownership::Fresh(lease),
-                Decision::Bound(lease) => Ownership::Bound(lease),
-                Decision::Conflict => return Err(Error::RoutingStateConflict { model: ir.model }),
-                Decision::Wait(waiter) => match waiter.wait().await {
-                    WaitOutcome::Bound(lease) => Ownership::Bound(lease),
-                    WaitOutcome::Reevaluate => {
-                        selection =
-                            Selection::load(&context.database, &ir.model, api_key_id).await?;
-                        let Some(pool_id) = selection.pool_id() else {
-                            ownership = Ownership::Direct;
-                            break;
-                        };
-                        namespace.pool_id = pool_id;
-                        continue;
-                    }
-                },
-            };
-            break;
+    let mut ownership = match projector.as_ref() {
+        Some(projector) => {
+            selection
+                .acquire_affinity(context, api_key_id, projector.evidence(), None)
+                .await?
         }
-    }
+        None => Ownership::Direct,
+    };
     loop {
         let routing = match &ownership {
             Ownership::Bound(lease) => selection.bound(context, lease.provider_id()).await?,
