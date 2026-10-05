@@ -6,9 +6,9 @@
 //! The insert of a successor version is conditional on the caller naming the current latest
 //! version, so a stale base version can never fork the history.
 
-use super::{Error, SqlExecutor, definition_from_row_offset};
+use super::{Error, SqlExecutor};
 use crate::{
-    database::{Database, Transaction, params},
+    database::{Database, Row, Transaction, params},
     provider::definition::{DefinitionPayload, ProviderDefinition},
 };
 use std::num::NonZeroI64;
@@ -289,6 +289,69 @@ pub(crate) async fn latest_version_in_transaction(
         .await?;
 
     Ok(rows.first().map(|row| row.get(0)).transpose()?)
+}
+
+/// Parses a definition payload JSON column, wrapped exactly once as internal storage drift: the
+/// column was written only through the validated management path, so a payload failing here is
+/// never the requesting client's fault.
+pub(super) fn payload_from_json<T>(json: Option<String>, what: &str) -> Result<T, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let json = json.ok_or_else(|| Error::Drift {
+        message: format!("{what} column must not be null"),
+    })?;
+
+    serde_json::from_str(&json).map_err(|error| Error::Drift {
+        message: format!("{what} column carries a malformed payload: {error}"),
+    })
+}
+
+/// Parses a provider definition row in the definition column order of
+/// [`DEFINITION_COLUMNS`] at the given column offset.
+pub(super) fn definition_from_row_offset(
+    row: &Row,
+    offset: usize,
+) -> Result<ProviderDefinition, Error> {
+    let name: String = row.get(offset)?;
+    let version: i64 = row.get(offset + 1)?;
+
+    let version = NonZeroI64::new(version).ok_or_else(|| Error::Drift {
+        message: format!("definition `{name}` carries a zero version"),
+    })?;
+
+    let format: String = row.get(offset + 2)?;
+
+    let format = crate::format::UpstreamFormat::parse(&format).ok_or_else(|| Error::Drift {
+        message: format!("definition `{name}` carries an unknown format `{format}`"),
+    })?;
+
+    Ok(ProviderDefinition {
+        name,
+        version,
+        payload: crate::provider::DefinitionPayload {
+            format,
+            inference: payload_from_json(row.get(offset + 3)?, "inference")?,
+            credential: payload_from_json(row.get(offset + 4)?, "credential")?,
+            provisioning: row
+                .get::<Option<String>>(offset + 5)?
+                .map(|json| payload_from_json(Some(json), "provisioning"))
+                .transpose()?,
+            discovery: row
+                .get::<Option<String>>(offset + 6)?
+                .map(|json| payload_from_json(Some(json), "discovery"))
+                .transpose()?,
+            quota: row
+                .get::<Option<String>>(offset + 8)?
+                .map(|json| payload_from_json(Some(json), "quota"))
+                .transpose()?,
+            compaction: row
+                .get::<Option<String>>(offset + 7)?
+                .map(|json| payload_from_json(Some(json), "compaction"))
+                .transpose()?,
+        },
+        created_at: row.get(offset + 9)?,
+    })
 }
 
 #[cfg(test)]

@@ -208,66 +208,50 @@ pub(crate) async fn responses_standalone(
         &body,
     )?;
 
-    log.stamp();
-
-    let response = request
-        .send()
-        .await
-        .map_err(|error| GatewayError::Unavailable {
-            detail: format!("upstream unreachable: {error}"),
-        })?;
-
-    let status = response.status();
-    log.observe_response(status);
-    if status.is_success()
-        && let Some(ownership) = ownership
+    let response = match gateway::dispatch(
+        context,
+        request,
+        &provider,
+        &routing.model.upstream_id,
+        log,
+        ownership,
+        gateway::QuotaPolicy::Classify,
+    )
+    .await?
     {
-        ownership.accept(routing.provider.id);
-    }
+        gateway::DispatchOutcome::Accepted(response) => response,
+        gateway::DispatchOutcome::Rejected { status, body } => {
+            let detail = body.lossy_text();
+            let excerpt = crate::http_body::truncate_excerpt(&detail);
 
-    if !status.is_success() {
-        let body = crate::http_body::read_bounded_error_body(response).await;
-        if let Some(error) = gateway::quota_error_of(
-            context,
-            &provider,
-            &routing.model.upstream_id,
-            status,
-            &body,
-        )
-        .await?
-        {
-            return Err(NativeAttemptFailure::Failed(error));
+            if let Some(classification) =
+                classify_failure(operation.unsupported.as_ref(), status, &detail)
+                    .await
+                    .or(classify_failure(
+                        routing
+                            .provider
+                            .definition
+                            .payload
+                            .compaction
+                            .as_ref()
+                            .and_then(|section| {
+                                section.mechanisms.responses_standalone_compact.as_ref()
+                            })
+                            .and_then(|declaration| declaration.unsupported.as_ref()),
+                        status,
+                        &detail,
+                    )
+                    .await)
+            {
+                return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
+            }
+
+            return Err(NativeAttemptFailure::Failed(GatewayError::Upstream {
+                status,
+                detail: excerpt,
+            }));
         }
-        let detail = body.lossy_text();
-        let excerpt = crate::http_body::truncate_excerpt(&detail);
-
-        if let Some(classification) =
-            classify_failure(operation.unsupported.as_ref(), status, &detail)
-                .await
-                .or(classify_failure(
-                    routing
-                        .provider
-                        .definition
-                        .payload
-                        .compaction
-                        .as_ref()
-                        .and_then(|section| {
-                            section.mechanisms.responses_standalone_compact.as_ref()
-                        })
-                        .and_then(|declaration| declaration.unsupported.as_ref()),
-                    status,
-                    &detail,
-                )
-                .await)
-        {
-            return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
-        }
-
-        return Err(NativeAttemptFailure::Failed(GatewayError::Upstream {
-            status,
-            detail: excerpt,
-        }));
-    }
+    };
 
     let bytes = response
         .bytes()
@@ -346,32 +330,17 @@ pub(crate) async fn count_tokens(
         &body,
     )?;
 
-    log.stamp();
-
-    let response = request
-        .send()
-        .await
-        .map_err(|error| GatewayError::Unavailable {
-            detail: format!("upstream unreachable: {error}"),
-        })?;
-
-    let status = response.status();
-    log.observe_response(status);
-    if status.is_success()
-        && let Some(ownership) = ownership
-    {
-        ownership.accept(routing.provider.id);
-    }
-
-    if !status.is_success() {
-        let detail = crate::http_body::read_error_body(response).await;
-        let excerpt = crate::http_body::truncate_excerpt(&detail);
-
-        return Err(GatewayError::Upstream {
-            status,
-            detail: excerpt,
-        });
-    }
+    let response = gateway::dispatch(
+        context,
+        request,
+        &provider,
+        &routing.model.upstream_id,
+        log,
+        ownership,
+        gateway::QuotaPolicy::Disabled,
+    )
+    .await?
+    .into_accepted()?;
 
     let bytes = response
         .bytes()
@@ -486,7 +455,7 @@ pub(crate) async fn messages_on_demand(
 
     let inference = &routing.provider.definition.payload.inference;
 
-    let merged_headers = messages::overlay_header_rows(&inference.headers, overlay_headers);
+    let merged_headers = gateway::overlay_header_rows(&inference.headers, overlay_headers);
 
     let request = gateway::build_internal_request(
         &context.data_plane,
@@ -498,48 +467,32 @@ pub(crate) async fn messages_on_demand(
         &body,
     )?;
 
-    log.stamp();
-
-    let response = request
-        .send()
-        .await
-        .map_err(|error| GatewayError::Unavailable {
-            detail: format!("upstream unreachable: {error}"),
-        })?;
-
-    let status = response.status();
-    log.observe_response(status);
-    if status.is_success()
-        && let Some(ownership) = ownership
+    let response = match gateway::dispatch(
+        context,
+        request,
+        &provider,
+        &routing.model.upstream_id,
+        log,
+        ownership,
+        gateway::QuotaPolicy::Classify,
+    )
+    .await?
     {
-        ownership.accept(routing.provider.id);
-    }
+        gateway::DispatchOutcome::Accepted(response) => response,
+        gateway::DispatchOutcome::Rejected { status, body } => {
+            let detail = body.lossy_text();
+            let excerpt = crate::http_body::truncate_excerpt(&detail);
 
-    if !status.is_success() {
-        let body = crate::http_body::read_bounded_error_body(response).await;
-        if let Some(error) = gateway::quota_error_of(
-            context,
-            &provider,
-            &routing.model.upstream_id,
-            status,
-            &body,
-        )
-        .await?
-        {
-            return Err(NativeAttemptFailure::Failed(error));
+            if let Some(classification) = classify_failure(classifier, status, &detail).await {
+                return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
+            }
+
+            return Err(NativeAttemptFailure::Failed(GatewayError::Upstream {
+                status,
+                detail: excerpt,
+            }));
         }
-        let detail = body.lossy_text();
-        let excerpt = crate::http_body::truncate_excerpt(&detail);
-
-        if let Some(classification) = classify_failure(classifier, status, &detail).await {
-            return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
-        }
-
-        return Err(NativeAttemptFailure::Failed(GatewayError::Upstream {
-            status,
-            detail: excerpt,
-        }));
-    }
+    };
 
     // An always-streaming definition streams the block; the SSE parser captures
     // it identically to the JSON body parse.

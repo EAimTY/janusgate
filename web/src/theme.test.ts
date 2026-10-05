@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { drainWrites } from "/src/screens/screen-test-support";
+import { drainWrites } from "./test-support/management-api";
 import { cycleTheme, nextThemePreference, themePreference } from "./theme";
 
 // jsdom implements neither matchMedia nor storage. The module reads storage

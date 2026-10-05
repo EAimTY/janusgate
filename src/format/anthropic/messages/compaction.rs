@@ -1,6 +1,5 @@
 //! Compaction-specific pieces of the Anthropic Messages codec: the outbound gateway carrier
-//! block, the tolerant typed view of a vendor compaction block, and the header-overlay helper
-//! the compaction operation descriptors compose with.
+//! block and the tolerant typed view of a vendor compaction block.
 //!
 //! The Messages compaction wire (request parsing, upstream render extensions, upstream capture,
 //! client rendering) lives in the family's concern modules beside this one; this module holds
@@ -38,43 +37,10 @@ pub(crate) fn gateway_carrier_block(
     )
 }
 
-/// Merges an operation's overlay header rows over the inference header rows: an overlay row
-/// replaces the base row of the same name — the operation's value wins, the base's position is
-/// not kept — and the result preserves overlay order first, then the remaining base rows in
-/// their order. This is how a compaction operation's pinned header (the `anthropic-beta` beta
-/// declaration foremost) overrides the inference header set without reordering the rest.
-#[must_use]
-pub(crate) fn overlay_header_rows(
-    base: &[crate::provider::definition::template::ParamRow],
-    overlay: &[crate::provider::definition::template::ParamRow],
-) -> Vec<crate::provider::definition::template::ParamRow> {
-    let mut rows: Vec<_> = overlay.to_vec();
-
-    for row in base {
-        if !overlay
-            .iter()
-            .any(|overlay_row| overlay_row.name == row.name)
-        {
-            rows.push(row.clone());
-        }
-    }
-
-    rows
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block, overlay_header_rows};
-    use crate::provider::definition::template::{ParamRow, StringExpr};
+    use super::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block};
     use serde_json::json;
-
-    /// Builds one literal header row.
-    fn row(name: &str, value: &str) -> ParamRow {
-        ParamRow {
-            name: name.to_string(),
-            value: StringExpr::literal(value),
-        }
-    }
 
     /// Renders the gateway carrier block for inspection: the readable summary or the fixed
     /// description rides as `content`, the sealed carrier as `signature`, and no absent member
@@ -108,41 +74,5 @@ mod tests {
                 "signature": "carrier",
             })
         );
-    }
-
-    /// Overlay rows replace same-named base rows, keep overlay order ahead of the surviving
-    /// base rows, and never reorder the untouched base rows.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the merged rows diverge from the replace-by-name contract.
-    #[test]
-    fn overlay_header_rows_replace_by_name_and_preserve_order() {
-        let base = vec![
-            row("x-api-key", "key"),
-            row("anthropic-version", "2023-06-01"),
-            row("anthropic-beta", "old-beta"),
-        ];
-        let overlay = vec![
-            row("anthropic-beta", "compact-2026-09-04"),
-            row("x-trace", "t1"),
-        ];
-
-        let merged = overlay_header_rows(&base, &overlay);
-
-        assert_eq!(
-            merged,
-            vec![
-                // The overlay row replaced the same-named base row and carries its own value.
-                row("anthropic-beta", "compact-2026-09-04"),
-                row("x-trace", "t1"),
-                // The surviving base rows keep their order.
-                row("x-api-key", "key"),
-                row("anthropic-version", "2023-06-01"),
-            ]
-        );
-
-        // An empty overlay keeps the base rows untouched in order.
-        assert_eq!(overlay_header_rows(&base, &[]), base);
     }
 }

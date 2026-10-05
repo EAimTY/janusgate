@@ -1,8 +1,8 @@
 import { render } from "@solidjs/web";
 import { createSignal } from "solid-js";
 import { describe, expect, it } from "vitest";
-import { createDisposals, drainWrites, optionRepr } from "/src/screens/screen-test-support";
-import { SelectField } from "/src/ui/controls";
+import { createDisposals, drainWrites, optionRepr } from "../test-support/management-api";
+import { SelectField } from "./controls";
 
 const disposes = createDisposals();
 

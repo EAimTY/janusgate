@@ -1,8 +1,8 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectionService } from "/src/connection/app-service";
-import { ConnectionScreen } from "/src/screens/connection-screen";
-import { buttonWithText, labeledInput, settle, typeInto } from "./screen-test-support";
+import { connectionService } from "../connection/app-service";
+import { buttonWithText, labeledInput, settle, typeInto } from "../test-support/management-api";
+import { ConnectionScreen } from "./connection-screen";
 
 /**
  * The connection screen runs against the application's real connection

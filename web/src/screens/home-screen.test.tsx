@@ -1,6 +1,6 @@
 import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
-import type { ManagementApi } from "/src/management-api/client";
+import type { ManagementApi } from "../management-api/client";
 import type {
     ApiKeyResponse,
     ModelResponse,
@@ -9,8 +9,7 @@ import type {
     QueryUsageRequest,
     QueryUsageResponse,
     UsageBucket,
-} from "/src/management-api/generated/v0";
-import { HomeScreen } from "/src/screens/home-screen";
+} from "../management-api/generated/v0";
 import {
     apiKeyRow,
     bodyText,
@@ -21,7 +20,8 @@ import {
     settle,
     stubListings,
     stubManagementApi,
-} from "./screen-test-support";
+} from "../test-support/management-api";
+import { HomeScreen } from "./home-screen";
 
 const BASE_URL = "https://gateway.example.com";
 

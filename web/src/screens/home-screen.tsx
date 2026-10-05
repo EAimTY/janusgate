@@ -1,27 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { credentialExpiryLine, nowMicros } from "/src/format";
-import { translation } from "/src/i18n";
-import { formatNumber } from "/src/i18n/formatters";
-import {
-    inventoryAttentionMessage,
-    requestChartPointMessage,
-    requestSummaryMessage,
-    servingKeyMessage,
-} from "/src/i18n/rich";
-import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import {
-    lapsedCredentialStanding,
-    readyInventoryCountsByProvider,
-} from "/src/management-api/serving";
-import {
-    CREDENTIAL_KIND,
-    isOAuthProviderRow,
-    type OauthProviderRow,
-} from "/src/management-api/vocabulary";
-import { hrefs } from "/src/router";
-import { indexRowsById } from "/src/row-index";
+import { OUTWARD_SURFACES } from "../features/overview/outward-surfaces";
 import {
     buildOverviewDailySeries,
     type OverviewDailySeries,
@@ -29,19 +8,40 @@ import {
     overviewDailyWindow,
     overviewRecentFrom,
     overviewRecentTotals,
-} from "/src/screens/overview-stats";
-import { createScreenRead, readAll } from "/src/screens/read";
-import { ReadNotice } from "/src/screens/read-notice";
-import { EMPTY_USAGE_ENTITIES, readUsageBuckets, readUsageEntities } from "/src/screens/usage-read";
-import { BarChart } from "/src/ui/bar-chart";
-import { CopyButton } from "/src/ui/clipboard";
-import { ButtonLink } from "/src/ui/controls";
-import { Badge, EmptyState, Notice, Skeleton, StatLink } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
-import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { noStoredExpirySentence } from "/src/ui/providers-table";
-import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
-import { OUTWARD_SURFACES } from "./outward-surfaces";
+} from "../features/overview/overview-stats";
+import { noStoredExpirySentence } from "../features/providers/credential-presentation";
+import { EMPTY_USAGE_FILTER_DRAFT } from "../features/usage/filter";
+import { EMPTY_USAGE_ENTITIES, readUsageBuckets, readUsageEntities } from "../features/usage/read";
+import { credentialExpiryLine, nowMicros } from "../format";
+import { translation } from "../i18n";
+import { formatNumber } from "../i18n/formatters";
+import {
+    inventoryAttentionMessage,
+    requestChartPointMessage,
+    requestSummaryMessage,
+    servingKeyMessage,
+} from "../i18n/rich";
+import type { ManagementApi } from "../management-api/client";
+import type { ModelResponse, ProviderResponse } from "../management-api/generated/v0";
+import {
+    lapsedCredentialStanding,
+    readyInventoryCountsByProvider,
+} from "../management-api/serving";
+import {
+    CREDENTIAL_KIND,
+    isOAuthProviderRow,
+    type OauthProviderRow,
+} from "../management-api/vocabulary";
+import { hrefs } from "../router";
+import { indexRowsById } from "../row-index";
+import { createScreenRead, readAll } from "../screen-state/read";
+import { BarChart } from "../ui/bar-chart";
+import { CopyButton } from "../ui/clipboard";
+import { ButtonLink } from "../ui/controls";
+import { Badge, EmptyState, Notice, Skeleton, StatLink } from "../ui/feedback";
+import { Glyph } from "../ui/glyph";
+import { Card, CardHeader, PageHeader } from "../ui/layout";
+import { ReadNotice } from "../ui/read-notice";
 
 /** What the overview's reads answered: the rolling figures plus the daily series. */
 type OverviewTraffic = OverviewRecentTotals & {

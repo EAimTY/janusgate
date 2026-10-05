@@ -4,27 +4,28 @@
 use super::{
     context::Context,
     format::{PayloadError, UpstreamEventParser, UpstreamFormat, anthropic, gemini, openai},
-    http_body, ids,
     ir::{Aggregator, InvalidRequest, IrAggregation, IrEvent, IrRequest},
     provider::{
-        Error as ProviderError, ModelRouting, Provider,
-        definition::{
-            eval::ValueEnv,
-            inference::{Inference, UpstreamStreaming},
-            template::{ParamRow, StringExpr, TemplateNode},
-        },
+        Error as ProviderError, ModelRouting,
+        definition::inference::{Inference, UpstreamStreaming},
         oauth,
     },
     sse::{SseFrame, SseParser},
-    storage::{self, Error as StorageError, api_logs::ApiLogDraft},
+    storage::{Error as StorageError, api_logs::ApiLogDraft},
 };
 use crate::compaction::accounting::{CompactionLedger, IterationKind};
 #[cfg(test)]
 use crate::database::Database;
 use futures::{Stream, StreamExt as _};
 use log::debug;
-use reqwest::{Client, StatusCode};
+use reqwest::StatusCode;
 use std::pin::Pin;
+
+mod dispatch;
+pub(crate) use dispatch::{DispatchOutcome, QuotaPolicy, dispatch};
+mod request;
+use request::build_upstream_request;
+pub(crate) use request::{build_internal_request, overlay_header_rows};
 
 mod event_stream;
 mod response_body;
@@ -293,46 +294,18 @@ pub(crate) async fn execute(
         compaction,
     )?;
 
-    // The dispatch mark fixes this attempt's recording switch and advances commitment even
-    // when recording is disabled. Every earlier failure remains unrecordable (README §3).
-    log.stamp();
-
-    let response = match request_builder.send().await {
-        Ok(response) => response,
-
-        Err(error) => {
-            let error = Error::Unavailable {
-                detail: format!("upstream unreachable: {error}"),
-            };
-
-            return Err(error);
-        }
-    };
-
+    let response = dispatch(
+        context,
+        request_builder,
+        &provider,
+        &routing.model.upstream_id,
+        log,
+        affinity,
+        QuotaPolicy::Classify,
+    )
+    .await?
+    .into_accepted()?;
     let status = response.status();
-    log.observe_response(status);
-
-    if !status.is_success() {
-        let body = http_body::read_bounded_error_body(response).await;
-        let failure = quota_error_of(
-            context,
-            &provider,
-            &routing.model.upstream_id,
-            status,
-            &body,
-        )
-        .await
-        .unwrap_or_else(Some)
-        .unwrap_or_else(|| Error::Upstream {
-            status,
-            detail: http_body::truncate_excerpt(&body.lossy_text()),
-        });
-        return Err(failure);
-    }
-
-    if let Some(affinity) = affinity {
-        affinity.accept(routing.provider.id);
-    }
 
     debug!("{upstream_label}: upstream responded {status}");
 
@@ -442,39 +415,17 @@ pub(crate) async fn execute_internal(
     let request =
         build_upstream_request(&context.data_plane, &provider, routing, &ir, false, None)?;
 
-    log.stamp();
-
-    let response = match request.send().await {
-        Ok(response) => response,
-
-        Err(send_error) => {
-            return Err(Error::Unavailable {
-                detail: format!("upstream unreachable: {send_error}"),
-            });
-        }
-    };
-
-    log.observe_response(response.status());
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = http_body::read_bounded_error_body(response).await;
-        return Err(quota_error_of(
-            context,
-            &provider,
-            &routing.model.upstream_id,
-            status,
-            &body,
-        )
-        .await?
-        .unwrap_or_else(|| Error::Upstream {
-            status,
-            detail: http_body::truncate_excerpt(&body.lossy_text()),
-        }));
-    }
-
-    if let Some(ownership) = ownership {
-        ownership.accept(routing.provider.id);
-    }
+    let response = dispatch(
+        context,
+        request,
+        &provider,
+        &routing.model.upstream_id,
+        log,
+        ownership,
+        QuotaPolicy::Classify,
+    )
+    .await?
+    .into_accepted()?;
 
     let is_streaming = is_upstream_streaming(&provider.definition.payload.inference, false);
 
@@ -650,291 +601,6 @@ where
     Ok((aggregator.finish(), is_terminal_real))
 }
 
-/// Builds one internal compaction-path HTTP request from explicit connection
-/// facts: the evaluated URL expression, the evaluated header rows, the JSON
-/// body spliced through the optional envelope, and the fixed `Accept:
-/// application/json` the non-streaming compaction framing carries (the header
-/// rows override it by name, exactly as the inference dispatch's do).
-///
-/// # Errors
-///
-/// Returns [`Error::Internal`] when the connection's expressions reference a
-/// value this dispatch does not carry — stored drift — or when a header row
-/// carries an unrenderable name or value.
-pub(crate) fn build_internal_request<T: serde::Serialize>(
-    http: &Client,
-    provider: &Provider,
-    routing: &ModelRouting,
-    url: &StringExpr,
-    header_rows: &[ParamRow],
-    envelope: Option<&TemplateNode>,
-    body: &T,
-) -> Result<reqwest::RequestBuilder, Error> {
-    let request_uuid = ids::new_uuid();
-
-    let env = ValueEnv::for_compaction_operation(
-        provider.credentials.slots(),
-        provider.base_url.as_deref(),
-        provider.credentials.secret(),
-        &request_uuid,
-        &routing.model.upstream_id,
-    );
-
-    let url = env
-        .evaluate(url, "compaction operation URL")
-        .map_err(|error| Error::Internal {
-            message: error.to_string(),
-        })?;
-
-    let mut headers = reqwest::header::HeaderMap::new();
-
-    headers.insert(
-        reqwest::header::ACCEPT,
-        reqwest::header::HeaderValue::from_static("application/json"),
-    );
-
-    for row in header_rows {
-        let value = env
-            .evaluate(&row.value, "compaction operation header")
-            .map_err(|error| Error::Internal {
-                message: error.to_string(),
-            })?;
-
-        let name = reqwest::header::HeaderName::from_bytes(row.name.as_bytes()).map_err(|_| {
-            Error::Internal {
-                message: format!(
-                    "the definition carries an invalid header name `{}`",
-                    row.name
-                ),
-            }
-        })?;
-
-        let value =
-            reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::Internal {
-                message: "the definition carries an unrenderable header value".to_string(),
-            })?;
-
-        headers.insert(name, value);
-    }
-
-    let builder = http.post(url).headers(headers);
-    let Some(envelope) = envelope else {
-        return Ok(builder.json(body));
-    };
-    let envelope = env
-        .render_json(envelope, body, "compaction operation envelope")
-        .map_err(|error| Error::Internal {
-            message: error.to_string(),
-        })?;
-    Ok(builder.json(&envelope))
-}
-
-/// Builds the upstream HTTP request for one dispatch, entirely from the provider definition
-/// (README §5.2): the evaluated URL (the streaming URL when this dispatch streams and
-/// the definition carries one), the codec-rendered body attached through the definition's
-/// envelope, the engine-owned `Accept` with the definition's header rows overriding it, and one
-/// request-UUID cached across every expression of the dispatch.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the definition's expressions reference a value this dispatch does not
-/// carry — stored drift — or when the client request cannot be rendered into the body.
-fn build_upstream_request(
-    http: &Client,
-    provider: &Provider,
-    routing: &ModelRouting,
-    ir: &IrRequest,
-    is_client_streaming: bool,
-    compaction: Option<&CompactionDispatch>,
-) -> Result<reqwest::RequestBuilder, Error> {
-    let inference = &provider.definition.payload.inference;
-
-    let is_upstream_streaming = is_upstream_streaming(inference, is_client_streaming);
-
-    // One request UUID per dispatch, reused by every expression reference in it.
-    let request_uuid = ids::new_uuid();
-
-    let slots = provider.credentials.slots();
-
-    let env = ValueEnv::for_inference(
-        slots,
-        provider.base_url.as_deref(),
-        provider.credentials.secret(),
-        &request_uuid,
-        &routing.model.upstream_id,
-    );
-
-    // The streaming URL only when this dispatch streams and one is configured (README §5.2).
-    let url_expr = if is_upstream_streaming {
-        inference.stream_url.as_ref().unwrap_or(&inference.url)
-    } else {
-        &inference.url
-    };
-
-    let url = env
-        .evaluate(url_expr, "inference URL")
-        .map_err(|error| Error::Internal {
-            message: error.to_string(),
-        })?;
-
-    let mut headers = reqwest::header::HeaderMap::new();
-
-    headers.insert(
-        reqwest::header::ACCEPT,
-        reqwest::header::HeaderValue::from_static(if is_upstream_streaming {
-            "text/event-stream"
-        } else {
-            "application/json"
-        }),
-    );
-
-    // The compaction dispatch's overlay rows replace same-named inference rows
-    // (the operation betas ride the operation definition), then the surviving
-    // inference rows follow in order.
-    let overlay = compaction
-        .map(|dispatch| dispatch.overlay_headers.as_slice())
-        .unwrap_or(&[]);
-
-    let merged_rows =
-        crate::format::anthropic::messages::overlay_header_rows(&inference.headers, overlay);
-
-    for row in &merged_rows {
-        let value = env
-            .evaluate(&row.value, "inference header")
-            .map_err(|error| Error::Internal {
-                message: error.to_string(),
-            })?;
-
-        let name = reqwest::header::HeaderName::from_bytes(row.name.as_bytes()).map_err(|_| {
-            Error::Internal {
-                message: format!(
-                    "the definition carries an invalid header name `{}`",
-                    row.name
-                ),
-            }
-        })?;
-
-        let value =
-            reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::Internal {
-                message: "the definition carries an unrenderable header value".to_string(),
-            })?;
-
-        headers.insert(name, value);
-    }
-
-    attach_upstream_body(
-        http.post(url).headers(headers),
-        &env,
-        provider,
-        ir,
-        is_upstream_streaming,
-        compaction,
-    )
-}
-
-/// Renders the upstream body through the definition format's codec and attaches it to the
-/// dispatch's request builder (README §5.2).
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidRequest`] when the client request cannot be rendered into the
-/// definition format's body, and [`Error::Internal`] when the envelope's expressions reference a
-/// value this dispatch does not carry — stored drift.
-fn attach_upstream_body(
-    builder: reqwest::RequestBuilder,
-    env: &ValueEnv<'_>,
-    provider: &Provider,
-    ir: &IrRequest,
-    is_upstream_streaming: bool,
-    compaction: Option<&CompactionDispatch>,
-) -> Result<reqwest::RequestBuilder, Error> {
-    let inference = &provider.definition.payload.inference;
-
-    let envelope = inference.envelope.as_ref();
-
-    match provider.definition.payload.format {
-        UpstreamFormat::OpenAiResponse => attach_body(
-            builder,
-            env,
-            envelope,
-            &openai::response::render_request_body_with_extensions(
-                ir,
-                is_upstream_streaming,
-                &inference.render_options,
-                compaction.and_then(|dispatch| dispatch.context_management.as_deref()),
-            )
-            .map_err(Error::from)?,
-        ),
-
-        UpstreamFormat::OpenAiChatCompletion => attach_body(
-            builder,
-            env,
-            envelope,
-            &openai::chat_completion::render_request_body(ir, is_upstream_streaming)
-                .map_err(Error::from)?,
-        ),
-
-        UpstreamFormat::GeminiGenerateContent => attach_body(
-            builder,
-            env,
-            envelope,
-            &gemini::generate_content::render_generate_content_request(ir).map_err(Error::from)?,
-        ),
-
-        UpstreamFormat::GeminiInteraction => attach_body(
-            builder,
-            env,
-            envelope,
-            &gemini::interaction::render_request_body(ir, &ir.model, is_upstream_streaming)
-                .map_err(Error::from)?,
-        ),
-
-        UpstreamFormat::AnthropicMessages => {
-            // A native threshold passthrough renders the vendor-shaped edits
-            // through the threshold body render; every other Messages dispatch
-            // renders the stripped form (the base render carries no compaction
-            // members).
-            let body = match compaction.and_then(|dispatch| dispatch.threshold_edits.as_deref()) {
-                Some(edits) => {
-                    anthropic::messages::render_threshold_body(ir, is_upstream_streaming, edits)
-                }
-
-                None => anthropic::messages::render_request_body(ir, is_upstream_streaming),
-            }
-            .map_err(Error::from)?;
-
-            attach_body(builder, env, envelope, &body)
-        }
-    }
-}
-
-/// Attaches one codec-rendered body to the request builder: without an envelope the typed body
-/// rides to reqwest and serializes exactly once onto the wire; with an envelope, the evaluated
-/// template borrows that same concrete body at its placeholder without constructing a JSON DOM.
-///
-/// # Errors
-///
-/// Returns [`Error::Internal`] when the envelope's expressions reference a value this dispatch
-/// does not carry — stored drift.
-fn attach_body<T: serde::Serialize>(
-    builder: reqwest::RequestBuilder,
-    env: &ValueEnv<'_>,
-    envelope: Option<&TemplateNode>,
-    body: &T,
-) -> Result<reqwest::RequestBuilder, Error> {
-    let Some(envelope) = envelope else {
-        return Ok(builder.json(body));
-    };
-
-    let body = env
-        .render_json(envelope, body, "inference envelope")
-        .map_err(|error| Error::Internal {
-            message: error.to_string(),
-        })?;
-
-    Ok(builder.json(&body))
-}
-
 /// Boxes the upstream event parser for the given wire format.
 fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventParser + Send> {
     match upstream_format {
@@ -986,48 +652,6 @@ fn unwrap_frame(frame: &mut SseFrame, response_unwrap: &Option<String>) {
     }
 }
 
-/// Applies exact quota rules to a rejected generation/native body and orders durable evidence.
-/// Token counters and every control-plane operation deliberately never call this function.
-///
-/// # Errors
-///
-/// Returns storage failures; a stale generation or deleted account never recreates evidence.
-pub(crate) async fn quota_error_of(
-    context: &Context,
-    provider: &Provider,
-    upstream_id: &str,
-    status: StatusCode,
-    body: &http_body::ErrorBody,
-) -> Result<Option<Error>, Error> {
-    let Some(restriction) = crate::provider::quota_rejection::classify_rejection(
-        status.as_u16(),
-        body,
-        provider
-            .definition
-            .payload
-            .inference
-            .quota_exhaustion
-            .as_ref(),
-        upstream_id,
-    ) else {
-        return Ok(None);
-    };
-    storage::quota_blocks::record_rejection(
-        &context.database,
-        provider.id,
-        provider.quota_generation,
-        &restriction.key,
-        &restriction.applies_to,
-        crate::unix_time::unix_now_micros(),
-    )
-    .await?;
-    Ok(Some(Error::QuotaRejected {
-        status,
-        detail: http_body::truncate_excerpt(&body.lossy_text()),
-        restriction: Box::new(restriction),
-    }))
-}
-
 impl From<PayloadError> for Error {
     fn from(error: PayloadError) -> Self {
         Self::Unavailable {
@@ -1044,15 +668,15 @@ mod tests {
         api::Error as ApiError,
         ir::{IrMessage, IrPart, IrRole},
         provider::{
-            DiscoveryState, Model, StoredCredentials,
+            DiscoveryState, Model, Provider, StoredCredentials,
             definition::{
                 DefinitionPayload, ProviderDefinition,
                 credential::CredentialAcquisition,
-                template::{StringExpr, ValueExpr},
+                template::{StringExpr, TemplateNode, ValueExpr},
             },
         },
     };
-    use reqwest::StatusCode;
+    use reqwest::{Client, StatusCode};
     use std::{collections::BTreeMap, num::NonZeroI64};
 
     /// Verifies the dispatch accounting derives from the shared API classification: a mirrored

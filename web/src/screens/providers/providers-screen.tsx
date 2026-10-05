@@ -1,0 +1,135 @@
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal, Show } from "solid-js";
+import { readProviderCatalog } from "/src/features/inventory/read";
+import { ProviderList } from "/src/features/providers/provider-list";
+import { translation } from "/src/i18n";
+import { noProvidersMatchMessage } from "/src/i18n/rich";
+import type { ManagementApi } from "/src/management-api/client";
+import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { modelCountsByProvider } from "/src/management-api/serving";
+import { CREDENTIAL_KIND, UPSTREAM_FORMAT } from "/src/management-api/vocabulary";
+import { hrefs } from "/src/router";
+import { createScreenRead, readOne } from "/src/screen-state/read";
+import { ButtonLink, listingNeedle, SearchInput } from "/src/ui/controls";
+import { EmptyState, Notice } from "/src/ui/feedback";
+import { PageHeader } from "/src/ui/layout";
+import { ReadNotice } from "/src/ui/read-notice";
+import { SkeletonRows } from "/src/ui/skeleton-rows";
+
+/**
+ * The provider list: one row per upstream account. Rows carry identity,
+ * type, model count, and the two states — nothing else, and no model's
+ * details. Each row opens the provider's detail page; the edit page behind
+ * it owns every change.
+ */
+export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Element {
+    const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
+    const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [search, setSearch] = createSignal("");
+
+    const read = createScreenRead({
+        load: async (signal) => {
+            const catalog = await readOne(signal, readProviderCatalog(props.api, null));
+
+            setProviders(catalog.providers);
+            setModels(catalog.models);
+        },
+    });
+
+    const modelCounts = createMemo(() => modelCountsByProvider(models()));
+
+    const visibleProviders = createMemo(() => {
+        const needle = listingNeedle(search());
+
+        if (needle === "") {
+            return providers();
+        }
+
+        return providers().filter(
+            (provider) =>
+                provider.name.toLowerCase().includes(needle) ||
+                CREDENTIAL_KIND.label(provider.type).toLowerCase().includes(needle) ||
+                // The wire format is the row's most identifying label.
+                UPSTREAM_FORMAT.label(provider.format).toLowerCase().includes(needle),
+        );
+    });
+
+    return (
+        <div class="rise-in flex flex-col gap-5">
+            <PageHeader
+                title={translation()(($) => $.screens.providersScreen.providers)}
+                description={translation()(
+                    ($) => $.screens.providersScreen.upstreamAccountsOpenOneForItsModelsAndMessage,
+                )}
+            >
+                <ButtonLink
+                    href={hrefs.providerNew()}
+                    tone="primary"
+                    glyph="plus"
+                >
+                    {translation()(($) => $.screens.providersScreen.createProvider)}
+                </ButtonLink>
+            </PageHeader>
+
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
+
+            <SkeletonRows
+                read={read}
+                rowCount={3}
+                rowHeight="h-16"
+            />
+
+            <Show when={read.hasRead()}>
+                <Show
+                    when={providers().length > 0}
+                    fallback={
+                        <EmptyState
+                            glyph="plug"
+                            title={translation()(($) => $.screens.providersScreen.noProvidersYet)}
+                            description={translation()(
+                                ($) =>
+                                    $.screens.providersScreen.aProviderIsOneUpstreamAccountMessage,
+                            )}
+                        >
+                            <ButtonLink
+                                href={hrefs.providerNew()}
+                                tone="primary"
+                                glyph="plus"
+                            >
+                                {translation()(($) => $.screens.providersScreen.createProvider)}
+                            </ButtonLink>
+                        </EmptyState>
+                    }
+                >
+                    <SearchInput
+                        label={translation()(($) => $.screens.providersScreen.searchProviders)}
+                        placeholder={translation()(
+                            ($) => $.screens.providersScreen.searchByNameTypeOrFormat,
+                        )}
+                        value={search()}
+                        onInput={setSearch}
+                        class="sm:max-w-xs"
+                    />
+
+                    <Show
+                        when={visibleProviders().length > 0}
+                        fallback={
+                            <Notice
+                                tone="info"
+                                title={noProvidersMatchMessage(search().trim())}
+                            />
+                        }
+                    >
+                        <ProviderList
+                            providers={visibleProviders()}
+                            modelCounts={modelCounts()}
+                        />
+                    </Show>
+                </Show>
+            </Show>
+        </div>
+    );
+}

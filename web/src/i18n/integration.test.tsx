@@ -1,12 +1,17 @@
 import { render } from "@solidjs/web";
 import { createRoot } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasDirtyForms } from "/src/dirty-form-registry";
-import { ErrorCode } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
-import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
-import { createOauthFlow } from "/src/screens/oauth-flow";
-import { DeviceStep } from "/src/screens/oauth-flow-view";
+import { hasDirtyForms } from "../dirty-form-registry";
+import {
+    CompactionSupportOverrideFields,
+    compactionOverrideSelection,
+    normalizedCompactionOverride,
+} from "../features/models/model-form";
+import { createOauthFlow } from "../features/providers/oauth-flow";
+import { DeviceStep } from "../features/providers/oauth-flow-view";
+import { ErrorCode } from "../management-api/generated/v0";
+import { performManagementCall } from "../management-api/outcome";
+import { ApiKeyEditScreen } from "../screens/api-keys/api-key-edit-screen";
 import {
     apiKeyRow,
     buttonWithText,
@@ -16,12 +21,7 @@ import {
     stubListings,
     stubManagementApi,
     typeInto,
-} from "/src/screens/screen-test-support";
-import {
-    CompactionSupportOverrideFields,
-    compactionOverrideSelection,
-    normalizedCompactionOverride,
-} from "/src/ui/model-form";
+} from "../test-support/management-api";
 import { setLanguagePreference } from "./index";
 
 const disposals: Array<() => void> = [];

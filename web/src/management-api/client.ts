@@ -1,7 +1,7 @@
 import {
     parseDefinitionEnvelope,
     parseListProviderDefinitionsResponse,
-} from "/src/management-api/definition-payload";
+} from "./definitions/payload";
 import {
     ContractViolationError,
     describeManagementFailure,
@@ -9,7 +9,7 @@ import {
     ManagementApiError,
     type ManagementApiErrorDetails,
     type ManagementFailureCategory,
-} from "/src/management-api/errors";
+} from "./errors";
 import {
     type ApiKeyEnvelope,
     type CompleteProviderOauthRequest,
@@ -64,30 +64,28 @@ import {
     type UpdateProviderDefinitionRequest,
     type UpdateProviderPoolRequest,
     type UpdateProviderRequest,
-} from "/src/management-api/generated/v0";
-import { parseGetProviderQuotaResponse } from "/src/management-api/quota";
+} from "./generated/v0";
+import { parseApiKeyEnvelope, parseListApiKeysResponse } from "./responses/api-keys";
+import { parseEmptyResponse, parseErrorResponse } from "./responses/common";
+import {
+    parseDiscoverModelsResponse,
+    parseListModelsResponse,
+    parseModelEnvelope,
+} from "./responses/models";
+import {
+    parseCompleteProviderOauthResponse,
+    parseStartProviderOauthResponse,
+} from "./responses/oauth";
+import { parseListProvidersResponse, parseProviderEnvelope } from "./responses/providers";
+import { parseGetProviderQuotaResponse } from "./responses/quota";
+import { parseListUsageResponse, parseQueryUsageResponse } from "./responses/usage";
 import {
     parseCreateModelRouteResponse,
     parseCreateProviderPoolResponse,
     parseGetProviderAvailabilityResponse,
     parseListModelRoutesResponse,
     parseListProviderPoolsResponse,
-} from "/src/management-api/routing";
-import {
-    parseApiKeyEnvelope,
-    parseCompleteProviderOauthResponse,
-    parseDiscoverModelsResponse,
-    parseEmptyResponse,
-    parseErrorResponse,
-    parseListApiKeysResponse,
-    parseListModelsResponse,
-    parseListProvidersResponse,
-    parseListUsageResponse,
-    parseModelEnvelope,
-    parseProviderEnvelope,
-    parseQueryUsageResponse,
-    parseStartProviderOauthResponse,
-} from "/src/management-api/validation";
+} from "./routing";
 
 /**
  * The connection facts one client instance is built from: the origin the

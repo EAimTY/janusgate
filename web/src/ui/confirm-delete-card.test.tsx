@@ -1,12 +1,12 @@
 import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
-import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import {
     buttonWithText,
     createDisposals,
     paragraphWithText,
     settle,
-} from "../screens/screen-test-support";
+} from "../test-support/management-api";
+import { ConfirmDeleteCard } from "./confirm-delete-card";
 
 describe("ConfirmDeleteCard state machine", () => {
     const disposes = createDisposals();

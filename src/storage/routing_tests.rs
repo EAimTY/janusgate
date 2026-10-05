@@ -394,6 +394,51 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         .is_empty()
     );
     assert_eq!(list_routes(&database).await?.len(), 4);
+    // Distinct exact IDs sharing one pool must never borrow another model's capabilities.
+    database
+        .execute(
+            "UPDATE providers SET is_enabled = 1 WHERE id = ?1",
+            crate::database::params![b],
+        )
+        .await?;
+    crate::storage::models::apply_discovered_models(
+        &database,
+        b,
+        &[crate::provider::DiscoveredModel {
+            upstream_id: "N".into(),
+            thinking_levels: Some(vec![crate::ir::IrReasoningLevel::Low]),
+            max_input_tokens: Some(2400),
+            max_output_tokens: Some(600),
+            compaction: None,
+        }],
+    )
+    .await?;
+    create_route(
+        &database,
+        "alias-N",
+        true,
+        &ModelRouteTarget::Pool {
+            pool_id: pool,
+            upstream_id: "N".into(),
+        },
+    )
+    .await?;
+    let listed = crate::storage::models::list_enabled_models_with_owner(
+        &database,
+        crate::test_support::structural_api_key(&database).await?,
+    )
+    .await?;
+    assert_eq!(
+        listed
+            .iter()
+            .map(|entry| entry.public_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alias-N", "future-N", "pool-coding-N"]
+    );
+    assert!(listed.iter().all(|entry| entry.provider_name == "coding"
+        && entry.max_input_tokens == Some(2400)
+        && entry.max_output_tokens == Some(600)
+        && entry.thinking_levels == Some(vec![crate::ir::IrReasoningLevel::Low])));
     Ok(())
 }
 
@@ -990,7 +1035,10 @@ async fn pool_exposure_tracks_member_inventory_and_suppresses_member_prefixes()
     assert_eq!(
         members
             .iter()
-            .filter(|member| member.is_structural_candidate())
+            .filter(|member| member
+                .model
+                .as_ref()
+                .is_some_and(|model| model.is_effectively_enabled(member.provider.is_enabled)))
             .map(|member| member.provider.id)
             .collect::<Vec<_>>(),
         [b]

@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome},
-    provider::DiscoveryState,
+    provider::{DiscoveryState, definition::template::StringExpr},
     storage::api_logs::{ApiLogStore, AttemptProgress, UsageFilter, list_api_logs},
     test_support::{self, MockAction, MockUpstream, TempDirGuard},
 };
@@ -302,5 +302,128 @@ async fn cancelled_attempts_own_the_header_and_rejection_windows() -> Result<(),
         assert_eq!(row.http_status, None);
         assert_eq!(row.upstream_http_status, has_headers.then_some(429));
     }
+    Ok(())
+}
+
+/// The send boundary observes rejection headers before quota persistence and keeps counters
+/// outside quota policy. A persistence failure never releases rejected evidence to a native
+/// unsupported classifier.
+///
+/// # Errors
+///
+/// Returns fixture or dispatch failures.
+///
+/// # Panics
+///
+/// Panics if quota policy or response observation diverges.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "configuration fixtures serialize their complete execution"
+)]
+async fn dispatch_orders_quota_evidence_and_keeps_counter_policy_disabled()
+-> Result<(), Box<dyn StdError>> {
+    let _configuration = test_support::configuration_lock();
+    let (context, _database, _directory) = context().await;
+    let definition = test_support::insert_static_key_definition(
+        &context.database,
+        "dispatch",
+        UpstreamFormat::OpenAiChatCompletion,
+    )
+    .await;
+    let mut provider = test_support::insert_provider(
+        &context.database,
+        &definition,
+        "dispatch",
+        None,
+        crate::provider::StoredCredentials::ApiKey {
+            api_key: "key".into(),
+        },
+    )
+    .await;
+    provider.definition.payload.inference.quota_exhaustion =
+        Some(serde_json::from_value(serde_json::json!({"rules":[{
+            "name":"quota","statuses":[429],"code":{"at":["error","code"],"value":"quota"},
+            "restriction_key":[{"type":"literal","value":"quota"}],
+            "applies_to":{"type":"all_models"}
+        }]}))?);
+    let body = r#"{"error":{"code":"quota"}}"#;
+    let response = format!(
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let (upstream, _requests) = MockUpstream::start_scripted_recording_bodies(vec![
+        MockAction::Respond(response.clone()),
+        MockAction::Respond(response.clone()),
+        MockAction::Respond(response.clone()),
+    ])
+    .await;
+    let mut counter = draft();
+    let rejection = dispatch(
+        &context,
+        context.data_plane.post(upstream.base()),
+        &provider,
+        "physical-model",
+        &mut counter,
+        None,
+        QuotaPolicy::Disabled,
+    )
+    .await?;
+    assert!(matches!(
+        rejection,
+        DispatchOutcome::Rejected {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            ..
+        }
+    ));
+    assert_eq!(counter.upstream_http_status, Some(429));
+    assert!(
+        crate::storage::quota_blocks::load_state(&context.database, provider.id)
+            .await?
+            .ok_or("account exists")?
+            .blocks
+            .is_empty()
+    );
+
+    let mut generation = draft();
+    let rejection = dispatch(
+        &context,
+        context.data_plane.post(upstream.base()),
+        &provider,
+        "physical-model",
+        &mut generation,
+        None,
+        QuotaPolicy::Classify,
+    )
+    .await;
+    assert!(matches!(rejection, Err(Error::QuotaRejected { .. })));
+    assert_eq!(generation.upstream_http_status, Some(429));
+    assert_eq!(
+        crate::storage::quota_blocks::load_state(&context.database, provider.id)
+            .await?
+            .ok_or("account exists")?
+            .blocks
+            .len(),
+        1
+    );
+
+    context
+        .database
+        .execute("DROP TABLE provider_quota_blocks", ())
+        .await?;
+    let mut failed_persistence = draft();
+    let rejection = dispatch(
+        &context,
+        context.data_plane.post(upstream.base()),
+        &provider,
+        "physical-model",
+        &mut failed_persistence,
+        None,
+        QuotaPolicy::Classify,
+    )
+    .await;
+    assert!(matches!(rejection, Err(Error::Storage(_))));
+    assert_eq!(failed_persistence.upstream_http_status, Some(429));
+    assert!(failed_persistence.started_at.is_some());
     Ok(())
 }

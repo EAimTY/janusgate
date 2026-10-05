@@ -2,12 +2,13 @@
 
 use super::{Error, models::EnabledModel};
 use crate::{
+    access_control::{AccessDecision, RouteOwner},
     compaction::{
         mechanism::{Mechanism, MechanismSupport},
         support_facts::CompactionSupportFacts,
     },
     database::Database,
-    provider::{Model, Provider},
+    provider::{Model, definition::compaction::CompactionSection},
 };
 
 /// Reads all authored routes and resolves their listing facts in one snapshot.
@@ -18,90 +19,105 @@ use crate::{
 /// # Errors
 ///
 /// Returns database errors or malformed stored rows.
-///
-/// # Panics
-///
-/// Panics if an enforced account or pool foreign reference is missing within the snapshot.
 pub(super) async fn list_public_models(
     database: &Database,
     api_key_id: i64,
 ) -> Result<Vec<EnabledModel>, Error> {
     let mut transaction = database.transaction().await?;
     let policy = super::api_keys::read_enabled_policy(&mut transaction, api_key_id).await?;
+    // SQL owns public-name ordering and authored membership priority; this projection never
+    // decodes credentials or builds an execution snapshot.
+    let columns = super::models::MODEL_COLUMNS_JOINED;
     let rows = transaction
         .query(
-            "SELECT id, public_id, is_enabled, model_id, pool_id, upstream_id, is_automatic \
-         FROM model_routes WHERE is_enabled = 1 ORDER BY public_id",
+            format!(
+                "SELECT r.id, r.public_id, p.id, p.name, 0 AS is_pool, 0 AS priority, \
+                 {columns}, d.compaction \
+                 FROM model_routes r JOIN models m ON m.id = r.model_id \
+                 JOIN providers p ON p.id = m.provider_id \
+                 JOIN provider_definitions d ON d.name = p.provider_definition_name \
+                     AND d.version = p.provider_definition_version \
+                 WHERE r.is_enabled = 1 AND p.is_enabled = 1 AND m.is_enabled = 1 \
+                     AND m.discovery_state != 'vanished' \
+                 UNION ALL \
+                 SELECT r.id, r.public_id, pool.id, pool.name, 1 AS is_pool, \
+                 member.priority, {columns}, d.compaction \
+                 FROM model_routes r JOIN provider_pools pool ON pool.id = r.pool_id \
+                 JOIN provider_pool_members member ON member.pool_id = pool.id \
+                 JOIN providers p ON p.id = member.provider_id \
+                 JOIN models m ON m.provider_id = p.id AND m.upstream_id = r.upstream_id \
+                 JOIN provider_definitions d ON d.name = p.provider_definition_name \
+                     AND d.version = p.provider_definition_version \
+                 WHERE r.is_enabled = 1 AND pool.is_enabled = 1 AND p.is_enabled = 1 \
+                     AND m.is_enabled = 1 AND m.discovery_state != 'vanished' \
+                 ORDER BY 2, 1, 6"
+            ),
             (),
         )
         .await?;
-    let mut entries = Vec::with_capacity(rows.len());
+    let mut entries = Vec::new();
+    let mut candidates = Vec::new();
+    let mut current_route = None;
+    let mut public_id = String::new();
+    let mut owner_name = String::new();
     for row in &rows {
-        let snapshot = super::route_snapshot::read_target(
-            &mut transaction,
-            super::routing::route_from_row(row)?,
-        )
-        .await?;
-        if policy.resolve(snapshot.route.id, snapshot.owner())
-            == crate::access_control::AccessDecision::Deny
-        {
+        let route_id: i64 = row.get(0)?;
+        let owner_id = row.get(2)?;
+        let owner = if row.get::<i64>(4)? == 0 {
+            RouteOwner::Provider(owner_id)
+        } else {
+            RouteOwner::Pool(owner_id)
+        };
+        if policy.resolve(route_id, owner) == AccessDecision::Deny {
             continue;
         }
-        let entry = match &snapshot.target {
-            super::route_snapshot::TargetSnapshot::Direct { provider, model } => {
-                model.is_effectively_enabled(provider.is_enabled).then(|| {
-                    capability_entry(
-                        &snapshot.route.public_id,
-                        &provider.name,
-                        &[(provider, model)],
-                    )
-                })
+        if current_route != Some(route_id) {
+            if !candidates.is_empty() {
+                entries.push(capability_entry(&public_id, &owner_name, &candidates));
             }
-            super::route_snapshot::TargetSnapshot::Pool {
-                name,
-                is_enabled,
-                members,
-                ..
-            } => {
-                let candidates: Vec<_> = members
-                    .iter()
-                    .filter_map(|member| {
-                        member
-                            .model
-                            .as_ref()
-                            .filter(|_| member.is_structural_candidate())
-                            .map(|model| (&member.provider, model))
-                    })
-                    .collect();
-                (*is_enabled && !candidates.is_empty())
-                    .then(|| capability_entry(&snapshot.route.public_id, name, &candidates))
-            }
-        };
-        if let Some(entry) = entry {
-            entries.push(entry);
+            candidates.clear();
+            current_route = Some(route_id);
+            public_id = row.get(1)?;
+            owner_name = row.get(3)?;
         }
+        candidates.push(ListingCandidate {
+            model: super::models::model_from_row_offset(row, 6)?,
+            compaction: row
+                .get::<Option<String>>(18)?
+                .map(|json| {
+                    super::provider_definitions::payload_from_json(Some(json), "compaction")
+                })
+                .transpose()?,
+        });
+    }
+    if !candidates.is_empty() {
+        entries.push(capability_entry(&public_id, &owner_name, &candidates));
     }
     transaction.commit().await?;
     Ok(entries)
 }
 
+/// The credential-free facts one structural listing candidate contributes.
+struct ListingCandidate {
+    /// The existing physical model domain projection.
+    model: Model,
+    /// Definition-level mechanism defaults, without unrelated descriptor sections.
+    compaction: Option<CompactionSection>,
+}
+
 /// Composes effective per-account facts before combining them conservatively.
-fn capability_entry(
-    public_id: &str,
-    owner: &str,
-    candidates: &[(&Provider, &Model)],
-) -> EnabledModel {
+fn capability_entry(public_id: &str, owner: &str, candidates: &[ListingCandidate]) -> EnabledModel {
     let input = candidates
         .iter()
-        .map(|(_, model)| model.effective_max_input_tokens())
+        .map(|candidate| candidate.model.effective_max_input_tokens())
         .collect::<Option<Vec<_>>>();
     let output = candidates
         .iter()
-        .map(|(_, model)| model.effective_max_output_tokens())
+        .map(|candidate| candidate.model.effective_max_output_tokens())
         .collect::<Option<Vec<_>>>();
     let levels = candidates
         .iter()
-        .map(|(_, model)| model.effective_thinking_levels())
+        .map(|candidate| candidate.model.effective_thinking_levels())
         .collect::<Option<Vec<_>>>();
     let thinking_levels = levels.and_then(|levels| {
         let mut intersection = levels.first()?.to_vec();
@@ -110,9 +126,11 @@ fn capability_entry(
     });
     let support: Vec<_> = candidates
         .iter()
-        .map(|(provider, model)| {
+        .map(|candidate| {
             CompactionSupportFacts::from_pairs(
-                model.effective_mechanism_support(provider.definition.payload.compaction.as_ref()),
+                candidate
+                    .model
+                    .effective_mechanism_support(candidate.compaction.as_ref()),
             )
         })
         .collect();

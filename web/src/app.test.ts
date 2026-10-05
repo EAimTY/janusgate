@@ -1,7 +1,9 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectionService } from "/src/connection/app-service";
-import { hrefs, navigate } from "/src/router";
+import { App, guardUnsavedFormsOnLeave } from "./app";
+import { connectionService } from "./connection/app-service";
+import { type DirtyFormRegistration, registerDirtyForm } from "./dirty-form-registry";
+import { hrefs, navigate } from "./router";
 import {
     bodyText,
     buttonWithText,
@@ -9,9 +11,7 @@ import {
     labeledInput,
     paragraphWithText,
     settle,
-} from "/src/screens/screen-test-support";
-import { App, guardUnsavedFormsOnLeave } from "./app";
-import { type DirtyFormRegistration, registerDirtyForm } from "./dirty-form-registry";
+} from "./test-support/management-api";
 
 /**
  * A plain stand-in for the leave event: only the surface the guard writes.

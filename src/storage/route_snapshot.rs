@@ -1,4 +1,4 @@
-//! Coherent route and physical account snapshots shared by listing and dispatch selection.
+//! Credential-bearing route and physical account snapshots for dispatch selection.
 
 use super::{Error, routing::ModelRoute};
 use crate::{
@@ -18,15 +18,6 @@ pub(crate) struct MemberSnapshot {
     pub(crate) model: Option<Model>,
 }
 
-impl MemberSnapshot {
-    /// Whether this member has an enabled, non-vanished physical target on an enabled account.
-    pub(crate) fn is_structural_candidate(&self) -> bool {
-        self.model
-            .as_ref()
-            .is_some_and(|model| model.is_effectively_enabled(self.provider.is_enabled))
-    }
-}
-
 /// A route's complete target state at one database snapshot.
 #[derive(Debug, Clone)]
 pub(crate) enum TargetSnapshot {
@@ -41,8 +32,6 @@ pub(crate) enum TargetSnapshot {
     Pool {
         /// Stable pool identity.
         id: i64,
-        /// Public owner label.
-        name: String,
         /// Administrator serving switch.
         is_enabled: bool,
         /// Authored member order and physical state.
@@ -140,9 +129,9 @@ pub(super) async fn read_target(
                 .query(
                     format!(
                         "SELECT {}, {} {} WHERE m.id = ?1",
-                        super::PROVIDER_COLUMNS,
-                        super::MODEL_COLUMNS_JOINED,
-                        super::PROVIDER_JOINED_FROM_MODELS
+                        super::providers::PROVIDER_COLUMNS,
+                        super::models::MODEL_COLUMNS_JOINED,
+                        super::providers::PROVIDER_JOINED_FROM_MODELS
                     ),
                     params![model_id],
                 )
@@ -152,7 +141,7 @@ pub(super) async fn read_target(
                 reason = "model foreign references hold throughout the snapshot"
             )]
             let row = rows.first().expect("stored route's physical target exists");
-            let joined = super::provider_model_from_row(row)?;
+            let joined = super::models::provider_model_from_row(row)?;
             TargetSnapshot::Direct {
                 provider: Box::new(joined.provider),
                 model: Box::new(joined.model),
@@ -164,7 +153,7 @@ pub(super) async fn read_target(
         } => {
             let rows = transaction
                 .query(
-                    "SELECT name, is_enabled FROM provider_pools WHERE id = ?1",
+                    "SELECT is_enabled FROM provider_pools WHERE id = ?1",
                     params![pool_id],
                 )
                 .await?;
@@ -175,8 +164,7 @@ pub(super) async fn read_target(
             let row = rows.first().expect("stored route's pool exists");
             TargetSnapshot::Pool {
                 id: *pool_id,
-                name: row.get(0)?,
-                is_enabled: row.get::<i64>(1)? != 0,
+                is_enabled: row.get::<i64>(0)? != 0,
                 members: read_members(transaction, *pool_id, upstream_id).await?,
             }
         }
@@ -219,7 +207,7 @@ async fn read_members(
             .query(
                 format!(
                     "SELECT {} FROM models WHERE provider_id = ?1 AND upstream_id = ?2",
-                    super::MODEL_COLUMNS
+                    super::models::MODEL_COLUMNS
                 ),
                 params![provider_id, upstream_id],
             )
@@ -227,7 +215,10 @@ async fn read_members(
         members.push(MemberSnapshot {
             priority: row.get(1)?,
             provider,
-            model: rows.first().map(super::model_from_row).transpose()?,
+            model: rows
+                .first()
+                .map(super::models::model_from_row)
+                .transpose()?,
         });
     }
     members.sort_by_key(|member| member.priority);

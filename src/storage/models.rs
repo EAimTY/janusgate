@@ -9,9 +9,9 @@
 use super::Error;
 use crate::{
     compaction::support_facts::CompactionSupportFacts,
-    database::{Database, Transaction, params},
+    database::{Database, Row, Transaction, TursoError, Value, params, params::IntoValue},
     ir::IrReasoningLevel,
-    provider::{DiscoveredModel, DiscoveryState, Model},
+    provider::{DiscoveredModel, DiscoveryState, Model, Provider},
 };
 
 /// One model row with the provider identity needed for listing.
@@ -117,13 +117,13 @@ async fn find_model_in_transaction(
             format!(
                 "SELECT {} FROM models \
                  WHERE provider_id = ?1 AND upstream_id = ?2",
-                super::MODEL_COLUMNS
+                MODEL_COLUMNS
             ),
             params![provider_id, upstream_id],
         )
         .await?;
 
-    rows.first().map(super::model_from_row).transpose()
+    rows.first().map(model_from_row).transpose()
 }
 
 /// Fetches one model row joined with its provider by the row's identifier inside a transaction —
@@ -135,20 +135,20 @@ async fn find_model_in_transaction(
 async fn find_provider_model_in_transaction(
     transaction: &mut Transaction,
     model_id: i64,
-) -> Result<Option<super::ProviderModelJoin>, Error> {
+) -> Result<Option<ProviderModelJoin>, Error> {
     let rows = transaction
         .query(
             format!(
                 "SELECT {}, {} {} WHERE m.id = ?1",
-                super::PROVIDER_COLUMNS,
-                super::MODEL_COLUMNS_JOINED,
-                super::PROVIDER_JOINED_FROM_MODELS
+                super::providers::PROVIDER_COLUMNS,
+                MODEL_COLUMNS_JOINED,
+                super::providers::PROVIDER_JOINED_FROM_MODELS
             ),
             params![model_id],
         )
         .await?;
 
-    rows.first().map(super::provider_model_from_row).transpose()
+    rows.first().map(provider_model_from_row).transpose()
 }
 
 /// Reads back one model row with its provider facts by row id inside a transaction.
@@ -164,14 +164,13 @@ async fn find_model_entry_by_id_in_transaction(
         .query(
             format!(
                 "SELECT {} {} WHERE m.id = ?1",
-                super::MODEL_ENTRY_COLUMNS,
-                super::MODELS_JOINED_PROVIDERS
+                MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
             ),
             params![model_id],
         )
         .await?;
 
-    rows.first().map(super::model_entry_from_row).transpose()
+    rows.first().map(model_entry_from_row).transpose()
 }
 
 /// Reads back one model row with its provider facts by natural key inside a transaction.
@@ -188,14 +187,13 @@ async fn find_model_entry_in_transaction(
         .query(
             format!(
                 "SELECT {} {} WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
-                super::MODEL_ENTRY_COLUMNS,
-                super::MODELS_JOINED_PROVIDERS
+                MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
             ),
             params![provider_id, upstream_id],
         )
         .await?;
 
-    rows.first().map(super::model_entry_from_row).transpose()
+    rows.first().map(model_entry_from_row).transpose()
 }
 
 /// Lists the stored models with their provider identity, narrowed to one provider's rows when
@@ -214,14 +212,12 @@ pub(crate) async fn list_model_entries(
     let sql = match provider_id {
         None => format!(
             "SELECT {} {} ORDER BY m.provider_id, m.upstream_id",
-            super::MODEL_ENTRY_COLUMNS,
-            super::MODELS_JOINED_PROVIDERS
+            MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
         ),
 
         Some(_) => format!(
             "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id",
-            super::MODEL_ENTRY_COLUMNS,
-            super::MODELS_JOINED_PROVIDERS
+            MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
         ),
     };
 
@@ -233,7 +229,7 @@ pub(crate) async fn list_model_entries(
     let mut entries = Vec::with_capacity(rows.len());
 
     for row in &rows {
-        entries.push(super::model_entry_from_row(row)?);
+        entries.push(model_entry_from_row(row)?);
     }
 
     Ok(entries)
@@ -313,10 +309,10 @@ pub(crate) async fn apply_discovered_models(
                         params![
                             existing.id,
                             DiscoveryState::Discovered,
-                            super::levels_into_value(model.thinking_levels.as_deref())?,
+                            levels_into_value(model.thinking_levels.as_deref())?,
                             model.max_input_tokens,
                             model.max_output_tokens,
-                            super::support_facts_into_value(model.compaction.as_ref())?,
+                            support_facts_into_value(model.compaction.as_ref())?,
                         ],
                     )
                     .await?;
@@ -334,10 +330,10 @@ pub(crate) async fn apply_discovered_models(
                         provider.id,
                         model.upstream_id.clone(),
                         DiscoveryState::Discovered,
-                        super::levels_into_value(model.thinking_levels.as_deref())?,
+                        levels_into_value(model.thinking_levels.as_deref())?,
                         model.max_input_tokens,
                         model.max_output_tokens,
-                        super::support_facts_into_value(model.compaction.as_ref())?,
+                        support_facts_into_value(model.compaction.as_ref())?,
                     ],
                 )
                 .await?;
@@ -350,8 +346,7 @@ pub(crate) async fn apply_discovered_models(
             .query(
                 format!(
                     "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id",
-                    super::MODEL_ENTRY_COLUMNS,
-                    super::MODELS_JOINED_PROVIDERS
+                    MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
                 ),
                 params![provider.id],
             )
@@ -360,7 +355,7 @@ pub(crate) async fn apply_discovered_models(
         let mut entries = Vec::with_capacity(rows.len());
 
         for row in &rows {
-            entries.push(super::model_entry_from_row(row)?);
+            entries.push(model_entry_from_row(row)?);
         }
 
         Ok(entries)
@@ -413,10 +408,10 @@ pub(crate) async fn insert_model_checked(
                             create.upstream_id,
                             i64::from(create.is_enabled),
                             DiscoveryState::Manual,
-                            super::levels_into_value(create.thinking_levels_override)?,
+                            levels_into_value(create.thinking_levels_override)?,
                             create.max_input_tokens_override,
                             create.max_output_tokens_override,
-                            super::support_facts_into_value(create.compaction_support_override)?,
+                            support_facts_into_value(create.compaction_support_override)?,
                         ],
                     )
                     .await?;
@@ -435,10 +430,10 @@ pub(crate) async fn insert_model_checked(
                         params![
                             i64::from(create.is_enabled),
                             DiscoveryState::Manual,
-                            super::levels_into_value(create.thinking_levels_override)?,
+                            levels_into_value(create.thinking_levels_override)?,
                             create.max_input_tokens_override,
                             create.max_output_tokens_override,
-                            super::support_facts_into_value(create.compaction_support_override)?,
+                            support_facts_into_value(create.compaction_support_override)?,
                             existing.id,
                         ],
                     )
@@ -497,10 +492,10 @@ pub(crate) async fn update_model_overrides_checked(
                  WHERE id = ?6",
                 params![
                     i64::from(update.is_enabled),
-                    super::levels_into_value(update.thinking_levels_override)?,
+                    levels_into_value(update.thinking_levels_override)?,
                     update.max_input_tokens_override,
                     update.max_output_tokens_override,
-                    super::support_facts_into_value(update.compaction_support_override)?,
+                    support_facts_into_value(update.compaction_support_override)?,
                     update.model_id,
                 ],
             )
@@ -544,6 +539,217 @@ pub(crate) async fn delete_model_checked(database: &Database, model_id: i64) -> 
     transaction.commit().await?;
 
     Ok(())
+}
+
+impl IntoValue for DiscoveryState {
+    fn into_value(self) -> Result<Value, TursoError> {
+        Ok(Value::Text(self.as_str().to_string()))
+    }
+}
+
+/// The models-to-providers join: models first, then the owning provider — the `(m, p)` aliases
+/// the projections and row-offset mappings over this join depend on.
+const MODELS_JOINED_PROVIDERS: &str = "FROM models m JOIN providers p ON p.id = m.provider_id";
+
+/// Column order of model selects: the row identity first, then the upstream identifier, the
+/// routing columns, the discovery state, the three capability base columns, the three
+/// capability override mirrors, and the two compaction support fact columns. The owning
+/// provider is never carried in the row itself — every read knows it through the query's filter
+/// or its join.
+pub(super) const MODEL_COLUMNS: &str = "id, upstream_id, is_enabled, \
+     discovery_state, thinking_levels, max_input_tokens, max_output_tokens, \
+     thinking_levels_override, max_input_tokens_override, max_output_tokens_override, \
+     compaction_support, compaction_support_override";
+
+/// The model columns as a provider-model join projects them, appended after
+/// [`super::providers::PROVIDER_COLUMNS`].
+pub(super) const MODEL_COLUMNS_JOINED: &str = "m.id, m.upstream_id, \
+     m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
+     m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
+     m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
+
+/// The combined column order of the model-entry join, consumed positionally by
+/// [`model_entry_from_row`]: the provider id and name, then the model columns.
+const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, \
+     m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
+     m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
+     m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
+
+/// A provider row joined with a model row.
+pub(super) struct ProviderModelJoin {
+    /// Owning provider.
+    pub(super) provider: Provider,
+
+    /// Model row.
+    pub(super) model: Model,
+}
+
+/// Reads a discovery-state column, failing with an internal drift error on an unknown or non-text
+/// value: the column is written only through [`DiscoveryState::as_str`] and its schema `CHECK`
+/// pins the closed set, so anything else is storage drift.
+fn discovery_state_from_value(value: Value) -> Result<DiscoveryState, Error> {
+    match value {
+        Value::Text(text) => DiscoveryState::parse(&text).ok_or_else(|| Error::Drift {
+            message: format!("unknown discovery state `{text}`"),
+        }),
+
+        _ => Err(Error::Drift {
+            message: "discovery state column must be a text value".to_string(),
+        }),
+    }
+}
+
+/// Reads a thinking-level set column (README §3): `NULL` is the unknown state ([`None`]); a JSON
+/// array of vocabulary strings is the canonicalized set; anything else — non-JSON text, a JSON
+/// value that is not an array, an array element that is not a string or not a vocabulary member —
+/// is storage drift, because both write paths (discovery ingestion and the management override)
+/// write only canonicalized vocabulary sets.
+fn levels_from_column(
+    value: Option<String>,
+    column: &str,
+) -> Result<Option<Vec<IrReasoningLevel>>, Error> {
+    let Some(json) = value else {
+        return Ok(None);
+    };
+
+    let parsed = serde_json::from_str::<Vec<String>>(&json).map_err(|error| Error::Drift {
+        message: format!("{column} column carries a malformed level set: {error}"),
+    })?;
+
+    parsed
+        .into_iter()
+        .map(|level| {
+            IrReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| Error::Drift {
+                message: format!("{column} column carries the foreign level `{level}`"),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Renders a thinking-level set column value for a statement parameter: [`Value::Null`] for the
+/// unknown state, else the set's canonical JSON array text. The caller passes a canonicalized set
+/// (both write paths canonicalize before storage, README §3), so the rendering needs no
+/// re-canonicalization.
+fn levels_into_value(levels: Option<&[IrReasoningLevel]>) -> Result<Value, TursoError> {
+    let Some(levels) = levels else {
+        return Ok(Value::Null);
+    };
+
+    let spelled = levels
+        .iter()
+        .map(|level| level.as_str())
+        .collect::<Vec<_>>();
+
+    serde_json::to_string(&spelled)
+        .map(Value::Text)
+        .map_err(|error| TursoError::ToSqlConversionFailure(error.into()))
+}
+
+/// The support-value domain one compaction facts column admits: the discovery-owned base
+/// column stores only known facts — discovery extracts booleans, so an explicit `unknown` in it
+/// is stored drift — while the administrator-owned override column additionally admits the
+/// explicit `unknown` that suppresses the lower layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupportFactDomain {
+    /// Only `supported`/`unsupported` members are legal.
+    Known,
+
+    /// The explicit `unknown` member value is legal too.
+    WithUnknown,
+}
+
+/// Parses one compaction support facts column: `Ok(None)` for `NULL` and for the empty
+/// object — both spell the nothing-known state — else the parsed map, rejecting a stored fact
+/// outside the column's domain as storage drift. The closed mechanism and support vocabularies
+/// are the serde types' own, so a foreign spelling fails the parse the same way.
+fn support_facts_from_column(
+    value: Option<String>,
+    column: &str,
+    domain: SupportFactDomain,
+) -> Result<Option<CompactionSupportFacts>, Error> {
+    let Some(json) = value else {
+        return Ok(None);
+    };
+
+    let facts =
+        serde_json::from_str::<CompactionSupportFacts>(&json).map_err(|error| Error::Drift {
+            message: format!("{column} column carries a malformed support map: {error}"),
+        })?;
+
+    if domain == SupportFactDomain::Known && facts.carries_unknown() {
+        return Err(Error::Drift {
+            message: format!("{column} column carries an explicit `unknown` fact"),
+        });
+    }
+
+    Ok(CompactionSupportFacts::from_pairs(facts.iter()))
+}
+
+/// Renders a compaction support facts column value for a statement parameter: [`Value::Null`]
+/// for the nothing-known state, else the map's canonical JSON object text. The caller passes a
+/// map built at a validated boundary, so the rendering re-checks nothing.
+fn support_facts_into_value(facts: Option<&CompactionSupportFacts>) -> Result<Value, TursoError> {
+    let Some(facts) = facts else {
+        return Ok(Value::Null);
+    };
+
+    serde_json::to_string(facts)
+        .map(Value::Text)
+        .map_err(|error| TursoError::ToSqlConversionFailure(error.into()))
+}
+
+/// Parses a provider-model joined row: the provider columns first, the model columns second.
+pub(super) fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
+    let provider = super::providers::provider_from_row(row)?;
+
+    let model = model_from_row_offset(row, super::providers::PROVIDER_COLUMN_COUNT)?;
+
+    Ok(ProviderModelJoin { provider, model })
+}
+
+/// Parses a model row starting at the given column offset.
+pub(super) fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, Error> {
+    Ok(Model {
+        id: row.get(offset)?,
+        upstream_id: row.get(offset + 1)?,
+        is_enabled: row.get::<i64>(offset + 2)? != 0,
+        discovery_state: discovery_state_from_value(row.get_value(offset + 3)?)?,
+        thinking_levels: levels_from_column(row.get(offset + 4)?, "thinking_levels")?,
+        max_input_tokens: row.get(offset + 5)?,
+        max_output_tokens: row.get(offset + 6)?,
+        thinking_levels_override: levels_from_column(
+            row.get(offset + 7)?,
+            "thinking_levels_override",
+        )?,
+        max_input_tokens_override: row.get(offset + 8)?,
+        max_output_tokens_override: row.get(offset + 9)?,
+        compaction_support: support_facts_from_column(
+            row.get(offset + 10)?,
+            "compaction_support",
+            SupportFactDomain::Known,
+        )?,
+        compaction_support_override: support_facts_from_column(
+            row.get(offset + 11)?,
+            "compaction_support_override",
+            SupportFactDomain::WithUnknown,
+        )?,
+    })
+}
+
+/// Parses a standalone model row in canonical column order.
+pub(super) fn model_from_row(row: &Row) -> Result<Model, Error> {
+    model_from_row_offset(row, 0)
+}
+
+/// Parses a model entry row in [`MODEL_ENTRY_COLUMNS`] order: the provider id and name, then the
+/// model columns at offset 2.
+fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
+    Ok(ModelEntry {
+        provider_id: row.get(0)?,
+        provider_name: row.get(1)?,
+        model: model_from_row_offset(row, 2)?,
+    })
 }
 
 /// One discovered fixture carrying no capability facts: everything unknown (README §3) — the

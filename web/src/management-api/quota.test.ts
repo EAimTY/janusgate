@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseGetProviderQuotaResponse, parseQuotaDescriptor } from "./quota";
+import { parseQuotaDescriptor } from "./definitions/quota";
+import { parseGetProviderQuotaResponse } from "./responses/quota";
 
 const entry = {
     key: [
@@ -245,7 +246,15 @@ describe("authored quota routing", () => {
         const parse = (routing: unknown, type = "map") =>
             parseQuotaDescriptor(
                 {
-                    request: {},
+                    request: {
+                        method: "GET",
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://example.test/quota",
+                            },
+                        ],
+                    },
                     sources: [
                         {
                             type,
@@ -281,15 +290,6 @@ describe("authored quota routing", () => {
                     ],
                 },
                 "quota",
-                () => ({
-                    method: "GET",
-                    url: [
-                        {
-                            type: "literal",
-                            value: "https://example.test/quota",
-                        },
-                    ],
-                }),
             );
         expect(parse(undefined).sources[0]?.entries[0]?.routing).toEqual({
             type: "monitoring_only",

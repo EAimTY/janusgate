@@ -10,15 +10,15 @@ import {
     Show,
     Switch,
 } from "solid-js";
-import { connectionService } from "/src/connection/app-service";
-import type { Connection } from "/src/connection/model";
-import { hasDirtyForms } from "/src/dirty-form-registry";
-import { formatRefreshStamp } from "/src/format";
-import { translation } from "/src/i18n";
-import { LanguageControl } from "/src/i18n/language-control";
-import { connectedMessage } from "/src/i18n/rich";
-import { createManagementApi } from "/src/management-api/client";
-import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
+import { connectionService } from "./connection/app-service";
+import type { Connection } from "./connection/model";
+import { hasDirtyForms } from "./dirty-form-registry";
+import { formatRefreshStamp } from "./format";
+import { translation } from "./i18n";
+import { LanguageControl } from "./i18n/language-control";
+import { connectedMessage } from "./i18n/rich";
+import { createManagementApi } from "./management-api/client";
+import { refreshStamp, requestRefresh, resetRefreshStamp } from "./refresh-state";
 import {
     type AppRoute,
     currentLocation,
@@ -26,35 +26,36 @@ import {
     matchAppRoute,
     navigate,
     routeTitle,
-} from "/src/router";
-import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
-import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
-import { ApiKeyNewScreen } from "/src/screens/api-key-new-screen";
-import { ApiKeysScreen } from "/src/screens/api-keys-screen";
-import { BulkPublicationScreen } from "/src/screens/bulk-publication-screen";
-import { ConnectionScreen } from "/src/screens/connection-screen";
-import { HomeScreen } from "/src/screens/home-screen";
-import { ModelDetailScreen } from "/src/screens/model-detail-screen";
-import { ModelEditScreen } from "/src/screens/model-edit-screen";
-import { ModelNewScreen } from "/src/screens/model-new-screen";
-import { ModelRouteEditorScreen } from "/src/screens/model-route-editor-screen";
-import { ModelsScreen } from "/src/screens/models-screen";
-import { NotFoundScreen } from "/src/screens/not-found-screen";
-import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
-import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
-import { ProviderNewScreen } from "/src/screens/provider-new-screen";
-import { ProviderPoolEditorScreen } from "/src/screens/provider-pool-editor-screen";
-import { ProvidersScreen } from "/src/screens/providers-screen";
-import { ModelRoutesScreen, ProviderPoolsScreen } from "/src/screens/routing-lists-screen";
-import { UsageQueryScreen } from "/src/screens/usage-query-screen";
-import { UsageScreen } from "/src/screens/usage-screen";
-import { cycleTheme, type ThemePreference, themePreference } from "/src/theme";
-import { AppLink } from "/src/ui/app-link";
-import { joinClass } from "/src/ui/attributes";
-import { Button } from "/src/ui/controls";
-import { Glyph, type GlyphName, JanusMark } from "/src/ui/glyph";
-import { createInlineConfirmFocus } from "/src/ui/inline-confirm";
-import { InlineConfirmQuestion } from "/src/ui/inline-confirm-question";
+} from "./router";
+import { ApiKeyDetailScreen } from "./screens/api-keys/api-key-detail-screen";
+import { ApiKeyEditScreen } from "./screens/api-keys/api-key-edit-screen";
+import { ApiKeyNewScreen } from "./screens/api-keys/api-key-new-screen";
+import { ApiKeysScreen } from "./screens/api-keys/api-keys-screen";
+import { ConnectionScreen } from "./screens/connection-screen";
+import { HomeScreen } from "./screens/home-screen";
+import { BulkPublicationScreen } from "./screens/model-routes/bulk-publication-screen";
+import { ModelRouteEditorScreen } from "./screens/model-routes/model-route-editor-screen";
+import { ModelRoutesScreen } from "./screens/model-routes/model-routes-screen";
+import { ModelDetailScreen } from "./screens/models/model-detail-screen";
+import { ModelEditScreen } from "./screens/models/model-edit-screen";
+import { ModelNewScreen } from "./screens/models/model-new-screen";
+import { ModelsScreen } from "./screens/models/models-screen";
+import { NotFoundScreen } from "./screens/not-found-screen";
+import { ProviderPoolEditorScreen } from "./screens/provider-pools/provider-pool-editor-screen";
+import { ProviderPoolsScreen } from "./screens/provider-pools/provider-pools-screen";
+import { ProviderDetailScreen } from "./screens/providers/provider-detail-screen";
+import { ProviderEditScreen } from "./screens/providers/provider-edit-screen";
+import { ProviderNewScreen } from "./screens/providers/provider-new-screen";
+import { ProvidersScreen } from "./screens/providers/providers-screen";
+import { UsageQueryScreen } from "./screens/usage/usage-query-screen";
+import { UsageScreen } from "./screens/usage/usage-screen";
+import { cycleTheme, type ThemePreference, themePreference } from "./theme";
+import { AppLink } from "./ui/app-link";
+import { joinClass } from "./ui/attributes";
+import { Button } from "./ui/controls";
+import { Glyph, type GlyphName, JanusMark } from "./ui/glyph";
+import { createInlineConfirmFocus } from "./ui/inline-confirm";
+import { InlineConfirmQuestion } from "./ui/inline-confirm-question";
 
 /**
  * The connection screen's document title: the one page outside the routes,

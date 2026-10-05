@@ -1,6 +1,6 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buttonWithText, createDisposals } from "../screens/screen-test-support";
+import { buttonWithText, createDisposals } from "../test-support/management-api";
 import { CopyButton, copyText } from "./clipboard";
 
 /**

@@ -20,7 +20,7 @@ import {
     expectRecord,
     expectString,
     parseListResponse,
-} from "./validation";
+} from "./validation-primitives";
 
 /** A management contract failure names only the safe structural path. */
 function invalid(context: string): never {

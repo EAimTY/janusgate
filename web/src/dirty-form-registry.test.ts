@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { drainWrites } from "/src/screens/screen-test-support";
 import {
     type DirtyFormRegistration,
     hasDirtyForms,
     registerDirtyForm,
 } from "./dirty-form-registry";
+import { drainWrites } from "./test-support/management-api";
 
 // The registry is module state shared by every test in this process: each
 // test gives the seats it took back, so a leftover dirty form cannot leave

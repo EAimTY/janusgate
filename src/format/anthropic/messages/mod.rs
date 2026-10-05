@@ -32,7 +32,7 @@ mod upstream_render;
 
 pub(crate) use self::{
     client_render::{CompactionOnlyUsage, render_compaction_only_response},
-    compaction::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block, overlay_header_rows},
+    compaction::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block},
     compaction_affinity::completed_anchors as completed_compaction_anchors,
     upstream_parse::UpstreamParser,
     upstream_render::{

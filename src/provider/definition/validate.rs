@@ -12,6 +12,7 @@ use super::{
     },
     credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce, TokenRefresh},
     discovery::{CapabilityExtraction, DiscoveryExtract, Pagination, ThinkingLevelsExtraction},
+    expressions::{ExpressionMember, ExpressionSurface},
     provisioning::{ProvisionExtraction, ProvisioningStep},
     template::{
         ControlBody, ControlMethod, ControlRequest, ExtractionShape, ParamRow, ResponseDescriptor,
@@ -442,7 +443,8 @@ impl DefinitionPayload {
                 // client-ID rules below enforce. A credential with a client secret
                 // authenticates with it — the Basic/body scheme is the definition's business.
                 if client_secret.is_none()
-                    && !request_references(&authorization.request, &ValueExpr::ClientId)
+                    && !ExpressionSurface::Control(&authorization.request)
+                        .references(&ValueExpr::ClientId)
                 {
                     return Err(ValidationError::new(
                         "device grant without a client secret requires the device authorization \
@@ -470,7 +472,7 @@ impl DefinitionPayload {
         if let Grant::AuthorizationCode {
             pkce: Pkce::S256, ..
         } = grant
-            && !request_references(&exchange.request, &ValueExpr::CodeVerifier)
+            && !ExpressionSurface::Control(&exchange.request).references(&ValueExpr::CodeVerifier)
         {
             return Err(ValidationError::new(
                 "authorization-code grant with `pkce: s256` requires the token exchange request \
@@ -485,7 +487,7 @@ impl DefinitionPayload {
         // the part dies at the upstream with `invalid_request` on every flow: the same
         // required-carry shape the verifier rule above enforces.
         if let Grant::AuthorizationCode { .. } = grant
-            && !request_references(&exchange.request, &ValueExpr::RedirectUri)
+            && !ExpressionSurface::Control(&exchange.request).references(&ValueExpr::RedirectUri)
         {
             return Err(ValidationError::new(
                 "authorization-code grant requires the token exchange request to reference the \
@@ -501,7 +503,8 @@ impl DefinitionPayload {
         // never references the part burns every flow on that attempt: the same required-carry
         // shape the verifier and redirect-URI rules above enforce.
         if let Grant::AuthorizationCode { .. } = grant
-            && !request_references(&exchange.request, &ValueExpr::AuthorizationCode)
+            && !ExpressionSurface::Control(&exchange.request)
+                .references(&ValueExpr::AuthorizationCode)
         {
             return Err(ValidationError::new(
                 "authorization-code grant requires the token exchange request to reference the \
@@ -517,7 +520,7 @@ impl DefinitionPayload {
         // until the flow's own expiry and never exchange: the same required-carry shape the
         // authorization-code rules above enforce.
         if let Grant::Device { .. } = grant
-            && !request_references(&exchange.request, &ValueExpr::DeviceCode)
+            && !ExpressionSurface::Control(&exchange.request).references(&ValueExpr::DeviceCode)
         {
             return Err(ValidationError::new(
                 "device grant requires the token exchange request to reference the \
@@ -533,7 +536,9 @@ impl DefinitionPayload {
         // `invalid_client` on every flow: the same required-carry shape the rules above
         // enforce. A credential with a client secret authenticates with it — the Basic/body
         // scheme is the definition's business.
-        if client_secret.is_none() && !request_references(&exchange.request, &ValueExpr::ClientId) {
+        if client_secret.is_none()
+            && !ExpressionSurface::Control(&exchange.request).references(&ValueExpr::ClientId)
+        {
             return Err(ValidationError::new(
                 "OAuth credential without a client secret requires the token exchange request \
                  to reference the `client_id` value part: RFC 6749 §4.1.3 makes the client ID \
@@ -553,7 +558,7 @@ impl DefinitionPayload {
         // `reprovision` reuses the provisioning extraction contract and `none` carries no
         // request.
         if let TokenRefresh::Grant { request, .. } = refresh
-            && !request_references(request, &ValueExpr::RefreshToken)
+            && !ExpressionSurface::Control(request).references(&ValueExpr::RefreshToken)
         {
             return Err(ValidationError::new(
                 "refresh grant requires the token refresh request to reference the \
@@ -570,7 +575,7 @@ impl DefinitionPayload {
         // authenticates its renewal with it.
         if let TokenRefresh::Grant { request, .. } = refresh
             && client_secret.is_none()
-            && !request_references(request, &ValueExpr::ClientId)
+            && !ExpressionSurface::Control(request).references(&ValueExpr::ClientId)
         {
             return Err(ValidationError::new(
                 "OAuth credential without a client secret requires the token refresh request \
@@ -1291,57 +1296,6 @@ fn validate_control_request(
     Ok(())
 }
 
-/// Whether one string expression references the sought value part, directly or inside a
-/// coalesce's arguments. Shared with the parent module's base-reference predicate, which seeks
-/// the same walk over the inference descriptor's non-URL members.
-pub(super) fn references(expr: &StringExpr, sought: &ValueExpr) -> bool {
-    expr.0.iter().any(|part| match part {
-        ValueExpr::Coalesce { parts } => parts.contains(sought),
-
-        other => other == sought,
-    })
-}
-
-/// Whether one template tree references the sought value part in any of its string leaves.
-/// Shared with the parent module's base-reference predicate, which seeks the same walk over
-/// the inference envelope.
-pub(super) fn template_node_references(node: &TemplateNode, sought: &ValueExpr) -> bool {
-    match node {
-        TemplateNode::Json { .. } | TemplateNode::Body => false,
-
-        TemplateNode::String { expr } => references(expr, sought),
-
-        TemplateNode::Object { fields } => fields
-            .values()
-            .any(|field| template_node_references(field, sought)),
-
-        TemplateNode::Array { items } => items
-            .iter()
-            .any(|item| template_node_references(item, sought)),
-    }
-}
-
-/// Whether one control request references the sought value part anywhere its stage expressions
-/// live: the URL, the headers, the query rows, and the body's form fields or JSON string leaves.
-/// Shared with the parent module's base-reference predicate, which seeks the same walk over
-/// every control request of the definition.
-pub(super) fn request_references(request: &ControlRequest, sought: &ValueExpr) -> bool {
-    let rows_reference = |rows: &[ParamRow]| rows.iter().any(|row| references(&row.value, sought));
-
-    let body_references = match &request.body {
-        None => false,
-
-        Some(ControlBody::Form { fields }) => rows_reference(fields),
-
-        Some(ControlBody::Json { node }) => template_node_references(node, sought),
-    };
-
-    body_references
-        || rows_reference(&request.headers)
-        || rows_reference(&request.query)
-        || references(&request.url, sought)
-}
-
 /// Validates one response descriptor: non-empty paths, and — for a form-encoded response, whose
 /// fields are flat — exactly one path member.
 fn validate_response_descriptor(
@@ -1406,123 +1360,80 @@ impl<'a> ExpressionWalk<'a> {
         Self { stage, slots }
     }
 
-    /// Walks one string expression.
+    /// Validates one string expression using the shared structural owner.
     fn string_expr(&mut self, expr: &StringExpr, what: &str) -> Result<(), ValidationError> {
-        for part in &expr.0 {
-            self.value_expr(part, what)?;
-        }
-
-        Ok(())
+        self.surface(ExpressionSurface::String(expr), what)
+            .map(|_| ())
     }
 
-    /// Walks one percent-encoded row list — query parameters, form fields, and authorize-URL
-    /// parameters: non-empty names, stage-available values. Percent-encoding carries any name,
-    /// so no header-name rule applies.
+    /// Validates percent-encoded parameter rows using the shared structural owner.
     fn params(&mut self, rows: &[ParamRow], what: &str) -> Result<(), ValidationError> {
-        for row in rows {
-            if row.name.is_empty() {
-                return Err(ValidationError::new(format!(
-                    "{what} carries an empty name"
-                )));
-            }
-
-            self.string_expr(&row.value, what)?;
-        }
-
-        Ok(())
+        self.surface(ExpressionSurface::Parameters(rows), what)
+            .map(|_| ())
     }
 
-    /// Walks one header-row list: non-empty, syntactically valid HTTP header names,
-    /// stage-available values. A header row reaches the wire as a literal header name (README
-    /// §5.2), so an invalid name is a definition defect caught here at the write instead of
-    /// failing every dispatch at runtime under a misleading error classification.
+    /// Validates literal HTTP header rows using the shared structural owner.
     fn headers(&mut self, rows: &[ParamRow], what: &str) -> Result<(), ValidationError> {
-        for row in rows {
-            if row.name.is_empty() {
-                return Err(ValidationError::new(format!(
-                    "{what} carries an empty name"
-                )));
-            }
-
-            if http::HeaderName::try_from(row.name.as_str()).is_err() {
-                return Err(ValidationError::new(format!(
-                    "{what} carries an invalid HTTP header name `{}`",
-                    row.name
-                )));
-            }
-
-            self.string_expr(&row.value, what)?;
-        }
-
-        Ok(())
+        self.surface(ExpressionSurface::Headers(rows), what)
+            .map(|_| ())
     }
 
-    /// Walks one template tree, returning the number of body placeholders it carries.
+    /// Validates template members and counts concrete codec body placeholders.
     fn template_node(&mut self, node: &TemplateNode, what: &str) -> Result<usize, ValidationError> {
-        match node {
-            TemplateNode::Json { .. } => Ok(0),
+        self.surface(ExpressionSurface::Template(node), what)
+    }
 
-            TemplateNode::String { expr } => {
-                self.string_expr(expr, what)?;
-
-                Ok(0)
-            }
-
-            TemplateNode::Body => Ok(1),
-
-            TemplateNode::Object { fields } => {
-                let mut body_count = 0;
-
-                for (name, field) in fields {
+    /// Applies write-boundary rules to structural facts in their original diagnostic order.
+    fn surface(
+        &mut self,
+        surface: ExpressionSurface<'_>,
+        what: &str,
+    ) -> Result<usize, ValidationError> {
+        let mut body_count = 0;
+        for member in surface.members() {
+            match member {
+                ExpressionMember::Value(value) => self.value_expr(value, what)?,
+                ExpressionMember::Body => body_count += 1,
+                ExpressionMember::HeaderName(name) | ExpressionMember::ParameterName(name) => {
                     if name.is_empty() {
                         return Err(ValidationError::new(format!(
-                            "{what} carries an empty object member name"
+                            "{what} carries an empty name"
                         )));
                     }
-
-                    body_count += self.template_node(field, what)?;
+                    if matches!(member, ExpressionMember::HeaderName(_))
+                        && http::HeaderName::try_from(name).is_err()
+                    {
+                        return Err(ValidationError::new(format!(
+                            "{what} carries an invalid HTTP header name `{name}`"
+                        )));
+                    }
                 }
-
-                Ok(body_count)
-            }
-
-            TemplateNode::Array { items } => {
-                let mut body_count = 0;
-
-                for item in items {
-                    body_count += self.template_node(item, what)?;
+                ExpressionMember::ObjectMemberName("") => {
+                    return Err(ValidationError::new(format!(
+                        "{what} carries an empty object member name"
+                    )));
                 }
-
-                Ok(body_count)
-            }
-        }
-    }
-
-    /// Validates one value part against the stage's available kinds.
-    fn value_expr(&mut self, expr: &ValueExpr, what: &str) -> Result<(), ValidationError> {
-        match expr {
-            ValueExpr::Literal { .. } => Ok(()),
-
-            ValueExpr::Coalesce { parts } => {
-                if parts.is_empty() {
+                ExpressionMember::ObjectMemberName(_) => {}
+                ExpressionMember::EmptyCoalesce => {
                     return Err(ValidationError::new(format!(
                         "{what} carries an empty coalesce"
                     )));
                 }
-
-                for part in parts {
-                    if matches!(part, ValueExpr::Coalesce { .. }) {
-                        return Err(ValidationError::new(format!(
-                            "{what} nests a coalesce inside a coalesce; coalesce arguments \
-                             carry direct value parts only"
-                        )));
-                    }
-
-                    self.value_expr(part, what)?;
+                ExpressionMember::NestedCoalesce => {
+                    return Err(ValidationError::new(format!(
+                        "{what} nests a coalesce inside a coalesce; coalesce arguments \
+                         carry direct value parts only"
+                    )));
                 }
-
-                Ok(())
             }
+        }
+        Ok(body_count)
+    }
+
+    /// Validates one direct value part against the stage's available kinds.
+    fn value_expr(&mut self, expr: &ValueExpr, what: &str) -> Result<(), ValidationError> {
+        match expr {
+            ValueExpr::Literal { .. } | ValueExpr::Coalesce { .. } => Ok(()),
 
             ValueExpr::Slot { name } => {
                 if !self.stage.allows(ValueKind::Slot) {

@@ -105,9 +105,12 @@ async fn read_blocks(
     let mut blocks = Vec::with_capacity(rows.len());
     for row in &rows {
         let applicability: quota::QuotaApplicability =
-            super::payload_from_json(row.get(1)?, "quota applicability")?;
+            super::provider_definitions::payload_from_json(row.get(1)?, "quota applicability")?;
         blocks.push(QuotaBlock {
-            key: super::payload_from_json(row.get(0)?, "quota restriction identity")?,
+            key: super::provider_definitions::payload_from_json(
+                row.get(0)?,
+                "quota restriction identity",
+            )?,
             applies_to: applicability.canonicalized(),
             observed_at: row.get(2)?,
             blocked_until: row.get(3)?,

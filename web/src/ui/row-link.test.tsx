@@ -1,7 +1,7 @@
 import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
-import { RowLink } from "/src/ui/row-link";
-import { buttonWithText, createDisposals, linkTo, settle } from "../screens/screen-test-support";
+import { buttonWithText, createDisposals, linkTo, settle } from "../test-support/management-api";
+import { RowLink } from "./row-link";
 
 describe("RowLink trailing action", () => {
     const disposes = createDisposals();

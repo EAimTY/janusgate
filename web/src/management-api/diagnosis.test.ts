@@ -1,10 +1,10 @@
 import { type JSX, render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ManagementApiError } from "/src/management-api/errors";
-import { ErrorCode } from "/src/management-api/generated/v0";
-import { gatewayFailure } from "/src/screens/screen-test-support";
+import { gatewayFailure } from "../test-support/management-api";
 import type { ActionContext, Reachability } from "./diagnosis";
 import { diagnoseFailure, probeReachability } from "./diagnosis";
+import { ManagementApiError } from "./errors";
+import { ErrorCode } from "./generated/v0";
 
 const context: ActionContext = {
     baseUrl: "https://gateway.example.com",

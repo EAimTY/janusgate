@@ -1,7 +1,7 @@
 /** Development-only visual fixture. The production entry never imports this module. */
 import { type JSX, render } from "@solidjs/web";
 import { createSignal, For } from "solid-js";
-import { BucketCell, BucketHeader, UsageTable } from "/src/screens/usage-table";
+import { BucketCell, BucketHeader, UsageTable } from "/src/features/usage/table";
 import { BarChart } from "/src/ui/bar-chart";
 import { CopyButton } from "/src/ui/clipboard";
 import { Button, SelectField, Switch, TextField } from "/src/ui/controls";

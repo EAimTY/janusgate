@@ -1,7 +1,4 @@
 import { type Accessor, createSignal } from "solid-js";
-import { translation } from "/src/i18n";
-import { isRoutingToken } from "/src/management-api/identifiers";
-import { parseRowIdentifier } from "./row-id";
 import {
     EMPTY_USAGE_FILTER_DRAFT,
     namedSubjects,
@@ -11,7 +8,10 @@ import {
     USAGE_QUERY_SUBJECT_FIELDS,
     type UsageFilterDraft,
     type UsageQuerySubject,
-} from "./usage-filter";
+} from "./features/usage/filter";
+import { translation } from "./i18n";
+import { isRoutingToken } from "./management-api/identifiers";
+import { parseRowIdentifier } from "./row-id";
 
 /**
  * The client-side routes. Each page does one job: the overview reads the
@@ -122,10 +122,10 @@ type AppLocation = {
 /**
  * The aggregates-subject vocabulary — the dimension union, the subject shape,
  * and the dimension↔field table every subject derivation reads — is defined
- * once beside the shared usage filter (`/src/usage-filter`); the router
+ * once beside the shared usage filter (`/src/features/usage/filter`); the router
  * re-exports the types its routes carry.
  */
-export type { UsageQuerySubject, UsageQuerySubjectDimension } from "./usage-filter";
+export type { UsageQuerySubject, UsageQuerySubjectDimension } from "./features/usage/filter";
 
 /**
  * The query string one aggregates link carries for its subject: a single

@@ -7,10 +7,13 @@
 //! the persist on the acquired stamp — so a concurrent reauthorization or stale-lease
 //! reacquisition is never overwritten by a refresh derived from superseded credentials.
 
-use super::{Error, SqlExecutor, provider_from_row};
+use super::{Error, SqlExecutor};
 use crate::{
-    database::{Database, Error as DatabaseError, Transaction, params},
-    provider::{Provider, StoredCredentials, definition::ProviderDefinition},
+    database::{
+        Database, Error as DatabaseError, Row, Transaction, TursoError, Value, params,
+        params::IntoValue,
+    },
+    provider::{CredentialKind, Provider, StoredCredentials, definition::ProviderDefinition},
 };
 use serde::Serialize;
 
@@ -85,8 +88,7 @@ pub(crate) async fn insert_provider(
 pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>, Error> {
     let sql = format!(
         "SELECT {} {} ORDER BY p.name",
-        super::PROVIDER_COLUMNS,
-        super::PROVIDER_JOINED_FROM
+        PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
     );
 
     let rows = database.query(sql, ()).await?;
@@ -604,8 +606,7 @@ pub(crate) async fn set_base_url_in_transaction(
 fn find_provider_sql() -> String {
     format!(
         "SELECT {} {} WHERE p.name = ?1",
-        super::PROVIDER_COLUMNS,
-        super::PROVIDER_JOINED_FROM
+        PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
     )
 }
 
@@ -614,8 +615,7 @@ fn find_provider_sql() -> String {
 fn find_provider_by_id_sql() -> String {
     format!(
         "SELECT {} {} WHERE p.id = ?1",
-        super::PROVIDER_COLUMNS,
-        super::PROVIDER_JOINED_FROM
+        PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
     )
 }
 
@@ -664,6 +664,61 @@ pub(crate) struct ProviderUpdate<'a> {
 
     /// Replacement credentials; `None` keeps the stored ones.
     pub(crate) credentials: Option<&'a StoredCredentials>,
+}
+
+impl IntoValue for CredentialKind {
+    fn into_value(self) -> Result<Value, TursoError> {
+        Ok(Value::Text(self.as_str().to_string()))
+    }
+}
+
+/// Column order of provider selects: the row identity, the routing columns, the credential
+/// state, and then the definition columns the row references, consumed positionally by
+/// [`provider_from_row`].
+pub(super) const PROVIDER_COLUMNS: &str = "p.id, p.name, p.base_url, p.credentials, \
+     p.is_enabled, p.quota_generation, p.quota_revision, d.name, d.version, \
+     d.format, d.inference, d.credential, d.provisioning, \
+     d.discovery, d.compaction, d.quota, d.created_at, p.model_prefix";
+
+/// The join behind every provider read: the row and the exact definition version it references.
+pub(super) const PROVIDER_JOINED_FROM: &str = "FROM providers p JOIN provider_definitions d \
+     ON d.name = p.provider_definition_name AND d.version = p.provider_definition_version";
+
+/// The provider-model join: models first, then the provider and its definition, filtered by the
+/// caller's model predicate.
+pub(super) const PROVIDER_JOINED_FROM_MODELS: &str = "FROM models m \
+     JOIN providers p ON p.id = m.provider_id JOIN provider_definitions d \
+     ON d.name = p.provider_definition_name AND d.version = p.provider_definition_version";
+
+/// The column count of [`PROVIDER_COLUMNS`]: a provider-model join appends the model columns
+/// after it.
+pub(super) const PROVIDER_COLUMN_COUNT: usize = 18;
+
+/// Parses a provider row in [`PROVIDER_COLUMNS`] order: the provider columns, then the exact
+/// definition version the row references.
+pub(super) fn provider_from_row(row: &Row) -> Result<Provider, Error> {
+    let name: String = row.get(1)?;
+    let credentials_json: String = row.get(3)?;
+
+    // The typed parse failure is wrapped exactly once as internal storage drift: the row was
+    // written only through the validated management path, so a payload failing here is never the
+    // requesting client's fault.
+    let credentials = serde_json::from_str::<crate::provider::StoredCredentials>(&credentials_json)
+        .map_err(|error| Error::Drift {
+            message: format!("provider `{name}` has malformed credentials: {error}"),
+        })?;
+
+    Ok(Provider {
+        id: row.get(0)?,
+        name,
+        model_prefix: row.get(17)?,
+        base_url: row.get(2)?,
+        credentials,
+        is_enabled: row.get::<i64>(4)? != 0,
+        quota_generation: row.get(5)?,
+        quota_revision: row.get(6)?,
+        definition: super::provider_definitions::definition_from_row_offset(row, 7)?,
+    })
 }
 
 #[cfg(test)]

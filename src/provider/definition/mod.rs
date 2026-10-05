@@ -11,6 +11,7 @@ pub(crate) mod compaction;
 pub(crate) mod credential;
 pub(crate) mod discovery;
 pub(crate) mod eval;
+mod expressions;
 pub(crate) mod inference;
 pub(crate) mod provisioning;
 pub(crate) mod quota;
@@ -80,68 +81,60 @@ impl DefinitionPayload {
     /// base URL.
     #[must_use]
     pub(crate) fn references_base(&self) -> bool {
-        // The part the walk seeks everywhere below: the stored base-URL reference.
-        let base = template::ValueExpr::Base;
+        self.base_capable_surfaces()
+            .into_iter()
+            .any(|surface| surface.references(&template::ValueExpr::Base))
+    }
 
-        let mut is_addressed = validate::references(&self.inference.url, &base)
-            || self
-                .inference
+    /// Enumerates each descriptor surface that can use a stored or working base URL.
+    /// Authorization URLs and extra parameters are excluded because their stage forbids Base.
+    fn base_capable_surfaces(&self) -> Vec<expressions::ExpressionSurface<'_>> {
+        use expressions::ExpressionSurface;
+        let mut surfaces = vec![
+            ExpressionSurface::String(&self.inference.url),
+            ExpressionSurface::Headers(&self.inference.headers),
+        ];
+        surfaces.extend(
+            self.inference
                 .stream_url
                 .as_ref()
-                .is_some_and(|url| validate::references(url, &base))
-            || self
-                .inference
-                .headers
-                .iter()
-                .any(|header| validate::references(&header.value, &base))
-            || self
-                .inference
+                .map(ExpressionSurface::String),
+        );
+        surfaces.extend(
+            self.inference
                 .envelope
                 .as_ref()
-                .is_some_and(|envelope| validate::template_node_references(envelope, &base));
-
-        // The credential section's OAuth recipe: every stage here evaluates against the flow's
-        // working base URL or the stored provider base URL, except the authorize-URL build,
-        // whose stage bars the base reference outright.
+                .map(ExpressionSurface::Template),
+        );
         if let credential::CredentialAcquisition::OAuth(recipe) = &self.credential {
-            is_addressed = is_addressed
-                || match &recipe.grant {
-                    credential::Grant::AuthorizationCode { .. } => false,
-                    credential::Grant::Device { authorization, .. } => {
-                        validate::request_references(&authorization.request, &base)
-                    }
-                };
-
-            is_addressed =
-                is_addressed || validate::request_references(&recipe.exchange.request, &base);
-
+            if let credential::Grant::Device { authorization, .. } = &recipe.grant {
+                surfaces.push(ExpressionSurface::Control(&authorization.request));
+            }
+            surfaces.push(ExpressionSurface::Control(&recipe.exchange.request));
             if let credential::TokenRefresh::Grant { request, .. } = &recipe.refresh {
-                is_addressed = is_addressed || validate::request_references(request, &base);
+                surfaces.push(ExpressionSurface::Control(request));
             }
         }
-
         if let Some(steps) = &self.provisioning {
-            is_addressed = is_addressed
-                || steps.iter().any(|step| {
-                    validate::request_references(&step.request, &base)
-                        || step
-                            .poll
-                            .as_ref()
-                            .is_some_and(|poll| validate::request_references(&poll.request, &base))
-                });
+            for step in steps {
+                surfaces.push(ExpressionSurface::Control(&step.request));
+                surfaces.extend(
+                    step.poll
+                        .as_ref()
+                        .map(|poll| ExpressionSurface::Control(&poll.request)),
+                );
+            }
         }
-
-        if let Some(discovery) = &self.discovery {
-            is_addressed = is_addressed || validate::request_references(&discovery.request, &base);
-        }
-
-        if let Some(quota) = &self.quota {
-            is_addressed = is_addressed || validate::request_references(&quota.request, &base);
-        }
-
-        // The compaction section: the two full operation surfaces and the Messages header
-        // overlays, whose expressions evaluate against the same environment as the inference
-        // connection's.
+        surfaces.extend(
+            self.discovery
+                .as_ref()
+                .map(|discovery| ExpressionSurface::Control(&discovery.request)),
+        );
+        surfaces.extend(
+            self.quota
+                .as_ref()
+                .map(|quota| ExpressionSurface::Control(&quota.request)),
+        );
         if let Some(compaction) = &self.compaction {
             if let Some(operation) = compaction
                 .mechanisms
@@ -149,16 +142,11 @@ impl DefinitionPayload {
                 .as_ref()
                 .and_then(|declaration| declaration.operation.as_ref())
             {
-                is_addressed = is_addressed
-                    || operation_references_base(
-                        &operation.url,
-                        &operation.headers,
-                        operation.envelope.as_ref(),
-                        &base,
-                    );
+                surfaces.push(ExpressionSurface::String(&operation.url));
+                surfaces.push(ExpressionSurface::Headers(&operation.headers));
+                surfaces.extend(operation.envelope.as_ref().map(ExpressionSurface::Template));
             }
-
-            for declaration in [
+            for headers in [
                 compaction
                     .mechanisms
                     .messages_on_demand_compaction
@@ -173,41 +161,16 @@ impl DefinitionPayload {
             .into_iter()
             .flatten()
             {
-                is_addressed = is_addressed
-                    || declaration
-                        .iter()
-                        .any(|header| validate::references(&header.value, &base));
+                surfaces.push(ExpressionSurface::Headers(headers));
             }
-
-            if let Some(count_tokens) = &compaction.count_tokens {
-                is_addressed = is_addressed
-                    || operation_references_base(
-                        &count_tokens.url,
-                        &count_tokens.headers,
-                        count_tokens.envelope.as_ref(),
-                        &base,
-                    );
+            if let Some(operation) = &compaction.count_tokens {
+                surfaces.push(ExpressionSurface::String(&operation.url));
+                surfaces.push(ExpressionSurface::Headers(&operation.headers));
+                surfaces.extend(operation.envelope.as_ref().map(ExpressionSurface::Template));
             }
         }
-
-        is_addressed
+        surfaces
     }
-}
-
-/// Whether one compaction operation's URL, header-row values, and envelope string leaves
-/// reference the sought value part — the same walk the write-time validation performs over the
-/// surface, seeking instead of rejecting.
-fn operation_references_base(
-    url: &template::StringExpr,
-    headers: &[template::ParamRow],
-    envelope: Option<&template::TemplateNode>,
-    sought: &template::ValueExpr,
-) -> bool {
-    validate::references(url, sought)
-        || headers
-            .iter()
-            .any(|header| validate::references(&header.value, sought))
-        || envelope.is_some_and(|envelope| validate::template_node_references(envelope, sought))
 }
 
 /// One immutable provider definition version: the stored `(name, version)` row plus its parsed
@@ -644,6 +607,17 @@ mod tests {
                     },
                 })),
                 true,
+            ),
+            (
+                "literal JSON never creates a reference or a body placeholder",
+                standalone(serde_json::json!({
+                    "url": literal("https://upstream.example/compact"),
+                    "envelope": {
+                        "type": "json",
+                        "value": { "type": "base", "body": { "type": "body" } },
+                    },
+                })),
+                false,
             ),
             (
                 "every standalone surface literal",
