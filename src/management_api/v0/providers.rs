@@ -10,7 +10,6 @@ use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroI64;
 
 route! {
     pub(super) ListProviders: {
@@ -311,8 +310,8 @@ pub(super) async fn delete(
 /// # Errors
 ///
 /// Returns [`Error`] for empty names, unknown ids, absent-keeps violations, taken names,
-/// public-ID collisions, a rebind whose target version or credential kinds disagree, and a base
-/// URL the effective definition requires being absent.
+/// public-ID collisions, a rebind naming a non-positive or unknown target version or
+/// disagreeing credential kinds, and a base URL the effective definition requires being absent.
 async fn handle_update(
     database: &crate::database::Database,
     request: UpdateProviderRequest,
@@ -332,21 +331,17 @@ async fn handle_update(
         return Err(super::definition_rebind_invalid());
     }
 
-    let rebind = match (
-        request.provider_definition_name.as_deref(),
-        request
-            .provider_definition_version
-            .and_then(NonZeroI64::new),
-    ) {
-        (Some(name), Some(version)) => Some((name, version)),
-        (None, None) => None,
+    // A non-positive rebind version is the shared malformed-parameter rejection, judged before
+    // any storage read; the pairing rule above guarantees both halves ride together.
+    let rebind_version = request
+        .provider_definition_version
+        .map(|version| super::definition_version(version, "provider_definition_version"))
+        .transpose()?;
 
-        _ => {
-            return Err(super::definition_version_invalid(
-                "provider_definition_version",
-            ));
-        }
-    };
+    let rebind = request
+        .provider_definition_name
+        .as_deref()
+        .zip(rebind_version);
 
     let credentials = request
         .api_key
@@ -384,8 +379,11 @@ async fn handle_update(
         None => None,
     };
 
-    // A rebind whose target kind differs from the stored credentials requires the replacement
-    // key in the same request; without a replacement the kinds must already agree.
+    // A rebind whose target kind differs from the effective credentials is rejected with the
+    // remedy the request can actually take: a supplied replacement key is always an `api_key`
+    // credential, so its mismatch names an `oauth` target this route can never satisfy — only
+    // an OAuth flow mints those — while a keyless rebind can still carry the replacement
+    // credentials in the request it belongs to.
     if let Some(target) = &rebind_target {
         let credentials_kind = credentials
             .as_ref()
@@ -393,16 +391,27 @@ async fn handle_update(
             .unwrap_or_else(|| existing.credential_kind());
 
         if credentials_kind != target.credential_kind() {
-            return Err(Error::CredentialKindMismatch {
-                message: format!(
+            let message = if credentials.is_some() {
+                format!(
+                    "Provider definition `{}` version {} carries `{}` credentials, which only \
+                     an OAuth flow mints — reauthorize the provider against this definition \
+                     with `oauth:reauthorize`",
+                    target.name,
+                    target.version.get(),
+                    target.credential_kind().as_str(),
+                )
+            } else {
+                format!(
                     "Provider definition `{}` version {} carries `{}` credentials; the \
                      provider carries `{}` credentials, so replacement credentials are required",
                     target.name,
                     target.version.get(),
                     target.credential_kind().as_str(),
                     credentials_kind.as_str(),
-                ),
-            });
+                )
+            };
+
+            return Err(Error::CredentialKindMismatch { message });
         }
     }
 
@@ -577,6 +586,150 @@ mod tests {
 
         assert_eq!(param, "base_url");
         assert!(message.contains("static-def"), "{message}");
+    }
+
+    /// A rebind naming a non-positive version renders the shared malformed-parameter rejection
+    /// before any storage read — never the transactional rebind 404 — because the schema's
+    /// `CHECK version > 0` makes such a version unrepresentable (README §3, §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or a rejection diverges.
+    #[tokio::test]
+    async fn updating_to_a_non_positive_rebind_version_renders_the_parameter_rejection() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "static-provider",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        for version in [0, -3] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the rejection is the documented side of this call"
+            )]
+            let error = handle_update(
+                &database,
+                UpdateProviderRequest {
+                    model_prefix: String::new(),
+                    provider_id: provider.id,
+                    name: provider.name.clone(),
+                    is_enabled: true,
+                    base_url: None,
+                    provider_definition_name: Some("static-def".to_string()),
+                    provider_definition_version: Some(version),
+                    api_key: None,
+                },
+            )
+            .await
+            .unwrap_err();
+
+            #[expect(
+                clippy::panic,
+                reason = "a divergent rejection variant is the failure report"
+            )]
+            let Error::InvalidDefinition(_) = error else {
+                panic!("a non-positive rebind version renders the parameter rejection");
+            };
+        }
+    }
+
+    /// A rebind onto differently-kind credentials branches its rejection on the replacement key:
+    /// with one supplied, the mismatch names an `oauth` target no replacement key can satisfy —
+    /// this route never mints OAuth credentials, so the message states the flow remedy; without
+    /// one, the request must carry the replacement credentials itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or a rejection diverges.
+    #[tokio::test]
+    async fn a_rebind_to_differently_kind_credentials_branches_on_the_replacement_key() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "static-provider",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        let request = |api_key: Option<&str>| UpdateProviderRequest {
+            model_prefix: String::new(),
+            provider_id: provider.id,
+            name: provider.name.clone(),
+            is_enabled: true,
+            base_url: None,
+            provider_definition_name: Some("oauth-def".to_string()),
+            provider_definition_version: Some(1),
+            api_key: api_key.map(str::to_string),
+        };
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::CredentialKindMismatch { message } =
+            handle_update(&database, request(Some("sk2")))
+                .await
+                .unwrap_err()
+        else {
+            panic!("a supplied key against an OAuth target renders the credential-kind mismatch");
+        };
+
+        assert!(
+            message.contains("oauth:reauthorize"),
+            "the supplied-key rejection must state the flow remedy: {message}"
+        );
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::CredentialKindMismatch { message } =
+            handle_update(&database, request(None)).await.unwrap_err()
+        else {
+            panic!("a keyless rebind onto an OAuth target renders the credential-kind mismatch");
+        };
+
+        assert!(
+            message.contains("replacement credentials are required"),
+            "the keyless rejection must require replacement credentials: {message}"
+        );
     }
 
     /// A named rebind whose target version does not exist defers the base-URL requirement to the

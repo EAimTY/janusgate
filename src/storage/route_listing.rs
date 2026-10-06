@@ -10,6 +10,36 @@ use crate::{
     database::Database,
     provider::{Model, definition::compaction::CompactionSection},
 };
+use std::sync::LazyLock;
+
+/// The single listing statement: direct routes and pool members over enabled accounts and
+/// models, SQL-ordered by public name, route, and authored member priority. A fully fixed
+/// statement over the shared column consts, built once.
+static LIST_PUBLIC_MODELS_SQL: LazyLock<String> = LazyLock::new(|| {
+    let columns = super::models::MODEL_COLUMNS_JOINED;
+    format!(
+        "SELECT r.id, r.public_id, p.id, p.name, 0 AS is_pool, 0 AS priority, \
+         {columns}, d.compaction \
+         FROM model_routes r JOIN models m ON m.id = r.model_id \
+         JOIN providers p ON p.id = m.provider_id \
+         JOIN provider_definitions d ON d.name = p.provider_definition_name \
+             AND d.version = p.provider_definition_version \
+         WHERE r.is_enabled = 1 AND p.is_enabled = 1 AND m.is_enabled = 1 \
+             AND m.discovery_state != 'vanished' \
+         UNION ALL \
+         SELECT r.id, r.public_id, pool.id, pool.name, 1 AS is_pool, \
+         member.priority, {columns}, d.compaction \
+         FROM model_routes r JOIN provider_pools pool ON pool.id = r.pool_id \
+         JOIN provider_pool_members member ON member.pool_id = pool.id \
+         JOIN providers p ON p.id = member.provider_id \
+         JOIN models m ON m.provider_id = p.id AND m.upstream_id = r.upstream_id \
+         JOIN provider_definitions d ON d.name = p.provider_definition_name \
+             AND d.version = p.provider_definition_version \
+         WHERE r.is_enabled = 1 AND pool.is_enabled = 1 AND p.is_enabled = 1 \
+             AND m.is_enabled = 1 AND m.discovery_state != 'vanished' \
+         ORDER BY 2, 1, 6"
+    )
+});
 
 /// Reads all authored routes and resolves their listing facts in one snapshot.
 ///
@@ -27,33 +57,8 @@ pub(super) async fn list_public_models(
     let policy = super::api_keys::read_enabled_policy(&mut transaction, api_key_id).await?;
     // SQL owns public-name ordering and authored membership priority; this projection never
     // decodes credentials or builds an execution snapshot.
-    let columns = super::models::MODEL_COLUMNS_JOINED;
     let rows = transaction
-        .query(
-            format!(
-                "SELECT r.id, r.public_id, p.id, p.name, 0 AS is_pool, 0 AS priority, \
-                 {columns}, d.compaction \
-                 FROM model_routes r JOIN models m ON m.id = r.model_id \
-                 JOIN providers p ON p.id = m.provider_id \
-                 JOIN provider_definitions d ON d.name = p.provider_definition_name \
-                     AND d.version = p.provider_definition_version \
-                 WHERE r.is_enabled = 1 AND p.is_enabled = 1 AND m.is_enabled = 1 \
-                     AND m.discovery_state != 'vanished' \
-                 UNION ALL \
-                 SELECT r.id, r.public_id, pool.id, pool.name, 1 AS is_pool, \
-                 member.priority, {columns}, d.compaction \
-                 FROM model_routes r JOIN provider_pools pool ON pool.id = r.pool_id \
-                 JOIN provider_pool_members member ON member.pool_id = pool.id \
-                 JOIN providers p ON p.id = member.provider_id \
-                 JOIN models m ON m.provider_id = p.id AND m.upstream_id = r.upstream_id \
-                 JOIN provider_definitions d ON d.name = p.provider_definition_name \
-                     AND d.version = p.provider_definition_version \
-                 WHERE r.is_enabled = 1 AND pool.is_enabled = 1 AND p.is_enabled = 1 \
-                     AND m.is_enabled = 1 AND m.discovery_state != 'vanished' \
-                 ORDER BY 2, 1, 6"
-            ),
-            (),
-        )
+        .query(LIST_PUBLIC_MODELS_SQL.as_str(), ())
         .await?;
     let mut entries = Vec::new();
     let mut candidates = Vec::new();

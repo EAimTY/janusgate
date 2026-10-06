@@ -25,8 +25,8 @@ export function DirtyFormFooter(props: {
                 isBusy={props.isSaving}
             >
                 {props.isSaving
-                    ? translation()(($) => $.additional.dirtyFormFooter.saving)
-                    : translation()(($) => $.additional.dirtyFormFooter.saveChanges)}
+                    ? translation()(($) => $.helpers.dirtyFormFooter.saving)
+                    : translation()(($) => $.helpers.dirtyFormFooter.saveChanges)}
             </Button>
             <Button
                 isDisabled={!props.isDirty || props.isSaving}

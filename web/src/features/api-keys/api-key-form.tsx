@@ -55,7 +55,7 @@ export function ApiKeyNameField(props: {
             isDisabled={props.isDisabled ?? false}
             isData={false}
             error={props.error}
-            hint={translation()(($) => $.additional.apiKeyForm.whichClientHoldsThisKeyMessage)}
+            hint={translation()(($) => $.helpers.apiKeyForm.whichClientHoldsThisKeyMessage)}
         />
     );
 }
@@ -136,8 +136,7 @@ export function ApiKeySecretField(props: {
                 hint={
                     props.hint ??
                     translation()(
-                        ($) =>
-                            $.additional.apiKeyForm.aServingClientAuthenticatesWithItOnEveryMessage,
+                        ($) => $.helpers.apiKeyForm.aServingClientAuthenticatesWithItOnEveryMessage,
                     )
                 }
             />

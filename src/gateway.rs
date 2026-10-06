@@ -603,11 +603,9 @@ where
         // Clean end of stream: the trailing frames flush through the parser,
         // then the parser's own flush hook runs. Neither may report a real
         // terminal — a finish here is the degraded one.
-        for frame in sse_parser.finish().map_err(|_| Error::Unavailable {
+        for mut frame in sse_parser.finish().map_err(|_| Error::Unavailable {
             detail: "oversized SSE frame".to_string(),
         })? {
-            let mut frame = frame;
-
             unwrap_frame(&mut frame, &response_unwrap);
 
             ingest(parser.ingest_frame(&frame)?, false);

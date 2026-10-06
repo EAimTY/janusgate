@@ -37,9 +37,13 @@ pub(crate) fn responses_gateway_default_threshold(
         model: public_model.to_string(),
     })?;
 
-    // Floor(0.8 * capacity) in integer arithmetic: 4/5 of the capacity,
-    // rounding down.
-    Ok(capacity / 5 * 4)
+    // Floor(0.8 * capacity) exactly, in integer arithmetic: with
+    // capacity = 5q + r, floor(4c/5) = 4q + floor(4r/5). The decomposition
+    // keeps every factor bounded — 4q <= 4/5 of u64::MAX and 4r <= 16 — so no
+    // multiply can overflow, unlike the direct `capacity * 4`.
+    let (quotient, remainder) = (capacity / 5, capacity % 5);
+
+    Ok(quotient * 4 + remainder * 4 / 5)
 }
 
 /// Estimates the active context size of one request in tokens:
@@ -310,10 +314,17 @@ mod tests {
             Ok(800_000)
         );
 
-        // Floor semantics: 0.8 * 101 = 80.8 floors to 80.
+        // Floor semantics: 0.8 * 101 = 80.8 floors to 80, and 0.8 * 103 = 82.4
+        // floors to 82 — a capacity whose remainder contributes a nonzero
+        // fraction under the floor.
         assert_eq!(
             responses_gateway_default_threshold("m", Some(101)).map_err(|_| ()),
             Ok(80)
+        );
+
+        assert_eq!(
+            responses_gateway_default_threshold("m", Some(103)).map_err(|_| ()),
+            Ok(82)
         );
 
         assert!(matches!(

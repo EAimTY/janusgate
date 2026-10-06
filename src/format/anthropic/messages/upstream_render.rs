@@ -143,7 +143,7 @@ pub(crate) struct UpstreamTool<'a> {
 
     /// JSON Schema of the accepted arguments; the client's schema rides through, and a tool
     /// declared without one receives the empty object schema.
-    input_schema: InputSchema,
+    input_schema: InputSchema<'a>,
 }
 
 /// A `tool_choice` restriction in the upstream shape.
@@ -209,15 +209,15 @@ struct DefaultInputSchema {}
 /// An advertised schema: a client's arbitrary JSON Schema or the concrete default object.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-enum InputSchema {
+enum InputSchema<'a> {
     /// Closed default supplied when the caller declared no parameter schema.
     Default(DefaultInputSchema),
     /// Caller-authored JSON Schema, outside the gateway's vocabulary.
-    Authored(Value),
+    Authored(&'a Value),
 }
 
 /// Builds the fixed empty object parameter schema.
-fn default_input_schema() -> InputSchema {
+fn default_input_schema() -> InputSchema<'static> {
     InputSchema::Default(DefaultInputSchema {})
 }
 
@@ -231,9 +231,9 @@ fn render_tools(tools: &[IrTool]) -> Vec<UpstreamTool<'_>> {
             description: tool.description.as_deref(),
             input_schema: tool
                 .parameters
-                .clone()
+                .as_ref()
                 .map(InputSchema::Authored)
-                .unwrap_or_else(default_input_schema),
+                .unwrap_or_else(|| default_input_schema()),
         })
         .collect()
 }

@@ -314,15 +314,17 @@ const API_KEY_ADDRESS = /^\/api-keys\/([^/]+)(\/edit)?$/;
  * Matches one entity's two addresses — `<prefix>/<row id>` for detail and
  * `<prefix>/<row id>/edit` for edit. The caller's builders construct the
  * route from the parsed row identifier, so the AppRoute construction stays
- * at the call; an address whose segment is not a row identifier is
- * not-found, and a path outside the family answers `null` so the next route
- * gets a turn.
+ * at the call; the edit constructor defaults to the detail constructor, the
+ * shape of the pool and public-route families, whose `/edit` spelling
+ * resolves to the same editor (README §6.2). An address whose segment is not
+ * a row identifier is not-found, and a path outside the family answers
+ * `null` so the next route gets a turn.
  */
 function matchEntityRoute(
     pathname: string,
     pattern: RegExp,
     detail: (rowId: number) => AppRoute,
-    edit: (rowId: number) => AppRoute,
+    edit?: (rowId: number) => AppRoute,
 ): AppRoute | null {
     const match = pattern.exec(pathname);
 
@@ -338,7 +340,7 @@ function matchEntityRoute(
         };
     }
 
-    return match[2] === undefined ? detail(rowId) : edit(rowId);
+    return match[2] === undefined ? detail(rowId) : (edit ?? detail)(rowId);
 }
 
 /**
@@ -370,18 +372,12 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
             name: "modelRouteNew",
             initialModelId: parseRowIdentifier(readQueryParameter(search, "model")),
         };
-    const poolRoute = matchEntityRoute(
-        normalizedPath,
-        /^\/pools\/([^/]+)(\/edit)?$/,
-        (poolId) => ({
-            name: "providerPoolEdit",
-            poolId,
-        }),
-        (poolId) => ({
-            name: "providerPoolEdit",
-            poolId,
-        }),
-    );
+    // Both spellings resolve to the pool editor (README §6.2), so one
+    // constructor serves detail and edit alike.
+    const poolRoute = matchEntityRoute(normalizedPath, /^\/pools\/([^/]+)(\/edit)?$/, (poolId) => ({
+        name: "providerPoolEdit",
+        poolId,
+    }));
     if (poolRoute !== null) return poolRoute;
     if (normalizedPath === "/routes/publish")
         return {
@@ -391,10 +387,6 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
     const publicRoute = matchEntityRoute(
         normalizedPath,
         /^\/routes\/([^/]+)(\/edit)?$/,
-        (routeId) => ({
-            name: "modelRouteEdit",
-            routeId,
-        }),
         (routeId) => ({
             name: "modelRouteEdit",
             routeId,

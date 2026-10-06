@@ -3,7 +3,7 @@ import type { ListProvidersResponse, ProviderEnvelope, ProviderResponse } from "
 import {
     expectBoolean,
     expectInteger,
-    expectNullableInteger,
+    expectNullableSafeInteger,
     expectNullableString,
     expectRecord,
     expectRowId,
@@ -51,36 +51,38 @@ function parseSharedProviderFields(
 /**
  * One provider row; the union is discriminated by the row's credential kind.
  * Both members share the definition pair and the derived format; the OAuth
- * member alone carries the nullable `expires_at`. The kind membership reads
- * from the closed vocabulary, so a kind added to the contract cannot compile
- * past it and then fail here at runtime.
+ * member alone carries the nullable `expires_at`. The kind is resolved first,
+ * so a wrong-kind body is named at the discriminator before any shared field
+ * can fail first, and the membership reads from the closed vocabulary, so a
+ * kind added to the contract cannot compile past it and then fail here at
+ * runtime.
  */
 export function parseProviderResponse(value: unknown, context: string): ProviderResponse {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
-    const shared = parseSharedProviderFields(record, context);
-
     const kind = CREDENTIAL_KIND.find(type);
+
+    if (kind === null) {
+        throw new ContractViolationError(`${context}.type is not a known credential kind: ${type}`);
+    }
+
+    const shared = parseSharedProviderFields(record, context);
 
     if (kind === "oauth") {
         return {
             type: kind,
             ...shared,
-            expires_at: expectNullableInteger(
+            expires_at: expectNullableSafeInteger(
                 Reflect.get(record, "expires_at"),
                 `${context}.expires_at`,
             ),
         };
     }
 
-    if (kind === "api_key") {
-        return {
-            type: kind,
-            ...shared,
-        };
-    }
-
-    throw new ContractViolationError(`${context}.type is not a known credential kind: ${type}`);
+    return {
+        type: kind,
+        ...shared,
+    };
 }
 
 export function parseListProvidersResponse(value: unknown): ListProvidersResponse {

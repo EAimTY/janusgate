@@ -431,11 +431,36 @@ describe("HomeScreen", () => {
         expect(bodyText()).toContain(
             "No models are available. Discover models on an enabled provider.",
         );
+        // The action reaches the page where discovery runs — with exactly one
+        // enabled provider, that page is the provider's own, where the empty
+        // model list starts a discovery on its own; the models listing offers
+        // no discovery affordance at all.
         expect(
-            Array.from(document.querySelectorAll('a[href="/models"]')).some((link) =>
+            Array.from(document.querySelectorAll('a[href="/providers/1"]')).some((link) =>
                 link.textContent?.includes("Discover models"),
             ),
         ).toBe(true);
         expect(bodyText()).not.toContain("has no models serving yet.");
+    });
+
+    it("sends the no-routes row to the provider list when no single enabled provider stands", async () => {
+        // Two enabled providers: no one page discovery belongs to, so the row
+        // opens the list the operator picks the account from.
+        mount(
+            overviewApi([], {
+                providers: [
+                    providerRow(),
+                    emptyProviderRow,
+                ],
+                modelRoutes: [],
+            }),
+        );
+        await settle();
+
+        expect(
+            Array.from(document.querySelectorAll('a[href="/providers"]')).some((link) =>
+                link.textContent?.includes("Discover models"),
+            ),
+        ).toBe(true);
     });
 });

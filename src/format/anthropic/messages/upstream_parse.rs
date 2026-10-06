@@ -12,7 +12,7 @@ use crate::{
     sse::SseFrame,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Parses upstream Anthropic Messages responses — event-name-discriminated SSE streams or a
 /// complete JSON body — into IR events.
@@ -49,7 +49,10 @@ pub(crate) struct UpstreamParser {
     /// Content blocks opened by `content_block_start`, keyed by stream content index.
     open_blocks: Vec<OpenBlock>,
 
-    /// Incomplete threshold blocks awaiting their full summary delta and stop.
+    /// Incomplete threshold blocks awaiting their full summary delta and stop. A block whose
+    /// stop never arrives stays withheld at a clean end-of-stream — the stop is the compaction
+    /// state's completeness boundary (the block authorizes history replacement, so an
+    /// unterminated one is never state) — and is dropped rather than flushed.
     pending_compaction_blocks: Vec<(usize, Value)>,
 
     /// Number of tool-call blocks opened so far; assigns the dense IR call index.
@@ -99,8 +102,8 @@ struct OpenBlock {
     /// Signature delivered by `signature_delta`, terminating the thinking block.
     signature: Option<String>,
 
-    /// Redacted payload carried by the block's start event.
-    redacted_data: Option<Value>,
+    /// Redacted payload string carried by the block's start event.
+    redacted_data: Option<String>,
 }
 
 /// Kind of a tracked upstream content block.
@@ -241,9 +244,10 @@ enum StartBlock {
 
     /// Redacted block carrying its whole payload up front.
     RedactedThinking {
-        /// Redacted payload, verbatim from the family.
+        /// Redacted payload string, verbatim from the family; absent or null carries none, and
+        /// any other JSON kind contradicts the protocol and fails the frame (README §6.2).
         #[serde(default)]
-        data: Option<Value>,
+        data: Option<String>,
     },
 
     /// Tool invocation block revealing its identity up front.
@@ -403,9 +407,10 @@ enum ResponseBlock {
 
     /// Complete redacted block.
     RedactedThinking {
-        /// Redacted payload, verbatim from the family.
+        /// Redacted payload string, verbatim from the family; absent or null carries none, and
+        /// any other JSON kind contradicts the protocol and fails the body (README §6.2).
         #[serde(default)]
-        data: Option<Value>,
+        data: Option<String>,
     },
 
     /// Complete tool invocation.
@@ -418,9 +423,10 @@ enum ResponseBlock {
         #[serde(default)]
         name: Option<String>,
 
-        /// JSON arguments object; the fragment's shape is the caller's to define.
+        /// JSON arguments object; absent or null is the accepted empty-arguments form, and any
+        /// other JSON kind contradicts the protocol and fails the body (README §6.2).
         #[serde(default)]
-        input: Option<Value>,
+        input: Option<Map<String, Value>>,
     },
 
     /// Any newer block kind the gateway does not read.
@@ -469,6 +475,13 @@ impl UpstreamParser {
     /// Emits [`IrEvent::MessageStart`] once per response.
     fn message_start_events(&mut self, head: &MessageHead) -> Vec<IrEvent> {
         message_start_once(&mut self.is_started, head.id.clone(), head.model.clone())
+    }
+
+    /// Emits the stream-opening [`IrEvent::MessageStart`] with empty identity on the recovery
+    /// paths that never saw the head announcement: every event stream opens with it exactly
+    /// once, first (README §6.2).
+    fn ensure_open(&mut self) -> Vec<IrEvent> {
+        message_start_once(&mut self.is_started, String::new(), String::new())
     }
 
     /// Records the cumulative usage columns carried by a usage fragment: the input columns on
@@ -740,15 +753,9 @@ impl UpstreamParser {
         }
     }
 
-    /// Closes the block named by a `content_block_stop` event: thinking blocks terminate with an
-    /// empty-text done carrying the streamed signature, whose opaque replay payload includes the
-    /// signature exactly like the complete-body path, tool blocks complete their call, and text
-    /// blocks need no closing event.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a ToolUse-kind tracked block carries no call ordinal — a first-party parser
-    /// invariant: the start event assigns one to every tool block it opens.
+    /// Closes the block named by a `content_block_stop` event: a pending compaction block whose
+    /// summary has arrived closes as its state event, and ordinary blocks close through
+    /// [`UpstreamParser::close_block`].
     fn ingest_block_stop(&mut self, event: ContentBlockStopEvent) -> Vec<IrEvent> {
         let content_index = event.index as usize;
         if let Some(position) = self
@@ -770,8 +777,19 @@ impl UpstreamParser {
             return Vec::new();
         };
 
-        let open = self.open_blocks.swap_remove(position);
+        Self::close_block(self.open_blocks.swap_remove(position))
+    }
 
+    /// Closes a tracked block into its closing IR events: thinking blocks terminate with an
+    /// empty-text done carrying the streamed signature, whose opaque replay payload includes the
+    /// signature exactly like the complete-body path, tool blocks complete their call, and text
+    /// blocks need no closing event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a ToolUse-kind tracked block carries no call ordinal — a first-party parser
+    /// invariant: the start event assigns one to every tool block it opens.
+    fn close_block(open: OpenBlock) -> Vec<IrEvent> {
         match open.kind {
             OpenBlockKind::Text => Vec::new(),
 
@@ -797,7 +815,7 @@ impl UpstreamParser {
                 text: String::new(),
                 signature: None,
                 opaque: block_opaque(&TypedBlock::RedactedThinking {
-                    data: open.redacted_data.unwrap_or(Value::Null),
+                    data: open.redacted_data.map(Value::String).unwrap_or(Value::Null),
                 }),
             }],
 
@@ -898,25 +916,43 @@ impl UpstreamEventParser for UpstreamParser {
             "content_block_start" => {
                 let event = crate::format::parse_frame::<ContentBlockStartEvent>(frame)?;
 
-                self.ingest_block_start(event)
+                // A stream opening at its first content block never saw the head announcement;
+                // the recovery opens the event stream with the empty identity.
+                let mut events = self.ensure_open();
+
+                events.extend(self.ingest_block_start(event)?);
+
+                Ok(events)
             }
 
             "content_block_delta" => {
                 let event = crate::format::parse_frame::<ContentBlockDeltaEvent>(frame)?;
 
-                Ok(self.ingest_block_delta(event))
+                let mut events = self.ensure_open();
+
+                events.extend(self.ingest_block_delta(event));
+
+                Ok(events)
             }
 
             "content_block_stop" => {
                 let event = crate::format::parse_frame::<ContentBlockStopEvent>(frame)?;
 
-                Ok(self.ingest_block_stop(event))
+                let mut events = self.ensure_open();
+
+                events.extend(self.ingest_block_stop(event));
+
+                Ok(events)
             }
 
             "message_delta" => {
                 let event = crate::format::parse_frame::<MessageDeltaEvent>(frame)?;
 
-                Ok(self.ingest_message_delta(event))
+                let mut events = self.ensure_open();
+
+                events.extend(self.ingest_message_delta(event));
+
+                Ok(events)
             }
 
             "message_stop" | "ping" => Ok(Vec::new()),
@@ -997,7 +1033,7 @@ impl UpstreamEventParser for UpstreamParser {
                         text: String::new(),
                         signature: None,
                         opaque: block_opaque(&TypedBlock::RedactedThinking {
-                            data: data.clone().unwrap_or(Value::Null),
+                            data: data.clone().map(Value::String).unwrap_or(Value::Null),
                         }),
                     });
                 }
@@ -1054,11 +1090,26 @@ impl UpstreamEventParser for UpstreamParser {
         Ok(events)
     }
 
-    /// Ends a cleanly terminated stream: a usage-bearing stream that never published a report
-    /// still publishes its columns with a zero output observation, and a stream that ends without
-    /// a finish degrades through [`crate::format::degrade_finish_once`].
+    /// Ends a cleanly terminated stream: the buffered cross-frame block state flushes before
+    /// the terminal events — every open block closes exactly as its `content_block_stop` would,
+    /// so an upstream that ended cleanly without the closing frames still delivers the content
+    /// it streamed (README §6.3) — a usage-bearing stream that never published a report still
+    /// publishes its columns with a zero output observation, and a stream that ends without a
+    /// finish degrades through [`crate::format::degrade_finish_once`]. Pending compaction
+    /// blocks are the exception: their stop is the completeness boundary of native compaction
+    /// state, so an unterminated one stays withheld.
     fn finish(&mut self) -> Vec<IrEvent> {
         let mut events = Vec::new();
+
+        if !self.open_blocks.is_empty() {
+            let mut open_blocks = std::mem::take(&mut self.open_blocks);
+
+            // `swap_remove` scrambles the tracked order during ingestion; the content order is
+            // the stream order the closing events must follow.
+            open_blocks.sort_by_key(|open| open.content_index);
+
+            events.extend(open_blocks.into_iter().flat_map(Self::close_block));
+        }
 
         if !self.is_usage_emitted
             && (self.input_tokens.is_some()
@@ -1095,8 +1146,8 @@ fn finish_reason_from_stop(stop_reason: &str) -> IrFinishReason {
         _ => IrFinishReason::Stop,
     }
 }
-/// Renders a tool `input` fragment as the JSON-encoded arguments text the IR carries.
-fn input_to_arguments(input: &Value) -> String {
+/// Maps a tool `input` object onto the JSON-encoded arguments text the IR carries.
+fn input_to_arguments(input: &Map<String, Value>) -> String {
     crate::format::render_json(input)
 }
 
@@ -1951,6 +2002,363 @@ mod tests {
                 model: "claude-test".to_string(),
             })
         );
+    }
+
+    /// Rejects third-party members whose JSON kind contradicts the protocol — a non-object
+    /// `tool_use.input` and a non-string redacted `data` — as a malformed payload instead of
+    /// silently degrading them (README §6.2), while the absent, null, and official forms still
+    /// parse in both the streaming and complete-body directions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any probe parses or rejects against the contract.
+    #[test]
+    fn rejects_kind_contradictions_in_tool_input_and_redacted_data() {
+        let parse_body = |content: Value| {
+            let mut parser = UpstreamParser::new();
+
+            parser.parse_json_response(&crate::format::test_json_body(&json!({
+                "id": "msg_k",
+                "model": "claude-test",
+                "content": [content],
+                "stop_reason": "end_turn",
+            })))
+        };
+
+        // A non-object `input` — array, string, or number alike — fails the body.
+        for input in [json!([1, 2]), json!("args"), json!(3)] {
+            #[expect(clippy::expect_used, reason = "the rejection is the tested contract")]
+            let failure = parse_body(json!({
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "search",
+                "input": input,
+            }))
+            .expect_err("a non-object tool input fails the body");
+
+            assert!(
+                failure
+                    .to_string()
+                    .starts_with("malformed upstream payload")
+            );
+        }
+
+        // The absent and null forms are the accepted empty-arguments case and the object form
+        // is the official one: all three parse, the first two with empty arguments.
+        for (input, arguments) in [
+            (
+                json!({"type": "tool_use", "id": "call_1", "name": "search"}),
+                "",
+            ),
+            (
+                json!({"type": "tool_use", "id": "call_1", "name": "search",
+                       "input": Value::Null}),
+                "",
+            ),
+            (
+                json!({"type": "tool_use", "id": "call_1", "name": "search",
+                       "input": {"q": "x"}}),
+                r#"{"q":"x"}"#,
+            ),
+        ] {
+            #[expect(clippy::expect_used, reason = "the acceptance is the tested contract")]
+            let events = parse_body(input).expect("the accepted tool input forms parse the body");
+
+            assert_eq!(
+                events.iter().find_map(|event| match event {
+                    IrEvent::ToolCallDone { arguments, .. } => Some(arguments.as_str()),
+                    _ => None,
+                }),
+                Some(arguments),
+            );
+        }
+
+        // A non-string redacted `data` fails both directions...
+        #[expect(clippy::expect_used, reason = "the rejection is the tested contract")]
+        let failure = parse_body(json!({"type": "redacted_thinking", "data": 5}))
+            .expect_err("a non-string redacted data fails the body");
+
+        assert!(
+            failure
+                .to_string()
+                .starts_with("malformed upstream payload")
+        );
+
+        let mut parser = UpstreamParser::new();
+
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        #[expect(clippy::expect_used, reason = "the rejection is the tested contract")]
+        parser
+            .ingest_frame(&frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "redacted_thinking",
+                                                     "data": 5}}),
+            ))
+            .expect_err("a non-string redacted data fails the start frame");
+
+        // ...while the string form rides through and the absent form carries none. Each probe
+        // parser's first frame is a content-block start, so the events open with the recovered
+        // head.
+        #[expect(clippy::expect_used, reason = "the acceptance is the tested contract")]
+        let events = parser
+            .ingest_frame(&frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "redacted_thinking",
+                                                     "data": "enc"}}),
+            ))
+            .expect("the string redacted data parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::MessageStart {
+                id: String::new(),
+                model: String::new(),
+            }],
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames("content_block_stop", json!({"index": 0})))
+            .expect("the stop frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::ReasoningDone {
+                text: String::new(),
+                signature: None,
+                opaque: json!({"type": "redacted_thinking", "data": "enc"}),
+            }],
+        );
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "redacted_thinking"}}),
+            ))
+            .expect("the absent redacted data parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::MessageStart {
+                id: String::new(),
+                model: String::new(),
+            }],
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames("content_block_stop", json!({"index": 0})))
+            .expect("the stop frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::ReasoningDone {
+                text: String::new(),
+                signature: None,
+                opaque: json!({"type": "redacted_thinking", "data": Value::Null}),
+            }],
+        );
+    }
+
+    /// Recovers a stream whose head `message_start` never arrived: the first content-block or
+    /// terminal-delta frame opens the event stream with the empty-identity
+    /// [`IrEvent::MessageStart`], exactly once and first, and a late head event is a no-op
+    /// (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recovered event streams diverge from the open-exactly-once contract.
+    #[test]
+    fn recovers_a_missing_stream_head() {
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        // The first content-block frame opens the stream with the empty identity.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "text"}}),
+            ))
+            .expect("the frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::MessageStart {
+                id: String::new(),
+                model: String::new(),
+            }],
+        );
+
+        // A late head event is a no-op, and a delta for the untracked index stays ignored.
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "message_start",
+                json!({"message": {"id": "msg_late", "model": "claude-test"}}),
+            ))
+            .expect("the late head parses");
+
+        assert!(events.is_empty());
+
+        // A terminal delta on a head-less stream opens the stream first, then rides its usage
+        // and finish as usual.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "message_delta",
+                json!({"delta": {"stop_reason": "end_turn"},
+                       "usage": {"output_tokens": 4}}),
+            ))
+            .expect("the frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: String::new(),
+                    model: String::new(),
+                },
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 0,
+                    output_tokens: 4,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }),
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
+        );
+    }
+
+    /// Flushes the buffered cross-frame state at a clean end-of-stream (README §6.3): an open
+    /// thinking block closes with its signature and opaque replay payload, an open tool call
+    /// completes, and an open text block needs nothing — all in content order, before the
+    /// degraded finish. A pending compaction block whose summary delta arrived but whose stop
+    /// never did stays withheld: the stop is the compaction state's completeness boundary, so
+    /// the unterminated block neither escapes nor joins the recorded blocks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flushed event stream diverges from the flush contract.
+    #[test]
+    fn flushes_buffered_block_state_at_a_clean_end_of_stream() {
+        let mut parser = UpstreamParser::new();
+
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        for frame in [
+            frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "compaction",
+                                                     "signature": "sig"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 0, "delta": {"type": "compaction_delta",
+                                             "content": "summary"}}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 1, "content_block": {"type": "text"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 1, "delta": {"type": "text_delta", "text": "hi"}}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 2, "content_block": {"type": "thinking"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 2, "delta": {"type": "thinking_delta",
+                                             "thinking": "draft"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 2, "delta": {"type": "signature_delta",
+                                             "signature": "sig"}}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 3, "content_block": {"type": "tool_use",
+                                                     "id": "call_1",
+                                                     "name": "search"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 3, "delta": {"type": "input_json_delta",
+                                             "partial_json": "{\"q\":\"x\"}"}}),
+            ),
+        ] {
+            #[expect(clippy::expect_used, reason = "the fixture frames parse")]
+            parser
+                .ingest_frame(&frame)
+                .expect("every fixture frame parses");
+        }
+
+        // The head-less stream opened with the recovered MessageStart; every ordinary block is
+        // still open at the clean end-of-stream, so `finish` closes them, while the
+        // unterminated compaction block stays withheld.
+        assert_eq!(
+            parser.finish(),
+            vec![
+                IrEvent::ReasoningDone {
+                    text: String::new(),
+                    signature: Some("sig".to_string()),
+                    opaque: json!({
+                        "type": "thinking",
+                        "thinking": "draft",
+                        "signature": "sig",
+                    }),
+                },
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_1".to_string(),
+                    name: "search".to_string(),
+                    arguments: "{\"q\":\"x\"}".to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
+        );
+
+        assert!(parser.compaction_blocks.is_empty());
     }
 
     /// Captures a compaction block announced by a streaming `content_block_start` verbatim —

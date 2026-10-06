@@ -215,4 +215,141 @@ describe("routing editors", () => {
             },
         ]);
     });
+
+    it("renders a pristine pool creation without an error and names member buttons after the account", async () => {
+        const api = stubManagementApi({
+            getProviderAvailability: () =>
+                Promise.resolve({
+                    blocks: [],
+                    last_refresh: {
+                        type: "not_observed",
+                    },
+                }),
+            listProviderPools: () =>
+                Promise.resolve({
+                    provider_pools: [],
+                }),
+            listProviders: () =>
+                Promise.resolve({
+                    providers: [
+                        providerRow(),
+                        providerRow({
+                            id: 2,
+                            name: "second",
+                        }),
+                    ],
+                }),
+            listModels: () =>
+                Promise.resolve({
+                    models: [],
+                }),
+        });
+        disposes.push(
+            render(
+                () => (
+                    <ProviderPoolEditorScreen
+                        api={api}
+                        poolId={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // A pristine form is not an error: the seeded-empty name states no
+        // required message from first paint — the save gate holds the action.
+        expect(document.body.textContent).not.toContain("Name is required.");
+
+        chooseSelect("Add account", "2");
+        await settle();
+        buttonWithText("Add member").click();
+        await settle();
+
+        // Every member row repeats the visible Move up/Remove labels, so the
+        // accessible name — not the shared label — carries the member.
+        expect(document.querySelector('button[aria-label="Move second up"]')).not.toBeNull();
+        expect(document.querySelector('button[aria-label="Move second down"]')).not.toBeNull();
+        expect(document.querySelector('button[aria-label="Remove second"]')).not.toBeNull();
+
+        // An emptied name is typed input: its error opens without a submit.
+        typeInto(labeledInput("Name"), "");
+        await settle();
+        expect(document.body.textContent).toContain("Name is required.");
+    });
+
+    it("renders a pristine route creation without errors, however the target type stands", async () => {
+        const api = stubManagementApi({
+            getProviderAvailability: () =>
+                Promise.resolve({
+                    blocks: [],
+                    last_refresh: {
+                        type: "not_observed",
+                    },
+                }),
+            listModelRoutes: () =>
+                Promise.resolve({
+                    model_routes: [],
+                }),
+            listProviderPools: () =>
+                Promise.resolve({
+                    provider_pools: [
+                        {
+                            model_prefix: "",
+                            id: 3,
+                            name: "Coding",
+                            is_enabled: true,
+                            members: [
+                                {
+                                    provider_id: 1,
+                                    priority: 0,
+                                },
+                            ],
+                        },
+                    ],
+                }),
+            listProviders: () =>
+                Promise.resolve({
+                    providers: [
+                        providerRow(),
+                    ],
+                }),
+            listModels: () =>
+                Promise.resolve({
+                    models: [],
+                }),
+        });
+        disposes.push(
+            render(
+                () => (
+                    <ModelRouteEditorScreen
+                        api={api}
+                        routeId={null}
+                        initialModelId={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // A pristine form is not an error: the seeded-empty public ID states
+        // no required message from first paint.
+        expect(document.body.textContent).not.toContain("Public ID is required.");
+
+        // Switching the target type mounts the untouched Upstream ID: it
+        // states no required message from its first paint either.
+        chooseSelect("Target type", "pool");
+        await settle();
+        expect(document.body.textContent).not.toContain("Upstream ID is required.");
+
+        // Typed input opens each field's error without a submit.
+        typeInto(labeledInput("Public ID"), "");
+        await settle();
+        expect(document.body.textContent).toContain("Public ID is required.");
+
+        typeInto(labeledInput("Upstream ID"), "");
+        await settle();
+        expect(document.body.textContent).toContain("Upstream ID is required.");
+    });
 });

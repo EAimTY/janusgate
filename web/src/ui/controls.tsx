@@ -118,6 +118,11 @@ export function TextField(props: {
                     disabled={props.isDisabled ?? false}
                     autocomplete={props.autocomplete ?? "off"}
                     spellcheck={false}
+                    // The state half of the standing error's announcement:
+                    // the error paragraph is `aria-describedby`, the invalid
+                    // state is `aria-invalid`, and the two follow the same
+                    // error together.
+                    aria-invalid={ariaBoolean(props.error != null)}
                     aria-describedby={describedBy()}
                     onInput={(event) => props.onInput(event.currentTarget.value)}
                 />

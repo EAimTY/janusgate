@@ -158,7 +158,7 @@ describe("response validation", () => {
                     },
                 ],
             }),
-        ).toThrow(/response\.providers\[0\]\.expires_at must be an integer or null/);
+        ).toThrow(/response\.providers\[0\]\.expires_at must be a safe integer or null/);
 
         expect(() =>
             parseListProvidersResponse({
@@ -207,6 +207,20 @@ describe("response validation", () => {
                     {
                         ...compatibleProvider,
                         type: "gemini_oauth",
+                    },
+                ],
+            }),
+        ).toThrow(/response\.providers\[0\]\.type is not a known credential kind/);
+
+        // The discriminator is decided before any shared field: a wrong-kind
+        // row is named at its type even when another field is broken too.
+        expect(() =>
+            parseListProvidersResponse({
+                providers: [
+                    {
+                        ...compatibleProvider,
+                        type: "gemini_oauth",
+                        id: "not-an-id",
                     },
                 ],
             }),

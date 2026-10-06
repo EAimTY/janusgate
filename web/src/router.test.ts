@@ -16,6 +16,12 @@ describe("matchAppRoute", () => {
         expect(match("/pools/new")).toEqual({
             name: "providerPoolNew",
         });
+        // Detail and edit are one editor for these families (README §6.2), so
+        // both spellings construct the same route from one builder.
+        expect(match("/pools/3")).toEqual({
+            name: "providerPoolEdit",
+            poolId: 3,
+        });
         expect(match("/pools/3/edit/")).toEqual({
             name: "providerPoolEdit",
             poolId: 3,
@@ -27,6 +33,10 @@ describe("matchAppRoute", () => {
         expect(match("/routes/new?model=9007199254740992")).toEqual({
             name: "modelRouteNew",
             initialModelId: null,
+        });
+        expect(match("/routes/7")).toEqual({
+            name: "modelRouteEdit",
+            routeId: 7,
         });
         expect(match("/routes/7/edit")).toEqual({
             name: "modelRouteEdit",

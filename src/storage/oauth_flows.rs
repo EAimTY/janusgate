@@ -17,7 +17,7 @@ use crate::{
     unix_time,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, num::NonZeroI64};
+use std::{collections::BTreeMap, num::NonZeroI64, sync::LazyLock};
 
 /// The column order of flow selects — the table's own order — consumed positionally by
 /// [`flow_from_row`].
@@ -28,6 +28,44 @@ const FLOW_COLUMNS: &str = "id, provider_definition_name, provider_definition_ve
      device_poll_interval_seconds, device_next_poll_at, device_poll_started_at, \
      device_exchange_checkpoint, outcome, result_provider_id, failure_code, \
      failure_message, expires_at";
+
+/// The unexpired-flow read a state token identifies without consuming: a fully fixed statement
+/// over [`FLOW_COLUMNS`], built once.
+static FIND_FLOW_BY_STATE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {FLOW_COLUMNS} FROM ongoing_oauth_flows WHERE state_token = ?1 AND expires_at > ?2"
+    )
+});
+
+/// The atomic consume — the single `DELETE … RETURNING` of the unexpired flow a state token
+/// identifies: a fully fixed statement, built once.
+static CONSUME_FLOW_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "DELETE FROM ongoing_oauth_flows WHERE state_token = ?1 AND expires_at > ?2 \
+         RETURNING {FLOW_COLUMNS}"
+    )
+});
+
+/// The terminal-flow consume — the single `DELETE … RETURNING` of an unexpired flow carrying a
+/// pending result: a fully fixed statement, built once.
+static CONSUME_TERMINAL_FLOW_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "DELETE FROM ongoing_oauth_flows WHERE state_token = ?1 AND expires_at > ?2 \
+         AND outcome IS NOT NULL RETURNING {FLOW_COLUMNS}"
+    )
+});
+
+/// The due device-flow claim — the single conditional `UPDATE … RETURNING`: a fully fixed
+/// statement, built once.
+static CLAIM_DUE_DEVICE_FLOW_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "UPDATE ongoing_oauth_flows SET device_poll_started_at = ?1 WHERE id = (\
+         SELECT id FROM ongoing_oauth_flows WHERE outcome IS NULL AND grant_type = ?2 \
+         AND expires_at > ?1 AND device_next_poll_at <= ?1 \
+         AND (device_poll_started_at IS NULL OR device_poll_started_at < ?3) \
+         ORDER BY device_next_poll_at LIMIT 1) RETURNING {FLOW_COLUMNS}"
+    )
+});
 
 /// What a flow is for: creating a new provider, or reauthorizing (and optionally rebinding) one
 /// existing provider.
@@ -564,12 +602,8 @@ pub(crate) async fn find_flow_by_state(
     state_token: &str,
     now: i64,
 ) -> Result<Option<OngoingFlow>, Error> {
-    let sql = format!(
-        "SELECT {FLOW_COLUMNS} FROM ongoing_oauth_flows WHERE state_token = ?1 AND expires_at > ?2"
-    );
-
     database
-        .query(sql, params![state_token, now])
+        .query(FIND_FLOW_BY_STATE_SQL.as_str(), params![state_token, now])
         .await?
         .first()
         .map(flow_from_row)
@@ -590,13 +624,8 @@ pub(crate) async fn consume_flow(
     state_token: &str,
     now: i64,
 ) -> Result<Option<OngoingFlow>, Error> {
-    let sql = format!(
-        "DELETE FROM ongoing_oauth_flows WHERE state_token = ?1 AND expires_at > ?2 RETURNING \
-         {FLOW_COLUMNS}"
-    );
-
     database
-        .query(sql, params![state_token, now])
+        .query(CONSUME_FLOW_SQL.as_str(), params![state_token, now])
         .await?
         .first()
         .map(flow_from_row)
@@ -615,13 +644,11 @@ pub(crate) async fn consume_terminal_flow(
     state_token: &str,
     now: i64,
 ) -> Result<Option<OngoingFlow>, Error> {
-    let sql = format!(
-        "DELETE FROM ongoing_oauth_flows WHERE state_token = ?1 AND expires_at > ?2 \
-         AND outcome IS NOT NULL RETURNING {FLOW_COLUMNS}"
-    );
-
     database
-        .query(sql, params![state_token, now])
+        .query(
+            CONSUME_TERMINAL_FLOW_SQL.as_str(),
+            params![state_token, now],
+        )
         .await?
         .first()
         .map(flow_from_row)
@@ -662,17 +689,9 @@ pub(crate) async fn claim_due_device_flow(
     now: i64,
     claim_stale_before: i64,
 ) -> Result<Option<OngoingFlow>, Error> {
-    let sql = format!(
-        "UPDATE ongoing_oauth_flows SET device_poll_started_at = ?1 WHERE id = (\
-         SELECT id FROM ongoing_oauth_flows WHERE outcome IS NULL AND grant_type = ?2 \
-         AND expires_at > ?1 AND device_next_poll_at <= ?1 \
-         AND (device_poll_started_at IS NULL OR device_poll_started_at < ?3) \
-         ORDER BY device_next_poll_at LIMIT 1) RETURNING {FLOW_COLUMNS}"
-    );
-
     database
         .query(
-            sql,
+            CLAIM_DUE_DEVICE_FLOW_SQL.as_str(),
             params![now, FlowGrant::Device.as_str(), claim_stale_before],
         )
         .await?

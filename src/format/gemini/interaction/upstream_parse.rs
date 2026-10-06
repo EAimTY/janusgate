@@ -35,8 +35,11 @@ pub(crate) struct UpstreamParser {
     /// `step.stop`, keyed by the upstream step index.
     open_steps: Vec<OpenStep>,
 
-    /// Whether a live `step.start`/`step.delta` event opened a step: live step delivery silences
-    /// the terminal frame's steps fallback, so content is never delivered twice.
+    /// Whether a live step event delivered content: content-bearing delivery silences the
+    /// terminal frame's steps fallback, so content is never delivered twice. An opening — a bare
+    /// `step.start`, an implicit open, a delta without a payload — carries no content (README
+    /// §6.3's content-bearing-event rule, as the Responses parser gates it) and leaves the
+    /// fallback live.
     is_step_delivered: bool,
 }
 
@@ -475,12 +478,11 @@ impl UpstreamParser {
             .map(|position| self.open_steps.swap_remove(position))
     }
 
-    /// Records a step opened by a live `step.start`/`step.delta` event: the open itself marks the
-    /// interaction as live-step-delivered, silencing the terminal frame's steps fallback. An
-    /// opening for an unknown step kind opens nothing and stays recoverable.
+    /// Records a step opened by a live `step.start`/`step.delta` event. An opening carries no
+    /// content: the terminal frame's steps fallback stays live until a content-bearing delta or
+    /// closing done delivers. An opening for an unknown step kind opens nothing and stays
+    /// recoverable.
     fn push_open(&mut self, step: OpenStep) {
-        self.is_step_delivered = true;
-
         self.open_steps.push(step);
     }
 
@@ -696,6 +698,12 @@ impl UpstreamParser {
                 // A delta for a step of another kind contradicts the opened kind, so it is
                 // dropped rather than misattributed to foreign content.
                 if matches!(self.find_open(frame.index), Some(OpenStep::Output { .. })) {
+                    // Only delivered bytes count as live delivery; a payload-less delta delivered
+                    // nothing and leaves the terminal fallback live (README §6.3).
+                    if !text.is_empty() {
+                        self.is_step_delivered = true;
+                    }
+
                     events.push(IrEvent::TextDelta(text));
                 }
             }
@@ -714,6 +722,12 @@ impl UpstreamParser {
                 // delta is one summary block: the boundaries the official upstream declared.
                 if let Some(OpenStep::Thought { summary: open, .. }) = self.find_open(frame.index) {
                     open.push(content.text.clone());
+
+                    // Only delivered bytes count as live delivery; a payload-less delta
+                    // delivered nothing and leaves the terminal fallback live (README §6.3).
+                    if !content.text.is_empty() {
+                        self.is_step_delivered = true;
+                    }
 
                     events.push(IrEvent::ReasoningDelta(content.text));
                 }
@@ -743,6 +757,8 @@ impl UpstreamParser {
 
                 // A delta for a step of another kind contradicts the opened kind, so it is
                 // dropped rather than misattributed to foreign content.
+                let mut is_payload_delivered = false;
+
                 if let Some(OpenStep::Call {
                     call_index,
                     id,
@@ -753,12 +769,21 @@ impl UpstreamParser {
                 {
                     open.push_str(&arguments);
 
+                    // Only delivered bytes count as live delivery; a payload-less delta
+                    // delivered nothing and leaves the terminal fallback live (README §6.3).
+                    // The flag applies after the step borrow ends.
+                    is_payload_delivered = !arguments.is_empty();
+
                     events.push(IrEvent::ToolCallDelta {
                         index: *call_index,
                         call_id: Some(id.clone()),
                         name: Some(name.clone()),
                         arguments_delta: arguments,
                     });
+                }
+
+                if is_payload_delivered {
+                    self.is_step_delivered = true;
                 }
             }
 
@@ -811,8 +836,12 @@ impl UpstreamParser {
                 )]
                 let opaque = serde_json::to_value(step).expect("the thought step serializes");
 
+                // The done's text stays empty: the deltas are the authoritative bytes and the
+                // empty-text done merely closes the block they delivered — the §6.2
+                // deltas-then-empty-done pairing, exactly as the GenerateContent parser pairs
+                // them — so no surface ever renders a summary byte twice.
                 events.push(IrEvent::ReasoningDone {
-                    text: summary.concat(),
+                    text: String::new(),
                     signature,
                     opaque,
                 });
@@ -825,6 +854,13 @@ impl UpstreamParser {
                 arguments,
                 ..
             }) => {
+                // The assembled call is content when it carries the streamed argument bytes;
+                // a bare opening closed by a stop delivers nothing and leaves the terminal
+                // fallback live (the thought arm's empty-text done likewise carries none).
+                if !arguments.is_empty() {
+                    self.is_step_delivered = true;
+                }
+
                 events.push(IrEvent::ToolCallDone {
                     index: call_index,
                     call_id: id,
@@ -845,10 +881,10 @@ impl UpstreamParser {
     /// Ingests an `interaction.completed` frame: the terminal status, then the usage report when
     /// the frame's partial resource carries one. The official terminal resource carries its steps
     /// only when the upstream includes them ("if included in this event"), so when no live
-    /// `step.start`/`step.delta` event opened a step, the resource's final `steps` are the
+    /// `step.start`/`step.delta` event delivered content, the resource's final `steps` are the
     /// exactly-once fallback content source, ingested through the same complete-step path as a
-    /// body's steps; a stream that delivered live step events ignores them, so content is never
-    /// delivered twice.
+    /// body's steps; a stream whose live events delivered content ignores them, so content is
+    /// never delivered twice.
     ///
     /// # Errors
     ///
@@ -1009,7 +1045,8 @@ mod tests {
 
     /// Verifies the official streaming vocabulary end to end over eventless frames: created opens
     /// the stream under the `interaction` member, text and thought deltas stream under opened
-    /// steps, a stop closes the thought as a done carrying the streamed state, an arguments delta
+    /// steps, a stop closes the thought as an empty-text done carrying the streamed signature and
+    /// replay payload — the deltas already delivered the block's bytes — an arguments delta
     /// assembles one call whose stop closes it, and the completed frame reports the terminal
     /// status and usage under the partial `interaction` resource.
     ///
@@ -1095,7 +1132,9 @@ mod tests {
             }),
         );
 
-        // The official stop carries the index alone; the done assembles from the streamed state.
+        // The official stop carries the index alone; the done assembles from the streamed state,
+        // its text staying empty because the deltas are the authoritative bytes (README §6.2's
+        // deltas-then-empty-done pairing).
         let thought_stop = ingest(
             &mut parser,
             super::super::EVENT_STEP_STOP,
@@ -1105,7 +1144,7 @@ mod tests {
         assert_eq!(
             thought_stop,
             vec![IrEvent::ReasoningDone {
-                text: "reasoning".to_string(),
+                text: String::new(),
                 signature: Some("sig-1".to_string()),
                 opaque: serde_json::json!({
                     "type": "thought",
@@ -1365,7 +1404,8 @@ mod tests {
             vec![IrEvent::ReasoningDelta("reasoning".to_string())],
         );
 
-        // The dropped text never reached the step: the stop closes the thought alone.
+        // The dropped text never reached the step: the stop closes the thought alone, its text
+        // staying empty because the matching delta is the authoritative delivery.
         assert_eq!(
             ingest(
                 &mut parser,
@@ -1373,7 +1413,7 @@ mod tests {
                 serde_json::json!({"index": 1}),
             ),
             vec![IrEvent::ReasoningDone {
-                text: "reasoning".to_string(),
+                text: String::new(),
                 signature: None,
                 opaque: serde_json::json!({
                     "type": "thought",
@@ -1639,7 +1679,8 @@ mod tests {
     /// Each text-carrying `thought_summary` delta is one summary block: the stop synthesizes the
     /// replay opaque with one block per delta — the boundaries the official upstream declared —
     /// so a multi-block thought replays byte-exact against the JSON body path, which preserves
-    /// the raw step's blocks verbatim, while the done's text stays the concatenation.
+    /// the raw step's blocks verbatim, while the done's text stays empty, the deltas having
+    /// delivered the bytes.
     ///
     /// # Panics
     ///
@@ -1675,7 +1716,7 @@ mod tests {
                 serde_json::json!({"index": 1}),
             ),
             vec![IrEvent::ReasoningDone {
-                text: "first second".to_string(),
+                text: String::new(),
                 signature: None,
                 opaque: serde_json::json!({
                     "type": "thought",
@@ -1850,6 +1891,89 @@ mod tests {
         assert!(
             parser.finish().is_empty(),
             "the terminal status finished the stream",
+        );
+    }
+
+    /// A bare `step.start` opens a step but delivers no content, so it never counts as live
+    /// delivery (README §6.3's content-bearing-event rule): a static-key upstream that streams
+    /// only openings recovers its full content exactly once from the terminal resource's steps,
+    /// rendered exactly as the non-streaming body path renders the same steps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a start-only stream strands the terminal steps or delivers them twice.
+    #[test]
+    fn recovers_the_terminal_steps_behind_start_only_steps() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_8", "model": "upstream-model"}}),
+        );
+
+        for (index, kind) in [(0, "thought"), (1, "model_output"), (2, "function_call")] {
+            assert!(
+                ingest(
+                    &mut parser,
+                    super::super::EVENT_STEP_START,
+                    serde_json::json!({"index": index, "step": {"type": kind}}),
+                )
+                .is_empty(),
+                "a bare start delivers nothing: {kind}",
+            );
+        }
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({
+                    "interaction": {
+                        "id": "int_8",
+                        "status": "completed",
+                        "steps": [
+                            {"type": "thought", "summary": [
+                                {"type": "text", "text": "considered"},
+                            ], "signature": "sig-t"},
+                            {"type": "model_output", "content": [
+                                {"type": "text", "text": "hello"},
+                            ]},
+                            {"type": "function_call", "id": "call_1", "name": "search",
+                             "arguments": {"q": "hi"}},
+                        ],
+                    },
+                }),
+            ),
+            vec![
+                IrEvent::ReasoningDone {
+                    text: "considered".to_string(),
+                    signature: Some("sig-t".to_string()),
+                    opaque: serde_json::json!({
+                        "type": "thought",
+                        "summary": [{"type": "text", "text": "considered"}],
+                        "signature": "sig-t",
+                    }),
+                },
+                IrEvent::TextDelta("hello".to_string()),
+                // The bare call start recorded its opening, consuming stable slot 0 for the
+                // opening it minted; the recovered call carries the next slot — internal only,
+                // as every surface renumbers calls into its own dense outward numbering.
+                IrEvent::ToolCallDelta {
+                    index: 1,
+                    call_id: Some("call_1".to_string()),
+                    name: Some("search".to_string()),
+                    arguments_delta: r#"{"q":"hi"}"#.to_string(),
+                },
+                IrEvent::ToolCallDone {
+                    index: 1,
+                    call_id: "call_1".to_string(),
+                    name: "search".to_string(),
+                    arguments: r#"{"q":"hi"}"#.to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
         );
     }
 

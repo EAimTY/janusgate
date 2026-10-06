@@ -6,13 +6,24 @@ use crate::{
     provider::{Model, Provider},
     routing::ModelRouteTarget,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
+
+/// The direct target's provider-model read over the shared column consts: a fully fixed
+/// statement, built once instead of through `format!` on every dispatch.
+static READ_TARGET_DIRECT_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {}, {} {} WHERE m.id = ?1",
+        super::providers::PROVIDER_COLUMNS,
+        super::models::MODEL_COLUMNS_JOINED,
+        super::providers::PROVIDER_JOINED_FROM_MODELS
+    )
+});
 
 /// One authored pool member, including unavailable accounts and missing physical inventory.
+/// Authored selection order is the member's position: the member read is SQL-ordered by the
+/// priority this snapshot never carries.
 #[derive(Debug, Clone)]
 pub(crate) struct MemberSnapshot {
-    /// Nonnegative authored selection order.
-    pub(crate) priority: u32,
     /// Concrete credential-bearing account.
     pub(crate) provider: Provider,
     /// Exact upstream model, when present in the account's inventory.
@@ -127,15 +138,7 @@ pub(super) async fn read_target(
     let target = match &route.target {
         ModelRouteTarget::Direct { model_id } => {
             let rows = transaction
-                .query(
-                    format!(
-                        "SELECT {}, {} {} WHERE m.id = ?1",
-                        super::providers::PROVIDER_COLUMNS,
-                        super::models::MODEL_COLUMNS_JOINED,
-                        super::providers::PROVIDER_JOINED_FROM_MODELS
-                    ),
-                    params![model_id],
-                )
+                .query(READ_TARGET_DIRECT_SQL.as_str(), params![model_id])
                 .await?;
             #[expect(
                 clippy::expect_used,
@@ -194,7 +197,7 @@ async fn read_members(
 ) -> Result<Vec<MemberSnapshot>, Error> {
     let rows = transaction
         .query(
-            "SELECT provider_id, priority FROM provider_pool_members \
+            "SELECT provider_id FROM provider_pool_members \
          WHERE pool_id = ?1 ORDER BY priority",
             params![pool_id],
         )
@@ -269,11 +272,9 @@ async fn read_members(
             .remove(&provider_id)
             .expect("stored member's provider exists");
         members.push(MemberSnapshot {
-            priority: row.get(1)?,
             provider,
             model: models.remove(&provider_id),
         });
     }
-    members.sort_by_key(|member| member.priority);
     Ok(members)
 }

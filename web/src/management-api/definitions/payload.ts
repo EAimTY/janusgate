@@ -6,8 +6,8 @@ import type {
 } from "../generated/v0";
 import {
     expectDeclaredKeys,
-    expectInteger,
     expectRecord,
+    expectSafeInteger,
     expectString,
     isPresentValue,
     parseEnvelopeResponse,
@@ -72,19 +72,41 @@ function expectDefinitionPayload(record: object, context: string): DefinitionPay
 /**
  * One definition payload's sections, rebuilt field by field from a record
  * whose declared keys the caller has already checked — the shared walk behind
- * the authored-payload gate and the stored-definition response parse.
+ * the authored-payload gate and the stored-definition response parse. The
+ * walk applies the gateway's provisioning-section rule too: the sequence runs
+ * after the token exchange, so it carries at least one step when present and
+ * only ever rides an OAuth credential.
  */
 function expectDefinitionSections(record: object, context: string): DefinitionPayload {
+    const format = UPSTREAM_FORMAT.parse(Reflect.get(record, "format"), `${context}.format`);
     const payload: DefinitionPayload = {
-        format: UPSTREAM_FORMAT.parse(Reflect.get(record, "format"), `${context}.format`),
-        inference: expectInference(Reflect.get(record, "inference"), `${context}.inference`),
+        format,
+        inference: expectInference(
+            Reflect.get(record, "inference"),
+            `${context}.inference`,
+            format,
+        ),
         credential: expectCredential(Reflect.get(record, "credential"), `${context}.credential`),
     };
 
     const provisioning = Reflect.get(record, "provisioning");
 
     if (isPresentValue(provisioning)) {
-        payload.provisioning = expectProvisioning(provisioning, `${context}.provisioning`);
+        const steps = expectProvisioning(provisioning, `${context}.provisioning`);
+
+        if (steps.length === 0) {
+            throw new ContractViolationError(
+                `${context}.provisioning must carry at least one step when present`,
+            );
+        }
+
+        if (payload.credential.type !== "oauth") {
+            throw new ContractViolationError(
+                `${context}.provisioning requires an OAuth credential: it runs after the token exchange`,
+            );
+        }
+
+        payload.provisioning = steps;
     }
 
     const discovery = Reflect.get(record, "discovery");
@@ -147,8 +169,8 @@ function parseDefinitionResponse(value: unknown, context: string): DefinitionRes
 
     return {
         name: expectString(Reflect.get(record, "name"), `${context}.name`),
-        version: expectInteger(Reflect.get(record, "version"), `${context}.version`),
-        created_at: expectInteger(Reflect.get(record, "created_at"), `${context}.created_at`),
+        version: expectSafeInteger(Reflect.get(record, "version"), `${context}.version`, 1),
+        created_at: expectSafeInteger(Reflect.get(record, "created_at"), `${context}.created_at`),
         ...payload,
     };
 }

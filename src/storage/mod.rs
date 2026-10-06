@@ -262,6 +262,16 @@ impl SqlExecutor for &mut Transaction {
     }
 }
 
+/// Renders the IN-list placeholders of a batched existence probe: one `?N` per probed id,
+/// numbered from one — the single spelling the storage tier's batched reference checks bind
+/// their id lists through.
+fn in_placeholders(count: usize) -> String {
+    (1..=count)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The documented wire wording for a rejected provider name (README §7.1), owned once here so the
 /// checked rename and both management name-taken pre-checks render a taken name identically.
 pub(crate) fn provider_name_taken_message(name: &str) -> String {

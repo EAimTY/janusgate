@@ -23,28 +23,28 @@ function codexWindows(at: string[] = []): QuotaEntryExtraction[] {
         "primary",
         "secondary",
     ].map((key) =>
-        ratioEntry(
+        ratioEntry({
             key,
-            key === "primary" ? "Primary window" : "Secondary window",
-            [
+            label: key === "primary" ? "Primary window" : "Secondary window",
+            at: [
                 ...at,
                 `${key}_window`,
             ],
-            [
+            valuePath: [
                 "used_percent",
             ],
-            {
+            window: {
                 type: "duration_field",
                 value: numberField([
                     "limit_window_seconds",
                 ]),
                 unit: "seconds",
             },
-            [
+            resetPath: [
                 "reset_at",
             ],
-            "unix_seconds",
-        ),
+            resetEncoding: "unix_seconds",
+        }),
     );
 }
 

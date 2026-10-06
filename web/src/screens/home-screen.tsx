@@ -129,6 +129,20 @@ export function HomeScreen(props: {
     );
     const hasNoPublicRoutes = () => entities().modelRoutes.length === 0;
 
+    // Where the no-public-routes row's action lands: the page where discovery
+    // actually runs, never the models listing — that page offers only
+    // creation, and the sibling no-inventory row already opens the provider's
+    // page for the same reason. Exactly one enabled provider is that page;
+    // otherwise the providers list is the way in.
+    const discoveryTarget = createMemo(() => {
+        const enabled = entities().providers.filter((provider) => provider.is_enabled);
+        const [single] = enabled;
+
+        return enabled.length === 1 && single !== undefined
+            ? hrefs.providerDetail(single.id)
+            : hrefs.providers();
+    });
+
     const attentionProviders = createMemo(() =>
         entities().providers.flatMap((provider): ProviderAttention[] => {
             const attention = credentialAttention(provider);
@@ -321,7 +335,7 @@ export function HomeScreen(props: {
                                 )}
                                 detail={translation()(
                                     ($) =>
-                                        $.additional.homeScreen
+                                        $.screens.homeScreen
                                             .inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage,
                                 )}
                                 fix={null}
@@ -342,7 +356,7 @@ export function HomeScreen(props: {
                                             />
                                         }
                                         action={{
-                                            href: hrefs.models(null),
+                                            href: discoveryTarget(),
                                             get label() {
                                                 return translation()(
                                                     ($) => $.screens.homeScreen.discoverModels,
@@ -451,7 +465,7 @@ export function HomeScreen(props: {
  */
 function trafficSummary(series: OverviewDailySeries): JSX.Element {
     if (series.total === 0) {
-        return translation()(($) => $.additional.homeScreen.noRequestsRecordedMessage);
+        return translation()(($) => $.screens.homeScreen.noRequestsRecordedMessage);
     }
 
     return requestSummaryMessage(series.total, series.peak);

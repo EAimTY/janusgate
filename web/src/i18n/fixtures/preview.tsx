@@ -34,7 +34,7 @@ const arabicPreview = {
     entityMessages: {
         deleteKey: "هل تريد حذف [[name]]؟ ستفقد التطبيقات التي تحمل هذا السر إمكانية الوصول.",
     },
-    additional: {
+    helpers: {
         clipboard: {
             copy: "نسخ",
             copied: "تم النسخ",
@@ -241,7 +241,7 @@ function Preview(): JSX.Element {
                             label={
                                 controller.activeLocale() === "ar"
                                     ? "نسخ العنوان"
-                                    : controller.translation()(($) => $.additional.clipboard.copy)
+                                    : controller.translation()(($) => $.helpers.clipboard.copy)
                             }
                             ariaLabel={copy().address}
                         />

@@ -1149,6 +1149,30 @@ describe("definition response validation", () => {
                 ],
             }),
         ).toThrow(/response\.provider_definitions\[0\]\.version must be an integer/);
+
+        expect(() =>
+            parseListProviderDefinitionsResponse({
+                provider_definitions: [
+                    {
+                        ...storedDefinition,
+                        version: 0,
+                    },
+                ],
+            }),
+        ).toThrow(
+            /response\.provider_definitions\[0\]\.version must be a safe integer of at least 1/,
+        );
+
+        expect(() =>
+            parseListProviderDefinitionsResponse({
+                provider_definitions: [
+                    {
+                        ...storedDefinition,
+                        created_at: 2 ** 53,
+                    },
+                ],
+            }),
+        ).toThrow(/response\.provider_definitions\[0\]\.created_at must be a safe integer/);
     });
 
     it("rejects a stored row carrying a member the row does not declare", () => {
@@ -1193,5 +1217,551 @@ describe("definition response validation", () => {
                 ],
             }),
         ).toThrow(/response\.provider_definitions\[0\]\.credential\.client_id must be a string/);
+    });
+});
+
+describe("definition write-boundary mirror", () => {
+    /** The responses-format `api_key` payload the structural probes graft onto. */
+    const responsesPayload = structuredClone(PROVIDER_PRESETS[0].payload);
+
+    /** The devin payload: the OAuth recipe the credential probes graft onto. */
+    const devinPreset = PROVIDER_PRESETS.find((candidate) => candidate.id === "devin")?.payload;
+
+    if (devinPreset === undefined) {
+        throw new Error("the catalog holds no devin preset");
+    }
+
+    const oauthPayload = structuredClone(devinPreset);
+    const oauthCredential = structuredClone(devinPreset.credential);
+
+    if (oauthCredential.type !== "oauth") {
+        throw new Error("the devin preset carries no OAuth recipe");
+    }
+
+    const oauthGrant = oauthCredential.grant;
+
+    if (oauthGrant.type !== "authorization_code") {
+        throw new Error("the devin preset carries no authorization-code grant");
+    }
+
+    const responsesDiscovery = responsesPayload.discovery;
+
+    if (responsesDiscovery === undefined || responsesDiscovery === null) {
+        throw new Error("the responses preset carries no discovery");
+    }
+
+    /** The chat-completion payload, for the per-format render-option probes. */
+    const chatCompletionPreset = PROVIDER_PRESETS.find(
+        (candidate) => candidate.id === "generic-openai-chat-completions",
+    )?.payload;
+
+    if (chatCompletionPreset === undefined) {
+        throw new Error("the catalog holds no generic-openai-chat-completions preset");
+    }
+
+    const chatCompletionPayload = structuredClone(chatCompletionPreset);
+
+    /** One literal expression part. */
+    const literal = (
+        value: string,
+    ): {
+        type: "literal";
+        value: string;
+    } => ({
+        type: "literal",
+        value,
+    });
+
+    /** Validates one grafted payload, returning the rejection message it names. */
+    const reject = (payload: unknown): string => {
+        const result = validateDefinitionPayload(payload);
+
+        if (!("error" in result)) {
+            throw new Error(`the payload should have been rejected: ${JSON.stringify(payload)}`);
+        }
+
+        return result.error;
+    };
+
+    it("names the expression walk's structural rules at their JSON paths", () => {
+        const probes: ReadonlyArray<
+            [
+                object,
+                RegExp,
+            ]
+        > = [
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        url: [],
+                    },
+                },
+                /definition\.inference\.url must carry at least one expression part/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        url: [
+                            {
+                                type: "coalesce",
+                                parts: [],
+                            },
+                        ],
+                    },
+                },
+                /definition\.inference\.url\[0\] carries an empty coalesce/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        url: [
+                            {
+                                type: "coalesce",
+                                parts: [
+                                    {
+                                        type: "coalesce",
+                                        parts: [
+                                            literal("fallback"),
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+                /definition\.inference\.url\[0\]\.parts\[0\] nests a coalesce inside a coalesce/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        headers: [
+                            {
+                                name: "",
+                                value: [
+                                    literal("x"),
+                                ],
+                            },
+                        ],
+                    },
+                },
+                /definition\.inference\.headers\[0\]\.name must not be empty/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        headers: [
+                            {
+                                name: "bad header",
+                                value: [
+                                    literal("x"),
+                                ],
+                            },
+                        ],
+                    },
+                },
+                /definition\.inference\.headers\[0\]\.name is not a valid HTTP header name/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        envelope: {
+                            type: "object",
+                            fields: {
+                                "": {
+                                    type: "body",
+                                },
+                            },
+                        },
+                    },
+                },
+                /definition\.inference\.envelope\.fields carries an empty object member name/,
+            ],
+        ];
+
+        for (const [payload, expected] of probes) {
+            expect(reject(payload), String(expected)).toMatch(expected);
+        }
+    });
+
+    it("holds the inference section to the gateway's write boundary", () => {
+        const probes: ReadonlyArray<
+            [
+                object,
+                RegExp,
+            ]
+        > = [
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        stream_url: [],
+                    },
+                },
+                /definition\.inference\.stream_url must carry at least one expression part/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    inference: {
+                        ...responsesPayload.inference,
+                        envelope: {
+                            type: "object",
+                            fields: {},
+                        },
+                    },
+                },
+                /definition\.inference\.envelope carries 0 body placeholders; exactly one is required/,
+            ],
+            [
+                {
+                    ...chatCompletionPayload,
+                    inference: {
+                        ...chatCompletionPayload.inference,
+                        render_options: [
+                            "omit_max_output_tokens",
+                        ],
+                    },
+                },
+                /definition\.inference\.render_options\[0\] is not part of the `openai_chat_completion` format's set/,
+            ],
+        ];
+
+        for (const [payload, expected] of probes) {
+            expect(reject(payload), String(expected)).toMatch(expected);
+        }
+
+        // The one render option sits inside its own format's set.
+        const accepted = validateDefinitionPayload({
+            ...responsesPayload,
+            inference: {
+                ...responsesPayload.inference,
+                render_options: [
+                    "omit_max_output_tokens",
+                ],
+            },
+        });
+
+        expect("error" in accepted).toBe(false);
+    });
+
+    it("holds every stage's control request to the shared shape rules", () => {
+        const probes: ReadonlyArray<
+            [
+                object,
+                RegExp,
+            ]
+        > = [
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesDiscovery,
+                        request: {
+                            ...responsesDiscovery.request,
+                            url: [],
+                        },
+                    },
+                },
+                /definition\.discovery\.request\.url must carry at least one expression part/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesDiscovery,
+                        request: {
+                            method: "GET",
+                            url: [
+                                {
+                                    type: "base",
+                                },
+                            ],
+                            body: {
+                                kind: "json",
+                                node: {
+                                    type: "json",
+                                    value: 1,
+                                },
+                            },
+                        },
+                    },
+                },
+                /definition\.discovery\.request must not carry a body on a GET request/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesDiscovery,
+                        request: {
+                            method: "POST",
+                            url: [
+                                {
+                                    type: "base",
+                                },
+                            ],
+                            body: {
+                                kind: "json",
+                                node: {
+                                    type: "body",
+                                },
+                            },
+                        },
+                    },
+                },
+                /definition\.discovery\.request\.body must not carry the inference body placeholder/,
+            ],
+        ];
+
+        for (const [payload, expected] of probes) {
+            expect(reject(payload), String(expected)).toMatch(expected);
+        }
+    });
+
+    it("holds the discovery extraction and pagination to their shapes", () => {
+        const probes: ReadonlyArray<
+            [
+                object,
+                RegExp,
+            ]
+        > = [
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesDiscovery,
+                        extract: {
+                            ...responsesDiscovery.extract,
+                            id_field: [],
+                        },
+                    },
+                },
+                /definition\.discovery\.extract\.id_field must not be empty/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesDiscovery,
+                        extract: {
+                            ...responsesDiscovery.extract,
+                            strip_prefix: "",
+                        },
+                    },
+                },
+                /definition\.discovery\.extract\.strip_prefix must not be empty/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesPayload.discovery,
+                        pagination: {
+                            type: "token",
+                            request_param: "",
+                            response_path: [
+                                "data",
+                            ],
+                            max_pages: 5,
+                        },
+                    },
+                },
+                /definition\.discovery\.pagination\.request_param must not be empty/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesPayload.discovery,
+                        pagination: {
+                            type: "token",
+                            request_param: "after",
+                            response_path: [],
+                            max_pages: 5,
+                        },
+                    },
+                },
+                /definition\.discovery\.pagination\.response_path must not be empty/,
+            ],
+            [
+                {
+                    ...responsesPayload,
+                    discovery: {
+                        ...responsesPayload.discovery,
+                        pagination: {
+                            type: "token",
+                            request_param: "after",
+                            response_path: [
+                                "data",
+                            ],
+                            max_pages: 0,
+                        },
+                    },
+                },
+                /definition\.discovery\.pagination\.max_pages must be a positive integer/,
+            ],
+        ];
+
+        for (const [payload, expected] of probes) {
+            expect(reject(payload), String(expected)).toMatch(expected);
+        }
+    });
+
+    it("holds the OAuth recipe to the credential write rules", () => {
+        const probes: ReadonlyArray<
+            [
+                object,
+                RegExp,
+            ]
+        > = [
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        client_id: "",
+                    },
+                },
+                /definition\.credential\.client_id must not be empty/,
+            ],
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        grant: {
+                            ...oauthGrant,
+                            authorize_url: [],
+                        },
+                    },
+                },
+                /definition\.credential\.grant\.authorize_url must carry at least one expression part/,
+            ],
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        grant: {
+                            ...oauthGrant,
+                            redirect_uri: "",
+                        },
+                    },
+                },
+                /definition\.credential\.grant\.redirect_uri must not be empty/,
+            ],
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        exchange: {
+                            ...oauthCredential.exchange,
+                            terminal_codes: [],
+                        },
+                    },
+                },
+                /definition\.credential\.exchange\.terminal_codes must not be empty/,
+            ],
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        exchange: {
+                            ...oauthCredential.exchange,
+                            terminal_codes: [
+                                "",
+                            ],
+                        },
+                    },
+                },
+                /definition\.credential\.exchange\.terminal_codes\[0\] must not be an empty code/,
+            ],
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        access_token_lifetime_seconds: 0,
+                    },
+                },
+                /definition\.credential\.access_token_lifetime_seconds must be a positive integer/,
+            ],
+            [
+                {
+                    ...oauthPayload,
+                    credential: {
+                        ...oauthCredential,
+                        exchange: {
+                            ...oauthCredential.exchange,
+                            response: {
+                                encoding: "form",
+                                fields: oauthCredential.exchange.response.fields.map(
+                                    (field, index) =>
+                                        index === 0
+                                            ? {
+                                                  ...field,
+                                                  path: [
+                                                      "api_key",
+                                                      "nested",
+                                                  ],
+                                              }
+                                            : field,
+                                ),
+                            },
+                        },
+                    },
+                },
+                /definition\.credential\.exchange\.response paths address flat form fields and carry exactly one member/,
+            ],
+        ];
+
+        for (const [payload, expected] of probes) {
+            expect(reject(payload), String(expected)).toMatch(expected);
+        }
+    });
+
+    it("requires provisioning to be a non-empty OAuth-only sequence", () => {
+        const step = {
+            request: {
+                method: "POST",
+                url: [
+                    literal("https://upstream.example.com/provision"),
+                ],
+            },
+            response_encoding: "json",
+        };
+
+        expect(
+            reject({
+                ...responsesPayload,
+                provisioning: [
+                    step,
+                ],
+            }),
+        ).toMatch(
+            /definition\.provisioning requires an OAuth credential: it runs after the token exchange/,
+        );
+
+        expect(
+            reject({
+                ...oauthPayload,
+                provisioning: [],
+            }),
+        ).toMatch(/definition\.provisioning must carry at least one step when present/);
     });
 });

@@ -8,7 +8,7 @@ use crate::{
     database::{Database, Transaction, params},
     unix_time,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Column order shared by complete-key reads.
 const API_KEY_COLUMNS: &str = "id, name, key, is_enabled, created_at, default_access";
@@ -54,9 +54,27 @@ pub(crate) enum AccessReference {
     Route(i64),
 }
 
-/// One sparse-rule collection of a key's policy: the table its rules live in and the target
-/// column naming each rule's referenced row.
-#[derive(Debug, Clone, Copy)]
+impl AccessReference {
+    /// The reference's rule collection.
+    fn collection(self) -> AccessCollection {
+        match self {
+            Self::Provider(_) => AccessCollection::Provider,
+            Self::Pool(_) => AccessCollection::Pool,
+            Self::Route(_) => AccessCollection::Route,
+        }
+    }
+
+    /// The referenced row identity.
+    const fn id(self) -> i64 {
+        match self {
+            Self::Provider(id) | Self::Pool(id) | Self::Route(id) => id,
+        }
+    }
+}
+
+/// One sparse-rule collection of a key's policy: the table its rules live in, and the fixed
+/// rule reads and typed rule home that collection's rows move through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum AccessCollection {
     /// Provider defaults.
     Provider,
@@ -70,12 +88,37 @@ impl AccessCollection {
     /// Every collection in canonical read order.
     const ALL: [Self; 3] = [Self::Provider, Self::Pool, Self::Route];
 
-    /// The collection's rule table and its target identity column.
-    const fn table_and_column(self) -> (&'static str, &'static str) {
+    /// The table holding the rows this collection's rules reference.
+    const fn referenced_table(self) -> &'static str {
         match self {
-            Self::Provider => ("api_key_provider_defaults", "provider_id"),
-            Self::Pool => ("api_key_pool_defaults", "pool_id"),
-            Self::Route => ("api_key_model_route_overrides", "model_route_id"),
+            Self::Provider => "providers",
+            Self::Pool => "provider_pools",
+            Self::Route => "model_routes",
+        }
+    }
+
+    /// The collection's two fixed rule reads — the single key's rules and every key's rules,
+    /// both in stored target order.
+    const fn rule_reads(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Provider => (
+                "SELECT api_key_id, provider_id, access FROM api_key_provider_defaults \
+                 WHERE api_key_id = ?1 ORDER BY provider_id",
+                "SELECT api_key_id, provider_id, access FROM api_key_provider_defaults \
+                 ORDER BY provider_id",
+            ),
+            Self::Pool => (
+                "SELECT api_key_id, pool_id, access FROM api_key_pool_defaults \
+                 WHERE api_key_id = ?1 ORDER BY pool_id",
+                "SELECT api_key_id, pool_id, access FROM api_key_pool_defaults \
+                 ORDER BY pool_id",
+            ),
+            Self::Route => (
+                "SELECT api_key_id, model_route_id, access FROM api_key_model_route_overrides \
+                 WHERE api_key_id = ?1 ORDER BY model_route_id",
+                "SELECT api_key_id, model_route_id, access FROM api_key_model_route_overrides \
+                 ORDER BY model_route_id",
+            ),
         }
     }
 
@@ -106,6 +149,18 @@ pub(crate) fn api_key_not_found_message(id: i64) -> String {
 /// Shared wire wording for a taken secret, without exposing its value.
 pub(crate) fn api_key_taken_message() -> String {
     "API key is already taken".into()
+}
+
+/// Reads the closed stored access vocabulary — the decode side of
+/// [`AccessDecision::as_str`] — treating a foreign value as stored drift.
+fn access_decision_from_stored(value: &str) -> Result<AccessDecision, Error> {
+    match value {
+        "allow" => Ok(AccessDecision::Allow),
+        "deny" => Ok(AccessDecision::Deny),
+        _ => Err(Error::Drift {
+            message: format!("unknown access decision `{value}`"),
+        }),
+    }
 }
 
 /// Lists complete keys using one transaction and three batched rule reads.
@@ -146,6 +201,8 @@ pub(crate) async fn find_api_key_by_id(
 /// Reads one collection's stored rules — the single key's rules when `api_key_id` is `Some`,
 /// every key's rules otherwise — as `(api key id, target identity, access decision)` triples
 /// in stored order, the one shared rule read of both [`read_keys`] and [`read_enabled_policy`].
+/// Each collection's two statement shapes are fixed consts, spelled once in
+/// [`AccessCollection::rule_reads`].
 ///
 /// # Errors
 ///
@@ -155,28 +212,11 @@ async fn read_rules(
     collection: AccessCollection,
     api_key_id: Option<i64>,
 ) -> Result<Vec<(i64, i64, AccessDecision)>, Error> {
-    let (table, column) = collection.table_and_column();
+    let (single_key_sql, all_keys_sql) = collection.rule_reads();
     let rows = match api_key_id {
-        Some(id) => {
-            transaction
-                .query(
-                    format!(
-                        "SELECT api_key_id, {column}, access FROM {table} \
-                         WHERE api_key_id = ?1 ORDER BY {column}"
-                    ),
-                    params![id],
-                )
-                .await?
-        }
+        Some(id) => transaction.query(single_key_sql, params![id]).await?,
 
-        None => {
-            transaction
-                .query(
-                    format!("SELECT api_key_id, {column}, access FROM {table} ORDER BY {column}"),
-                    (),
-                )
-                .await?
-        }
+        None => transaction.query(all_keys_sql, ()).await?,
     };
 
     rows.iter()
@@ -184,7 +224,7 @@ async fn read_rules(
             Ok((
                 row.get(0)?,
                 row.get(1)?,
-                AccessDecision::from_stored(&row.get::<String>(2)?)?,
+                access_decision_from_stored(&row.get::<String>(2)?)?,
             ))
         })
         .collect()
@@ -258,7 +298,7 @@ pub(super) async fn read_enabled_policy(
         return Err(Error::InactiveApiKey { id });
     };
     let mut policy = ApiKeyAccessControl {
-        default_access: AccessDecision::from_stored(&row.get::<String>(0)?)?,
+        default_access: access_decision_from_stored(&row.get::<String>(0)?)?,
         owner_defaults: Vec::new(),
         route_overrides: Vec::new(),
     };
@@ -298,22 +338,51 @@ fn policy_references(policy: &ApiKeyAccessControl) -> Result<Vec<AccessReference
 }
 
 /// Rejects duplicate identities before any writes, and checks references in the write snapshot.
+///
+/// Each collection's referenced identities are probed with one `WHERE id IN` query per
+/// collection — never one query per authored rule — and the first reference, in authored order,
+/// whose row is absent is reported: the identical [`Error::MissingAccessReference`] outcome the
+/// per-rule probes produced.
 async fn validate_policy(
     transaction: &mut Transaction,
     policy: &ApiKeyAccessControl,
 ) -> Result<(), Error> {
     let references = policy_references(policy)?;
+
+    // Authored identities are already unique, so each collection's probe list carries distinct
+    // ids; the found sets then answer every reference's presence without further queries.
+    let mut present = HashMap::<AccessCollection, HashSet<i64>>::new();
+    for collection in AccessCollection::ALL {
+        let ids: Vec<i64> = references
+            .iter()
+            .filter(|reference| reference.collection() == collection)
+            .copied()
+            .map(AccessReference::id)
+            .collect();
+        if ids.is_empty() {
+            continue;
+        }
+        let rows = transaction
+            .query(
+                format!(
+                    "SELECT id FROM {} WHERE id IN ({})",
+                    collection.referenced_table(),
+                    super::in_placeholders(ids.len()),
+                ),
+                ids,
+            )
+            .await?;
+        let found = present.entry(collection).or_default();
+        for row in rows {
+            found.insert(row.get(0)?);
+        }
+    }
+
     for reference in references {
-        let (table, id) = match reference {
-            AccessReference::Provider(id) => ("providers", id),
-            AccessReference::Pool(id) => ("provider_pools", id),
-            AccessReference::Route(id) => ("model_routes", id),
-        };
-        if transaction
-            .query(format!("SELECT id FROM {table} WHERE id = ?1"), params![id])
-            .await?
-            .is_empty()
-        {
+        let is_present = present
+            .get(&reference.collection())
+            .is_some_and(|ids| ids.contains(&reference.id()));
+        if !is_present {
             return Err(Error::MissingAccessReference { reference });
         }
     }
@@ -480,7 +549,7 @@ fn api_key_from_row(row: &crate::database::Row) -> Result<ApiKey, Error> {
         is_enabled: row.get::<i64>(3)? != 0,
         created_at: row.get(4)?,
         access_control: ApiKeyAccessControl {
-            default_access: AccessDecision::from_stored(&row.get::<String>(5)?)?,
+            default_access: access_decision_from_stored(&row.get::<String>(5)?)?,
             owner_defaults: Vec::new(),
             route_overrides: Vec::new(),
         },

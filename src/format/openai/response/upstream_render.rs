@@ -9,10 +9,11 @@ use crate::{
         RenderOption,
         openai::{ToolChoice, render_tool_choice},
     },
-    ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrRole, StateItem},
+    ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, StateItem},
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// The upstream Responses request payload, shared by the Codex and compatible entry points.
 #[derive(Debug, Serialize)]
@@ -137,6 +138,19 @@ enum MessageRole {
     Assistant,
 }
 
+/// Renders an image into the Responses `image_url` string: a remote URL borrows verbatim, and
+/// only inline data synthesizes its data URL — the inverse of [`IrImage::from_url`].
+fn image_url(image: &IrImage) -> Cow<'_, str> {
+    match image {
+        IrImage::Url(url) => Cow::Borrowed(url),
+
+        IrImage::Inline {
+            mime_type,
+            data_base64,
+        } => Cow::Owned(format!("data:{mime_type};base64,{data_base64}")),
+    }
+}
+
 /// One content part of a rendered message item: the `input_*` parts a client turn carries, and the
 /// `output_text` part a replayed assistant turn carries.
 #[derive(Debug, Serialize)]
@@ -150,8 +164,9 @@ enum MessageContentPart<'a> {
 
     /// An image reference.
     InputImage {
-        /// Inline data URL or remote `http`/`https` URL (README §6.6).
-        image_url: String,
+        /// Inline data URL or remote `http`/`https` URL (README §6.6), borrowed verbatim for a
+        /// remote image.
+        image_url: Cow<'a, str>,
     },
 
     /// Assistant output text.
@@ -325,7 +340,7 @@ fn render_input_items(ir: &IrRequest) -> Result<Vec<InputItem<'_>>, InvalidReque
                         IrPart::Text { text } => Some(MessageContentPart::InputText { text }),
 
                         IrPart::Image { image } => Some(MessageContentPart::InputImage {
-                            image_url: image.to_url(),
+                            image_url: image_url(image),
                         }),
 
                         // The IR type system routes only text and images into user content.

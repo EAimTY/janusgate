@@ -31,7 +31,7 @@ import {
 } from "/src/management-api/vocabulary";
 import { PROVIDER_PRESETS } from "/src/presets/catalog";
 import type { ProviderPreset } from "/src/presets/types";
-import { requestRefresh } from "/src/refresh-state";
+import { reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { indexRowsById } from "/src/row-index";
 import { type ScreenNotice, screenFailureNotice } from "/src/screen-state/notices";
@@ -200,7 +200,10 @@ export function ProviderDetailScreen(props: {
 
     const providersById = createMemo(() => indexRowsById(providers()));
     const quota = createProviderQuotaView({
-        onQuotaReadComplete: requestRefresh,
+        // A quota observation is the one read on this page outside the
+        // screen read: it reports success to the shell's freshness stamp
+        // (README §6.3.1) without re-running the page's reads.
+        onQuotaReadComplete: reportRefresh,
         api: () => props.api,
         provider,
     });
@@ -213,18 +216,16 @@ export function ProviderDetailScreen(props: {
                 <PageHeader
                     title={translation()(($) => $.screens.providerDetailScreen.provider)}
                     backHref={hrefs.providers()}
-                    backLabel={translation()(($) => $.additional.providerDetailScreen.providers)}
+                    backLabel={translation()(($) => $.screens.providerDetailScreen.providers)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="provider"
-                    headerTitle={translation()(($) => $.additional.providerDetailScreen.provider)}
+                    headerTitle={translation()(($) => $.screens.providerDetailScreen.provider)}
                     createAction={{
                         href: hrefs.providerNew(),
-                        label: translation()(
-                            ($) => $.additional.providerDetailScreen.createProvider,
-                        ),
+                        label: translation()(($) => $.screens.providerDetailScreen.createProvider),
                     }}
                 />
             }
@@ -235,20 +236,14 @@ export function ProviderDetailScreen(props: {
                         title={row.name}
                         description={`${UPSTREAM_FORMAT.label(row.format)} · ${CREDENTIAL_KIND.label(row.type)}`}
                         backHref={hrefs.providers()}
-                        backLabel={translation()(
-                            ($) => $.additional.providerDetailScreen.providers,
-                        )}
+                        backLabel={translation()(($) => $.screens.providerDetailScreen.providers)}
                     >
                         <Badge
                             tone={row.is_enabled ? "ok" : "muted"}
                             label={
                                 row.is_enabled
-                                    ? translation()(
-                                          ($) => $.additional.providerDetailScreen.enabled,
-                                      )
-                                    : translation()(
-                                          ($) => $.additional.providerDetailScreen.disabled,
-                                      )
+                                    ? translation()(($) => $.screens.providerDetailScreen.enabled)
+                                    : translation()(($) => $.screens.providerDetailScreen.disabled)
                             }
                         />
                         <Show when={credentialBadge(row)}>
@@ -284,7 +279,7 @@ export function ProviderDetailScreen(props: {
                                     standing() === "expired"
                                         ? translation()(
                                               ($) =>
-                                                  $.additional.providerDetailScreen
+                                                  $.screens.providerDetailScreen
                                                       .theOAuthCredentialsHaveExpiredMessage,
                                           )
                                         : oauthNeverFreshSentence()
@@ -384,7 +379,7 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                     value={
                         props.provider.model_prefix === ""
                             ? translation()(
-                                  ($) => $.additional.providerDetailScreen.noneExactUpstreamIDs,
+                                  ($) => $.screens.providerDetailScreen.noneExactUpstreamIDs,
                               )
                             : props.provider.model_prefix
                     }
@@ -448,8 +443,8 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                     label={translation()(($) => $.screens.providerDetailScreen.status)}
                     value={
                         props.provider.is_enabled
-                            ? translation()(($) => $.additional.providerDetailScreen.enabled)
-                            : translation()(($) => $.additional.providerDetailScreen.disabled)
+                            ? translation()(($) => $.screens.providerDetailScreen.enabled)
+                            : translation()(($) => $.screens.providerDetailScreen.disabled)
                     }
                 />
             </FactList>
@@ -495,8 +490,8 @@ function ModelsCard(props: {
                     onClick={props.onDiscover}
                 >
                     {props.isDiscovering
-                        ? translation()(($) => $.additional.providerDetailScreen.discovering)
-                        : translation()(($) => $.additional.providerDetailScreen.discoverModels)}
+                        ? translation()(($) => $.screens.providerDetailScreen.discovering)
+                        : translation()(($) => $.screens.providerDetailScreen.discoverModels)}
                 </Button>
                 {/* The inline list stays unsearchable; the quiet door hands
                     the visitor the searchable models view filtered to this
@@ -521,12 +516,12 @@ function ModelsCard(props: {
                             {props.isDiscovering
                                 ? translation()(
                                       ($) =>
-                                          $.additional.providerDetailScreen
+                                          $.screens.providerDetailScreen
                                               .askingTheUpstreamWhatItReports,
                                   )
                                 : translation()(
                                       ($) =>
-                                          $.additional.providerDetailScreen
+                                          $.screens.providerDetailScreen
                                               .noModelsOnThisProviderYetDiscoverWhatMessage,
                                   )}
                         </p>

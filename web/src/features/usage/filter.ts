@@ -616,6 +616,35 @@ export function soleSubject(named: ReadonlyArray<UsageQuerySubject>): UsageQuery
 }
 
 /**
+ * The aggregates subject the stream's standing draft carries: its entity
+ * narrow, when exactly one of provider, model, or key is named, as the
+ * aggregates page's prefilled subject — so crossing to the aggregates page
+ * from a stream whose form names an entity keeps asking about that entity
+ * instead of silently totaling the whole gateway, applied or not. The narrow
+ * is read off the wire filter [`buildUsageFilter`] spells — the one trusted
+ * conversion from the form's strings to row ids — so this link's subject
+ * cannot drift from the question the form holds. A draft naming no entity,
+ * or more than one, carries no subject: a subject is one entity, and a
+ * compound narrow belongs to the aggregates page's own filter, not to a
+ * link. The window and every non-entity field stay behind — only the entity
+ * subject crosses, the aggregates page's window semantics being its own.
+ */
+export function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | undefined {
+    const wire = buildUsageFilter(filter);
+
+    // `buildUsageFilter` names a wire field with exactly one id — one draft
+    // field, one wire value — so the list's first element is the id the walk
+    // reads.
+    return (
+        soleSubject(
+            namedSubjects(
+                (dimension) => wire[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField]?.[0] ?? null,
+            ),
+        ) ?? undefined
+    );
+}
+
+/**
  * Which recorded rows the stats count: exactly one subject's, named by its
  * wire filter field. Derived from [`USAGE_QUERY_SUBJECT_FIELDS`], so the
  * shape stays the wire spelling of the dimension table rather than a parallel

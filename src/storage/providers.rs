@@ -16,6 +16,7 @@ use crate::{
     provider::{CredentialKind, Provider, StoredCredentials, definition::ProviderDefinition},
 };
 use serde::Serialize;
+use std::sync::LazyLock;
 
 /// Inserts one provider row through the pooled or transactional executor, returning the new
 /// row's id: the statement is written once for both the pooled creation path and the device
@@ -86,12 +87,7 @@ pub(crate) async fn insert_provider(
 ///
 /// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>, Error> {
-    let sql = format!(
-        "SELECT {} {} ORDER BY p.name",
-        PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
-    );
-
-    let rows = database.query(sql, ()).await?;
+    let rows = database.query(LIST_PROVIDERS_SQL.as_str(), ()).await?;
 
     rows.iter().map(provider_from_row).collect()
 }
@@ -106,7 +102,9 @@ pub(crate) async fn find_provider(
     database: &Database,
     name: &str,
 ) -> Result<Option<Provider>, Error> {
-    let rows = database.query(find_provider_sql(), params![name]).await?;
+    let rows = database
+        .query(FIND_PROVIDER_SQL.as_str(), params![name])
+        .await?;
 
     rows.first().map(provider_from_row).transpose()
 }
@@ -135,7 +133,7 @@ async fn find_provider_by_id_on<E: SqlExecutor>(
     provider_id: i64,
 ) -> Result<Option<Provider>, Error> {
     let rows = executor
-        .query(find_provider_by_id_sql(), params![provider_id])
+        .query(FIND_PROVIDER_BY_ID_SQL.as_str(), params![provider_id])
         .await?;
 
     rows.first().map(provider_from_row).transpose()
@@ -597,23 +595,33 @@ pub(crate) async fn set_base_url_in_transaction(
     Ok(())
 }
 
+/// The every-provider listing, ordered by name: a fully fixed statement over the shared column
+/// consts, built once.
+static LIST_PROVIDERS_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {} {} ORDER BY p.name",
+        PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
+    )
+});
+
 /// The `WHERE name = ?1` provider lookup. Names are unique, so this is the name-taken check behind
-/// creation; all addressing of an existing provider goes through its id.
-fn find_provider_sql() -> String {
+/// creation; all addressing of an existing provider goes through its id. A fully fixed statement
+/// over the shared column consts, built once.
+static FIND_PROVIDER_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT {} {} WHERE p.name = ?1",
         PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
     )
-}
+});
 
 /// The `WHERE id = ?1` provider lookup shared by the pooled and transactional executors through
-/// [`find_provider_by_id`].
-fn find_provider_by_id_sql() -> String {
+/// [`find_provider_by_id`]: a fully fixed statement over the shared column consts, built once.
+static FIND_PROVIDER_BY_ID_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT {} {} WHERE p.id = ?1",
         PROVIDER_COLUMNS, PROVIDER_JOINED_FROM
     )
-}
+});
 
 /// The fields of a provider about to be inserted.
 #[derive(Clone, Copy)]

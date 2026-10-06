@@ -2,7 +2,8 @@ import { ContractViolationError } from "../errors";
 import type { Discovery, DiscoveryExtract, Pagination } from "../generated/v0";
 import {
     expectDeclaredKeys,
-    expectInteger,
+    expectNonEmptyString,
+    expectPositiveInteger,
     expectRecord,
     expectString,
     isPresentValue,
@@ -32,10 +33,17 @@ function expectDiscoveryExtract(value: unknown, context: string): DiscoveryExtra
             id_field: expectResponsePath(Reflect.get(record, "id_field"), `${context}.id_field`),
         };
 
+        // The identifier field names the member inside every page entry: an
+        // empty chain addresses the entry itself, which is never the
+        // identifier, so the extraction would fail on every entry.
+        if (extract.id_field.length === 0) {
+            throw new ContractViolationError(`${context}.id_field must not be empty`);
+        }
+
         const stripPrefix = Reflect.get(record, "strip_prefix");
 
         if (isPresentValue(stripPrefix)) {
-            extract.strip_prefix = expectString(stripPrefix, `${context}.strip_prefix`);
+            extract.strip_prefix = expectNonEmptyString(stripPrefix, `${context}.strip_prefix`);
         }
 
         return extract;
@@ -90,17 +98,28 @@ function expectPagination(value: unknown, context: string): Pagination {
             context,
         );
 
+        const responsePath = expectResponsePath(
+            Reflect.get(record, "response_path"),
+            `${context}.response_path`,
+        );
+
+        // An empty chain addresses the page root, which can never continue
+        // the walk: the root object reads as a malformed token on every page.
+        if (responsePath.length === 0) {
+            throw new ContractViolationError(`${context}.response_path must not be empty`);
+        }
+
         return {
             type: "token",
-            request_param: expectString(
+            request_param: expectNonEmptyString(
                 Reflect.get(record, "request_param"),
                 `${context}.request_param`,
             ),
-            response_path: expectResponsePath(
-                Reflect.get(record, "response_path"),
-                `${context}.response_path`,
+            response_path: responsePath,
+            max_pages: expectPositiveInteger(
+                Reflect.get(record, "max_pages"),
+                `${context}.max_pages`,
             ),
-            max_pages: expectInteger(Reflect.get(record, "max_pages"), `${context}.max_pages`),
         };
     }
 
@@ -117,21 +136,39 @@ function expectPagination(value: unknown, context: string): Pagination {
             context,
         );
 
+        const hasMorePath = expectResponsePath(
+            Reflect.get(record, "has_more_path"),
+            `${context}.has_more_path`,
+        );
+        const lastIdPath = expectResponsePath(
+            Reflect.get(record, "last_id_path"),
+            `${context}.last_id_path`,
+        );
+
+        // An empty has-more chain addresses the page root, whose truthy read
+        // is always false: the walk would end after page one with the page
+        // budget never firing. An empty last-identifier chain names no member
+        // to continue from, so both must address at least one member.
+        if (hasMorePath.length === 0) {
+            throw new ContractViolationError(`${context}.has_more_path must not be empty`);
+        }
+
+        if (lastIdPath.length === 0) {
+            throw new ContractViolationError(`${context}.last_id_path must not be empty`);
+        }
+
         return {
             type: "cursor",
-            has_more_path: expectResponsePath(
-                Reflect.get(record, "has_more_path"),
-                `${context}.has_more_path`,
-            ),
-            last_id_path: expectResponsePath(
-                Reflect.get(record, "last_id_path"),
-                `${context}.last_id_path`,
-            ),
-            request_param: expectString(
+            has_more_path: hasMorePath,
+            last_id_path: lastIdPath,
+            request_param: expectNonEmptyString(
                 Reflect.get(record, "request_param"),
                 `${context}.request_param`,
             ),
-            max_pages: expectInteger(Reflect.get(record, "max_pages"), `${context}.max_pages`),
+            max_pages: expectPositiveInteger(
+                Reflect.get(record, "max_pages"),
+                `${context}.max_pages`,
+            ),
         };
     }
 

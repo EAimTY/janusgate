@@ -93,13 +93,18 @@ export const genericGeminiGenerateContentPreset: ProviderPreset = {
     payload: {
         format: "gemini_generate_content",
         inference: {
+            // Discovery strips the `models/` resource prefix off the reported
+            // names, so the inference URLs re-spell it before the bare model
+            // id: `{base}/models/{model}:generateContent`.
             url: [
                 base(),
+                literal("/models/"),
                 model(),
                 literal(":generateContent"),
             ],
             stream_url: [
                 base(),
+                literal("/models/"),
                 model(),
                 literal(":streamGenerateContent?alt=sse"),
             ],

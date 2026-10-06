@@ -102,13 +102,13 @@ export function ApiKeyEditScreen(props: {
                 <PageHeader
                     title={translation()(($) => $.screens.apiKeyEditScreen.editAPIKey)}
                     backHref={hrefs.apiKeyDetail(props.apiKeyId)}
-                    backLabel={translation()(($) => $.additional.apiKeyEditScreen.apiKey)}
+                    backLabel={translation()(($) => $.screens.apiKeyEditScreen.apiKey)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="api_key"
-                    headerTitle={translation()(($) => $.additional.apiKeyEditScreen.editAPIKey)}
+                    headerTitle={translation()(($) => $.screens.apiKeyEditScreen.editAPIKey)}
                 />
             }
         >
@@ -117,7 +117,7 @@ export function ApiKeyEditScreen(props: {
                     <PageHeader
                         title={editNameMessage(row.name)}
                         backHref={hrefs.apiKeyDetail(row.id)}
-                        backLabel={translation()(($) => $.additional.apiKeyEditScreen.apiKey)}
+                        backLabel={translation()(($) => $.screens.apiKeyEditScreen.apiKey)}
                     />
 
                     <HoldNotice
@@ -309,9 +309,7 @@ function SettingsCard(props: {
                     // how the operator inspects that live value before
                     // rotating.
                     generateConfirmSubject="current"
-                    revealLabel={translation()(
-                        ($) => $.additional.apiKeyEditScreen.showTheCurrentKey,
-                    )}
+                    revealLabel={translation()(($) => $.screens.apiKeyEditScreen.showTheCurrentKey)}
                     hint={translation()(
                         ($) =>
                             $.screens.apiKeyEditScreen

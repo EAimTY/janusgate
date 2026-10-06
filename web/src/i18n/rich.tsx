@@ -531,61 +531,83 @@ export function reconnectMessage(isEnabled: boolean, href: string): JSX.Element 
           );
 }
 
-export function networkTitleMessage(
-    kind: "unreachable" | "mixed-content" | "blocked" | "no-answer",
-    baseUrl: string,
-): JSX.Element {
-    const template =
-        kind === "unreachable"
-            ? translation()(($) => $.diagnosis.nothingAnsweredAtBaseUrl)
-            : kind === "mixed-content"
-              ? translation()(($) => $.diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl)
-              : kind === "blocked"
-                ? translation()(
-                      ($) =>
-                          $.diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl,
-                  )
-                : translation()(($) => $.diagnosis.noAnswerFromBaseUrl);
-    return renderRichMessage(
-        kind === "unreachable"
-            ? "diagnosis.nothingAnsweredAtBaseUrl"
-            : kind === "mixed-content"
-              ? "diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl"
-              : kind === "blocked"
-                ? "diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl"
-                : "diagnosis.noAnswerFromBaseUrl",
-        template,
-        {
-            baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
-        },
-    );
+/** The reachability readings the connection failure diagnosis distinguishes. */
+type NetworkFailureKind = "unreachable" | "mixed-content" | "blocked" | "no-answer";
+
+/** The title renderer for each network-failure kind, consulted once per diagnosis. */
+const networkTitleMessages = {
+    unreachable: (baseUrl: string): JSX.Element =>
+        renderRichMessage(
+            "diagnosis.nothingAnsweredAtBaseUrl",
+            translation()(($) => $.diagnosis.nothingAnsweredAtBaseUrl),
+            {
+                baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
+            },
+        ),
+    "mixed-content": (baseUrl: string): JSX.Element =>
+        renderRichMessage(
+            "diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl",
+            translation()(($) => $.diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl),
+            {
+                baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
+            },
+        ),
+    blocked: (baseUrl: string): JSX.Element =>
+        renderRichMessage(
+            "diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl",
+            translation()(
+                ($) => $.diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl,
+            ),
+            {
+                baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
+            },
+        ),
+    "no-answer": (baseUrl: string): JSX.Element =>
+        renderRichMessage(
+            "diagnosis.noAnswerFromBaseUrl",
+            translation()(($) => $.diagnosis.noAnswerFromBaseUrl),
+            {
+                baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
+            },
+        ),
+} satisfies Record<NetworkFailureKind, (baseUrl: string) => JSX.Element>;
+
+export function networkTitleMessage(kind: NetworkFailureKind, baseUrl: string): JSX.Element {
+    return networkTitleMessages[kind](baseUrl);
 }
+
+/** The CORS-recovery renderer for each reachability reading, consulted once. */
+const corsRecoveryMessages = {
+    confirmed: (origin: string): JSX.Element =>
+        renderRichMessage(
+            "diagnosis.addOriginToSettingInThatInstancesConfigurationFileAndRestartTheGatewayServing",
+            translation()(
+                ($) =>
+                    $.diagnosis
+                        .addOriginToSettingInThatInstancesConfigurationFileAndRestartTheGatewayServing,
+            ),
+            {
+                origin: <bdi dir="ltr">{origin}</bdi>,
+                setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
+            },
+        ),
+    unconfirmed: (origin: string): JSX.Element =>
+        renderRichMessage(
+            "diagnosis.eitherNothingIsListeningAtThatAddressOrTheBrowserBlockedTheResponseBefore",
+            translation()(
+                ($) =>
+                    $.diagnosis
+                        .eitherNothingIsListeningAtThatAddressOrTheBrowserBlockedTheResponseBefore,
+            ),
+            {
+                origin: <bdi dir="ltr">{origin}</bdi>,
+                setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
+            },
+        ),
+} satisfies Record<"confirmed" | "unconfirmed", (origin: string) => JSX.Element>;
+
 export function corsRecoveryMessage(isConfirmed: boolean, origin: string): JSX.Element {
-    return isConfirmed
-        ? renderRichMessage(
-              "diagnosis.addOriginToSettingInThatInstancesConfigurationFileAndRestartTheGatewayServing",
-              translation()(
-                  ($) =>
-                      $.diagnosis
-                          .addOriginToSettingInThatInstancesConfigurationFileAndRestartTheGatewayServing,
-              ),
-              {
-                  origin: <bdi dir="ltr">{origin}</bdi>,
-                  setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
-              },
-          )
-        : renderRichMessage(
-              "diagnosis.eitherNothingIsListeningAtThatAddressOrTheBrowserBlockedTheResponseBefore",
-              translation()(
-                  ($) =>
-                      $.diagnosis
-                          .eitherNothingIsListeningAtThatAddressOrTheBrowserBlockedTheResponseBefore,
-              ),
-              {
-                  origin: <bdi dir="ltr">{origin}</bdi>,
-                  setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
-              },
-          );
+    return corsRecoveryMessages[isConfirmed ? "confirmed" : "unconfirmed"](origin);
 }
 
 export function ownerDefaultMessage(name: string, kind: "provider" | "pool"): JSX.Element {

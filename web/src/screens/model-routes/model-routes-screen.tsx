@@ -122,13 +122,13 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
                                                         route.is_enabled
                                                             ? translation()(
                                                                   ($) =>
-                                                                      $.additional
-                                                                          .routingListsScreen.on,
+                                                                      $.screens.routingListsScreen
+                                                                          .on,
                                                               )
                                                             : translation()(
                                                                   ($) =>
-                                                                      $.additional
-                                                                          .routingListsScreen.off,
+                                                                      $.screens.routingListsScreen
+                                                                          .off,
                                                               )
                                                     }
                                                 />

@@ -193,6 +193,21 @@ export function expectSafeInteger(value: unknown, context: string, minimum?: num
 }
 
 /**
+ * One positive integer, the wire mirror of a `NonZero` count or duration: a
+ * zero or negative budget, interval, or lifetime is a broken fact the authored
+ * payload names inline instead of sending.
+ */
+export function expectPositiveInteger(value: unknown, context: string): number {
+    const integer = expectInteger(value, context);
+
+    if (integer <= 0) {
+        throw new ContractViolationError(`${context} must be a positive integer`);
+    }
+
+    return integer;
+}
+
+/**
  * One never-recycled SQL row identifier: a safe integer of at least 1 — the
  * range every row id the gateway mints carries, whatever response embeds it.
  */
@@ -219,6 +234,23 @@ export function expectNullableInteger(value: unknown, context: string): number |
 
     if (typeof value !== "number" || !Number.isInteger(value)) {
         throw new ContractViolationError(`${context} must be an integer or null`);
+    }
+
+    return value;
+}
+
+/**
+ * One nullable integer the wire guarantees JavaScript represents exactly: the
+ * nullable mirror-column timestamps and expiries, whose `null` is meaningful
+ * and whose every carried value is exact.
+ */
+export function expectNullableSafeInteger(value: unknown, context: string): number | null {
+    if (value === null) {
+        return null;
+    }
+
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+        throw new ContractViolationError(`${context} must be a safe integer or null`);
     }
 
     return value;

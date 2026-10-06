@@ -6,6 +6,7 @@ import { hasGuardedSubjects } from "../leave-guard-registry";
 import type { ApiKeyResponse, ProviderResponse } from "../management-api/generated/v0";
 import { ErrorCode } from "../management-api/generated/v0";
 import { performManagementCall } from "../management-api/outcome";
+import { parseListModelsResponse } from "../management-api/responses/models";
 import { isOAuthProviderRow } from "../management-api/vocabulary";
 import { requestRefresh } from "../refresh-state";
 import {
@@ -662,6 +663,90 @@ describe("row-identity predicates", () => {
                 discovery_state: "manual",
             }),
         ).toBe(false);
+    });
+
+    it("keeps a model row's identity when a re-read rebuilds equal compaction maps", () => {
+        // The response parser rebuilds the two compaction-facts maps as fresh
+        // objects on every read — content-equal facts never share an
+        // instance — so the identity must ride the maps' contents. The rows
+        // here are built through the parser exactly as a screen's re-read
+        // arrives, not spread from one instance.
+        const wireRow = modelRow({
+            compaction_support: {
+                responses_automatic_compaction: "supported",
+                responses_explicit_trigger: "unsupported",
+            },
+            compaction_support_override: {
+                responses_automatic_compaction: "unknown",
+            },
+        });
+        const first = parseListModelsResponse({
+            models: [
+                wireRow,
+            ],
+        }).models[0];
+        const second = parseListModelsResponse({
+            models: [
+                wireRow,
+            ],
+        }).models[0];
+        if (first === undefined || second === undefined) {
+            throw new Error("the parser answered no row");
+        }
+
+        expect(first.compaction_support).not.toBe(second.compaction_support);
+        expect(first.compaction_support_override).not.toBe(second.compaction_support_override);
+        expect(isSameModelRow(first, second)).toBe(true);
+
+        // Key order carries no facts; one changed fact breaks the identity.
+        const reordered = parseListModelsResponse({
+            models: [
+                modelRow({
+                    compaction_support: {
+                        responses_explicit_trigger: "unsupported",
+                        responses_automatic_compaction: "supported",
+                    },
+                    compaction_support_override: {
+                        responses_automatic_compaction: "unknown",
+                    },
+                }),
+            ],
+        }).models[0];
+        if (reordered === undefined) {
+            throw new Error("the parser answered no row");
+        }
+        expect(isSameModelRow(first, reordered)).toBe(true);
+
+        const changed = parseListModelsResponse({
+            models: [
+                modelRow({
+                    compaction_support: {
+                        responses_automatic_compaction: "unsupported",
+                        responses_explicit_trigger: "unsupported",
+                    },
+                    compaction_support_override: {
+                        responses_automatic_compaction: "unknown",
+                    },
+                }),
+            ],
+        }).models[0];
+        if (changed === undefined) {
+            throw new Error("the parser answered no row");
+        }
+        expect(isSameModelRow(first, changed)).toBe(false);
+
+        // A map meets only a map: facts appearing or vanishing are a change
+        // in either direction.
+        const bare = parseListModelsResponse({
+            models: [
+                modelRow(),
+            ],
+        }).models[0];
+        if (bare === undefined) {
+            throw new Error("the parser answered no row");
+        }
+        expect(isSameModelRow(first, bare)).toBe(false);
+        expect(isSameModelRow(bare, first)).toBe(false);
     });
 
     it("keeps an API-key row's identity only while every field stands", () => {

@@ -236,8 +236,9 @@ mod tests {
                 ("project".into(), "stored-project".into()),
             ]);
             let client = crate::http_client::control_plane();
-            let environment =
-                crate::provider::definition::eval::ValueEnv::for_discovery(&slots, None, "current");
+            let environment = crate::provider::definition::eval::ValueEnv::for_stored_credential(
+                &slots, None, "current",
+            );
             let rendered = crate::provider::control::build_request(
                 &client,
                 &fixture.descriptor.request,

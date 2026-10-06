@@ -33,7 +33,10 @@ mod upstream_render;
 pub(crate) use self::{
     client_render::{CompactionOnlyUsage, render_compaction_only_response},
     compaction::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block},
-    compaction_affinity::completed_anchors as completed_compaction_anchors,
+    compaction_affinity::{
+        checkpoint_projection as completed_compaction_projection,
+        completed_anchors as completed_compaction_anchors,
+    },
     upstream_parse::UpstreamParser,
     upstream_render::{
         render_count_tokens_request, render_on_demand_body, render_request_body,
@@ -245,9 +248,6 @@ fn is_anthropic_block(opaque: &Value) -> bool {
         _ => false,
     }
 }
-
-/// Digest-only actual checkpoint state beside its completed artifact/window anchors.
-pub(crate) use compaction_affinity::checkpoint_projection as completed_compaction_projection;
 
 #[cfg(test)]
 mod tests {

@@ -4,6 +4,7 @@ use super::{EmptyResponse, Error, route};
 use crate::{context::Context, routing::ModelRouteTarget, storage::routing};
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
+use log::info;
 use serde::{Deserialize, Serialize};
 
 route! {
@@ -153,6 +154,7 @@ pub(super) async fn create(
         &request.target,
     )
     .await?;
+    info!("created model route {} (`{}`)", id, request.public_id);
     Ok(Json(CreateModelRouteResponse { model_route_id: id }))
 }
 
@@ -170,6 +172,7 @@ pub(super) async fn update(
         &request.target,
     )
     .await?;
+    info!("updated model route `{}`", request.public_id);
     Ok(Json(EmptyResponse {}))
 }
 
@@ -179,6 +182,7 @@ pub(super) async fn delete(
     WithRejection(Json(request), _): WithRejection<Json<DeleteModelRouteRequest>, Error>,
 ) -> Result<Json<EmptyResponse>, Error> {
     routing::delete_route(&context.database, request.model_route_id).await?;
+    info!("deleted model route {}", request.model_route_id);
     Ok(Json(EmptyResponse {}))
 }
 

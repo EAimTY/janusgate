@@ -13,6 +13,7 @@ use crate::{
     provider::{DiscoveredModel, DiscoveryState, Model, Provider},
     vocabulary::ReasoningLevel,
 };
+use std::sync::LazyLock;
 
 /// One model row with the provider identity needed for listing.
 #[derive(Debug, Clone)]
@@ -113,14 +114,7 @@ async fn find_model_in_transaction(
     upstream_id: &str,
 ) -> Result<Option<Model>, Error> {
     let rows = transaction
-        .query(
-            format!(
-                "SELECT {} FROM models \
-                 WHERE provider_id = ?1 AND upstream_id = ?2",
-                MODEL_COLUMNS
-            ),
-            params![provider_id, upstream_id],
-        )
+        .query(FIND_MODEL_SQL.as_str(), params![provider_id, upstream_id])
         .await?;
 
     rows.first().map(model_from_row).transpose()
@@ -136,13 +130,7 @@ async fn find_model_entry_by_id_in_transaction(
     model_id: i64,
 ) -> Result<Option<ModelEntry>, Error> {
     let rows = transaction
-        .query(
-            format!(
-                "SELECT {} {} WHERE m.id = ?1",
-                MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
-            ),
-            params![model_id],
-        )
+        .query(FIND_MODEL_ENTRY_BY_ID_SQL.as_str(), params![model_id])
         .await?;
 
     rows.first().map(model_entry_from_row).transpose()
@@ -160,10 +148,7 @@ async fn find_model_entry_in_transaction(
 ) -> Result<Option<ModelEntry>, Error> {
     let rows = transaction
         .query(
-            format!(
-                "SELECT {} {} WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
-                MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
-            ),
+            FIND_MODEL_ENTRY_SQL.as_str(),
             params![provider_id, upstream_id],
         )
         .await?;
@@ -184,21 +169,17 @@ pub(crate) async fn list_model_entries(
     database: &Database,
     provider_id: Option<i64>,
 ) -> Result<Vec<ModelEntry>, Error> {
-    let sql = match provider_id {
-        None => format!(
-            "SELECT {} {} ORDER BY m.provider_id, m.upstream_id",
-            MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
-        ),
-
-        Some(_) => format!(
-            "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id",
-            MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
-        ),
-    };
-
     let rows = match provider_id {
-        None => database.query(sql, ()).await?,
-        Some(provider_id) => database.query(sql, params![provider_id]).await?,
+        None => database.query(LIST_MODEL_ENTRIES_SQL.as_str(), ()).await?,
+
+        Some(provider_id) => {
+            database
+                .query(
+                    LIST_PROVIDER_MODEL_ENTRIES_SQL.as_str(),
+                    params![provider_id],
+                )
+                .await?
+        }
     };
 
     let mut entries = Vec::with_capacity(rows.len());
@@ -303,10 +284,7 @@ pub(crate) async fn apply_discovered_models(
         // The response carries every row of the provider as this transaction left them.
         let rows = transaction
             .query(
-                format!(
-                    "SELECT {} {} WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id",
-                    MODEL_ENTRY_COLUMNS, MODELS_JOINED_PROVIDERS
-                ),
+                LIST_PROVIDER_MODEL_ENTRIES_SQL.as_str(),
                 params![provider.id],
             )
             .await?;
@@ -540,6 +518,46 @@ const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, m.id, m.upstream_id, \
      m.is_enabled, m.discovery_state, m.thinking_levels, m.max_input_tokens, \
      m.max_output_tokens, m.thinking_levels_override, m.max_input_tokens_override, \
      m.max_output_tokens_override, m.compaction_support, m.compaction_support_override";
+
+/// The natural-key model read behind checked creation: a fully fixed statement over
+/// [`MODEL_COLUMNS`], built once.
+static FIND_MODEL_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!("SELECT {MODEL_COLUMNS} FROM models WHERE provider_id = ?1 AND upstream_id = ?2")
+});
+
+/// The id-addressed model-entry read behind override updates: a fully fixed statement, built
+/// once.
+static FIND_MODEL_ENTRY_BY_ID_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!("SELECT {MODEL_ENTRY_COLUMNS} {MODELS_JOINED_PROVIDERS} WHERE m.id = ?1")
+});
+
+/// The natural-key model-entry read behind checked creation's read-back: a fully fixed
+/// statement, built once.
+static FIND_MODEL_ENTRY_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {MODEL_ENTRY_COLUMNS} {MODELS_JOINED_PROVIDERS} \
+         WHERE m.provider_id = ?1 AND m.upstream_id = ?2"
+    )
+});
+
+/// The every-provider model-entry listing, ordered by provider id and upstream id: a fully
+/// fixed statement, built once.
+static LIST_MODEL_ENTRIES_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {MODEL_ENTRY_COLUMNS} {MODELS_JOINED_PROVIDERS} \
+         ORDER BY m.provider_id, m.upstream_id"
+    )
+});
+
+/// The one-provider model-entry listing, ordered by provider id and upstream id: the filtered
+/// form of [`list_model_entries`] and discovery application's read-back. A fully fixed
+/// statement, built once.
+static LIST_PROVIDER_MODEL_ENTRIES_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {MODEL_ENTRY_COLUMNS} {MODELS_JOINED_PROVIDERS} \
+         WHERE m.provider_id = ?1 ORDER BY m.provider_id, m.upstream_id"
+    )
+});
 
 /// A provider row joined with a model row.
 pub(super) struct ProviderModelJoin {

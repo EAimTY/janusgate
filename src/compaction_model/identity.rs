@@ -1,21 +1,21 @@
 //! Stable item identities for overlap detection across a compaction boundary.
 //!
-//! A checkpoint's envelope records the identities of the instruction items and
-//! retained units it covers. On replay, history entries sitting before the
-//! boundary are compared against those identities: proven overlap is removed
-//! from the covered window — the envelope restores it — while an unmatched
-//! entry (for example, a developer instruction a client newly injected before
-//! the checkpoint) is preserved. Comparison is ordered identity overlap, never
-//! arbitrary text similarity, and never a global deduplication of equal text.
+//! A checkpoint's envelope records the identities of the instruction items it
+//! covers. On replay, instruction entries sitting before the boundary are
+//! compared against those identities: proven overlap is removed from the
+//! covered window — the envelope restores it — while an unmatched entry (for
+//! example, a developer instruction a client newly injected before the
+//! checkpoint) is preserved. The conversation prefix supersedes wholesale at
+//! the boundary offset and is never matched by identity. Comparison is ordered
+//! identity overlap, never arbitrary text similarity, and never a global
+//! deduplication of equal text.
 //!
 //! An identity is a stable client-supplied source identifier when one is
 //! available, otherwise a deterministic digest of the typed semantic item plus
 //! its occurrence position: the index of the entry among entries of the same
-//! kind and role within the compared window. Both sides of the comparison
-//! compute over their own prefix, so an unchanged prefix yields identical
-//! digests.
+//! role within the compared window. Both sides of the comparison compute over
+//! their own prefix, so an unchanged prefix yields identical digests.
 
-use crate::ir::{IrMessage, IrRole};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -42,8 +42,8 @@ impl InstructionRole {
     }
 }
 
-/// The stable identity of one instruction item or retained unit: its client
-/// source identifier when one is available, and its deterministic digest.
+/// The stable identity of one instruction item: its client source identifier
+/// when one is available, and its deterministic digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ItemIdentity {
     /// The client-supplied source identifier, when the source protocol carries
@@ -58,7 +58,10 @@ pub(crate) struct ItemIdentity {
 impl ItemIdentity {
     /// Computes the identity of one instruction item: its role, its occurrence
     /// index among instructions of the same role within the compared window,
-    /// its text, and its client source identifier when available.
+    /// its text, and its client source identifier when available. An empty
+    /// identifier normalizes to absent: a built identity never carries one, so
+    /// the non-empty source identifiers [`Self::matches`] matches are enforced
+    /// at construction.
     #[must_use]
     pub(crate) fn for_instruction(
         role: InstructionRole,
@@ -76,7 +79,7 @@ impl ItemIdentity {
         hasher.update(text.as_bytes());
 
         Self {
-            source_id,
+            source_id: source_id.filter(|identifier| !identifier.is_empty()),
             digest: hex_digest(&hasher.finalize()),
         }
     }
@@ -89,76 +92,37 @@ impl ItemIdentity {
     pub(crate) fn for_instruction_window<'a>(
         items: impl IntoIterator<Item = (InstructionRole, &'a str)>,
     ) -> Vec<Self> {
-        // Per-role occurrence counters over the compared window.
-        let mut occurrences: Vec<(InstructionRole, usize)> = Vec::new();
+        // One occurrence counter per role: the instruction vocabulary is
+        // closed, so two counters index any window in a single pass.
+        let mut system_occurrences = 0usize;
+        let mut developer_occurrences = 0usize;
 
         items
             .into_iter()
             .map(|(role, text)| {
-                let occurrence = occurrences
-                    .iter()
-                    .find(|(counted, _)| *counted == role)
-                    .map(|(_, count)| *count)
-                    .unwrap_or(0);
+                let occurrence = match role {
+                    InstructionRole::System => {
+                        let occurrence = system_occurrences;
+                        system_occurrences += 1;
+                        occurrence
+                    }
 
-                if let Some((_, count)) =
-                    occurrences.iter_mut().find(|(counted, _)| *counted == role)
-                {
-                    *count += 1;
-                } else {
-                    occurrences.push((role, 1));
-                }
+                    InstructionRole::Developer => {
+                        let occurrence = developer_occurrences;
+                        developer_occurrences += 1;
+                        occurrence
+                    }
+                };
 
                 Self::for_instruction(role, occurrence, text, None)
             })
             .collect()
     }
 
-    /// Computes the identity of one conversation message: its occurrence index
-    /// among messages of the message's own role within the compared window,
-    /// its typed semantic content, and its client source identifier when
-    /// available.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the typed semantic serialization of the message fails —
-    /// impossible for IR parts over concrete serde types.
-    #[must_use]
-    pub(crate) fn for_message(
-        occurrence: usize,
-        message: &IrMessage,
-        source_id: Option<String>,
-    ) -> Self {
-        // The digest covers the message's typed semantic serialization, which
-        // both the sealing side (the covered window) and the replay side (the
-        // current request's prefix) recompute from their own parsed history.
-        #[expect(
-            clippy::expect_used,
-            reason = "serializing concrete serde types over IR parts cannot fail"
-        )]
-        let semantic = serde_json::to_vec(&MessageDigest {
-            role: message.role,
-            parts: &message.parts,
-        })
-        .expect("the typed semantic item serializes");
-
-        let mut hasher = Sha256::new();
-
-        hasher.update(b"message\x00");
-        hasher.update(role_spelling(message.role).as_bytes());
-        hasher.update(b"\x00");
-        hasher.update(occurrence.to_string().as_bytes());
-        hasher.update(b"\x00");
-        hasher.update(&semantic);
-
-        Self {
-            source_id,
-            digest: hex_digest(&hasher.finalize()),
-        }
-    }
-
     /// Whether this identity matches another: equal non-empty source
-    /// identifiers, or equal digests.
+    /// identifiers, or equal digests. Built identities never carry an empty
+    /// source identifier — the constructors normalize one to absent — so the
+    /// non-empty half of the contract holds by construction.
     #[must_use]
     pub(crate) fn matches(&self, other: &Self) -> bool {
         match (&self.source_id, &other.source_id) {
@@ -166,27 +130,6 @@ impl ItemIdentity {
 
             _ => self.digest == other.digest,
         }
-    }
-}
-
-/// The semantic digest input of a conversation message: role plus parts, in a
-/// private serializable shape so the digest is stable regardless of unrelated
-/// `IrMessage` changes.
-#[derive(Serialize)]
-struct MessageDigest<'a> {
-    /// The message's participating role.
-    role: IrRole,
-
-    /// The message's ordered typed segments.
-    parts: &'a [crate::ir::IrPart],
-}
-
-/// Renders a role's digest spelling.
-const fn role_spelling(role: IrRole) -> &'static str {
-    match role {
-        IrRole::User => "user",
-        IrRole::Assistant => "assistant",
-        IrRole::Tool => "tool",
     }
 }
 
@@ -199,12 +142,22 @@ pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
 
 /// Renders a SHA-256 digest as lowercase hex — the digest form every
 /// identity, visible-content binding, and prefix requirement carries.
+///
+/// # Panics
+///
+/// Panics if the fmt write into the rendering `String` fails — impossible, a
+/// `String`'s fmt buffer is always writable.
 #[must_use]
 pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     let mut rendered = String::with_capacity(bytes.len() * 2);
 
     for byte in bytes {
-        rendered.push_str(&format!("{byte:02x}"));
+        #[expect(
+            clippy::expect_used,
+            reason = "writing to a String's fmt buffer cannot fail"
+        )]
+        std::fmt::Write::write_fmt(&mut rendered, format_args!("{byte:02x}"))
+            .expect("a String's fmt buffer is always writable");
     }
 
     rendered
@@ -218,7 +171,6 @@ mod tests {
     )]
 
     use super::{InstructionRole, ItemIdentity};
-    use crate::ir::{IrMessage, IrPart, IrRole};
 
     /// Identities computed over equal semantic items in equal positions match,
     /// and a source identifier wins over a digest when both sides carry one.
@@ -271,33 +223,22 @@ mod tests {
         );
     }
 
-    /// Message digests are role-sensitive and content-sensitive.
+    /// An empty source identifier normalizes to absent at construction, so a
+    /// built identity never carries the empty identifier `matches` excludes.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails — the assertion is the failure report.
     #[test]
-    fn message_identities_distinguish_role_and_content() {
-        let user = IrMessage {
-            role: IrRole::User,
-            parts: vec![IrPart::Text {
-                text: String::from("hello"),
-            }],
-        };
+    fn empty_source_identifiers_normalize_to_absent() {
+        let identity = ItemIdentity::for_instruction(
+            InstructionRole::System,
+            0,
+            "be terse",
+            Some(String::new()),
+        );
 
-        let assistant = IrMessage {
-            role: IrRole::Assistant,
-            parts: vec![IrPart::Text {
-                text: String::from("hello"),
-            }],
-        };
-
-        let left = ItemIdentity::for_message(0, &user, None);
-        let right = ItemIdentity::for_message(0, &user, None);
-
-        assert!(left.matches(&right));
-        assert!(!left.matches(&ItemIdentity::for_message(0, &assistant, None)));
-        assert!(!left.matches(&ItemIdentity::for_message(1, &user, None)));
+        assert_eq!(identity.source_id, None);
     }
 
     /// The window identities count occurrences per role, so interleaved roles

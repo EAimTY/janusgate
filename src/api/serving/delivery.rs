@@ -47,7 +47,7 @@ pub(super) fn finalize_buffered<T: Serialize>(
     response
 }
 
-/// Returns the pre-rendered SSE frames as the response body, finalizing the
+/// Renders the pre-rendered SSE frames as the response body, finalizing the
 /// row for the completed artifact.
 ///
 /// # Panics
@@ -58,7 +58,7 @@ pub(super) fn prerendered_sse_response(
     frames: Vec<String>,
     api_log_store: Option<api_logs::ApiLogStore>,
     log: ApiLogDraft,
-) -> Result<Response, Error> {
+) -> Response {
     let body = frames.concat();
 
     api_logs::spawn_api_log_finalization(
@@ -85,7 +85,7 @@ pub(super) fn prerendered_sse_response(
         .headers_mut()
         .insert(axum::http::header::CONTENT_TYPE, content_type);
 
-    Ok(response)
+    response
 }
 
 /// The checkpoint prefix a checkpoint-continue lifecycle renders ahead of its
@@ -219,7 +219,7 @@ pub(super) async fn aggregated_response_task<TFormat>(
         if !outcome_sender.is_closed()
             && let Some(affinity) = affinity.as_mut()
         {
-            affinity.complete_json::<TFormat>(&response);
+            complete_accepted_json::<TFormat>(affinity, &response);
         }
         response
     })
@@ -274,6 +274,53 @@ pub(super) async fn aggregated_response_task<TFormat>(
     }
 }
 
+/// Starts the accepted request's outward codec projection: a checkpoint-continue
+/// lifecycle omits its already rendered checkpoint prefix, an ordinary lifecycle
+/// projects the complete accepted client-visible history.
+pub(super) fn begin_accepted_projection(
+    accepted: &crate::affinity::Accepted,
+    renderer: &mut dyn ClientSseRenderer,
+) {
+    if accepted.is_checkpoint() {
+        renderer.begin_checkpoint_projection(accepted.continuation());
+    } else {
+        renderer.begin_projection(accepted.continuation());
+    }
+}
+
+/// Registers a completed aggregated JSON rendering on the accepted affinity: the
+/// format's completed artifacts publish at their own boundary, and the response's
+/// projection publishes only when it is replayable and changed the accepted
+/// request's retry identity — the JSON twin of the streaming path's
+/// [`crate::affinity::Accepted::complete_projection`].
+pub(super) fn complete_accepted_json<F: ClientFormat>(
+    accepted: &mut crate::affinity::Accepted,
+    response: &F::JsonResponse,
+) {
+    accepted.complete_artifacts();
+    accepted.register_artifacts(&F::completed_json_artifacts(response));
+    let before = accepted
+        .projector()
+        .evidence()
+        .retry
+        .map(|retry| retry.digest);
+    let is_replayable = if accepted.is_checkpoint() {
+        F::project_json_checkpoint(response, accepted.projector_mut())
+    } else {
+        F::project_json_response(response, accepted.projector_mut())
+    };
+    if is_replayable
+        && before
+            != accepted
+                .projector()
+                .evidence()
+                .retry
+                .map(|retry| retry.digest)
+    {
+        accepted.register_artifacts(&accepted.projector().completed_anchors());
+    }
+}
+
 /// Capacity of the SSE body channel; upstream parsing is driven directly by its render task.
 const SSE_BODY_CHANNEL_BUFFER: usize = 64;
 
@@ -303,7 +350,7 @@ pub(super) fn sse_response(
         let mut events = events;
         // The codec receives only accepted client history; the task retains account ownership.
         if let Some(affinity) = affinity.as_ref() {
-            affinity.begin_projection(renderer.as_mut());
+            begin_accepted_projection(affinity, renderer.as_mut());
         }
 
         // Whether any frame reached the client's channel; the first one declares HTTP 200.
@@ -340,7 +387,7 @@ pub(super) fn sse_response(
                             && let Some(affinity) = affinity.as_ref()
                             && let Some(artifact) = &completed_artifact
                         {
-                            affinity.register_released_artifact(&artifact.anchors);
+                            affinity.register_artifacts(&artifact.anchors);
                         }
                         // The validated native item or prepared single-block prefix is complete.
                         // Publish its digest immediately before that item's

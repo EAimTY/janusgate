@@ -142,7 +142,7 @@ export function ModelsScreen(props: {
 
         if (props.providerFilter === null) {
             return translation()(
-                ($) => $.additional.modelsScreen.noModelsOnAnyProviderYetDiscoverOrMessage,
+                ($) => $.screens.modelsScreen.noModelsOnAnyProviderYetDiscoverOrMessage,
             );
         }
 

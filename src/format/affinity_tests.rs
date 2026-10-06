@@ -525,7 +525,15 @@ fn check_unreplayable_call<F: ClientFormat>(arguments: &str) {
         },
     );
     assert!(!F::project_json_response(&response, &mut original.clone()));
-    accepted.complete_json::<F>(&response);
+    // The delivery side's JSON completion glue, composed from the primitives it drives: the
+    // completed artifacts register, and the unreplayable response's projection folds into the
+    // accepted state without ever registering.
+    accepted.complete_artifacts();
+    accepted.register_artifacts(&F::completed_json_artifacts(&response));
+    assert!(!F::project_json_response(
+        &response,
+        accepted.projector_mut()
+    ));
     let mut partial_replay = original;
     partial_replay.text(Role::Assistant, b"answer");
     partial_replay.text(Role::User, b"next");

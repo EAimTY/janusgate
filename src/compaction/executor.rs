@@ -304,7 +304,7 @@ async fn dispatch_native_trigger(
         Ok(aggregation) => Ok(aggregation),
 
         Err(GatewayError::Upstream { status, detail }) => {
-            if let Some(reason) = native::classify_failure(classifier, status, &detail).await {
+            if let Some(reason) = native::classify_failure(classifier, status, &detail) {
                 return Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason));
             }
 
@@ -481,12 +481,35 @@ async fn native_threshold_checkpoint(
         return Ok(None);
     };
 
-    let plan = history::plan_native_checkpoint(ir, plan_instructions, budgets(section))?;
-    let mut prefix = ir.clone();
-    prefix.messages = plan.summary_input_messages.clone();
-    prefix
-        .state_items
-        .retain(|item| item.offset < prefix.messages.len());
+    let mut plan = history::plan_native_checkpoint(ir, plan_instructions, budgets(section))?;
+
+    // The adapter dispatches the summary input alone, never a clone of the
+    // full history: the prefix is built field by field from the borrowed
+    // request, riding only the native state above its boundary.
+    let summary_input = std::mem::take(&mut plan.summary_input_messages);
+
+    let prefix_boundary = summary_input.len();
+
+    let prefix = IrRequest {
+        has_compaction_trigger: ir.has_compaction_trigger,
+        model: ir.model.clone(),
+        instructions: ir.instructions.clone(),
+        messages: summary_input,
+        tools: ir.tools.clone(),
+        tool_choice: ir.tool_choice.clone(),
+        temperature: ir.temperature,
+        top_p: ir.top_p,
+        max_output_tokens: ir.max_output_tokens,
+        response_format: ir.response_format.clone(),
+        reasoning_effort: ir.reasoning_effort,
+        state_items: ir
+            .state_items
+            .iter()
+            .filter(|item| item.offset < prefix_boundary)
+            .cloned()
+            .collect(),
+    };
+
     let mut overlay_headers = Vec::new();
     let attempt = try_native(Some(async {
         match mechanism {
@@ -594,11 +617,7 @@ async fn native_threshold_checkpoint(
         window,
         history::produced_prefix_identity(ir),
     );
-    payload.retained_messages = plan
-        .retained_units
-        .into_iter()
-        .flat_map(|(_, messages)| messages)
-        .collect();
+    payload.retained_messages = plan.retained_units.into_iter().flatten().collect();
     payload.retained_state_items = plan
         .retained_state_items
         .into_iter()
@@ -626,27 +645,37 @@ async fn native_threshold_checkpoint(
 /// Builds the continuation request of a completed checkpoint: the restored
 /// compacted window — the summary message, the retained units, and the native
 /// state riding them — with the caller's instruction context and output budget
-/// preserved and every compaction control stripped.
+/// preserved and every compaction control stripped. Built field by field from
+/// the borrowed window, so the covered history and state are never cloned just
+/// to be overwritten.
 #[must_use]
 fn continuation_request(
     restored: &IrRequest,
     summary_text: &str,
     plan: &GatewayCheckpointPlan,
 ) -> IrRequest {
-    let mut continuation = restored.clone();
-
     let mut messages = Vec::with_capacity(1 + plan.retained_units.len());
 
     messages.push(summary_message(summary_text));
 
-    for (_identity, unit_messages) in &plan.retained_units {
+    for unit_messages in &plan.retained_units {
         messages.extend(unit_messages.iter().cloned());
     }
 
-    continuation.messages = messages;
-    continuation.state_items = plan.retained_state_items.clone();
-
-    continuation
+    IrRequest {
+        has_compaction_trigger: restored.has_compaction_trigger,
+        model: restored.model.clone(),
+        instructions: restored.instructions.clone(),
+        messages,
+        tools: restored.tools.clone(),
+        tool_choice: restored.tool_choice.clone(),
+        temperature: restored.temperature,
+        top_p: restored.top_p,
+        max_output_tokens: restored.max_output_tokens,
+        response_format: restored.response_format.clone(),
+        reasoning_effort: restored.reasoning_effort,
+        state_items: plan.retained_state_items.clone(),
+    }
 }
 
 /// The outer outcome of a Responses completion request the executor resolved.
@@ -1003,12 +1032,6 @@ pub(crate) async fn execute_responses_request(
 /// gateway summary — every outcome a compact-only lifecycle. A positively
 /// classified unsupported boundary at any native stage falls through to the
 /// next mechanism; every other failure propagates unchanged.
-///
-/// # Panics
-///
-/// Panics if a dispatched adapter lacks its selected declaration — an
-/// invariant the gates establish: a dispatch future exists only when its gate
-/// selected the declaration.
 async fn responses_trigger_flow(
     context: &Context,
     routing: &ModelRouting,
@@ -1122,17 +1145,16 @@ async fn responses_trigger_flow(
 
     // The cross-format adapter: the trigger compacts through the Messages
     // on-demand operation, whose block seals into one carrier item with the
-    // canonical-window replacement the trigger contract demands.
+    // canonical-window replacement the trigger contract demands. The
+    // declaration's existence gates the stage, as in the on-demand flow: the
+    // effective support may resolve from model facts or an override over a
+    // declaration with no headers, and an absent overlay dispatches with none.
     let on_demand =
         section.and_then(|section| section.mechanisms.messages_on_demand_compaction.as_ref());
 
-    let overlay = on_demand
-        .and_then(|declaration| declaration.overlay_headers.as_deref())
-        .filter(|rows| !rows.is_empty());
-
     let on_demand_attempt = try_native(
-        overlay
-            .filter(|_rows| {
+        on_demand
+            .filter(|_declaration| {
                 is_native_eligible(
                     routing,
                     section,
@@ -1140,13 +1162,7 @@ async fn responses_trigger_flow(
                     UpstreamFormat::AnthropicMessages,
                 )
             })
-            .map(|overlay_headers| async {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "the gate dispatches only with the selected declaration"
-                )]
-                let declaration = on_demand.expect("the selected on-demand declaration");
-
+            .map(|declaration| async {
                 // The adapter cannot satisfy the trigger's exactly-one-artifact
                 // contract with a no-summary outcome, so the outcome fails
                 // explicitly instead of rendering a successful lifecycle without
@@ -1154,7 +1170,7 @@ async fn responses_trigger_flow(
                 match native::messages_on_demand(
                     context,
                     routing,
-                    overlay_headers,
+                    declaration.overlay_headers.as_deref().unwrap_or(&[]),
                     declaration.unsupported.as_ref(),
                     ir,
                     None,
@@ -1495,12 +1511,6 @@ pub(crate) async fn execute_messages_request(
 /// carrier, then gateway summary. A positively classified unsupported boundary
 /// at any native stage falls through to the next mechanism; every other
 /// failure propagates unchanged.
-///
-/// # Panics
-///
-/// Panics if a dispatched adapter lacks its selected declaration — an
-/// invariant the gates establish: a dispatch future exists only when its gate
-/// selected the declaration.
 #[expect(
     clippy::too_many_arguments,
     reason = "one same-account stage keeps its protocol controls, billing, and binding together"
@@ -1522,14 +1532,13 @@ async fn messages_on_demand_flow(
     let on_demand =
         section.and_then(|section| section.mechanisms.messages_on_demand_compaction.as_ref());
 
-    // The exact native mechanism.
-    let overlay = on_demand
-        .and_then(|declaration| declaration.overlay_headers.as_deref())
-        .filter(|rows| !rows.is_empty());
-
+    // The exact native mechanism. The declaration's existence gates the stage:
+    // the effective support resolves from model facts or an administrator
+    // override even when the declared default carries no headers, and an
+    // absent overlay dispatches with none.
     let on_demand_attempt = try_native(
-        overlay
-            .filter(|_rows| {
+        on_demand
+            .filter(|_declaration| {
                 is_native_eligible(
                     routing,
                     section,
@@ -1537,18 +1546,12 @@ async fn messages_on_demand_flow(
                     UpstreamFormat::AnthropicMessages,
                 )
             })
-            .map(|overlay_headers| async {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "the gate dispatches only with the selected declaration"
-                )]
-                let declaration = on_demand.expect("the selected on-demand declaration");
-
+            .map(|declaration| async {
                 // Compact-only: the caller's output limit caps the on-demand budget.
                 native::messages_on_demand(
                     context,
                     routing,
-                    overlay_headers,
+                    declaration.overlay_headers.as_deref().unwrap_or(&[]),
                     declaration.unsupported.as_ref(),
                     ir,
                     compaction_instructions.as_deref(),
@@ -2237,15 +2240,12 @@ mod tests {
 
         let plan = GatewayCheckpointPlan {
             summary_input_messages: Vec::new(),
-            retained_units: vec![(
-                ItemIdentity::for_instruction(InstructionRole::System, 0, "unit", None),
-                vec![IrMessage {
-                    role: IrRole::User,
-                    parts: vec![IrPart::Text {
-                        text: String::from("pending"),
-                    }],
+            retained_units: vec![vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: String::from("pending"),
                 }],
-            )],
+            }]],
             retained_state_items: vec![StateItem {
                 offset: 1,
                 item: serde_json::json!({"type": "reasoning"}),

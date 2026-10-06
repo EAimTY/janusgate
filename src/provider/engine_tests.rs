@@ -252,9 +252,10 @@ async fn provisioning_polls_a_form_encoded_operation_to_completion() {
 }
 
 /// Pins the form-encoded poll's error surface (README §5.4): the one form member the error path
-/// names is the terminal failure payload, rendered verbatim after the form decoding, and it
-/// preempts a truthy done marker — a response carrying `done=true` alongside its error member
-/// fails on the payload, never completes.
+/// names is the terminal failure payload, and it preempts a truthy done marker — a response
+/// carrying `done=true` alongside its error member fails on the payload, never completes. The
+/// raised error is gateway-authored (README §3, §7.2): the decoded payload is upstream response
+/// content, so it never renders into the failure the stage raises.
 ///
 /// # Panics
 ///
@@ -300,11 +301,11 @@ async fn a_form_encoded_poll_surfaces_its_error_member_as_the_failure_payload() 
         panic!("a form poll carrying its error member must fail on the payload");
     };
 
-    assert!(
-        error
-            .to_string()
-            .contains("failed upstream: operation failed"),
-        "the error member renders verbatim after the form decoding: {error}"
+    assert_eq!(
+        error.to_string(),
+        "Upstream request failed: provisioning poll 0 failed upstream",
+        "the error member fails the poll with a gateway-authored error, never the payload: \
+         {error}"
     );
 
     mock.shutdown.send(()).ok();
@@ -493,7 +494,7 @@ fn discovery_env(base: &str) -> ValueEnv<'static> {
     let leaked: &'static str = Box::leak(base.to_string().into_boxed_str());
     let slots: &'static BTreeMap<String, String> = Box::leak(Box::new(BTreeMap::new()));
 
-    ValueEnv::for_discovery(slots, Some(leaked), "secret")
+    ValueEnv::for_stored_credential(slots, Some(leaked), "secret")
 }
 
 /// The device grant one device-authorization test runs: the authorization response maps every

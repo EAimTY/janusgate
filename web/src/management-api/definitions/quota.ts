@@ -559,7 +559,13 @@ export function parseQuotaDescriptor(value: unknown, context: string): QuotaDesc
     };
 }
 
-/** Checks quota-only stage expressions and the existing OAuth slot namespace once at parsing. */
+/**
+ * Checks the quota stage's own expression rules once at parsing: the OAuth
+ * slot namespace and the stage-available value kinds. The structural rules —
+ * the non-empty URL, the coalesce shapes, the GET-with-body and body
+ * placeholder bans — are the control-request parser's, shared with every
+ * other stage.
+ */
 export function validateQuotaRequest(
     descriptor: QuotaDescriptor,
     credential: CredentialAcquisition,
@@ -583,11 +589,6 @@ export function validateQuotaRequest(
     const expression = (value: StringExpr): void => {
         for (const part of value) {
             if (part.type === "coalesce") {
-                if (part.parts.some((value) => value.type === "coalesce")) {
-                    throw new ContractViolationError(
-                        `${context} must not nest a coalesce expression`,
-                    );
-                }
                 expression(part.parts);
             } else if (part.type === "slot") {
                 if (!slots.has(part.name)) {
@@ -610,9 +611,6 @@ export function validateQuotaRequest(
         }
     };
     const node = (value: TemplateNode): void => {
-        if (value.type === "body") {
-            throw new ContractViolationError(`${context} must not reference the inference body`);
-        }
         if (value.type === "string") expression(value.expr);
         if (value.type === "array") value.items.forEach(node);
         if (value.type === "object") Object.values(value.fields).forEach(node);
@@ -626,7 +624,4 @@ export function validateQuotaRequest(
         expression(row.value);
     if (request.body?.kind === "form") for (const row of request.body.fields) expression(row.value);
     if (request.body?.kind === "json") node(request.body.node);
-    if (request.method === "GET" && request.body != null) {
-        throw new ContractViolationError(`${context} must not carry a body on a GET request`);
-    }
 }

@@ -143,6 +143,10 @@ const spanish = {
             name: "Nombre",
             created: "Creada",
             status: "Estado",
+            apiKeys: "Claves de API",
+            createAPIKey: "Crear clave de API",
+            enabled: "Activado",
+            disabled: "Desactivado",
         },
         apiKeyEditScreen: {
             editAPIKey: "Editar clave de API",
@@ -155,6 +159,8 @@ const spanish = {
             deleteThisKey: "Eliminar esta clave",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "Eliminar revoca la clave de inmediato. Los clientes que la tengan empezarán a recibir errores 401. Sus reglas de acceso a modelos se eliminan; la contabilidad histórica se conserva.",
+            apiKey: "Clave de API",
+            showTheCurrentKey: "Mostrar la clave actual",
         },
         apiKeyNewScreen: {
             createAPIKey: "Crear clave de API",
@@ -167,6 +173,7 @@ const spanish = {
             enabled: "Activado",
             loadModelAccessInventoryBeforeCreatingAKeyMessage:
                 "Carga el inventario de acceso a modelos antes de crear una clave.",
+            creating: "Creando…",
         },
         apiKeysScreen: {
             apiKeys: "Claves de API",
@@ -179,6 +186,8 @@ const spanish = {
             searchAPIKeys: "Buscar claves de API",
             searchByNameOrKey: "Buscar por nombre o clave",
             theSecretHere: "el secreto que figura aquí",
+            on: "Activado",
+            off: "Desactivado",
         },
         bulkPublicationScreen: {
             createAliases: "Crear alias",
@@ -191,6 +200,17 @@ const spanish = {
                 "Otra fila seleccionada usa este ID público. Elige nombres explícitos distintos.",
             openRoute: "Abrir ruta",
             createSelectedAliases: "Crear los alias seleccionados",
+            publicIDIsRequiredMessage: "El ID público es obligatorio.",
+            noDirectRoutes: "Sin rutas directas",
+            modelVanishedItsNewRouteWillBeSuspended:
+                "El modelo ya no se informa; su nueva ruta se suspenderá",
+            modelEnabled: "Modelo activado",
+            modelDisabled: "Modelo desactivado",
+        },
+        connectionScreen: {
+            showTheTokenWhileTyping: "Mostrar el token mientras se escribe",
+            probingTheGateway: "Sondeando la pasarela…",
+            connect: "Conectar",
         },
         homeScreen: {
             overview: "Resumen",
@@ -233,6 +253,9 @@ const spanish = {
             issueAnAPIKeyForServingClients: "Emite una clave de API para los clientes de servicio",
             pointAClientAtAnEndpointBelow:
                 "Apunta un cliente a uno de los puntos de conexión de abajo",
+            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
+                "Inspecciona las rutas públicas para ver la disponibilidad de cuota. Estas cifras describen los interruptores y el inventario almacenados.",
+            noRequestsRecordedMessage: "No hay solicitudes registradas.",
         },
         modelDetailScreen: {
             model: "Modelo",
@@ -257,6 +280,17 @@ const spanish = {
             provider: "Proveedor",
             discovery: "Descubrimiento",
             status: "Estado",
+            models: "Modelos",
+            overriddenByAdministratorMessage: "Anulado por el administrador.",
+            fromTheLatestDiscoveryMessage: "Del último descubrimiento.",
+            unknownOmittedFromModelListingsMessage:
+                "Desconocido: se omite en los listados de modelos.",
+            noFactOnThisRowTheDefinitionsDeclarationMessage:
+                "Sin dato en esta fila; decide la declaración de la definición.",
+            unknown: "Desconocido",
+            noAutomaticEntry: "Sin entrada automática",
+            enabled: "Activado",
+            disabled: "Desactivado",
         },
         modelEditScreen: {
             editModel: "Editar modelo",
@@ -265,6 +299,7 @@ const spanish = {
             deleteThisModel: "Eliminar este modelo",
             deletingRemovesThisPhysicalModelAndItsDirectMessage:
                 "Eliminar quita este modelo físico y sus rutas directas. Las rutas de grupo se conservan almacenadas.",
+            model: "Modelo",
         },
         modelNewScreen: {
             createModel: "Crear modelo",
@@ -282,6 +317,13 @@ const spanish = {
             upstreamID: "ID upstream",
             modelSettings: "Ajustes del modelo",
             enabled: "Activado",
+            aModelBelongsToOneProviderMessage:
+                "Obligatorio. Un modelo pertenece a un solo proveedor.",
+            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
+                "Obligatorio. Se envía al upstream tal cual: solo letras, números y símbolos.",
+            carriedHereFromAModelTheUpstreamNoMessage:
+                "Obligatorio. Arrastrado hasta aquí desde un modelo del que el upstream ya no informa; al enviarlo lo reclamas con los ajustes de abajo.",
+            creating: "Creando…",
         },
         modelRouteEditorScreen: {
             thisModelNameIsManagedAutomaticallyEditTheMessage:
@@ -301,6 +343,20 @@ const spanish = {
                 "Identificador exacto solicitado en todos los miembros. Que falten modelos no impide la publicación.",
             physicalModel: "Modelo físico",
             createPublicRoute: "Crear ruta pública",
+            editPublicRoute: "Editar ruta pública",
+            publicRoutes: "Rutas públicas",
+            aModelNameMaintainedAutomaticallyByItsProviderMessage:
+                "Un nombre de modelo mantenido automáticamente por su proveedor o grupo.",
+            clientsRequestThisPublicIDChangingItsTargetMessage:
+                "Los clientes solicitan este ID público. Cambiar su destino deja ese nombre intacto.",
+            openPool: "Abrir grupo",
+            openPhysicalModel: "Abrir modelo físico",
+            deleteThisPublicRouteQuestion: "¿Eliminar esta ruta pública?",
+            publicIDIsRequiredMessage: "El ID público es obligatorio.",
+            directPhysicalModel: "Modelo físico directo",
+            chooseAPool: "Elegir un grupo",
+            upstreamIDIsRequiredMessage: "El ID upstream es obligatorio.",
+            chooseAPhysicalModel: "Elegir un modelo físico",
         },
         modelsScreen: {
             models: "Modelos",
@@ -318,6 +374,8 @@ const spanish = {
             searchModels: "Buscar modelos",
             searchByUpstreamIDOrProviderName: "Buscar por ID upstream o nombre de proveedor",
             provider: "Proveedor",
+            noModelsOnAnyProviderYetDiscoverOrMessage:
+                "Aún no hay modelos en ningún proveedor; descúbrelos o añade uno.",
         },
         notFoundScreen: {
             pageNotFound: "Página no encontrada",
@@ -357,6 +415,16 @@ const spanish = {
             storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
                 "Observaciones almacenadas. Actualizar consulta explícitamente la cuenta upstream. Restablecer borra las restricciones e instala una prórroga de actualización; no restablece la cuota del upstream.",
             thisPoolHasNoMembersMessage: "Este grupo no tiene miembros.",
+            readingStoredAvailability: "Leyendo la disponibilidad almacenada…",
+            quotaNotObserved: "Cuota no observada",
+            quotaReadsUnsupported: "Lecturas de cuota no compatibles",
+            administratorResetRefreshGraceInstalled:
+                "Restablecido por el administrador; prórroga de actualización instalada",
+            accountEnabled: "Cuenta activada",
+            updatingAvailability: "Actualizando la disponibilidad…",
+            allModels: "Todos los modelos",
+            resetUnknown: "Reinicio desconocido",
+            resetTimePassedRefreshRequired: "Pasó la hora de reinicio; se requiere actualizar",
         },
         providerDetailScreen: {
             provider: "Proveedor",
@@ -376,6 +444,17 @@ const spanish = {
                 "Descubiertos desde upstream o añadidos a mano.",
             createModel: "Crear modelo",
             allModels: "Todos los modelos",
+            providers: "Proveedores",
+            createProvider: "Crear proveedor",
+            enabled: "Activado",
+            disabled: "Desactivado",
+            theOAuthCredentialsHaveExpiredMessage: "Las credenciales OAuth han caducado.",
+            noneExactUpstreamIDs: "Ninguno; ID upstream exactos",
+            discovering: "Descubriendo…",
+            discoverModels: "Descubrir modelos",
+            askingTheUpstreamWhatItReports: "Preguntando al upstream qué informa…",
+            noModelsOnThisProviderYetDiscoverWhatMessage:
+                "Aún no hay modelos en este proveedor; descubre qué informa el proveedor o añade uno a mano.",
         },
         providerEditScreen: {
             editProvider: "Editar proveedor",
@@ -386,6 +465,15 @@ const spanish = {
             thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
                 "La definición de este proveedor evalúa las solicitudes contra una URL base; restaura una, o usa Revertir.",
             deleteThisProvider: "Eliminar este proveedor",
+            provider: "Proveedor",
+            modelPrefix: "Prefijo de modelo",
+            aProviderNeedsANameMessage: "Un proveedor necesita un nombre.",
+            starting: "Iniciando…",
+            reconnectTheAccount: "Reconectar la cuenta",
+            replacing: "Reemplazando…",
+            replaceTheCredentials: "Reemplazar las credenciales",
+            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
+                "Eliminar quita la cuenta y sus pertenencias a grupos. No tiene modelos físicos.",
         },
         providerNewScreen: {
             createProvider: "Crear proveedor",
@@ -417,6 +505,13 @@ const spanish = {
             resetToPreset: "Restablecer al preajuste",
             theConnectionRecipeIsInvalidOpenTheAdvancedMessage:
                 "La receta de conexión no es válida; abre el apartado Avanzado de arriba para ver la ruta del error.",
+            modelPrefix: "Prefijo de modelo",
+            creating: "Creando…",
+            connecting: "Conectando…",
+            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
+                "Obligatorio. La dirección upstream contra la que se evalúan las solicitudes de esta definición; sin ella, la pasarela rechaza el inicio de un flujo.",
+            starting: "Iniciando…",
+            startTheAuthorization: "Iniciar la autorización",
         },
         providerPoolEditorScreen: {
             interchangeableAccountsForTheSameUpstreamServiceTriedMessage:
@@ -442,6 +537,12 @@ const spanish = {
             addAccount: "Añadir cuenta",
             addMember: "Añadir miembro",
             createPool: "Crear grupo",
+            editPool: "Editar grupo",
+            pools: "Grupos",
+            deleteThisPoolItsMembershipIsRemovedMessage:
+                "¿Eliminar este grupo? Su pertenencia se elimina.",
+            nameIsRequiredMessage: "El nombre es obligatorio.",
+            chooseAnAccount: "Elegir una cuenta",
         },
         providerQuotaCard: {
             upstreamQuota: "Cuota del upstream",
@@ -459,6 +560,15 @@ const spanish = {
             resetTimeReachedRefreshToUpdate:
                 "Se alcanzó la hora de reinicio; actualiza para ver el estado al día",
             theUpstreamReturnedNoQuotaEntriesMessage: "El upstream no devolvió entradas de cuota.",
+            periodUnknown: "Periodo desconocido",
+            monthly: "Mensual",
+            unknown: "Desconocido",
+            unlimited: "Ilimitado",
+            resetUnknown: "Reinicio desconocido",
+            readingQuota: "Leyendo la cuota…",
+            refreshingQuota: "Actualizando la cuota…",
+            refreshQuota: "Actualizar cuota",
+            retryQuota: "Reintentar cuota",
         },
         providersScreen: {
             providers: "Proveedores",
@@ -490,6 +600,8 @@ const spanish = {
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "Publica un modelo físico directamente o apunta a un grupo y a un ID upstream exacto.",
             automaticPrefix: "Automático · ",
+            on: "Activado",
+            off: "Desactivado",
         },
         screenFrame: {
             readAgain: "Leer de nuevo",
@@ -528,6 +640,12 @@ const spanish = {
             reasoning: "Razonamiento",
             tokenTotalsSkipRowsWhereTheUpstreamReportedMessage:
                 "Los totales de tokens omiten las filas en las que el upstream no informó de uso; un desglose ausente nunca infla ni desinfla un total.",
+            querying: "Consultando…",
+            runQuery: "Ejecutar consulta",
+            noFilterOrBoundNarrowsTheQuestionSoMessage:
+                "Ningún filtro ni límite acota la consulta, así que una respuesta vacía es el registro completo de la pasarela: aún no contiene uso.",
+            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
+                "Nada registrado coincide con estos filtros; amplía los límites, quita un filtro o consulta sin ninguno. Borrar filtros está en el formulario de arriba.",
         },
         usageScreen: {
             usage: "Uso",
@@ -548,6 +666,19 @@ const spanish = {
             filtersStayBehind: " — la ventana y todos los demás filtros se quedan atrás.",
             streamMark: " · Transmisión",
             thisRowIsNoLongerListed: "Esta fila ya no figura en la lista.",
+            reading: "Leyendo…",
+            applyFilters: "Aplicar filtros",
+            widenTheWindowDropAFilterOrReadMessage:
+                "Amplía la ventana, quita un filtro o lee toda la transmisión; Borrar filtros está en el formulario de arriba.",
+            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
+                "El filtro de la pasarela localiza filas; nunca valida un valor contra ellas, así que un id desconocido o un estado nunca registrado simplemente no coincide con nada.",
+            thatIsEveryRowThisFilterMatchesMessage:
+                "Esas son todas las filas que coinciden con este filtro.",
+            thatIsEveryRecordedRowMessage: "Esas son todas las filas registradas.",
+            aReadCycleIsReplacingTheStreamExtendMessage:
+                "Un ciclo de lectura está reemplazando la transmisión; amplíala cuando termine el ciclo.",
+            loading: "Cargando…",
+            loadMore: "Cargar más",
         },
         usageStats: {
             usage: "Uso",
@@ -677,256 +808,6 @@ const spanish = {
         managementToken: "Introduce el token de administración.",
         nameEmpty: "El nombre no puede estar vacío.",
     },
-    additional: {
-        app: {
-            readThisScreensStateFromTheGatewayAgain:
-                "Volver a leer el estado de esta pantalla desde la pasarela",
-            thisScreenReadsNothingFromTheGatewaySo:
-                "Esta pantalla no lee nada de la pasarela, así que no hay nada que actualizar",
-            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
-                "¿Desconectar y olvidar el token almacenado? Volver a conectar implica introducirlo de nuevo.",
-        },
-        apiKeyAccess: {
-            allow: "Permitir",
-            deny: "Denegar",
-            provider: "Proveedor",
-            pool: "Grupo",
-            automatic: "Automático",
-            alias: "Alias",
-        },
-        apiKeyForm: {
-            whichClientHoldsThisKeyMessage: "Obligatorio. Qué cliente posee esta clave.",
-            aServingClientAuthenticatesWithItOnEveryMessage:
-                "Obligatorio. Un cliente de servicio se autentica con ella en todas las interfaces.",
-        },
-        clipboard: {
-            copyToClipboard: "Copiar al portapapeles",
-            copied: "Copiado",
-            copy: "Copiar",
-            theValueHere: "el valor que figura aquí",
-        },
-        confirmDeleteCard: {
-            deleting: "Eliminando…",
-            deleteForGood: "Eliminar definitivamente",
-        },
-        dirtyFormFooter: {
-            saving: "Guardando…",
-            saveChanges: "Guardar cambios",
-        },
-        layout: {
-            back: "Volver",
-        },
-        modelForm: {
-            followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage:
-                "Sigue el descubrimiento; actualmente se desconoce, así que los listados lo omiten.",
-            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
-                "Sigue el descubrimiento; actualmente no se sabe nada, así que decide la declaración de la definición.",
-        },
-        providerForm: {
-            verifiedLive: "Verificado en vivo",
-            unverified: "Sin verificar",
-            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
-                "Obligatorio. La dirección upstream a la que apuntan las solicitudes de esta definición.",
-            upstreamAPIKey: "Clave de API upstream",
-            sentUpstreamWithEveryRequestNeverReturnedByMessage:
-                "Obligatorio. Se envía al upstream con cada solicitud. La pasarela nunca la devuelve.",
-            showTheAPIKeyWhileTyping: "Mostrar la clave de API mientras se escribe",
-        },
-        providersTable: {
-            on: "Activado",
-            off: "Desactivado",
-        },
-        usageFilterControls: {
-            allEndpoints: "Todos los puntos de conexión",
-        },
-        apiKeyDetailScreen: {
-            apiKeys: "Claves de API",
-            apiKey: "Clave de API",
-            createAPIKey: "Crear clave de API",
-            enabled: "Activado",
-            disabled: "Desactivado",
-        },
-        apiKeyEditScreen: {
-            apiKey: "Clave de API",
-            editAPIKey: "Editar clave de API",
-            showTheCurrentKey: "Mostrar la clave actual",
-        },
-        apiKeyNewScreen: {
-            creating: "Creando…",
-            createAPIKey: "Crear clave de API",
-        },
-        apiKeysScreen: {
-            on: "Activado",
-            off: "Desactivado",
-        },
-        bulkPublicationScreen: {
-            publicIDIsRequiredMessage: "El ID público es obligatorio.",
-            noDirectRoutes: "Sin rutas directas",
-            modelVanishedItsNewRouteWillBeSuspended:
-                "El modelo ya no se informa; su nueva ruta se suspenderá",
-            modelEnabled: "Modelo activado",
-            modelDisabled: "Modelo desactivado",
-        },
-        connectionScreen: {
-            showTheTokenWhileTyping: "Mostrar el token mientras se escribe",
-            probingTheGateway: "Sondeando la pasarela…",
-            connect: "Conectar",
-        },
-        homeScreen: {
-            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
-                "Inspecciona las rutas públicas para ver la disponibilidad de cuota. Estas cifras describen los interruptores y el inventario almacenados.",
-            noRequestsRecordedMessage: "No hay solicitudes registradas.",
-        },
-        modelDetailScreen: {
-            models: "Modelos",
-            model: "Modelo",
-            overriddenByAdministratorMessage: "Anulado por el administrador.",
-            fromTheLatestDiscoveryMessage: "Del último descubrimiento.",
-            unknownOmittedFromModelListingsMessage:
-                "Desconocido: se omite en los listados de modelos.",
-            noFactOnThisRowTheDefinitionsDeclarationMessage:
-                "Sin dato en esta fila; decide la declaración de la definición.",
-            unknown: "Desconocido",
-            noAutomaticEntry: "Sin entrada automática",
-            enabled: "Activado",
-            disabled: "Desactivado",
-        },
-        modelEditScreen: {
-            model: "Modelo",
-            editModel: "Editar modelo",
-        },
-        modelNewScreen: {
-            aModelBelongsToOneProviderMessage:
-                "Obligatorio. Un modelo pertenece a un solo proveedor.",
-            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
-                "Obligatorio. Se envía al upstream tal cual: solo letras, números y símbolos.",
-            carriedHereFromAModelTheUpstreamNoMessage:
-                "Obligatorio. Arrastrado hasta aquí desde un modelo del que el upstream ya no informa; al enviarlo lo reclamas con los ajustes de abajo.",
-            creating: "Creando…",
-            createModel: "Crear modelo",
-        },
-        modelRouteEditorScreen: {
-            createPublicRoute: "Crear ruta pública",
-            editPublicRoute: "Editar ruta pública",
-            publicRoutes: "Rutas públicas",
-            aModelNameMaintainedAutomaticallyByItsProviderMessage:
-                "Un nombre de modelo mantenido automáticamente por su proveedor o grupo.",
-            clientsRequestThisPublicIDChangingItsTargetMessage:
-                "Los clientes solicitan este ID público. Cambiar su destino deja ese nombre intacto.",
-            openPool: "Abrir grupo",
-            openPhysicalModel: "Abrir modelo físico",
-            deleteThisPublicRoute: "¿Eliminar esta ruta pública?",
-            publicIDIsRequiredMessage: "El ID público es obligatorio.",
-            publicID: "ID público",
-            directPhysicalModel: "Modelo físico directo",
-            pool: "Grupo",
-            chooseAPool: "Elegir un grupo",
-            upstreamIDIsRequiredMessage: "El ID upstream es obligatorio.",
-            upstreamID: "ID upstream",
-            chooseAPhysicalModel: "Elegir un modelo físico",
-        },
-        modelsScreen: {
-            noModelsOnAnyProviderYetDiscoverOrMessage:
-                "Aún no hay modelos en ningún proveedor; descúbrelos o añade uno.",
-        },
-        poolAvailabilityCard: {
-            readingStoredAvailability: "Leyendo la disponibilidad almacenada…",
-            quotaNotObserved: "Cuota no observada",
-            quotaReadsUnsupported: "Lecturas de cuota no compatibles",
-            administratorResetRefreshGraceInstalled:
-                "Restablecido por el administrador; prórroga de actualización instalada",
-            accountEnabled: "Cuenta activada",
-            updatingAvailability: "Actualizando la disponibilidad…",
-            allModels: "Todos los modelos",
-            resetUnknown: "Reinicio desconocido",
-            resetTimePassedRefreshRequired: "Pasó la hora de reinicio; se requiere actualizar",
-        },
-        providerDetailScreen: {
-            providers: "Proveedores",
-            provider: "Proveedor",
-            createProvider: "Crear proveedor",
-            enabled: "Activado",
-            disabled: "Desactivado",
-            theOAuthCredentialsHaveExpiredMessage: "Las credenciales OAuth han caducado.",
-            noneExactUpstreamIDs: "Ninguno; ID upstream exactos",
-            discovering: "Descubriendo…",
-            discoverModels: "Descubrir modelos",
-            askingTheUpstreamWhatItReports: "Preguntando al upstream qué informa…",
-            noModelsOnThisProviderYetDiscoverWhatMessage:
-                "Aún no hay modelos en este proveedor; descubre qué informa el proveedor o añade uno a mano.",
-        },
-        providerEditScreen: {
-            provider: "Proveedor",
-            editProvider: "Editar proveedor",
-            modelPrefix: "Prefijo de modelo",
-            aProviderNeedsANameMessage: "Un proveedor necesita un nombre.",
-            starting: "Iniciando…",
-            reconnectTheAccount: "Reconectar la cuenta",
-            replacing: "Reemplazando…",
-            replaceTheCredentials: "Reemplazar las credenciales",
-            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
-                "Eliminar quita la cuenta y sus pertenencias a grupos. No tiene modelos físicos.",
-        },
-        providerNewScreen: {
-            modelPrefix: "Prefijo de modelo",
-            creating: "Creando…",
-            createProvider: "Crear proveedor",
-            connecting: "Conectando…",
-            connectTheAccount: "Conectar la cuenta",
-            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
-                "Obligatorio. La dirección upstream contra la que se evalúan las solicitudes de esta definición; sin ella, la pasarela rechaza el inicio de un flujo.",
-            starting: "Iniciando…",
-            startTheAuthorization: "Iniciar la autorización",
-        },
-        providerPoolEditorScreen: {
-            createPool: "Crear grupo",
-            editPool: "Editar grupo",
-            pools: "Grupos",
-            deleteThisPoolItsMembershipIsRemovedMessage:
-                "¿Eliminar este grupo? Su pertenencia se elimina.",
-            nameIsRequiredMessage: "El nombre es obligatorio.",
-            modelPrefix: "Prefijo de modelo",
-            chooseAnAccount: "Elegir una cuenta",
-        },
-        providerQuotaCard: {
-            periodUnknown: "Periodo desconocido",
-            monthly: "Mensual",
-            unknown: "Desconocido",
-            unlimited: "Ilimitado",
-            resetUnknown: "Reinicio desconocido",
-            readingQuota: "Leyendo la cuota…",
-            refreshingQuota: "Actualizando la cuota…",
-            refreshQuota: "Actualizar cuota",
-            retryQuota: "Reintentar cuota",
-        },
-        routingListsScreen: {
-            on: "Activado",
-            off: "Desactivado",
-        },
-        usageQueryScreen: {
-            querying: "Consultando…",
-            runQuery: "Ejecutar consulta",
-            noFilterOrBoundNarrowsTheQuestionSoMessage:
-                "Ningún filtro ni límite acota la consulta, así que una respuesta vacía es el registro completo de la pasarela: aún no contiene uso.",
-            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
-                "Nada registrado coincide con estos filtros; amplía los límites, quita un filtro o consulta sin ninguno. Borrar filtros está en el formulario de arriba.",
-        },
-        usageScreen: {
-            reading: "Leyendo…",
-            applyFilters: "Aplicar filtros",
-            widenTheWindowDropAFilterOrReadMessage:
-                "Amplía la ventana, quita un filtro o lee toda la transmisión; Borrar filtros está en el formulario de arriba.",
-            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
-                "El filtro de la pasarela localiza filas; nunca valida un valor contra ellas, así que un id desconocido o un estado nunca registrado simplemente no coincide con nada.",
-            thatIsEveryRowThisFilterMatchesMessage:
-                "Esas son todas las filas que coinciden con este filtro.",
-            thatIsEveryRecordedRowMessage: "Esas son todas las filas registradas.",
-            aReadCycleIsReplacingTheStreamExtendMessage:
-                "Un ciclo de lectura está reemplazando la transmisión; amplíala cuando termine el ciclo.",
-            loading: "Cargando…",
-            loadMore: "Cargar más",
-        },
-    },
     operationNotices: {
         flowFailed: "El flujo falló.",
         freshFlow: "Inicia un flujo nuevo y autorízalo sin demora.",
@@ -1040,14 +921,54 @@ const spanish = {
             theGatewayHoldsNoProviderHereItWasDeletedOrTheAddressWasTyped:
                 "La pasarela no tiene ningún proveedor aquí. Se eliminó, o la dirección se escribió mal. Nada de aquí puede recuperarlo.",
         },
-        usageLabels: {
-            streamed: "Con transmisión",
-            nonstreamed: "Sin transmisión",
+        app: {
+            readThisScreensStateFromTheGatewayAgain:
+                "Volver a leer el estado de esta pantalla desde la pasarela",
+            thisScreenReadsNothingFromTheGatewaySo:
+                "Esta pantalla no lee nada de la pasarela, así que no hay nada que actualizar",
+            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
+                "¿Desconectar y olvidar el token almacenado? Volver a conectar implica introducirlo de nuevo.",
+        },
+        apiKeyForm: {
+            whichClientHoldsThisKeyMessage: "Obligatorio. Qué cliente posee esta clave.",
+            aServingClientAuthenticatesWithItOnEveryMessage:
+                "Obligatorio. Un cliente de servicio se autentica con ella en todas las interfaces.",
+        },
+        clipboard: {
+            copyToClipboard: "Copiar al portapapeles",
+            copied: "Copiado",
+            copy: "Copiar",
+            theValueHere: "el valor que figura aquí",
+        },
+        confirmDeleteCard: {
+            deleting: "Eliminando…",
+            deleteForGood: "Eliminar definitivamente",
+        },
+        dirtyFormFooter: {
+            saving: "Guardando…",
+            saveChanges: "Guardar cambios",
+        },
+        layout: {
+            back: "Volver",
+        },
+        providerForm: {
+            verifiedLive: "Verificado en vivo",
+            unverified: "Sin verificar",
+            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
+                "Obligatorio. La dirección upstream a la que apuntan las solicitudes de esta definición.",
+            upstreamAPIKey: "Clave de API upstream",
+            sentUpstreamWithEveryRequestNeverReturnedByMessage:
+                "Obligatorio. Se envía al upstream con cada solicitud. La pasarela nunca la devuelve.",
+            showTheAPIKeyWhileTyping: "Mostrar la clave de API mientras se escribe",
         },
         apiKeyAccess: {
             inherit: "Heredar",
             allow: "Permitir",
             deny: "Denegar",
+            provider: "Proveedor",
+            pool: "Grupo",
+            automatic: "Automático",
+            alias: "Alias",
         },
         modelForm: {
             followingDiscoveryCurrentlyDeclaresNoLevels:
@@ -1060,6 +981,8 @@ const spanish = {
                 "Reemplaza el valor descubierto por un número entero positivo.",
             unset: "Sin definir",
             discoveredNothingKnown: "Descubierto: no se sabe nada.",
+            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
+                "Sigue el descubrimiento; actualmente no se sabe nada, así que decide la declaración de la definición.",
         },
         modelsTable: {
             ready: "Listo",
@@ -1074,6 +997,8 @@ const spanish = {
             valid: "Válida",
             expired: "Caducada",
             stale: "Obsoleta",
+            on: "Activado",
+            off: "Desactivado",
         },
         usageFilterControls: {
             allOutcomes: "Todos los resultados",
@@ -1081,6 +1006,7 @@ const spanish = {
             any: "Cualquiera",
             streamed: "Con transmisión",
             nonstreamed: "Sin transmisión",
+            allEndpoints: "Todos los puntos de conexión",
         },
         usageFilter: {
             allTime: "Todo el tiempo",
@@ -1180,6 +1106,7 @@ const spanish = {
         enabledStored: "activados de {{total}} almacenados",
         readyListed: "listos de {{total}} en la lista",
         copyEndpoint: "Copiar la URL del punto de conexión de {{surface}}",
+        copyApiKeySecret: "Copiar el secreto de {{name}}",
         disabledCredential:
             "{{expiry}} El proveedor está desactivado; reconéctalo cuando lo vuelvas a activar.",
         noKeysDetail:

@@ -182,7 +182,7 @@ export function UsageFilterControls(props: {
                 options={[
                     {
                         value: "",
-                        label: translation()(($) => $.additional.usageFilterControls.allEndpoints),
+                        label: translation()(($) => $.helpers.usageFilterControls.allEndpoints),
                     },
                     ...API_LOG_ENDPOINT_TYPE.options,
                 ]}

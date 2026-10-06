@@ -50,64 +50,35 @@ export function deadlineController(timeoutMs: number): AbortController {
 }
 
 /**
- * The connection probe the operator cancelled. The service records it like
- * any probe outcome, but it is control flow, never a refusal (README §6.4):
- * the setup screen recognizes it and reopens the form pristine instead of
- * seeding a failure no gateway produced.
- */
-export class ConnectionProbeCancelled extends Error {
-    constructor() {
-        super("The connection probe was cancelled.");
-        this.name = "ConnectionProbeCancelled";
-    }
-}
-
-/** The cancel handle of the probe in flight, or `null` between probes. */
-let inFlightProbe: AbortController | null = null;
-
-/** Whether the operator cancelled the probe now in flight. */
-let isProbeCancelled = false;
-
-/**
- * Aborts the connection probe in flight, if one is: the attempt ends and the
- * setup form reopens pristine. A probe that already answered is untouched.
+ * Cancels the connect probe in flight, if one is, through the service's own
+ * cancel channel: the attempt ends and the machine records a cancellation —
+ * control flow, never a refusal. A probe that already answered is untouched.
  */
 export function cancelConnectionProbe(): void {
-    if (inFlightProbe !== null) {
-        isProbeCancelled = true;
-        inFlightProbe.abort();
-    }
+    connectionService.cancelConnect();
 }
 
 /**
  * The application's single connection service, wired to the browser's storage
  * and to the connection probe — `providers:list`, the first call of README
- * §3.1.
+ * §3.1. The service owns the attempt's cancel channel: `cancelConnect` aborts
+ * the signal the probe in flight carries, and an aborted attempt lands as the
+ * machine's cancellation, never as a refusal.
  */
 export const connectionService = createConnectionService({
     storage: browserStorage(),
-    probe: async (connection: Connection) => {
+    probe: async (connection: Connection, signal: AbortSignal) => {
         const controller = deadlineController(PROBE_TIMEOUT_MS);
-        isProbeCancelled = false;
-        inFlightProbe = controller;
+        // The service's cancel forwards into the probe's own deadline
+        // controller, so the transport call ends on whichever fires first.
+        // The deadline's expiry rejects like any transport failure and the
+        // setup panel diagnoses it as a refusal; the operator's cancel is
+        // visible to the service alone, as its own signal's abort — the
+        // distinction that lands an attempt as a cancellation instead.
+        signal.addEventListener("abort", () => controller.abort(signal.reason), {
+            once: true,
+        });
 
-        try {
-            // The probe is the setup button's busy state: without a deadline
-            // a dead address would hold it for the browser's full default
-            // fetch timeout. The deadline surfaces as the usual transport
-            // failure, which the setup panel diagnoses like any other
-            // refusal; an operator cancel surfaces as
-            // `ConnectionProbeCancelled`, which the setup screen never
-            // renders as a refusal.
-            await createManagementApi(connection).listProviders(controller.signal);
-        } catch (error) {
-            if (isProbeCancelled) {
-                throw new ConnectionProbeCancelled();
-            }
-
-            throw error;
-        } finally {
-            inFlightProbe = null;
-        }
+        await createManagementApi(connection).listProviders(controller.signal);
     },
 });

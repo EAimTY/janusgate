@@ -100,28 +100,41 @@ describe("preset catalog", () => {
         }
     });
 
-    it("marks the researched-but-unconfirmed products unverified and the rest live", () => {
-        for (const id of [
-            "antigravity",
-            "generic-openai-chat-completions",
-        ]) {
-            expect(findPreset(id).verification).toBe("live");
-        }
-
+    it("pins every preset's verification status against the researched facts", () => {
+        // The status drives the user-facing Verified badge and provenance
+        // line, so every catalog entry is pinned against this table — a new
+        // preset must state its researched status here, and a flip anywhere
+        // fails loudly.
+        //
         // Codex rides the unverified list since its compaction section:
         // the login and inference shape was live-verified, but a preset
         // carrying compaction declarations is not live-verified until an
         // authenticated compact-and-continuation run passes (README §5.6).
-        for (const id of [
-            "codex",
-            "claude-code",
-            "kimi-code",
-            "github-copilot",
-            "devin",
-            "xai",
-            "zen-openai-chat-completions",
-        ]) {
-            expect(findPreset(id).verification).toBe("unverified");
+        const expectedStatuses: Record<string, ProviderPreset["verification"]> = {
+            antigravity: "live",
+            "generic-openai-chat-completions": "live",
+            "generic-openai-responses": "live",
+            "generic-gemini-generate-content": "live",
+            "generic-gemini-interactions": "live",
+            "generic-anthropic-messages": "live",
+            codex: "unverified",
+            "claude-code": "unverified",
+            "kimi-code": "unverified",
+            "github-copilot": "unverified",
+            devin: "unverified",
+            xai: "unverified",
+            "zen-openai-chat-completions": "unverified",
+            "zen-openai-responses": "unverified",
+            "zen-anthropic-messages": "unverified",
+            "zen-gemini-generate-content": "unverified",
+        };
+
+        expect(new Set(PROVIDER_PRESETS.map((candidate) => candidate.id))).toEqual(
+            new Set(Object.keys(expectedStatuses)),
+        );
+
+        for (const candidate of PROVIDER_PRESETS) {
+            expect(candidate.verification, candidate.id).toBe(expectedStatuses[candidate.id]);
         }
     });
 
@@ -455,6 +468,57 @@ describe("derived base-URL neediness", () => {
 });
 
 describe("generic Gemini presets", () => {
+    it("addresses the GenerateContent resource path under the discovered bare model id", () => {
+        // Discovery strips the `models/` resource prefix off every reported
+        // name (public model identifiers exclude `/`), so the inference URLs
+        // must spell the resource segment the protocol requires:
+        // `{base}/models/{model}:generateContent`.
+        const gemini = findPreset("generic-gemini-generate-content");
+
+        expect(
+            at(gemini, [
+                "inference",
+                "url",
+            ]),
+        ).toEqual([
+            {
+                type: "base",
+            },
+            {
+                type: "literal",
+                value: "/models/",
+            },
+            {
+                type: "model",
+            },
+            {
+                type: "literal",
+                value: ":generateContent",
+            },
+        ]);
+        expect(
+            at(gemini, [
+                "inference",
+                "stream_url",
+            ]),
+        ).toEqual([
+            {
+                type: "base",
+            },
+            {
+                type: "literal",
+                value: "/models/",
+            },
+            {
+                type: "model",
+            },
+            {
+                type: "literal",
+                value: ":streamGenerateContent?alt=sse",
+            },
+        ]);
+    });
+
     for (const id of [
         "generic-gemini-generate-content",
         "generic-gemini-interactions",

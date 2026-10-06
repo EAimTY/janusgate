@@ -687,10 +687,10 @@ function ContextBar(props: {
                     title={
                         props.hasScreenReads
                             ? translation()(
-                                  ($) => $.additional.app.readThisScreensStateFromTheGatewayAgain,
+                                  ($) => $.helpers.app.readThisScreensStateFromTheGatewayAgain,
                               )
                             : translation()(
-                                  ($) => $.additional.app.thisScreenReadsNothingFromTheGatewaySo,
+                                  ($) => $.helpers.app.thisScreenReadsNothingFromTheGatewaySo,
                               )
                     }
                     disabled={!props.hasScreenReads}
@@ -754,8 +754,7 @@ function DisconnectControl(): JSX.Element {
                     focusArmed={confirmFocus.focusArmed}
                     question={translation()(
                         ($) =>
-                            $.additional.app
-                                .disconnectAndForgetTheStoredTokenReconnectingMeansMessage,
+                            $.helpers.app.disconnectAndForgetTheStoredTokenReconnectingMeansMessage,
                     )}
                 />
                 <Button

@@ -853,7 +853,7 @@ pub(super) fn parse_inbound_request(
     body: &[u8],
     betas: &[String],
 ) -> Result<ParsedRequest, InvalidRequest> {
-    let request: InboundRequest = crate::format::parse_client_request(body)?;
+    let mut request: InboundRequest = crate::format::parse_client_request(body)?;
 
     if request.messages.is_empty() {
         let message = if request.compaction.is_some() {
@@ -1019,30 +1019,30 @@ pub(super) fn parse_inbound_request(
 
     let mut tools = Vec::new();
 
-    if let Some(tools_in) = &request.tools {
-        for tool in tools_in {
-            // A non-`custom` discriminator names a server-side tool: function tools only, and
-            // the rejection names `type` (README §6.6).
-            if let Some(other) = tool.kind.as_deref().filter(|kind| *kind != "custom") {
-                return Err(InvalidRequest::field(
-                    "type",
-                    format!("Unsupported tool type `{other}`; function tools only"),
-                ));
-            }
-
-            if !tool.input_schema.is_object() {
-                return Err(InvalidRequest::field(
-                    "input_schema",
-                    "Tool input_schema must be a JSON object",
-                ));
-            }
-
-            tools.push(IrTool {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                parameters: Some(tool.input_schema.clone()),
-            });
+    // The deserialized request is owned and consumed in place: taking the tools moves each
+    // one's members into the IR without cloning.
+    for tool in request.tools.take().unwrap_or_default() {
+        // A non-`custom` discriminator names a server-side tool: function tools only, and
+        // the rejection names `type` (README §6.6).
+        if let Some(other) = tool.kind.as_deref().filter(|kind| *kind != "custom") {
+            return Err(InvalidRequest::field(
+                "type",
+                format!("Unsupported tool type `{other}`; function tools only"),
+            ));
         }
+
+        if !tool.input_schema.is_object() {
+            return Err(InvalidRequest::field(
+                "input_schema",
+                "Tool input_schema must be a JSON object",
+            ));
+        }
+
+        tools.push(IrTool {
+            name: tool.name,
+            description: tool.description,
+            parameters: Some(tool.input_schema),
+        });
     }
 
     let tool_choice = match &request.tool_choice {

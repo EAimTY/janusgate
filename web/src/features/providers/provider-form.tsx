@@ -47,10 +47,10 @@ export function ProviderPresetPicker(props: {
                                     label={
                                         preset.verification === "live"
                                             ? translation()(
-                                                  ($) => $.additional.providerForm.verifiedLive,
+                                                  ($) => $.helpers.providerForm.verifiedLive,
                                               )
                                             : translation()(
-                                                  ($) => $.additional.providerForm.unverified,
+                                                  ($) => $.helpers.providerForm.unverified,
                                               )
                                     }
                                 />
@@ -147,7 +147,7 @@ export function CompatibleConnectionFields(props: {
                         props.hasBaseUrl === true
                             ? translation()(
                                   ($) =>
-                                      $.additional.providerForm
+                                      $.helpers.providerForm
                                           .theUpstreamAddressThisDefinitionsRequestsPointAtMessage,
                               )
                             : undefined
@@ -156,8 +156,7 @@ export function CompatibleConnectionFields(props: {
             </Show>
             <TextField
                 label={
-                    props.apiKeyLabel ??
-                    translation()(($) => $.additional.providerForm.upstreamAPIKey)
+                    props.apiKeyLabel ?? translation()(($) => $.helpers.providerForm.upstreamAPIKey)
                 }
                 type={isKeyVisible() ? "text" : "password"}
                 value={props.apiKey}
@@ -169,13 +168,13 @@ export function CompatibleConnectionFields(props: {
                     props.apiKeyHint ??
                     translation()(
                         ($) =>
-                            $.additional.providerForm
+                            $.helpers.providerForm
                                 .sentUpstreamWithEveryRequestNeverReturnedByMessage,
                     )
                 }
             />
             <SecretRevealToggle
-                caption={translation()(($) => $.additional.providerForm.showTheAPIKeyWhileTyping)}
+                caption={translation()(($) => $.helpers.providerForm.showTheAPIKeyWhileTyping)}
                 isVisible={isKeyVisible()}
                 onToggle={setIsKeyVisible}
             />

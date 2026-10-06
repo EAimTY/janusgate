@@ -1,9 +1,12 @@
 import type {
+    QuotaDirection,
     QuotaEntryExtraction,
     QuotaField,
+    QuotaFieldBase,
     QuotaNumberEncoding,
     QuotaNumberField,
     QuotaRatioScale,
+    QuotaResetEncoding,
     QuotaWindowSource,
 } from "../management-api/generated/v0";
 
@@ -34,38 +37,61 @@ export function numberField(
 
 /**
  * One optional reported ratio window; an absent entry supplies no observation.
- * The magnitude rides the percent scale unless the upstream reports a fraction.
+ * The entry rides the monitoring-only routing, the `entry`-relative selections,
+ * and the used direction; the object carries each researched delta from those
+ * defaults.
  */
-export function ratioEntry(
-    key: string,
-    label: string,
-    at: string[],
-    valuePath: string[],
-    window: QuotaWindowSource,
-    resetPath: string[],
-    resetEncoding: "unix_seconds" | "rfc3339",
-    encoding: QuotaNumberEncoding = "number",
-    scale: QuotaRatioScale = "percent",
-): QuotaEntryExtraction {
+export function ratioEntry(input: {
+    key: string;
+    label: string;
+    at: string[];
+    valuePath: string[];
+    window: QuotaWindowSource;
+    resetPath: string[];
+    resetEncoding: QuotaResetEncoding;
+    /** Wire encoding of the ratio's value field. */
+    encoding?: QuotaNumberEncoding;
+    /** Magnitude scale; percent unless the upstream reports a fraction. */
+    scale?: QuotaRatioScale;
+    /** Measurement direction; used unless the upstream reports remaining. */
+    direction?: QuotaDirection;
+    /** Whether an absent entry fails extraction instead of being omitted. */
+    isRequired?: boolean;
+    /** Whether an absent value field fails the entry's measurement. */
+    isValueRequired?: boolean;
+    /** Explicit unlimited bypass field, selected relative to the entry. */
+    unlimitedPath?: string[];
+    /** Context the reset field resolves from; the entry unless it sits at the item root. */
+    resetBase?: QuotaFieldBase;
+}): QuotaEntryExtraction {
     return {
-        key,
-        label,
-        at,
-        is_required: false,
+        key: input.key,
+        label: input.label,
+        at: input.at,
+        is_required: input.isRequired ?? false,
         routing: {
             type: "monitoring_only",
         },
-        window,
+        window: input.window,
         measurement: {
             type: "ratio",
-            value: numberField(valuePath, encoding),
-            scale,
-            direction: "used",
+            value: numberField(
+                input.valuePath,
+                input.encoding ?? "number",
+                input.isValueRequired ?? false,
+            ),
+            scale: input.scale ?? "percent",
+            direction: input.direction ?? "used",
         },
         reset: {
             type: "field",
-            field: field(resetPath),
-            encoding: resetEncoding,
+            field: field(input.resetPath, false, input.resetBase ?? "entry"),
+            encoding: input.resetEncoding,
         },
+        ...(input.unlimitedPath === undefined
+            ? {}
+            : {
+                  is_unlimited: field(input.unlimitedPath, true),
+              }),
     };
 }

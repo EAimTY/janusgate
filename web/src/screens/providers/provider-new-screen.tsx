@@ -685,11 +685,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     isBusy={create.isCreating()}
                                 >
                                     {create.isCreating()
-                                        ? translation()(
-                                              ($) => $.additional.providerNewScreen.creating,
-                                          )
+                                        ? translation()(($) => $.screens.providerNewScreen.creating)
                                         : translation()(
-                                              ($) => $.additional.providerNewScreen.createProvider,
+                                              ($) => $.screens.providerNewScreen.createProvider,
                                           )}
                                 </Button>
                             </div>
@@ -768,12 +766,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                                 flow={oauth}
                                                 startedFlow={authorizationFlow}
                                                 busyLabel={translation()(
-                                                    ($) =>
-                                                        $.additional.providerNewScreen.connecting,
+                                                    ($) => $.screens.providerNewScreen.connecting,
                                                 )}
                                                 submitLabel={translation()(
                                                     ($) =>
-                                                        $.additional.providerNewScreen
+                                                        $.screens.providerNewScreen
                                                             .connectTheAccount,
                                                 )}
                                                 isSubmittable={canComplete}
@@ -804,7 +801,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                             error={baseUrlError()}
                                             hint={translation()(
                                                 ($) =>
-                                                    $.additional.providerNewScreen
+                                                    $.screens.providerNewScreen
                                                         .theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage,
                                             )}
                                         />
@@ -817,13 +814,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                     onClick={() => void oauth.start()}
                                 >
                                     {oauth.isStarting()
-                                        ? translation()(
-                                              ($) => $.additional.providerNewScreen.starting,
-                                          )
+                                        ? translation()(($) => $.screens.providerNewScreen.starting)
                                         : translation()(
                                               ($) =>
-                                                  $.additional.providerNewScreen
-                                                      .startTheAuthorization,
+                                                  $.screens.providerNewScreen.startTheAuthorization,
                                           )}
                                 </Button>
                             </div>

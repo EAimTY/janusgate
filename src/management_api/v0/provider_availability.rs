@@ -6,6 +6,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
+use log::info;
 use serde::{Deserialize, Serialize};
 
 route! {
@@ -82,6 +83,6 @@ pub(super) async fn reset(
         .quota_coordinator
         .reset(&context.database, request.provider_id)
         .await?;
-    log::info!("provider {} availability reset", request.provider_id);
+    info!("provider {} availability reset", request.provider_id);
     Ok(Json(EmptyResponse {}))
 }

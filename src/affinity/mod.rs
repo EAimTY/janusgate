@@ -138,13 +138,21 @@ impl Accepted {
         self
     }
 
-    /// Enables actual answer projection, omitting an already prepared outward checkpoint.
-    pub(crate) fn begin_projection(&self, renderer: &mut dyn crate::format::ClientSseRenderer) {
-        if self.is_checkpoint {
-            renderer.begin_checkpoint_projection(self.continuation());
-        } else {
-            renderer.begin_projection(self.continuation());
-        }
+    /// Whether the accepted history's outward tail is one already prepared checkpoint, which
+    /// the delivery side omits from projection.
+    pub(crate) fn is_checkpoint(&self) -> bool {
+        self.is_checkpoint
+    }
+
+    /// The accepted client-visible projection's digest-only state, for reads and folds by the
+    /// delivery side's format glue.
+    pub(crate) fn projector(&self) -> &fingerprint::Projector {
+        &self.projector
+    }
+
+    /// The accepted projection's working state, folded by the delivery side's format glue.
+    pub(crate) fn projector_mut(&mut self) -> &mut fingerprint::Projector {
+        &mut self.projector
     }
 
     /// Returns the codec's actual completed-prefix boundary while prepared hints await release.
@@ -161,8 +169,8 @@ impl Accepted {
         self.binding.register(&std::mem::take(&mut self.artifacts));
     }
 
-    /// Registers a newly completed actual native artifact at its own outward frame boundary.
-    pub(crate) fn register_released_artifact(&self, anchors: &[Anchor]) {
+    /// Registers completed artifact anchors at their own successful outward boundary.
+    pub(crate) fn register_artifacts(&self, anchors: &[Anchor]) {
         self.binding.register(anchors);
     }
 
@@ -176,25 +184,6 @@ impl Accepted {
         let before = self.projector.evidence().retry.map(|retry| retry.digest);
         self.projector = projector;
         if before != self.projector.evidence().retry.map(|retry| retry.digest) {
-            self.binding.register(&self.projector.completed_anchors());
-        }
-    }
-
-    /// Registers only a completed actual JSON rendering that extends the accepted history.
-    pub(crate) fn complete_json<F: crate::format::ClientFormat>(
-        &mut self,
-        response: &F::JsonResponse,
-    ) {
-        self.complete_artifacts();
-        self.binding
-            .register(&F::completed_json_artifacts(response));
-        let before = self.projector.evidence().retry.map(|retry| retry.digest);
-        let is_replayable = if self.is_checkpoint {
-            F::project_json_checkpoint(response, &mut self.projector)
-        } else {
-            F::project_json_response(response, &mut self.projector)
-        };
-        if is_replayable && before != self.projector.evidence().retry.map(|retry| retry.digest) {
             self.binding.register(&self.projector.completed_anchors());
         }
     }

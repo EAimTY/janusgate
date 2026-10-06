@@ -78,8 +78,8 @@ export function ConfirmDeleteCard(props: {
                         onClick={() => void remove()}
                     >
                         {isDeleting()
-                            ? translation()(($) => $.additional.confirmDeleteCard.deleting)
-                            : translation()(($) => $.additional.confirmDeleteCard.deleteForGood)}
+                            ? translation()(($) => $.helpers.confirmDeleteCard.deleting)
+                            : translation()(($) => $.helpers.confirmDeleteCard.deleteForGood)}
                     </Button>
                     <Button
                         isDisabled={isDeleting()}

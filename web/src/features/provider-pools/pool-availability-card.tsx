@@ -26,10 +26,10 @@ function inventoryLabel(value: InventoryAvailability): string {
 
 function refreshText(refresh: LastRefresh | null): JSX.Element {
     if (refresh === null)
-        return translation()(($) => $.additional.poolAvailabilityCard.readingStoredAvailability);
+        return translation()(($) => $.screens.poolAvailabilityCard.readingStoredAvailability);
     switch (refresh.type) {
         case "not_observed":
-            return translation()(($) => $.additional.poolAvailabilityCard.quotaNotObserved);
+            return translation()(($) => $.screens.poolAvailabilityCard.quotaNotObserved);
         case "succeeded":
             return quotaFactMessage("quotaObserved", formatTimestamp(refresh.observed_at));
         case "failed":
@@ -37,10 +37,10 @@ function refreshText(refresh: LastRefresh | null): JSX.Element {
                 reason: translation()(($) => $.quotaMessages.failure[refresh.reason]),
             });
         case "unsupported":
-            return translation()(($) => $.additional.poolAvailabilityCard.quotaReadsUnsupported);
+            return translation()(($) => $.screens.poolAvailabilityCard.quotaReadsUnsupported);
         case "reset":
             return translation()(
-                ($) => $.additional.poolAvailabilityCard.administratorResetRefreshGraceInstalled,
+                ($) => $.screens.poolAvailabilityCard.administratorResetRefreshGraceInstalled,
             );
     }
 }
@@ -169,7 +169,7 @@ export function AccountAvailabilityRow(props: {
                         )}
                         {props.isAccountInspection &&
                         availability().inventory === "model_not_selected"
-                            ? translation()(($) => $.additional.poolAvailabilityCard.accountEnabled)
+                            ? translation()(($) => $.screens.poolAvailabilityCard.accountEnabled)
                             : inventoryLabel(availability().inventory)}
                     </p>
                 </div>
@@ -203,7 +203,7 @@ export function AccountAvailabilityRow(props: {
                 class="mt-3 text-[12.5px] text-ink-dim"
             >
                 {isBusy()
-                    ? translation()(($) => $.additional.poolAvailabilityCard.updatingAvailability)
+                    ? translation()(($) => $.screens.poolAvailabilityCard.updatingAvailability)
                     : refreshText(availability().refresh)}
             </p>
             <Show when={blocks().length > 0}>
@@ -216,9 +216,7 @@ export function AccountAvailabilityRow(props: {
                             <li class="break-words">
                                 <bdi dir="ltr">{block.key.join(" / ")}</bdi> ·{" "}
                                 {block.applies_to.type === "all_models"
-                                    ? translation()(
-                                          ($) => $.additional.poolAvailabilityCard.allModels,
-                                      )
+                                    ? translation()(($) => $.screens.poolAvailabilityCard.allModels)
                                     : quotaFactMessage(
                                           "models",
                                           block.applies_to.upstream_ids.join(", "),
@@ -226,12 +224,12 @@ export function AccountAvailabilityRow(props: {
                                 ·{" "}
                                 {block.blocked_until === null
                                     ? translation()(
-                                          ($) => $.additional.poolAvailabilityCard.resetUnknown,
+                                          ($) => $.screens.poolAvailabilityCard.resetUnknown,
                                       )
                                     : block.blocked_until <= nowMicros()
                                       ? translation()(
                                             ($) =>
-                                                $.additional.poolAvailabilityCard
+                                                $.screens.poolAvailabilityCard
                                                     .resetTimePassedRefreshRequired,
                                         )
                                       : quotaFactMessage(

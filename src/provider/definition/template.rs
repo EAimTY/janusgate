@@ -176,7 +176,10 @@ pub enum TemplateNode {
     /// The codec-rendered upstream inference body.
     Body,
 
-    /// A JSON object whose members render in the carried order.
+    /// A JSON object whose members render in the map's canonical lexicographic name order,
+    /// never the definition document's order: the carried `BTreeMap` iterates sorted, and its
+    /// deserializer folds a repeated member name into its last spelling — so an upstream body
+    /// that depends on member order or repeats one name is unrepresentable, by construction.
     Object {
         /// The members, keyed by name.
         fields: BTreeMap<String, TemplateNode>,

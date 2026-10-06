@@ -178,8 +178,8 @@ export function usageDimensionLabel(
             const field = DIMENSION_KEY_FIELD[dimension];
 
             return bucketKeyField(key[field], field)
-                ? translation()(($) => $.helpers.usageLabels.streamed)
-                : translation()(($) => $.helpers.usageLabels.nonstreamed);
+                ? translation()(($) => $.helpers.usageFilterControls.streamed)
+                : translation()(($) => $.helpers.usageFilterControls.nonstreamed);
         }
 
         case "http_status": {

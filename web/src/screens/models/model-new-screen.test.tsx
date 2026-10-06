@@ -8,6 +8,7 @@ import {
     buttonWithText,
     chooseSelect,
     createDisposals,
+    drainWrites,
     labeledCheckbox,
     labeledInput,
     labeledSelect,
@@ -183,6 +184,66 @@ describe("ModelNewScreen creation", () => {
         typeInto(labeledInput("Upstream ID"), "gpt-4o");
         await settle();
         expect(buttonWithText("Create model").disabled).toBe(false);
+    });
+
+    it("answers a deep link's back door with its provider before the read lands", async () => {
+        // The listing is held back, so the skeleton window stands: the page
+        // must already answer to the provider its link came from, never
+        // announcing the models listing and flipping once the read lands.
+        let releaseListing: ((result: { providers: ProviderResponse[] }) => void) | undefined;
+        const held = new Promise<{
+            providers: ProviderResponse[];
+        }>((resolve) => {
+            releaseListing = resolve;
+        });
+        mountScreen(
+            screenApi(
+                [
+                    providerRow({
+                        id: 3,
+                        name: "alpha",
+                    }),
+                ],
+                {
+                    listing: () => held,
+                },
+            ),
+            3,
+        );
+        await drainWrites();
+
+        expect(linkTo("/providers/3").textContent).toContain("Provider");
+
+        // The read landing with the provider present changes nothing.
+        releaseListing?.({
+            providers: [
+                providerRow({
+                    id: 3,
+                    name: "alpha",
+                }),
+            ],
+        });
+        await settle();
+
+        expect(linkTo("/providers/3").textContent).toContain("Provider");
+    });
+
+    it("downgrades the deep link's back door to the models listing once the read proves the provider absent", async () => {
+        // The route names provider 3, the listing holds only provider 5: the
+        // provider page names no row, so the models listing — filtered to the
+        // named provider — is the honest way back.
+        mountScreen(
+            screenApi([
+                providerRow({
+                    id: 5,
+                    name: "beta",
+                }),
+            ]),
+            3,
+        );
+        await settle();
+
+        expect(linkTo("/models?provider=3").textContent).toContain("Models");
     });
 
     it("prefills the claim's upstream ID and states the claim-back wording", async () => {

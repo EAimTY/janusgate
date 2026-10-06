@@ -104,7 +104,9 @@ pub(crate) struct ProvisioningEnv<'a> {
 /// # Errors
 ///
 /// Returns [`Error`] when a step fails: a transport failure, a rejection, a failed required
-/// extraction, an exhausted poll budget, or a terminal poll failure payload.
+/// extraction, an exhausted poll budget, or a terminal poll failure at the configured error
+/// path. Every failure the stage raises is gateway-authored; upstream response content from a
+/// failure payload stays in the log excerpt alone.
 pub(crate) async fn run_steps(
     http: &Client,
     steps: &[ProvisioningStep],
@@ -195,11 +197,16 @@ async fn run_poll(
         let body =
             control::execute(http, &poll.request, &env, poll.response_encoding, what).await?;
 
-        // A completed operation carrying a terminal failure payload fails the step with that
-        // payload instead of collapsing into a generic missing-done failure.
+        // A completed operation carrying a terminal failure payload fails the step. The payload
+        // is upstream response content: its bounded excerpt is logged for diagnosis, while the
+        // error the stage raises is fully gateway-authored, so the terminal failure pair a
+        // device flow persists (README §3, §7.2) never embeds an upstream body — the contract
+        // the poller's `provisioning_failure_message` renders under.
         if let Some(failure) = error_at(&body, &poll.error_path)? {
+            debug!("provisioning poll {index} failed upstream: {failure}");
+
             return Err(Error::Unavailable {
-                detail: format!("provisioning poll {index} failed upstream: {failure}"),
+                detail: format!("provisioning poll {index} failed upstream"),
             });
         }
 
@@ -276,9 +283,15 @@ fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
 }
 
 /// Reads the failure payload at one error path, when any: on JSON, an object renders its
-/// `status` and `message` members and any other non-`null` value renders verbatim; on the flat
-/// form encoding, the one addressed member renders verbatim — it is already text. An absent or
-/// `null` payload reads as no failure.
+/// `status` and `message` members, a bare string renders its text — never the JSON-quoted
+/// spelling — and any other non-`null` value renders its JSON text; on the flat form encoding,
+/// the one addressed member renders verbatim — it is already text. Every rendering is truncated
+/// to the shared excerpt bound (README §4), so a hostile payload can never stream unbounded
+/// text into a message. An absent or `null` payload reads as no failure.
+///
+/// The rendering is diagnostic text for the log alone: the error the poll raises names the
+/// failed step without embedding it, so no upstream body content can reach a stored terminal
+/// failure (README §3, §7.2).
 fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, Error> {
     /// Known display fields inside an otherwise arbitrary upstream failure fragment.
     #[derive(Deserialize)]
@@ -301,7 +314,7 @@ fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, E
 
     Ok(match value {
         // A form field is already text: the flat encoding's only shape renders verbatim.
-        PollValue::Form(text) => Some(text.to_string()),
+        PollValue::Form(text) => Some(crate::http_body::truncate_excerpt(text)),
 
         PollValue::Json(json) => {
             if json.is_null() {
@@ -312,12 +325,21 @@ fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, E
             let (status, message) = description
                 .map(|description| (description.status, description.message))
                 .unwrap_or_default();
-            Some(match (status, message) {
+
+            let rendered = match (status, message) {
                 (Some(status), Some(message)) => format!("{status}: {message}"),
                 (Some(status), None) => status,
                 (None, Some(message)) => message,
-                (None, None) => json.to_string(),
-            })
+
+                // A bare string renders its text — never the JSON-quoted spelling — and any
+                // other shape renders its JSON text.
+                (None, None) => json
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| json.to_string()),
+            };
+
+            Some(crate::http_body::truncate_excerpt(&rendered))
         }
     })
 }
@@ -520,6 +542,72 @@ mod tests {
         value: &str,
     ) -> Result<(), super::Error> {
         apply_target(state, target, Extracted::Text(value.to_string()))
+    }
+
+    /// The poll failure rendering bounds and shapes the upstream payload (README §4): an
+    /// object renders its `status` and `message` members, a bare JSON string renders its text —
+    /// never the JSON-quoted spelling — any other non-`null` value renders its JSON text, every
+    /// rendering is truncated to the shared excerpt bound, and a `null` payload reads as no
+    /// failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn error_at_renders_json_payloads_bounded_and_unquoted() {
+        let path = ResponsePath(vec!["error".to_string()]);
+
+        let json = |value: serde_json::Value| DecodedBody::Json(value);
+
+        let rendered = error_at(
+            &json(serde_json::json!({
+                "error": {
+                    "status": "quota_exceeded",
+                    "message": "the operation exploded"
+                }
+            })),
+            &path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered.as_deref(),
+            Some("quota_exceeded: the operation exploded"),
+            "an object payload renders its display members"
+        );
+
+        let rendered = error_at(
+            &json(serde_json::json!({"error": "quota went away"})),
+            &path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered.as_deref(),
+            Some("quota went away"),
+            "a bare string renders its text, never the JSON-quoted spelling"
+        );
+
+        let rendered = error_at(&json(serde_json::json!({"error": 42})), &path).unwrap();
+
+        assert_eq!(rendered.as_deref(), Some("42"));
+
+        let rendered = error_at(&json(serde_json::json!({"error": [1, 2]})), &path).unwrap();
+
+        assert_eq!(rendered.as_deref(), Some("[1,2]"));
+
+        let rendered =
+            error_at(&json(serde_json::json!({"error": "x".repeat(500)})), &path).unwrap();
+
+        assert_eq!(
+            rendered.map(|text| text.chars().count()),
+            Some(401),
+            "the rendering is truncated to the shared excerpt bound"
+        );
+
+        let none = error_at(&json(serde_json::json!({"error": null})), &path).unwrap();
+
+        assert_eq!(none, None, "a null payload reads as no failure");
     }
 
     /// A flat form response carries no nesting (README §5.1), so a poll path addressing it

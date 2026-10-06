@@ -210,9 +210,7 @@ async fn handle_update(
 ) -> Result<crate::provider::ProviderDefinition, Error> {
     super::validate_identifier("name", &request.name)?;
 
-    let Some(base_version) = NonZeroI64::new(request.base_version) else {
-        return Err(super::definition_version_invalid("base_version"));
-    };
+    let base_version = super::definition_version(request.base_version, "base_version")?;
 
     request
         .payload
@@ -332,6 +330,40 @@ mod tests {
         ) else {
             panic!("an unrelated storage failure keeps its own classification");
         };
+    }
+
+    /// A non-positive base version renders the shared malformed-parameter rejection — never the
+    /// stale-version conflict against an existing name — because the schema's
+    /// `CHECK version > 0` makes such a version unrepresentable (README §3, §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture fails to insert or a rejection diverges.
+    #[tokio::test]
+    async fn a_non_positive_base_version_renders_the_parameter_rejection() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        for base_version in [0, -3] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the rejection is the documented side of this call"
+            )]
+            let error = handle_update(&database, update_request("static-def", base_version))
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(error, Error::InvalidDefinition(_)),
+                "base version {base_version} rendered a divergent rejection: {error:?}"
+            );
+        }
     }
 
     /// `provider-definitions:update` against an existing name whose stored latest version is

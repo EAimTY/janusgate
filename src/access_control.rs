@@ -14,22 +14,11 @@ pub(crate) enum AccessDecision {
 }
 
 impl AccessDecision {
-    /// Canonical database spelling.
+    /// Canonical database spelling; storage owns the decode side of this vocabulary.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Allow => "allow",
             Self::Deny => "deny",
-        }
-    }
-
-    /// Reads the closed storage vocabulary, treating foreign values as drift.
-    pub(crate) fn from_stored(value: &str) -> Result<Self, crate::storage::Error> {
-        match value {
-            "allow" => Ok(Self::Allow),
-            "deny" => Ok(Self::Deny),
-            _ => Err(crate::storage::Error::Drift {
-                message: format!("unknown access decision `{value}`"),
-            }),
         }
     }
 }

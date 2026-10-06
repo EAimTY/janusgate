@@ -297,19 +297,31 @@ pub(crate) async fn begin_flow(
             // The expiry comes from the response's lifetime, else the definition's explicit
             // fallback. The write-time validation makes a definition carrying neither
             // unrepresentable: a stored-drift definition must fail fast instead of silently
-            // inventing a lifetime.
-            #[expect(
-                clippy::expect_used,
-                reason = "write-time validation requires a reported expiry or the configured \
-                          fallback; a definition with neither is stored drift"
-            )]
-            let expires_in = device
-                .expires_in_seconds
-                .or_else(|| {
-                    expires_in_fallback_seconds
-                        .map(|fallback| i64::try_from(fallback.get()).unwrap_or(i64::MAX))
-                })
-                .expect("device-flow expiry is guaranteed by the write-time validation");
+            // inventing a lifetime. A fallback beyond the `i64` range the database clock
+            // scales it into is the same stored drift — a malformed definition, never a
+            // silently clamped magnitude.
+            let expires_in = match device.expires_in_seconds {
+                Some(expires_in) => expires_in,
+
+                None => {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "write-time validation requires a reported expiry or the \
+                                  configured fallback; a definition with neither is stored \
+                                  drift"
+                    )]
+                    let fallback = expires_in_fallback_seconds
+                        .expect("device-flow expiry is guaranteed by the write-time validation");
+
+                    i64::try_from(fallback.get()).map_err(|_| Error::Unavailable {
+                        detail: format!(
+                            "malformed definition: `expires_in_fallback_seconds` is out of \
+                             range, got {}",
+                            fallback.get()
+                        ),
+                    })?
+                }
+            };
 
             let interval = device
                 .interval_seconds
@@ -670,13 +682,13 @@ mod tests {
     /// request posts the `client_id` form row — RFC 8628 §3.1, and the write boundary requires
     /// it of the fixture's secret-less credential — to the given base and maps the required
     /// codes plus the verification URI, reporting neither `expires_in` nor `interval` — so the
-    /// begin resolves the documented fallbacks, the definition's expiry fallback and the
-    /// five-second RFC 8628 default.
+    /// begin resolves the documented fallbacks, the given expiry fallback and the five-second
+    /// RFC 8628 default.
     ///
     /// # Panics
     ///
     /// Panics when the fixture grant fails to parse — a broken fixture is the failure report.
-    fn device_begin_grant(base: &str) -> Grant {
+    fn device_begin_grant(base: &str, fallback_seconds: u64) -> Grant {
         #[expect(clippy::unwrap_used, reason = "the fixture grant always parses")]
         serde_json::from_value(json!({
             "type": "device",
@@ -709,7 +721,7 @@ mod tests {
                     ]
                 }
             },
-            "expires_in_fallback_seconds": 900
+            "expires_in_fallback_seconds": fallback_seconds
         }))
         .unwrap()
     }
@@ -954,7 +966,7 @@ mod tests {
             panic!("the OAuth fixture payload carries an OAuth credential");
         };
 
-        recipe.grant = device_begin_grant(&exchange_url);
+        recipe.grant = device_begin_grant(&exchange_url, 900);
 
         payload.validate().unwrap();
 
@@ -1031,5 +1043,103 @@ mod tests {
         .expect("the began flow row is persisted");
 
         assert_eq!(stored.id, began.flow.id);
+    }
+
+    /// A device definition whose configured expiry fallback exceeds the database clock's `i64`
+    /// range is stored drift the begin fails fast on (README §5.3): the begin answers the
+    /// malformed definition instead of silently clamping the fallback and persisting an absurd
+    /// expiry.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[tokio::test]
+    async fn a_begin_whose_expiry_fallback_is_out_of_range_fails_as_malformed_definition() {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "device_code": "device-code",
+                "user_code": "user-code",
+                "verification_uri": "https://verify.example",
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let exchange_url = mock.base();
+
+        let mut payload = test_support::oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::Device {
+                has_grant_type_field: true,
+                authorization: OAuthDeviceAuthorizationFixture::default(),
+            },
+            exchange_url: &exchange_url,
+            response_fields: vec![],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::None,
+            provisioning: None,
+        });
+
+        #[expect(
+            clippy::panic,
+            reason = "the fixture payload always carries an OAuth credential"
+        )]
+        let CredentialAcquisition::OAuth(recipe) = &mut payload.credential else {
+            panic!("the OAuth fixture payload carries an OAuth credential");
+        };
+
+        // The response reports no `expires_in`, so the begin consults the configured fallback:
+        // `u64::MAX` parses and passes write-time validation, then exceeds the `i64` range the
+        // database clock scales it into.
+        recipe.grant = device_begin_grant(&exchange_url, u64::MAX);
+
+        payload.validate().unwrap();
+
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = provider_definitions::insert_definition(
+            &database,
+            NewDefinition {
+                name: "device-def",
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(
+            clippy::panic,
+            reason = "an out-of-range fallback clamping silently is the failure report"
+        )]
+        let Err(error) = begin_flow(
+            &database,
+            &crate::http_client::control_plane(),
+            &definition,
+            BeginPurpose::Reauthorize {
+                target_provider_id: 1,
+            },
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        else {
+            panic!("an out-of-range expiry fallback is stored drift");
+        };
+
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("malformed definition"), "{rendered}");
+
+        assert!(
+            rendered.contains("expires_in_fallback_seconds"),
+            "{rendered}"
+        );
+
+        mock.shutdown.send(()).ok();
     }
 }

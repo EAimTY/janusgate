@@ -140,6 +140,10 @@ const korean = {
             name: "이름",
             created: "생성 시각",
             status: "상태",
+            apiKeys: "API 키",
+            createAPIKey: "API 키 만들기",
+            enabled: "사용",
+            disabled: "사용 안 함",
         },
         apiKeyEditScreen: {
             editAPIKey: "API 키 편집",
@@ -152,6 +156,8 @@ const korean = {
             deleteThisKey: "이 키 삭제",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "삭제하면 키가 즉시 폐기되어, 키를 보유한 클라이언트는 401 응답을 받기 시작합니다. 모델 접근 규칙은 제거되고 기록된 사용량은 남습니다.",
+            apiKey: "API 키",
+            showTheCurrentKey: "현재 키 표시",
         },
         apiKeyNewScreen: {
             createAPIKey: "API 키 만들기",
@@ -164,6 +170,7 @@ const korean = {
             enabled: "사용",
             loadModelAccessInventoryBeforeCreatingAKeyMessage:
                 "키를 만들기 전에 모델 접근 목록을 먼저 불러오세요.",
+            creating: "만드는 중…",
         },
         apiKeysScreen: {
             apiKeys: "API 키",
@@ -176,6 +183,8 @@ const korean = {
             searchAPIKeys: "API 키 검색",
             searchByNameOrKey: "이름 또는 키로 검색",
             theSecretHere: "여기의 시크릿",
+            on: "켜짐",
+            off: "꺼짐",
         },
         bulkPublicationScreen: {
             createAliases: "별칭 만들기",
@@ -188,6 +197,16 @@ const korean = {
                 "다른 선택된 행이 이 공개 ID를 사용합니다. 서로 다른 이름을 분명히 지정하세요.",
             openRoute: "라우트 열기",
             createSelectedAliases: "선택한 별칭 만들기",
+            publicIDIsRequiredMessage: "공개 ID는 필수입니다.",
+            noDirectRoutes: "직접 라우트 없음",
+            modelVanishedItsNewRouteWillBeSuspended: "모델이 사라짐 — 새 라우트가 일시 중단됩니다",
+            modelEnabled: "모델 사용 설정됨",
+            modelDisabled: "모델 사용 안 함",
+        },
+        connectionScreen: {
+            showTheTokenWhileTyping: "입력하는 동안 토큰 표시",
+            probingTheGateway: "게이트웨이 확인 중…",
+            connect: "연결",
         },
         homeScreen: {
             overview: "개요",
@@ -229,6 +248,9 @@ const korean = {
             discoverItsModelsFromUpstream: "업스트림에서 모델 탐색",
             issueAnAPIKeyForServingClients: "서비스 클라이언트용 API 키 발급",
             pointAClientAtAnEndpointBelow: "아래 엔드포인트로 클라이언트 지정",
+            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
+                "할당량 가용성은 공개 라우트에서 확인하세요. 이 수치는 저장된 스위치와 모델 목록을 나타냅니다.",
+            noRequestsRecordedMessage: "기록된 요청이 없습니다.",
         },
         modelDetailScreen: {
             model: "모델",
@@ -253,6 +275,16 @@ const korean = {
             provider: "공급자",
             discovery: "탐색",
             status: "상태",
+            models: "모델",
+            overriddenByAdministratorMessage: "관리자가 재정의했습니다.",
+            fromTheLatestDiscoveryMessage: "최근 탐색 결과입니다.",
+            unknownOmittedFromModelListingsMessage: "알 수 없음 — 모델 목록에서 생략됩니다.",
+            noFactOnThisRowTheDefinitionsDeclarationMessage:
+                "이 행에는 정보가 없습니다 — 정의의 선언이 결정합니다.",
+            unknown: "알 수 없음",
+            noAutomaticEntry: "자동 항목 없음",
+            enabled: "사용",
+            disabled: "사용 안 함",
         },
         modelEditScreen: {
             editModel: "모델 편집",
@@ -261,6 +293,7 @@ const korean = {
             deleteThisModel: "이 모델 삭제",
             deletingRemovesThisPhysicalModelAndItsDirectMessage:
                 "삭제하면 이 물리 모델과 그 직접 라우트가 제거됩니다. 계정 풀 라우트는 저장된 상태로 남습니다.",
+            model: "모델",
         },
         modelNewScreen: {
             createModel: "모델 만들기",
@@ -278,6 +311,12 @@ const korean = {
             upstreamID: "업스트림 ID",
             modelSettings: "모델 설정",
             enabled: "사용",
+            aModelBelongsToOneProviderMessage: "필수. 모델은 공급자 하나에 속합니다.",
+            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
+                "필수. 업스트림으로 그대로 전송되며 영문자, 숫자, 기호만 사용할 수 있습니다.",
+            carriedHereFromAModelTheUpstreamNoMessage:
+                "필수. 업스트림이 더 이상 보고하지 않는 모델에서 가져온 값입니다. 제출하면 아래 설정에 따라 그 모델을 되찾아옵니다.",
+            creating: "만드는 중…",
         },
         modelRouteEditorScreen: {
             thisModelNameIsManagedAutomaticallyEditTheMessage:
@@ -297,6 +336,20 @@ const korean = {
                 "모든 구성원에게 요청하는 정확한 식별자입니다. 모델이 없어도 게시는 막지 않습니다.",
             physicalModel: "물리 모델",
             createPublicRoute: "공개 라우트 만들기",
+            editPublicRoute: "공개 라우트 편집",
+            publicRoutes: "공개 라우트",
+            aModelNameMaintainedAutomaticallyByItsProviderMessage:
+                "공급자 또는 계정 풀이 자동으로 관리하는 모델 이름입니다.",
+            clientsRequestThisPublicIDChangingItsTargetMessage:
+                "클라이언트가 이 공개 ID를 요청합니다. 대상을 바꿔도 이 이름은 그대로 유지됩니다.",
+            openPool: "계정 풀 열기",
+            openPhysicalModel: "물리 모델 열기",
+            deleteThisPublicRouteQuestion: "이 공개 라우트를 삭제할까요?",
+            publicIDIsRequiredMessage: "공개 ID는 필수입니다.",
+            directPhysicalModel: "직접 물리 모델",
+            chooseAPool: "계정 풀 선택",
+            upstreamIDIsRequiredMessage: "업스트림 ID는 필수입니다.",
+            chooseAPhysicalModel: "물리 모델 선택",
         },
         modelsScreen: {
             models: "모델",
@@ -314,6 +367,8 @@ const korean = {
             searchModels: "모델 검색",
             searchByUpstreamIDOrProviderName: "업스트림 ID 또는 공급자 이름으로 검색",
             provider: "공급자",
+            noModelsOnAnyProviderYetDiscoverOrMessage:
+                "어떤 공급자에도 아직 모델이 없습니다 — 탐색하거나 하나 추가하세요.",
         },
         notFoundScreen: {
             pageNotFound: "페이지를 찾을 수 없음",
@@ -353,6 +408,15 @@ const korean = {
             storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
                 "저장된 관측값입니다. 새로 고침은 업스트림 계정에 직접 질의합니다. 초기화는 제한을 해제하고 새로 고침 유예를 설정하며, 업스트림 할당량은 초기화하지 않습니다.",
             thisPoolHasNoMembersMessage: "이 계정 풀에는 구성원이 없습니다.",
+            readingStoredAvailability: "저장된 가용성을 읽는 중…",
+            quotaNotObserved: "할당량이 관측되지 않음",
+            quotaReadsUnsupported: "할당량 조회를 지원하지 않음",
+            administratorResetRefreshGraceInstalled: "관리자가 초기화함, 새로 고침 유예 설정됨",
+            accountEnabled: "계정 사용 설정됨",
+            updatingAvailability: "가용성을 업데이트하는 중…",
+            allModels: "모든 모델",
+            resetUnknown: "초기화 시각 알 수 없음",
+            resetTimePassedRefreshRequired: "초기화 시각이 지남, 새로 고침 필요",
         },
         providerDetailScreen: {
             provider: "공급자",
@@ -372,6 +436,17 @@ const korean = {
                 "업스트림에서 탐색했거나 직접 추가한 모델입니다.",
             createModel: "모델 만들기",
             allModels: "모든 모델",
+            providers: "공급자",
+            createProvider: "공급자 만들기",
+            enabled: "사용",
+            disabled: "사용 안 함",
+            theOAuthCredentialsHaveExpiredMessage: "OAuth 자격 증명이 만료되었습니다.",
+            noneExactUpstreamIDs: "없음 — 정확한 업스트림 ID 사용",
+            discovering: "탐색 중…",
+            discoverModels: "모델 탐색",
+            askingTheUpstreamWhatItReports: "업스트림이 보고하는 내용을 묻는 중…",
+            noModelsOnThisProviderYetDiscoverWhatMessage:
+                "이 공급자에는 아직 모델이 없습니다 — 공급자가 보고하는 모델을 탐색하거나 직접 하나 추가하세요.",
         },
         providerEditScreen: {
             editProvider: "공급자 편집",
@@ -382,6 +457,15 @@ const korean = {
             thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
                 "이 공급자의 정의는 기본 URL을 기준으로 요청을 평가합니다 — URL을 복원하거나 되돌리기를 사용하세요.",
             deleteThisProvider: "이 공급자 삭제",
+            provider: "공급자",
+            modelPrefix: "모델 접두사",
+            aProviderNeedsANameMessage: "공급자에는 이름이 필요합니다.",
+            starting: "시작하는 중…",
+            reconnectTheAccount: "계정 다시 연결",
+            replacing: "교체하는 중…",
+            replaceTheCredentials: "자격 증명 교체",
+            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
+                "삭제하면 이 계정과 계정 풀 구성원 자격이 제거됩니다. 이 계정에는 물리 모델이 없습니다.",
         },
         providerNewScreen: {
             createProvider: "공급자 만들기",
@@ -413,6 +497,13 @@ const korean = {
             resetToPreset: "프리셋으로 초기화",
             theConnectionRecipeIsInvalidOpenTheAdvancedMessage:
                 "연결 레시피가 잘못되었습니다. 위의 고급 항목을 열어 문제가 있는 경로를 확인하세요.",
+            modelPrefix: "모델 접두사",
+            creating: "만드는 중…",
+            connecting: "연결하는 중…",
+            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
+                "필수. 이 정의의 요청이 평가 기준으로 삼는 업스트림 주소입니다. 주소가 없으면 게이트웨이는 흐름 시작을 거부합니다.",
+            starting: "시작하는 중…",
+            startTheAuthorization: "인증 시작",
         },
         providerPoolEditorScreen: {
             interchangeableAccountsForTheSameUpstreamServiceTriedMessage:
@@ -438,6 +529,12 @@ const korean = {
             addAccount: "계정 추가",
             addMember: "구성원 추가",
             createPool: "계정 풀 만들기",
+            editPool: "계정 풀 편집",
+            pools: "계정 풀",
+            deleteThisPoolItsMembershipIsRemovedMessage:
+                "이 계정 풀을 삭제할까요? 구성원 자격이 제거됩니다.",
+            nameIsRequiredMessage: "이름은 필수입니다.",
+            chooseAnAccount: "계정 선택",
         },
         providerQuotaCard: {
             upstreamQuota: "업스트림 할당량",
@@ -456,6 +553,15 @@ const korean = {
                 "초기화 시각에 도달했습니다, 새로 고침하여 업데이트하세요",
             theUpstreamReturnedNoQuotaEntriesMessage:
                 "업스트림이 할당량 항목을 반환하지 않았습니다.",
+            periodUnknown: "기간 알 수 없음",
+            monthly: "월간",
+            unknown: "알 수 없음",
+            unlimited: "무제한",
+            resetUnknown: "초기화 시각 알 수 없음",
+            readingQuota: "할당량을 읽는 중…",
+            refreshingQuota: "할당량을 새로 고치는 중…",
+            refreshQuota: "할당량 새로 고침",
+            retryQuota: "할당량 다시 시도",
         },
         providersScreen: {
             providers: "공급자",
@@ -487,6 +593,8 @@ const korean = {
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "물리 모델을 직접 게시하거나, 계정 풀과 정확한 업스트림 ID를 대상으로 지정하세요.",
             automaticPrefix: "자동 · ",
+            on: "켜짐",
+            off: "꺼짐",
         },
         screenFrame: {
             readAgain: "다시 읽기",
@@ -525,6 +633,12 @@ const korean = {
             reasoning: "추론",
             tokenTotalsSkipRowsWhereTheUpstreamReportedMessage:
                 "토큰 합계는 업스트림이 사용량을 보고하지 않은 행을 건너뜁니다. 없는 내역이 합계를 늘리거나 줄이지 않습니다.",
+            querying: "질의하는 중…",
+            runQuery: "질의 실행",
+            noFilterOrBoundNarrowsTheQuestionSoMessage:
+                "필터나 범위가 질의를 좁히지 않으므로, 빈 답변은 게이트웨이의 전체 기록입니다. 아직 사용량이 없습니다.",
+            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
+                "이 필터와 일치하는 기록이 없습니다. 범위를 넓히거나 필터를 제거하거나 필터 없이 질의하세요. 필터 지우기는 위 양식에 있습니다.",
         },
         usageScreen: {
             usage: "사용량",
@@ -544,6 +658,18 @@ const korean = {
             filtersStayBehind: " — 기간과 나머지 모든 필터는 여기에 남습니다.",
             streamMark: " · 스트리밍",
             thisRowIsNoLongerListed: "이 행은 더 이상 목록에 없습니다.",
+            reading: "읽는 중…",
+            applyFilters: "필터 적용",
+            widenTheWindowDropAFilterOrReadMessage:
+                "기간을 넓히거나, 필터를 제거하거나, 스트림 전체를 읽으세요. 필터 지우기는 위 양식에 있습니다.",
+            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
+                "게이트웨이의 필터는 행을 찾을 뿐 값을 검증하지 않으므로, 알 수 없는 ID나 기록된 적 없는 상태는 그저 아무것도 일치하지 않습니다.",
+            thatIsEveryRowThisFilterMatchesMessage: "이 필터와 일치하는 모든 행입니다.",
+            thatIsEveryRecordedRowMessage: "기록된 모든 행입니다.",
+            aReadCycleIsReplacingTheStreamExtendMessage:
+                "읽기 주기가 스트림을 교체하는 중입니다 — 주기가 끝난 뒤 더 불러오세요.",
+            loading: "불러오는 중…",
+            loadMore: "더 불러오기",
         },
         usageStats: {
             usage: "사용량",
@@ -664,251 +790,6 @@ const korean = {
         managementToken: "관리 토큰을 입력하세요.",
         nameEmpty: "이름은 비워 둘 수 없습니다.",
     },
-    additional: {
-        app: {
-            readThisScreensStateFromTheGatewayAgain:
-                "게이트웨이에서 이 화면의 상태를 다시 읽습니다",
-            thisScreenReadsNothingFromTheGatewaySo:
-                "이 화면은 게이트웨이에서 아무것도 읽지 않으므로 새로 고칠 내용이 없습니다",
-            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
-                "연결을 끊고 저장된 토큰을 지울까요? 다시 연결하려면 토큰을 다시 입력해야 합니다.",
-        },
-        apiKeyAccess: {
-            allow: "허용",
-            deny: "거부",
-            provider: "공급자",
-            pool: "계정 풀",
-            automatic: "자동",
-            alias: "별칭",
-        },
-        apiKeyForm: {
-            whichClientHoldsThisKeyMessage: "필수. 이 키를 사용하는 클라이언트입니다.",
-            aServingClientAuthenticatesWithItOnEveryMessage:
-                "필수. 서비스 클라이언트가 모든 인터페이스에서 이 키로 인증합니다.",
-        },
-        clipboard: {
-            copyToClipboard: "클립보드에 복사",
-            copied: "복사됨",
-            copy: "복사",
-            theValueHere: "여기의 값",
-        },
-        confirmDeleteCard: {
-            deleting: "삭제 중…",
-            deleteForGood: "완전히 삭제",
-        },
-        dirtyFormFooter: {
-            saving: "저장 중…",
-            saveChanges: "변경 사항 저장",
-        },
-        layout: {
-            back: "뒤로",
-        },
-        modelForm: {
-            followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage:
-                "탐색 값을 따르는 중 — 현재 알 수 없어 목록에서 생략됩니다.",
-            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
-                "탐색 값을 따르는 중 — 현재 알려진 값이 없어 정의의 선언이 결정합니다.",
-        },
-        providerForm: {
-            verifiedLive: "실시간 확인됨",
-            unverified: "미확인",
-            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
-                "필수. 이 정의의 요청이 향하는 업스트림 주소입니다.",
-            upstreamAPIKey: "업스트림 API 키",
-            sentUpstreamWithEveryRequestNeverReturnedByMessage:
-                "필수. 모든 요청과 함께 업스트림으로 전송됩니다. 게이트웨이는 값을 반환하지 않습니다.",
-            showTheAPIKeyWhileTyping: "입력하는 동안 API 키 표시",
-        },
-        providersTable: {
-            on: "켜짐",
-            off: "꺼짐",
-        },
-        usageFilterControls: {
-            allEndpoints: "모든 엔드포인트",
-        },
-        apiKeyDetailScreen: {
-            apiKeys: "API 키",
-            apiKey: "API 키",
-            createAPIKey: "API 키 만들기",
-            enabled: "사용",
-            disabled: "사용 안 함",
-        },
-        apiKeyEditScreen: {
-            apiKey: "API 키",
-            editAPIKey: "API 키 편집",
-            showTheCurrentKey: "현재 키 표시",
-        },
-        apiKeyNewScreen: {
-            creating: "만드는 중…",
-            createAPIKey: "API 키 만들기",
-        },
-        apiKeysScreen: {
-            on: "켜짐",
-            off: "꺼짐",
-        },
-        bulkPublicationScreen: {
-            publicIDIsRequiredMessage: "공개 ID는 필수입니다.",
-            noDirectRoutes: "직접 라우트 없음",
-            modelVanishedItsNewRouteWillBeSuspended: "모델이 사라짐 — 새 라우트가 일시 중단됩니다",
-            modelEnabled: "모델 사용 설정됨",
-            modelDisabled: "모델 사용 안 함",
-        },
-        connectionScreen: {
-            showTheTokenWhileTyping: "입력하는 동안 토큰 표시",
-            probingTheGateway: "게이트웨이 확인 중…",
-            connect: "연결",
-        },
-        homeScreen: {
-            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
-                "할당량 가용성은 공개 라우트에서 확인하세요. 이 수치는 저장된 스위치와 모델 목록을 나타냅니다.",
-            noRequestsRecordedMessage: "기록된 요청이 없습니다.",
-        },
-        modelDetailScreen: {
-            models: "모델",
-            model: "모델",
-            overriddenByAdministratorMessage: "관리자가 재정의했습니다.",
-            fromTheLatestDiscoveryMessage: "최근 탐색 결과입니다.",
-            unknownOmittedFromModelListingsMessage: "알 수 없음 — 모델 목록에서 생략됩니다.",
-            noFactOnThisRowTheDefinitionsDeclarationMessage:
-                "이 행에는 정보가 없습니다 — 정의의 선언이 결정합니다.",
-            unknown: "알 수 없음",
-            noAutomaticEntry: "자동 항목 없음",
-            enabled: "사용",
-            disabled: "사용 안 함",
-        },
-        modelEditScreen: {
-            model: "모델",
-            editModel: "모델 편집",
-        },
-        modelNewScreen: {
-            aModelBelongsToOneProviderMessage: "필수. 모델은 공급자 하나에 속합니다.",
-            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
-                "필수. 업스트림으로 그대로 전송되며 영문자, 숫자, 기호만 사용할 수 있습니다.",
-            carriedHereFromAModelTheUpstreamNoMessage:
-                "필수. 업스트림이 더 이상 보고하지 않는 모델에서 가져온 값입니다. 제출하면 아래 설정에 따라 그 모델을 되찾아옵니다.",
-            creating: "만드는 중…",
-            createModel: "모델 만들기",
-        },
-        modelRouteEditorScreen: {
-            createPublicRoute: "공개 라우트 만들기",
-            editPublicRoute: "공개 라우트 편집",
-            publicRoutes: "공개 라우트",
-            aModelNameMaintainedAutomaticallyByItsProviderMessage:
-                "공급자 또는 계정 풀이 자동으로 관리하는 모델 이름입니다.",
-            clientsRequestThisPublicIDChangingItsTargetMessage:
-                "클라이언트가 이 공개 ID를 요청합니다. 대상을 바꿔도 이 이름은 그대로 유지됩니다.",
-            openPool: "계정 풀 열기",
-            openPhysicalModel: "물리 모델 열기",
-            deleteThisPublicRoute: "이 공개 라우트를 삭제할까요?",
-            publicIDIsRequiredMessage: "공개 ID는 필수입니다.",
-            publicID: "공개 ID",
-            directPhysicalModel: "직접 물리 모델",
-            pool: "계정 풀",
-            chooseAPool: "계정 풀 선택",
-            upstreamIDIsRequiredMessage: "업스트림 ID는 필수입니다.",
-            upstreamID: "업스트림 ID",
-            chooseAPhysicalModel: "물리 모델 선택",
-        },
-        modelsScreen: {
-            noModelsOnAnyProviderYetDiscoverOrMessage:
-                "어떤 공급자에도 아직 모델이 없습니다 — 탐색하거나 하나 추가하세요.",
-        },
-        poolAvailabilityCard: {
-            readingStoredAvailability: "저장된 가용성을 읽는 중…",
-            quotaNotObserved: "할당량이 관측되지 않음",
-            quotaReadsUnsupported: "할당량 조회를 지원하지 않음",
-            administratorResetRefreshGraceInstalled: "관리자가 초기화함, 새로 고침 유예 설정됨",
-            accountEnabled: "계정 사용 설정됨",
-            updatingAvailability: "가용성을 업데이트하는 중…",
-            allModels: "모든 모델",
-            resetUnknown: "초기화 시각 알 수 없음",
-            resetTimePassedRefreshRequired: "초기화 시각이 지남, 새로 고침 필요",
-        },
-        providerDetailScreen: {
-            providers: "공급자",
-            provider: "공급자",
-            createProvider: "공급자 만들기",
-            enabled: "사용",
-            disabled: "사용 안 함",
-            theOAuthCredentialsHaveExpiredMessage: "OAuth 자격 증명이 만료되었습니다.",
-            noneExactUpstreamIDs: "없음 — 정확한 업스트림 ID 사용",
-            discovering: "탐색 중…",
-            discoverModels: "모델 탐색",
-            askingTheUpstreamWhatItReports: "업스트림이 보고하는 내용을 묻는 중…",
-            noModelsOnThisProviderYetDiscoverWhatMessage:
-                "이 공급자에는 아직 모델이 없습니다 — 공급자가 보고하는 모델을 탐색하거나 직접 하나 추가하세요.",
-        },
-        providerEditScreen: {
-            provider: "공급자",
-            editProvider: "공급자 편집",
-            modelPrefix: "모델 접두사",
-            aProviderNeedsANameMessage: "공급자에는 이름이 필요합니다.",
-            starting: "시작하는 중…",
-            reconnectTheAccount: "계정 다시 연결",
-            replacing: "교체하는 중…",
-            replaceTheCredentials: "자격 증명 교체",
-            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
-                "삭제하면 이 계정과 계정 풀 구성원 자격이 제거됩니다. 이 계정에는 물리 모델이 없습니다.",
-        },
-        providerNewScreen: {
-            modelPrefix: "모델 접두사",
-            creating: "만드는 중…",
-            createProvider: "공급자 만들기",
-            connecting: "연결하는 중…",
-            connectTheAccount: "계정 연결",
-            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
-                "필수. 이 정의의 요청이 평가 기준으로 삼는 업스트림 주소입니다. 주소가 없으면 게이트웨이는 흐름 시작을 거부합니다.",
-            starting: "시작하는 중…",
-            startTheAuthorization: "인증 시작",
-        },
-        providerPoolEditorScreen: {
-            createPool: "계정 풀 만들기",
-            editPool: "계정 풀 편집",
-            pools: "계정 풀",
-            deleteThisPoolItsMembershipIsRemovedMessage:
-                "이 계정 풀을 삭제할까요? 구성원 자격이 제거됩니다.",
-            nameIsRequiredMessage: "이름은 필수입니다.",
-            modelPrefix: "모델 접두사",
-            chooseAnAccount: "계정 선택",
-        },
-        providerQuotaCard: {
-            periodUnknown: "기간 알 수 없음",
-            monthly: "월간",
-            unknown: "알 수 없음",
-            unlimited: "무제한",
-            resetUnknown: "초기화 시각 알 수 없음",
-            readingQuota: "할당량을 읽는 중…",
-            refreshingQuota: "할당량을 새로 고치는 중…",
-            refreshQuota: "할당량 새로 고침",
-            retryQuota: "할당량 다시 시도",
-        },
-        routingListsScreen: {
-            on: "켜짐",
-            off: "꺼짐",
-        },
-        usageQueryScreen: {
-            querying: "질의하는 중…",
-            runQuery: "질의 실행",
-            noFilterOrBoundNarrowsTheQuestionSoMessage:
-                "필터나 범위가 질의를 좁히지 않으므로, 빈 답변은 게이트웨이의 전체 기록입니다. 아직 사용량이 없습니다.",
-            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
-                "이 필터와 일치하는 기록이 없습니다. 범위를 넓히거나 필터를 제거하거나 필터 없이 질의하세요. 필터 지우기는 위 양식에 있습니다.",
-        },
-        usageScreen: {
-            reading: "읽는 중…",
-            applyFilters: "필터 적용",
-            widenTheWindowDropAFilterOrReadMessage:
-                "기간을 넓히거나, 필터를 제거하거나, 스트림 전체를 읽으세요. 필터 지우기는 위 양식에 있습니다.",
-            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
-                "게이트웨이의 필터는 행을 찾을 뿐 값을 검증하지 않으므로, 알 수 없는 ID나 기록된 적 없는 상태는 그저 아무것도 일치하지 않습니다.",
-            thatIsEveryRowThisFilterMatchesMessage: "이 필터와 일치하는 모든 행입니다.",
-            thatIsEveryRecordedRowMessage: "기록된 모든 행입니다.",
-            aReadCycleIsReplacingTheStreamExtendMessage:
-                "읽기 주기가 스트림을 교체하는 중입니다 — 주기가 끝난 뒤 더 불러오세요.",
-            loading: "불러오는 중…",
-            loadMore: "더 불러오기",
-        },
-    },
     operationNotices: {
         flowFailed: "흐름이 실패했습니다.",
         freshFlow: "새 흐름을 시작하고 신속히 인증하세요.",
@@ -1002,14 +883,54 @@ const korean = {
             theGatewayHoldsNoProviderHereItWasDeletedOrTheAddressWasTyped:
                 "게이트웨이에 이 공급자가 없습니다. 삭제되었거나 주소를 잘못 입력했습니다. 이 페이지에서는 되돌릴 수 없습니다.",
         },
-        usageLabels: {
-            streamed: "스트리밍",
-            nonstreamed: "비스트리밍",
+        app: {
+            readThisScreensStateFromTheGatewayAgain:
+                "게이트웨이에서 이 화면의 상태를 다시 읽습니다",
+            thisScreenReadsNothingFromTheGatewaySo:
+                "이 화면은 게이트웨이에서 아무것도 읽지 않으므로 새로 고칠 내용이 없습니다",
+            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
+                "연결을 끊고 저장된 토큰을 지울까요? 다시 연결하려면 토큰을 다시 입력해야 합니다.",
+        },
+        apiKeyForm: {
+            whichClientHoldsThisKeyMessage: "필수. 이 키를 사용하는 클라이언트입니다.",
+            aServingClientAuthenticatesWithItOnEveryMessage:
+                "필수. 서비스 클라이언트가 모든 인터페이스에서 이 키로 인증합니다.",
+        },
+        clipboard: {
+            copyToClipboard: "클립보드에 복사",
+            copied: "복사됨",
+            copy: "복사",
+            theValueHere: "여기의 값",
+        },
+        confirmDeleteCard: {
+            deleting: "삭제 중…",
+            deleteForGood: "완전히 삭제",
+        },
+        dirtyFormFooter: {
+            saving: "저장 중…",
+            saveChanges: "변경 사항 저장",
+        },
+        layout: {
+            back: "뒤로",
+        },
+        providerForm: {
+            verifiedLive: "실시간 확인됨",
+            unverified: "미확인",
+            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
+                "필수. 이 정의의 요청이 향하는 업스트림 주소입니다.",
+            upstreamAPIKey: "업스트림 API 키",
+            sentUpstreamWithEveryRequestNeverReturnedByMessage:
+                "필수. 모든 요청과 함께 업스트림으로 전송됩니다. 게이트웨이는 값을 반환하지 않습니다.",
+            showTheAPIKeyWhileTyping: "입력하는 동안 API 키 표시",
         },
         apiKeyAccess: {
             inherit: "상속",
             allow: "허용",
             deny: "거부",
+            provider: "공급자",
+            pool: "계정 풀",
+            automatic: "자동",
+            alias: "별칭",
         },
         modelForm: {
             followingDiscoveryCurrentlyDeclaresNoLevels:
@@ -1021,6 +942,8 @@ const korean = {
             replacesTheDiscoveredValueWithAPositiveInteger: "탐색된 값을 양의 정수로 대체합니다.",
             unset: "설정 안 됨",
             discoveredNothingKnown: "탐색 결과: 알려진 내용 없음.",
+            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
+                "탐색 값을 따르는 중 — 현재 알려진 값이 없어 정의의 선언이 결정합니다.",
         },
         modelsTable: {
             ready: "준비됨",
@@ -1035,6 +958,8 @@ const korean = {
             valid: "유효",
             expired: "만료됨",
             stale: "오래됨",
+            on: "켜짐",
+            off: "꺼짐",
         },
         usageFilterControls: {
             allOutcomes: "모든 결과",
@@ -1042,6 +967,7 @@ const korean = {
             any: "전체",
             streamed: "스트리밍",
             nonstreamed: "비스트리밍",
+            allEndpoints: "모든 엔드포인트",
         },
         usageFilter: {
             allTime: "전체 기간",
@@ -1130,6 +1056,7 @@ const korean = {
         enabledStored: "저장된 {{total}}개 중 사용 설정 개수",
         readyListed: "나열된 {{total}}개 중 준비 개수",
         copyEndpoint: "{{surface}} 엔드포인트 URL 복사",
+        copyApiKeySecret: "{{name}}의 시크릿 복사",
         disabledCredential:
             "{{expiry}} 공급자가 사용 안 함 상태입니다 — 다시 사용 설정할 때 다시 연결하세요.",
         noKeysDetail:

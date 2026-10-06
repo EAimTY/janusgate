@@ -234,7 +234,7 @@ async fn walk_pages(
 /// The environment one discovery request carries: the current secret, the stored slots, and the
 /// stored base URL.
 fn discovery_env(provider: &Provider) -> ValueEnv<'_> {
-    ValueEnv::for_discovery(
+    ValueEnv::for_stored_credential(
         provider.credentials.slots(),
         provider.base_url.as_deref(),
         provider.credentials.secret(),
@@ -669,7 +669,7 @@ mod tests {
         let base_url: &'static str = Box::leak(base_url.to_string().into_boxed_str());
         let slots: &'static BTreeMap<String, String> = Box::leak(Box::new(BTreeMap::new()));
 
-        ValueEnv::for_discovery(slots, Some(base_url), "secret")
+        ValueEnv::for_stored_credential(slots, Some(base_url), "secret")
     }
 
     /// Maps one discovery outcome to its identifiers, in order.

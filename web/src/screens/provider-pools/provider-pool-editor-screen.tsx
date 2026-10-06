@@ -100,19 +100,17 @@ export function ProviderPoolEditorScreen(props: {
                 <PageHeader
                     title={
                         props.poolId === null
-                            ? translation()(($) => $.additional.providerPoolEditorScreen.createPool)
-                            : translation()(($) => $.additional.providerPoolEditorScreen.editPool)
+                            ? translation()(($) => $.screens.providerPoolEditorScreen.createPool)
+                            : translation()(($) => $.screens.providerPoolEditorScreen.editPool)
                     }
                     backHref={hrefs.providerPools()}
-                    backLabel={translation()(($) => $.additional.providerPoolEditorScreen.pools)}
+                    backLabel={translation()(($) => $.screens.providerPoolEditorScreen.pools)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="pool"
-                    headerTitle={translation()(
-                        ($) => $.additional.providerPoolEditorScreen.editPool,
-                    )}
+                    headerTitle={translation()(($) => $.screens.providerPoolEditorScreen.editPool)}
                 />
             }
         >
@@ -123,7 +121,7 @@ export function ProviderPoolEditorScreen(props: {
                             title={
                                 pool.id === null
                                     ? translation()(
-                                          ($) => $.additional.providerPoolEditorScreen.createPool,
+                                          ($) => $.screens.providerPoolEditorScreen.createPool,
                                       )
                                     : editNameMessage(pool.name)
                             }
@@ -134,7 +132,7 @@ export function ProviderPoolEditorScreen(props: {
                             )}
                             backHref={hrefs.providerPools()}
                             backLabel={translation()(
-                                ($) => $.additional.providerPoolEditorScreen.pools,
+                                ($) => $.screens.providerPoolEditorScreen.pools,
                             )}
                         />
                         <HoldNotice
@@ -217,8 +215,7 @@ function PoolDelete(props: {
             )}
             question={translation()(
                 ($) =>
-                    $.additional.providerPoolEditorScreen
-                        .deleteThisPoolItsMembershipIsRemovedMessage,
+                    $.screens.providerPoolEditorScreen.deleteThisPoolItsMembershipIsRemovedMessage,
             )}
             onConfirm={remove}
         />
@@ -243,6 +240,10 @@ function PoolForm(props: {
     const [isEnabled, setIsEnabled] = createSignal(props.seed.is_enabled);
     const [members, setMembers] = createSignal(props.seed.members);
     const [selectedAccount, setSelectedAccount] = createSignal("");
+    // The name's error is stated only once the field has received input — a
+    // pristine form is not an error (the app's lazy-error convention); the
+    // save gate holds the action until the name stands.
+    const [hasNameInput, setHasNameInput] = createSignal(false);
     const desired = (): PoolSeed => ({
         id: baseline().id,
         name: name(),
@@ -372,12 +373,14 @@ function PoolForm(props: {
                 <TextField
                     label={translation()(($) => $.screens.providerPoolEditorScreen.name)}
                     value={name()}
-                    onInput={setName}
+                    onInput={(value) => {
+                        setHasNameInput(true);
+                        setName(value);
+                    }}
                     error={
-                        name() === ""
+                        hasNameInput() && name() === ""
                             ? translation()(
-                                  ($) =>
-                                      $.additional.providerPoolEditorScreen.nameIsRequiredMessage,
+                                  ($) => $.screens.providerPoolEditorScreen.nameIsRequiredMessage,
                               )
                             : null
                     }
@@ -422,10 +425,21 @@ function PoolForm(props: {
                                         </span>
                                     </span>
                                     <div class="flex shrink-0 flex-wrap gap-2">
+                                        {/* Every member row repeats the same visible
+                                            labels, so each button carries the
+                                            member-qualified name as its accessible
+                                            name — the same sentence its tooltip
+                                            states. */}
                                         <Button
                                             title={translation()(($) => $.domainMessages.moveUp, {
                                                 name: accountName(member.provider_id),
                                             })}
+                                            ariaLabel={translation()(
+                                                ($) => $.domainMessages.moveUp,
+                                                {
+                                                    name: accountName(member.provider_id),
+                                                },
+                                            )}
                                             isDisabled={form.isSaving() || index() === 0}
                                             onClick={() => move(index(), -1)}
                                         >
@@ -437,6 +451,12 @@ function PoolForm(props: {
                                             title={translation()(($) => $.domainMessages.moveDown, {
                                                 name: accountName(member.provider_id),
                                             })}
+                                            ariaLabel={translation()(
+                                                ($) => $.domainMessages.moveDown,
+                                                {
+                                                    name: accountName(member.provider_id),
+                                                },
+                                            )}
                                             isDisabled={
                                                 form.isSaving() || index() === members().length - 1
                                             }
@@ -450,6 +470,12 @@ function PoolForm(props: {
                                             title={translation()(($) => $.domainMessages.remove, {
                                                 name: accountName(member.provider_id),
                                             })}
+                                            ariaLabel={translation()(
+                                                ($) => $.domainMessages.remove,
+                                                {
+                                                    name: accountName(member.provider_id),
+                                                },
+                                            )}
                                             isDisabled={form.isSaving()}
                                             onClick={() =>
                                                 setMembers(
@@ -477,7 +503,7 @@ function PoolForm(props: {
                             addableAccounts(),
                             (provider) => provider.name,
                             translation()(
-                                ($) => $.additional.providerPoolEditorScreen.chooseAnAccount,
+                                ($) => $.screens.providerPoolEditorScreen.chooseAnAccount,
                             ),
                         )}
                         onChange={setSelectedAccount}

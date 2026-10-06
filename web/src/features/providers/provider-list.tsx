@@ -43,8 +43,8 @@ function ProviderRow(props: {
                             tone={props.provider.is_enabled ? "ok" : "muted"}
                             label={
                                 props.provider.is_enabled
-                                    ? translation()(($) => $.additional.providersTable.on)
-                                    : translation()(($) => $.additional.providersTable.off)
+                                    ? translation()(($) => $.helpers.providersTable.on)
+                                    : translation()(($) => $.helpers.providersTable.off)
                             }
                         />
                         <Show when={credential()}>

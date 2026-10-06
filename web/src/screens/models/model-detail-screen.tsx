@@ -55,17 +55,15 @@ function provenanceLabel(source: CapabilitySource, unknownWording?: string): str
     switch (source) {
         case "override":
             return translation()(
-                ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
+                ($) => $.screens.modelDetailScreen.overriddenByAdministratorMessage,
             );
         case "discovered":
-            return translation()(
-                ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
-            );
+            return translation()(($) => $.screens.modelDetailScreen.fromTheLatestDiscoveryMessage);
         case "unknown":
             return (
                 unknownWording ??
                 translation()(
-                    ($) => $.additional.modelDetailScreen.unknownOmittedFromModelListingsMessage,
+                    ($) => $.screens.modelDetailScreen.unknownOmittedFromModelListingsMessage,
                 )
             );
     }
@@ -128,13 +126,13 @@ export function ModelDetailScreen(props: {
                 <PageHeader
                     title={translation()(($) => $.screens.modelDetailScreen.model)}
                     backHref={hrefs.models(null)}
-                    backLabel={translation()(($) => $.additional.modelDetailScreen.models)}
+                    backLabel={translation()(($) => $.screens.modelDetailScreen.models)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="model"
-                    headerTitle={translation()(($) => $.additional.modelDetailScreen.model)}
+                    headerTitle={translation()(($) => $.screens.modelDetailScreen.model)}
                 />
             }
         >
@@ -184,8 +182,7 @@ function CapabilityFacts(props: {
         provenanceLabel(
             fact.source,
             translation()(
-                ($) =>
-                    $.additional.modelDetailScreen.noFactOnThisRowTheDefinitionsDeclarationMessage,
+                ($) => $.screens.modelDetailScreen.noFactOnThisRowTheDefinitionsDeclarationMessage,
             ),
         );
 
@@ -193,7 +190,7 @@ function CapabilityFacts(props: {
         const effective = levels();
 
         if (effective === null) {
-            return translation()(($) => $.additional.modelDetailScreen.unknown);
+            return translation()(($) => $.screens.modelDetailScreen.unknown);
         }
 
         return effective.length === 0
@@ -350,8 +347,7 @@ function ModelFacts(props: {
                         value={
                             automaticModelNames(props.model, props.modelRoutes, props.pools).join(
                                 ", ",
-                            ) ||
-                            translation()(($) => $.additional.modelDetailScreen.noAutomaticEntry)
+                            ) || translation()(($) => $.screens.modelDetailScreen.noAutomaticEntry)
                         }
                         isTabular
                         class="break-all"
@@ -402,8 +398,8 @@ function ModelFacts(props: {
                         label={translation()(($) => $.screens.modelDetailScreen.status)}
                         value={
                             props.model.is_enabled
-                                ? translation()(($) => $.additional.modelDetailScreen.enabled)
-                                : translation()(($) => $.additional.modelDetailScreen.disabled)
+                                ? translation()(($) => $.screens.modelDetailScreen.enabled)
+                                : translation()(($) => $.screens.modelDetailScreen.disabled)
                         }
                     />
                 </FactList>

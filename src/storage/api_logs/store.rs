@@ -13,7 +13,7 @@ use std::{future::Future, num::NonZero, path::PathBuf, sync::Arc, time::Duration
 use time::{Date, Month};
 
 /// Microseconds in one UTC day: the width of one api-log file's partition.
-pub(super) const MICROS_PER_DAY: i64 = 86_400_000_000;
+const MICROS_PER_DAY: i64 = 86_400_000_000;
 
 /// The Julian Day Number of the Unix epoch, 1970-01-01: the fixed offset between [`Date`]'s
 /// Julian-day mapping and Unix epoch days.

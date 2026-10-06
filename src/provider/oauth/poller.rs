@@ -381,8 +381,14 @@ async fn schedule_retry(
 /// Schedules the next attempt while the caller still owns its claim: `delay_seconds` sets the
 /// next attempt instant and `interval_seconds` is the flow interval persisted as the stored
 /// schedule. The two differ only on a transport-timeout backoff, whose doubling is transient.
-/// A lost claim is ordinary contention: the winning poller owns the schedule, so the discard is
-/// logged and ignored.
+/// A lost claim — the persist matching no row — is ordinary contention: the winning poller
+/// owns the schedule, so the discard is logged and ignored.
+///
+/// # Errors
+///
+/// Returns [`storage::Error`] when the persist fails or [`Error::Internal`] when the claimed
+/// flow carries no claim stamp — a claimed flow always does, the same stored drift
+/// [`checkpoint_completed_exchange`] fatalizes.
 async fn schedule_retry_at(
     database: &Database,
     flow: &OngoingFlow,
@@ -390,7 +396,9 @@ async fn schedule_retry_at(
     delay_seconds: i64,
 ) -> Result<(), Error> {
     let Some(claim) = flow.device_poll_started_at else {
-        return Ok(());
+        return Err(Error::Internal {
+            message: "the claimed flow carries no claim stamp".to_string(),
+        });
     };
 
     let next_poll_at = next_poll_instant(delay_seconds)?;
@@ -434,6 +442,12 @@ fn next_poll_instant(interval_seconds: i64) -> Result<i64, Error> {
 /// flow expires. The caller passes the stamp its persist must compare-set against: the held
 /// claim, or — on a path that already ran [`storage::oauth_flows::restamp_claim`] — the fresh
 /// stamp the re-stamp produced, since the superseded pre-restamp stamp matches no row.
+///
+/// # Errors
+///
+/// Returns [`storage::Error`] when the persist fails or [`Error::Internal`] when the claimed
+/// flow carries no claim stamp — a claimed flow always does, the same stored drift
+/// [`checkpoint_completed_exchange`] fatalizes.
 async fn persist_terminal(
     database: &Database,
     flow: &OngoingFlow,
@@ -442,7 +456,9 @@ async fn persist_terminal(
     message: &str,
 ) -> Result<(), Error> {
     let Some(claim) = claim_started_at else {
-        return Ok(());
+        return Err(Error::Internal {
+            message: "the claimed flow carries no claim stamp".to_string(),
+        });
     };
 
     let is_persisted = storage::oauth_flows::persist_device_poll(
@@ -687,9 +703,10 @@ fn is_timeout(error: &Error) -> bool {
 }
 
 /// The gateway-owned terminal message one completion-pipeline failure stores (README §7.2):
-/// the error's own rendering — transport, mapping, and drift details are gateway-authored —
-/// except [`Error::Rejected`], whose `Display` embeds the truncated upstream body excerpt; it
-/// renders from the status alone, so no upstream body content ever lands in a terminal result.
+/// the error's own rendering — transport, mapping, drift, and provisioning-poll details are
+/// gateway-authored at their source — except [`Error::Rejected`], whose `Display` embeds the
+/// truncated upstream body excerpt; it renders from the status alone, so no upstream body
+/// content ever lands in a terminal result.
 fn provisioning_failure_message(error: &Error) -> String {
     match error {
         Error::Rejected { status, .. } => {
@@ -1261,6 +1278,11 @@ mod tests {
         /// One step with no extractions, succeeding against any mock response: the window
         /// between the commit's pre-check and the provider write spans a real HTTP round-trip.
         Succeeding,
+
+        /// One step whose poll's first response carries a terminal failure payload at the
+        /// configured error path: the poll fails on the payload immediately, never reaching its
+        /// done path.
+        PollFailure,
     }
 
     impl ProvisioningFixture {
@@ -1268,6 +1290,29 @@ mod tests {
         fn steps(self, token_url: &str) -> Option<serde_json::Value> {
             match self {
                 Self::None => None,
+
+                Self::PollFailure => Some(serde_json::json!([
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": [{"type": "literal",
+                                     "value": format!("{token_url}/provision")}]
+                        },
+                        "response_encoding": "json",
+                        "poll": {
+                            "request": {
+                                "method": "GET",
+                                "url": [{"type": "literal",
+                                         "value": format!("{token_url}/provision/status")}]
+                            },
+                            "response_encoding": "json",
+                            "done_path": ["done"],
+                            "error_path": ["error"],
+                            "interval_ms": 1,
+                            "budget_ms": 1000
+                        }
+                    }
+                ])),
 
                 Self::Failing => Some(serde_json::json!([
                     {
@@ -1906,6 +1951,101 @@ mod tests {
                 "Upstream request failed: provisioning response lacks the required path ",
                 r#"["machine"]"#
             ))
+        );
+
+        // The terminal persist released the claim stamp.
+        assert_eq!(
+            settled.device_poll_started_at, None,
+            "the persisted terminal outcome clears the claim stamp"
+        );
+
+        // The terminal row is unclaimable, so the poll loop can never re-run the exchange.
+        #[expect(clippy::unwrap_used, reason = "the claim query executes")]
+        let reclaims = claim_due_device_flow(
+            &database,
+            now + 60 * crate::unix_time::MICROS_PER_SEC,
+            now + 30 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            reclaims.is_none(),
+            "a terminal flow is never re-claimed for another exchange"
+        );
+
+        // The failed provisioning never wrote the provider.
+        assert!(
+            storage::providers::find_provider(&database, "created")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        mock.shutdown.send(()).ok();
+    }
+
+    /// A provisioning poll that completes with a terminal failure payload at its configured
+    /// error path fails the flow with the gateway-owned `provisioning_failed` pair whose
+    /// message is fully gateway-authored (README §3, §7.2): the payload the error path carries
+    /// is upstream response content, so it never lands in the stored terminal failure — the
+    /// gateway names the failed poll alone.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_poll_failure_payload_fails_the_flow_with_a_gateway_authored_message() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The exchange's response maps the access token; the provisioning step succeeds, and
+        // the poll's first response carries the terminal failure payload at the error path.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&serde_json::json!({"access_token": "exchange-token"})).unwrap(),
+            serde_json::to_string(&serde_json::json!({})).unwrap(),
+            serde_json::to_string(&serde_json::json!({
+                "done": false,
+                "error": {
+                    "status": "quota_exceeded",
+                    "message": "the operation exploded badly"
+                }
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            &mock.base(),
+            ProvisioningFixture::PollFailure,
+            vec![],
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        process(&database, &http_client::control_plane(), &claimed)
+            .await
+            .unwrap();
+
+        let settled = settled_flow(&database, now).await;
+
+        // The gateway-owned terminal pair, carrying none of the upstream payload.
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("provisioning_failed"));
+        assert_eq!(
+            settled.failure_message.as_deref(),
+            Some("Upstream request failed: provisioning poll 0 failed upstream"),
         );
 
         // The terminal persist released the claim stamp.

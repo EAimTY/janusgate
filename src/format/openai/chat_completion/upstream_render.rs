@@ -6,10 +6,11 @@
 
 use crate::{
     format::openai::{ToolChoice, render_tool_choice},
-    ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrRole},
+    ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole},
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// The upstream Chat Completions request payload.
 #[derive(Debug, Serialize)]
@@ -77,7 +78,7 @@ enum Message<'a> {
     /// A user turn.
     User {
         /// The user content parts.
-        content: Vec<UserContentPart>,
+        content: Vec<UserContentPart<'a>>,
     },
 
     /// An assistant turn.
@@ -100,28 +101,43 @@ enum Message<'a> {
     },
 }
 
-/// One user content part.
+/// One user content part, borrowing the request's text and remote image URLs; only an inline
+/// image owns its synthesized data URL.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum UserContentPart {
+enum UserContentPart<'a> {
     /// Plain text.
     Text {
         /// The text content.
-        text: String,
+        text: &'a str,
     },
 
     /// An image reference.
     ImageUrl {
         /// The image URL.
-        image_url: ImageUrl,
+        image_url: ImageUrl<'a>,
     },
 }
 
 /// The image URL object of an image content part.
 #[derive(Debug, Serialize)]
-struct ImageUrl {
-    /// Inline data URL or remote `http`/`https` URL (README §6.6).
-    url: String,
+struct ImageUrl<'a> {
+    /// Inline data URL or remote `http`/`https` URL (README §6.6), borrowed verbatim for a
+    /// remote image.
+    url: Cow<'a, str>,
+}
+
+/// Renders an image into the OpenAI `image_url` string: a remote URL borrows verbatim, and only
+/// inline data synthesizes its data URL — the inverse of [`IrImage::from_url`].
+fn image_url(image: &IrImage) -> Cow<'_, str> {
+    match image {
+        IrImage::Url(url) => Cow::Borrowed(url),
+
+        IrImage::Inline {
+            mime_type,
+            data_base64,
+        } => Cow::Owned(format!("data:{mime_type};base64,{data_base64}")),
+    }
 }
 
 /// One assistant tool call.
@@ -248,15 +264,15 @@ pub(crate) fn render_request_body(
     for message in &ir.messages {
         match message.role {
             IrRole::User => {
-                let content: Vec<UserContentPart> = message
+                let content: Vec<UserContentPart<'_>> = message
                     .parts
                     .iter()
                     .filter_map(|part| match part {
-                        IrPart::Text { text } => Some(UserContentPart::Text { text: text.clone() }),
+                        IrPart::Text { text } => Some(UserContentPart::Text { text }),
 
                         IrPart::Image { image } => Some(UserContentPart::ImageUrl {
                             image_url: ImageUrl {
-                                url: image.to_url(),
+                                url: image_url(image),
                             },
                         }),
 

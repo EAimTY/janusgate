@@ -65,6 +65,12 @@ function isSameIdentity(before: Identity, after: Identity): boolean {
 export function createProviderQuotaView(props: {
     readonly api: Accessor<ManagementApi>;
     readonly provider: Accessor<ProviderResponse | null>;
+    /**
+     * Called once a quota observation succeeds (README §6.3.1): the
+     * observation reads independently of every other card, so the consumer
+     * may stamp the shell's freshness (§6.1) but must never re-run another
+     * read. A failed or superseded observation never calls it.
+     */
     readonly onQuotaReadComplete?: () => void;
 }): ProviderQuotaView {
     const [state, setState] = createSignal<QuotaViewState>({
@@ -145,25 +151,30 @@ export function createProviderQuotaView(props: {
                           },
                       },
             );
-        } else {
-            setState(
-                outcome.result === null
-                    ? {
-                          type: "unsupported",
-                      }
-                    : outcome.result === undefined
-                      ? {
-                            type: "unobserved",
-                        }
-                      : {
-                            type: "ready",
-                            snapshot: outcome.result,
-                            refresh: {
-                                type: "idle",
-                            },
-                        },
-            );
+            return;
         }
+        setState(
+            outcome.result === null
+                ? {
+                      type: "unsupported",
+                  }
+                : outcome.result === undefined
+                  ? {
+                        type: "unobserved",
+                    }
+                  : {
+                        type: "ready",
+                        snapshot: outcome.result,
+                        refresh: {
+                            type: "idle",
+                        },
+                    },
+        );
+        // A completed read is the card's own business, but a succeeded quota
+        // observation is a successful read of gateway-visible state: the
+        // consumer may stamp the shell's freshness with it (README §6.1). A
+        // failed observation states its diagnosis here and never reports — a
+        // failure re-runs nothing and stamps nothing.
         if (shouldReadQuota && hasResolvedCapability) props.onQuotaReadComplete?.();
     };
 

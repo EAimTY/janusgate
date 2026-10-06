@@ -66,6 +66,33 @@ function isSameFieldValue<TRow extends object, TFieldKey extends keyof TRow>(
 }
 
 /**
+ * Whether two nullable record maps carry the same entries: `null` meets only
+ * `null`, and two records meet when they name the same keys with equal
+ * values — key order never carries facts. The response parsers rebuild these
+ * maps as fresh objects on every read, so instance identity can never hold
+ * and content is the only equality that keeps a row's identity.
+ */
+function isSameNullableRecord<TValue extends string>(
+    previous: {
+        [key: string]: TValue;
+    } | null,
+    fresh: {
+        [key: string]: TValue;
+    } | null,
+): boolean {
+    if (previous === null || fresh === null) {
+        return previous === fresh;
+    }
+
+    const previousKeys = Object.keys(previous);
+
+    return (
+        previousKeys.length === Object.keys(fresh).length &&
+        previousKeys.every((key) => previous[key] === fresh[key])
+    );
+}
+
+/**
  * Whether a fresh read answers the same provider row the screen already
  * holds, content and all. An equal row keeps its identity, so a refresh that
  * changes nothing never remounts — and never resets — a form opened on the
@@ -75,7 +102,16 @@ export function isSameProviderRow(previous: ProviderResponse, fresh: ProviderRes
     return isSameRowFields(previous, fresh);
 }
 
-/** Whether a fresh read answers the same model row, content and all. */
+/**
+ * Whether a fresh read answers the same model row, content and all. The two
+ * compaction-facts columns are plain maps the response parser rebuilds fresh
+ * per read, so they compare by their entries — the walk's reference default
+ * would read every content-equal re-read as changed and remount the row body
+ * on each refresh.
+ */
 export function isSameModelRow(previous: ModelResponse, fresh: ModelResponse): boolean {
-    return isSameRowFields(previous, fresh);
+    return isSameRowFields(previous, fresh, {
+        compaction_support: isSameNullableRecord,
+        compaction_support_override: isSameNullableRecord,
+    });
 }

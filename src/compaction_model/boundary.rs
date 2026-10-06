@@ -116,6 +116,13 @@ const fn is_null_no_op(boundary: &CompactionBoundary) -> bool {
 
 /// Target-independent authentication and latest usable boundary selection for one request.
 /// It performs no account lookup, upstream I/O, or history materialization.
+///
+/// Supersession is positional: a boundary occupies its message offset, and its
+/// own state-item slot orders it within that offset — state items the
+/// boundary's encounter order precedes (at an earlier offset, or at the same
+/// offset with an earlier vector index) are covered and superseded by it, while
+/// the items that follow it are the fresh suffix state the restored window
+/// renders. The routing projection filters state by the same ordering.
 #[derive(Default)]
 pub(crate) struct BoundaryPreparation {
     /// Latest authenticated non-no-op boundary; superseded decoded content is discarded.
@@ -186,7 +193,63 @@ pub(crate) enum ActiveBoundary<'a> {
     },
 }
 
+/// The state-item vector indices of the request's compaction artifacts, in
+/// boundary order: the i-th compaction-typed state item is the i-th parsed
+/// boundary, both pushed in encounter order by the codecs.
+///
+/// # Panics
+///
+/// Panics if an accepted state item fails to deserialize its typed
+/// discriminator — impossible, the codecs serialize the first-party shape.
+fn compaction_state_slots(ir: &crate::ir::IrRequest) -> Vec<usize> {
+    ir.state_items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, state)| {
+            #[expect(
+                clippy::expect_used,
+                reason = "accepted codec state has a typed discriminator"
+            )]
+            let discriminator: StateDiscriminator =
+                StateDiscriminator::deserialize(&state.item).expect("accepted state has a type");
+
+            matches!(discriminator, StateDiscriminator::Compaction).then_some(index)
+        })
+        .collect()
+}
+
 impl BoundaryPreparation {
+    /// The active boundary's own state-item slot: the vector index of the
+    /// state item the boundary was parsed from, ordering it among the state
+    /// items that share its message offset. Restoration supersedes
+    /// same-offset state by this slot, matching the routing projection's
+    /// vector filter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the active boundary has no recorded state slot — the parser
+    /// records each compaction state item its boundary was parsed from.
+    pub(crate) fn active_state_slot(&self, ir: &crate::ir::IrRequest) -> usize {
+        let slots = compaction_state_slots(ir);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "restoration runs only against an active boundary, which authenticate \
+                      always pairs with its parsed boundary"
+        )]
+        let boundary_index = self
+            .active_index
+            .expect("the active boundary has a parsed boundary");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the parser records each compaction state slot"
+        )]
+        *slots
+            .get(boundary_index)
+            .expect("the active boundary has a state slot")
+    }
+
     /// The latest authenticated usable boundary, when one stands.
     pub(crate) fn active(&self) -> Option<ActiveBoundary<'_>> {
         Some(match self.active.as_ref()? {
@@ -218,22 +281,7 @@ impl BoundaryPreparation {
     ) -> Result<RoutingPreparation, BoundaryError> {
         let mut projector = Projector::new();
         let compaction = parsed.compaction.as_ref();
-        let slots: Vec<_> = parsed
-            .ir
-            .state_items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, state)| {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "accepted codec state has a typed discriminator"
-                )]
-                let discriminator: StateDiscriminator =
-                    StateDiscriminator::deserialize(&state.item)
-                        .expect("accepted state has a type");
-                matches!(discriminator, StateDiscriminator::Compaction).then_some(index)
-            })
-            .collect();
+        let slots = compaction_state_slots(&parsed.ir);
         let first_message = match self.active.as_ref() {
             Some(
                 PreparedBoundary::Gateway { offset, .. } | PreparedBoundary::Native { offset, .. },

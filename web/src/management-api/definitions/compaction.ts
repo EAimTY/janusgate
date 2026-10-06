@@ -9,7 +9,6 @@ import type {
     RideAlongDeclaration,
     StandaloneCompactDeclaration,
     StandaloneCompactOperation,
-    TemplateNode,
     UnsupportedClassifier,
     UpstreamFormat,
 } from "../generated/v0";
@@ -18,13 +17,20 @@ import {
     expectBoolean,
     expectDeclaredKeys,
     expectInteger,
+    expectNonEmptyString,
     expectOneOf,
+    expectPositiveInteger,
     expectRecord,
     expectString,
     isPresentValue,
 } from "../validation-primitives";
 import type { CompactionMechanism } from "../vocabulary";
-import { expectParamRows, expectStringExpr, expectTemplateNode } from "./expressions";
+import {
+    countTemplateBodyNodes,
+    expectHeaderRows,
+    expectStringExpr,
+    expectTemplateNode,
+} from "./expressions";
 
 /** The tagged compaction strategy a definition follows (README §5). */
 function expectCompactionStrategy(value: unknown, context: string): CompactionStrategy {
@@ -58,17 +64,6 @@ function expectDefaultSupport(value: unknown, context: string): MechanismSupport
         context,
         "a mechanism support state",
     );
-}
-
-/** One gateway budget: a positive integer, the wire mirror of a `NonZero` count. */
-function expectBudget(value: unknown, context: string): number {
-    const budget = expectInteger(value, context);
-
-    if (budget <= 0) {
-        throw new ContractViolationError(`${context} must be a positive integer`);
-    }
-
-    return budget;
 }
 
 /**
@@ -145,36 +140,6 @@ function expectUnsupportedClassifier(value: unknown, context: string): Unsupport
 }
 
 /**
- * Counts the body placeholders of one template tree, naming an empty
- * object-member name on the way — the same walk the gateway's operation
- * validation performs over an envelope.
- */
-function countBodyNodes(node: TemplateNode, context: string): number {
-    switch (node.type) {
-        case "json":
-        case "string":
-            return 0;
-        case "body":
-            return 1;
-        case "object":
-            return Object.entries(node.fields).reduce((total, [name, field]) => {
-                if (name === "") {
-                    throw new ContractViolationError(
-                        `${context}.fields carries an empty object member name`,
-                    );
-                }
-
-                return total + countBodyNodes(field, `${context}.fields.${name}`);
-            }, 0);
-        case "array":
-            return node.items.reduce(
-                (total, item, index) => total + countBodyNodes(item, `${context}.items[${index}]`),
-                0,
-            );
-    }
-}
-
-/**
  * One operation-shaped connection surface's shared members (README §5): the
  * non-empty URL, the header rows, the envelope carrying exactly one body
  * placeholder, and the response-unwrap member — the browser-side mirror of
@@ -201,14 +166,14 @@ function expectOperationConnection(
     const headers = Reflect.get(record, "headers");
 
     if (headers !== undefined) {
-        connection.headers = expectParamRows(headers, `${context}.headers`);
+        connection.headers = expectHeaderRows(headers, `${context}.headers`);
     }
 
     const envelope = Reflect.get(record, "envelope");
 
     if (isPresentValue(envelope)) {
         const node = expectTemplateNode(envelope, `${context}.envelope`);
-        const bodyCount = countBodyNodes(node, `${context}.envelope`);
+        const bodyCount = countTemplateBodyNodes(node);
 
         if (bodyCount !== 1) {
             throw new ContractViolationError(
@@ -222,13 +187,10 @@ function expectOperationConnection(
     const responseUnwrap = Reflect.get(record, "response_unwrap");
 
     if (isPresentValue(responseUnwrap)) {
-        const unwrapped = expectString(responseUnwrap, `${context}.response_unwrap`);
-
-        if (unwrapped === "") {
-            throw new ContractViolationError(`${context}.response_unwrap must not be empty`);
-        }
-
-        connection.response_unwrap = unwrapped;
+        connection.response_unwrap = expectNonEmptyString(
+            responseUnwrap,
+            `${context}.response_unwrap`,
+        );
     }
 
     return connection;
@@ -404,7 +366,10 @@ function expectOverlayDeclaration(
     const overlayHeaders = Reflect.get(record, "overlay_headers");
 
     if (isPresentValue(overlayHeaders)) {
-        declaration.overlay_headers = expectParamRows(overlayHeaders, `${context}.overlay_headers`);
+        declaration.overlay_headers = expectHeaderRows(
+            overlayHeaders,
+            `${context}.overlay_headers`,
+        );
     }
 
     const unsupported = Reflect.get(record, "unsupported");
@@ -563,11 +528,11 @@ export function expectCompactionSection(
         summary_budget:
             summaryBudget === undefined
                 ? 4096
-                : expectBudget(summaryBudget, `${context}.summary_budget`),
+                : expectPositiveInteger(summaryBudget, `${context}.summary_budget`),
         retention_budget:
             retentionBudget === undefined
                 ? 8192
-                : expectBudget(retentionBudget, `${context}.retention_budget`),
+                : expectPositiveInteger(retentionBudget, `${context}.retention_budget`),
         can_export_native_summary:
             canExportNativeSummary === undefined
                 ? false

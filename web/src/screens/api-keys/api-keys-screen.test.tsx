@@ -95,4 +95,23 @@ describe("ApiKeysScreen count line", () => {
         expect(bodyText()).toContain('No API keys match "zzz"');
         expect(bodyText()).not.toContain("keys enabled");
     });
+
+    it("names each row's copy button after the key it copies", async () => {
+        mount();
+        await settle();
+
+        // Every row repeats the visible Copy label, so the accessible name —
+        // not the shared label — is what tells the keys apart.
+        const labels = Array.from(
+            document.querySelectorAll('button[aria-label^="Copy the secret of "]'),
+        ).map((button) => button.getAttribute("aria-label"));
+
+        expect(labels).toEqual([
+            "Copy the secret of alpha-on",
+            "Copy the secret of beta-off",
+            "Copy the secret of gamma-off",
+            "Copy the secret of delta-on",
+            "Copy the secret of epsilon-off",
+        ]);
+    });
 });

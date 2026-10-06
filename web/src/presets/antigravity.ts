@@ -14,7 +14,7 @@ import {
     slot,
     tokenExchangeResponse,
 } from "./expressions";
-import { field, numberField } from "./quota-helpers";
+import { ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for antigravity. */
@@ -77,35 +77,25 @@ export const antigravityPreset: ProviderPreset = {
                         type: "map_key",
                     },
                     entries: [
-                        {
+                        ratioEntry({
                             key: "usage",
-                            routing: {
-                                type: "monitoring_only",
-                            },
                             label: "Model allowance",
                             at: [
                                 "quotaInfo",
                             ],
-                            is_required: false,
+                            valuePath: [
+                                "remainingFraction",
+                            ],
+                            scale: "fraction",
+                            direction: "remaining",
                             window: {
                                 type: "unknown",
                             },
-                            measurement: {
-                                type: "ratio",
-                                value: numberField([
-                                    "remainingFraction",
-                                ]),
-                                scale: "fraction",
-                                direction: "remaining",
-                            },
-                            reset: {
-                                type: "field",
-                                field: field([
-                                    "resetTime",
-                                ]),
-                                encoding: "rfc3339",
-                            },
-                        },
+                            resetPath: [
+                                "resetTime",
+                            ],
+                            resetEncoding: "rfc3339",
+                        }),
                     ],
                 },
             ],

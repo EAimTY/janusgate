@@ -82,13 +82,13 @@ export function ModelEditScreen(props: {
                 <PageHeader
                     title={translation()(($) => $.screens.modelEditScreen.editModel)}
                     backHref={hrefs.modelDetail(props.modelId)}
-                    backLabel={translation()(($) => $.additional.modelEditScreen.model)}
+                    backLabel={translation()(($) => $.screens.modelEditScreen.model)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="model"
-                    headerTitle={translation()(($) => $.additional.modelEditScreen.editModel)}
+                    headerTitle={translation()(($) => $.screens.modelEditScreen.editModel)}
                 />
             }
         >
@@ -97,7 +97,7 @@ export function ModelEditScreen(props: {
                     <PageHeader
                         title={editIdentifierMessage(row.upstream_id)}
                         backHref={hrefs.modelDetail(row.id)}
-                        backLabel={translation()(($) => $.additional.modelEditScreen.model)}
+                        backLabel={translation()(($) => $.screens.modelEditScreen.model)}
                     />
 
                     {/* The suspension the detail page states, restated here

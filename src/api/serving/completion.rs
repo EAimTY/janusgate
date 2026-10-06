@@ -1,8 +1,8 @@
 //! Completion parsing, route selection, compaction coordination, and concrete artifact rendering.
 
 use super::delivery::{
-    AggregationRender, CheckpointPrefix, detached_aggregation, finalize_buffered,
-    prerendered_sse_response, sse_response,
+    AggregationRender, CheckpointPrefix, complete_accepted_json, detached_aggregation,
+    finalize_buffered, prerendered_sse_response, sse_response,
 };
 use crate::{
     accounting::ApiLogEndpointType,
@@ -447,7 +447,7 @@ where
                 accounting: &mut guard,
                 render: &mut render,
             },
-            parsed.clone(),
+            &parsed,
             routing,
         )
         .await;
@@ -481,29 +481,27 @@ where
 /// Resolves and renders one compaction attempt, with errors owned by the outer accounting guard.
 async fn run_compaction_pipeline_inner<TFormat>(
     pipeline: &mut Pipeline<'_>,
-    parsed: crate::format::ParsedRequest,
+    parsed: &crate::format::ParsedRequest,
     routing: crate::provider::ModelRouting,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
     TFormat::JsonResponse: Serialize,
 {
-    let surface = compaction_surface(&parsed);
+    let surface = compaction_surface(parsed);
 
     // The ledger's billed totals stamp the accounting row for every outcome
     // that carries one; the executor has already recorded each dispatch into
     // it (README §6.8).
-    let stamp_billed = |draft: &mut ApiLogDraft, ledger: Option<&CompactionLedger>| {
-        if let Some(ledger) = ledger {
-            draft.stamp_billed_usage(ledger.reported_billed_totals());
-        }
+    let stamp_billed = |draft: &mut ApiLogDraft, ledger: &CompactionLedger| {
+        draft.stamp_billed_usage(ledger.reported_billed_totals());
     };
 
     if surface == CompactionSurface::Messages {
         let outcome = executor::execute_messages_request(
             pipeline.context,
             &routing,
-            &parsed,
+            parsed,
             pipeline.preparation,
             pipeline.accounting.draft_mut(),
             Some(&mut pipeline.selection.ownership),
@@ -522,8 +520,7 @@ where
                     ..CompactionDispatch::default()
                 };
 
-                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed.clone())
-                    .await
+                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed).await
             }
 
             MessagesOuterOutcome::CompactionOnly {
@@ -532,7 +529,7 @@ where
                 iterations,
                 ledger,
             } => {
-                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), &ledger);
 
                 let affinity = pipeline.selection.accepted().map(|accepted| {
                     accepted.completed_prefix(
@@ -560,7 +557,7 @@ where
                 aggregation,
                 ledger,
             } => {
-                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), &ledger);
 
                 let affinity = pipeline.selection.accepted();
                 aggregated_artifact_response::<TFormat>(pipeline, &aggregation, affinity)
@@ -574,7 +571,7 @@ where
                 iterations,
                 ledger,
             } => {
-                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), &ledger);
 
                 checkpoint_completion::<TFormat>(
                     pipeline,
@@ -593,7 +590,7 @@ where
         let outcome = executor::execute_responses_request(
             pipeline.context,
             &routing,
-            &parsed,
+            parsed,
             pipeline.preparation,
             pipeline.accounting.draft_mut(),
             Some(&mut pipeline.selection.ownership),
@@ -612,8 +609,7 @@ where
                     ..CompactionDispatch::default()
                 };
 
-                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed.clone())
-                    .await
+                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed).await
             }
 
             ResponsesOuterOutcome::CompactionOnly {
@@ -622,7 +618,7 @@ where
                 usage,
                 ledger,
             } => {
-                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), &ledger);
 
                 let response = compaction_only_responses_response(pipeline, &items, usage)?;
                 pipeline
@@ -635,7 +631,7 @@ where
                 aggregation,
                 ledger,
             } => {
-                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), &ledger);
                 let affinity = pipeline.selection.accepted();
                 aggregated_artifact_response::<TFormat>(pipeline, &aggregation, affinity)
             }
@@ -647,7 +643,7 @@ where
                 overlay_headers,
                 ledger,
             } => {
-                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), &ledger);
 
                 checkpoint_completion::<TFormat>(
                     pipeline,
@@ -670,13 +666,13 @@ where
 /// dispatch extension the executor resolved (passthrough controls, replay
 /// overlays — empty for a plain replay). A native-unsupported upstream
 /// rejection falls back to the gateway summary on the same account and
-/// recurses into the pipeline with the fallback request.
+/// recurses into the pipeline over the same parsed request.
 async fn ordinary_completion<TFormat>(
     pipeline: &mut Pipeline<'_>,
     routing: crate::provider::ModelRouting,
     ir: crate::ir::IrRequest,
     dispatch: CompactionDispatch,
-    fallback_request: ParsedRequest,
+    parsed: &ParsedRequest,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
@@ -712,10 +708,7 @@ where
             } else {
                 None
             };
-            if crate::compaction::native::classify_failure(classifier, status, &message)
-                .await
-                .is_some()
-            {
+            if crate::compaction::native::classify_failure(classifier, status, &message).is_some() {
                 let mut fallback_routing = routing;
                 if let Some(section) = &mut fallback_routing.provider.definition.payload.compaction
                 {
@@ -724,7 +717,7 @@ where
                 }
                 return Box::pin(run_compaction_pipeline_inner::<TFormat>(
                     pipeline,
-                    fallback_request,
+                    parsed,
                     fallback_routing,
                 ))
                 .await;
@@ -735,15 +728,12 @@ where
     };
 
     if is_streaming {
-        let is_threshold = fallback_request
-            .compaction
-            .as_ref()
-            .is_some_and(|compaction| {
-                matches!(
-                    compaction.control,
-                    Some(CompactionControl::MessagesThreshold { .. })
-                )
-            });
+        let is_threshold = parsed.compaction.as_ref().is_some_and(|compaction| {
+            matches!(
+                compaction.control,
+                Some(CompactionControl::MessagesThreshold { .. })
+            )
+        });
         let renderer: Box<dyn ClientSseRenderer + Send> = if is_threshold {
             Box::new(
                 crate::format::anthropic::messages::SseRenderer::new(
@@ -933,11 +923,11 @@ fn compaction_only_responses_response(
         let frames =
             render_trigger_stream_frames(pipeline.render.public_id.clone(), items.to_vec(), usage);
 
-        prerendered_sse_response(
+        Ok(prerendered_sse_response(
             frames,
             pipeline.context.api_log_store.clone(),
             pipeline.accounting.take(),
-        )
+        ))
     } else {
         let aggregation = IrAggregation {
             usage: Some(usage),
@@ -1054,7 +1044,7 @@ where
         // without gateway-fabricated iteration entries.
         let body = TFormat::render_json_response(&public_id, aggregation);
         if let Some(affinity) = &mut affinity {
-            affinity.complete_json::<TFormat>(&body);
+            complete_accepted_json::<TFormat>(affinity, &body);
         }
         Ok(finalize_buffered(
             pipeline.context.api_log_store.clone(),

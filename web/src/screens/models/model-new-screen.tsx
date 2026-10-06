@@ -60,15 +60,30 @@ export function ModelNewScreen(props: {
             : (providers().find((row) => row.id === props.providerFilter) ?? null),
     );
 
-    const backHref = (): string => {
-        const fixed = fixedProvider();
+    // Whether the read has proven the route-named provider absent. Only a
+    // landed read may say so — an in-flight or failed one proves nothing —
+    // and until then the page answers to the provider its link came from.
+    const isProviderAbsent = (): boolean =>
+        read.hasRead() && props.providerFilter !== null && fixedProvider() === null;
 
-        return fixed === null ? hrefs.models(props.providerFilter) : hrefs.providerDetail(fixed.id);
+    // The back door is seeded from the route: a deep link naming a provider
+    // opens with that provider's page as its way back — the page the link
+    // was taken on — instead of announcing the models listing during the
+    // skeleton and flipping once the listing installs. The models listing
+    // takes over only once a read proves the named provider absent.
+    const backHref = (): string => {
+        if (props.providerFilter === null) {
+            return hrefs.models(null);
+        }
+
+        return isProviderAbsent()
+            ? hrefs.models(props.providerFilter)
+            : hrefs.providerDetail(props.providerFilter);
     };
     const backLabel = (): string =>
-        fixedProvider() === null
-            ? translation()(($) => $.screens.modelNewScreen.models)
-            : translation()(($) => $.screens.modelNewScreen.provider);
+        props.providerFilter !== null && !isProviderAbsent()
+            ? translation()(($) => $.screens.modelNewScreen.provider)
+            : translation()(($) => $.screens.modelNewScreen.models);
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -254,7 +269,7 @@ function ModelCreateForm(props: {
                                     isDisabled={create.isCreating()}
                                     hint={translation()(
                                         ($) =>
-                                            $.additional.modelNewScreen
+                                            $.screens.modelNewScreen
                                                 .aModelBelongsToOneProviderMessage,
                                     )}
                                 />
@@ -280,12 +295,12 @@ function ModelCreateForm(props: {
                                 props.initialUpstreamId === null
                                     ? translation()(
                                           ($) =>
-                                              $.additional.modelNewScreen
+                                              $.screens.modelNewScreen
                                                   .sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage,
                                       )
                                     : translation()(
                                           ($) =>
-                                              $.additional.modelNewScreen
+                                              $.screens.modelNewScreen
                                                   .carriedHereFromAModelTheUpstreamNoMessage,
                                       )
                             }
@@ -363,8 +378,8 @@ function ModelCreateForm(props: {
                                 isBusy={create.isCreating()}
                             >
                                 {create.isCreating()
-                                    ? translation()(($) => $.additional.modelNewScreen.creating)
-                                    : translation()(($) => $.additional.modelNewScreen.createModel)}
+                                    ? translation()(($) => $.screens.modelNewScreen.creating)
+                                    : translation()(($) => $.screens.modelNewScreen.createModel)}
                             </Button>
                         </div>
                     </div>

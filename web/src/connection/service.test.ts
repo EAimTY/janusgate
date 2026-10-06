@@ -119,6 +119,98 @@ describe("createConnectionService", () => {
         expect(service.currentConnection()).toBeNull();
     });
 
+    it("cancels the probe in flight into a clean setup, never a refusal", async () => {
+        const storage = createStorage();
+        const signals: Array<AbortSignal> = [];
+
+        const service = createConnectionService({
+            storage,
+            // The transport hangs until its signal fires, so only the
+            // service's cancel channel can end the attempt.
+            probe: (_candidate, signal) =>
+                new Promise<void>((_resolve, reject) => {
+                    signals.push(signal);
+                    signal.addEventListener("abort", () => reject(signal.reason));
+                }),
+        });
+
+        const attempt = service.connect(connection);
+        service.cancelConnect();
+        await attempt;
+
+        expect(signals).toHaveLength(1);
+        expect(signals[0]?.aborted).toBe(true);
+
+        // The cancelled attempt persists nothing and carries no failure: the
+        // machine records a cancellation, so setup reopens pristine instead
+        // of seeding a refusal no gateway produced.
+        expect(readStoredConnection(storage)).toBeNull();
+
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            failure: null,
+            forgottenBaseUrl: null,
+        });
+    });
+
+    it("lands a transport answer that rides through the cancel as a cancellation", async () => {
+        const storage = createStorage();
+
+        const service = createConnectionService({
+            storage,
+            // A transport that cannot abort may still answer after the
+            // cancel: the operator's word stands either way.
+            probe: (_candidate, signal) =>
+                new Promise<void>((resolve) => {
+                    signal.addEventListener("abort", () => setTimeout(resolve, 0));
+                }),
+        });
+
+        const attempt = service.connect(connection);
+        service.cancelConnect();
+        await attempt;
+
+        expect(readStoredConnection(storage)).toBeNull();
+
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            failure: null,
+            forgottenBaseUrl: null,
+        });
+    });
+
+    it("treats a transport abort the service did not order as a refusal", async () => {
+        const storage = createStorage();
+        // The probe's own deadline aborts against the transport, while the
+        // service's cancel channel stays clean: the attempt fails like any
+        // refusal instead of reading as a cancellation.
+        const timeout = new DOMException("The operation timed out.", "TimeoutError");
+
+        const service = createConnectionService({
+            storage,
+            probe: async () => {
+                throw timeout;
+            },
+        });
+
+        await service.connect(connection);
+
+        expect(readStoredConnection(storage)).toBeNull();
+
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            failure: expect.objectContaining({
+                // The message carries the diagnosis whatever the environment's
+                // rendering of the abort (jsdom's DOMException is not an Error,
+                // so the failure's message derives from its string form).
+                message: expect.stringContaining("The operation timed out."),
+                cause: timeout,
+                baseUrl: connection.baseUrl,
+            }),
+            forgottenBaseUrl: null,
+        });
+    });
+
     it("never probes while a connection is being verified or already held", async () => {
         const storage = createStorage();
         let probeCount = 0;

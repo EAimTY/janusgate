@@ -210,8 +210,8 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                             isBusy={create.isCreating()}
                         >
                             {create.isCreating()
-                                ? translation()(($) => $.additional.apiKeyNewScreen.creating)
-                                : translation()(($) => $.additional.apiKeyNewScreen.createAPIKey)}
+                                ? translation()(($) => $.screens.apiKeyNewScreen.creating)
+                                : translation()(($) => $.screens.apiKeyNewScreen.createAPIKey)}
                         </Button>
                     </div>
                 </form>

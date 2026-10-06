@@ -508,8 +508,8 @@ export function UsageQueryScreen(props: {
                             isDisabled={!isFormValid()}
                         >
                             {isQuerying()
-                                ? translation()(($) => $.additional.usageQueryScreen.querying)
-                                : translation()(($) => $.additional.usageQueryScreen.runQuery)}
+                                ? translation()(($) => $.screens.usageQueryScreen.querying)
+                                : translation()(($) => $.screens.usageQueryScreen.runQuery)}
                         </Button>
                         <Show when={isAnyFilterSet()}>
                             <Button
@@ -550,7 +550,7 @@ export function UsageQueryScreen(props: {
                                     )}
                                     detail={translation()(
                                         ($) =>
-                                            $.additional.usageQueryScreen
+                                            $.screens.usageQueryScreen
                                                 .noFilterOrBoundNarrowsTheQuestionSoMessage,
                                     )}
                                 />
@@ -563,7 +563,7 @@ export function UsageQueryScreen(props: {
                                 )}
                                 detail={translation()(
                                     ($) =>
-                                        $.additional.usageQueryScreen
+                                        $.screens.usageQueryScreen
                                             .nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage,
                                 )}
                             />

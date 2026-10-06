@@ -141,6 +141,10 @@ const english = {
             name: "Name",
             created: "Created",
             status: "Status",
+            apiKeys: "API keys",
+            createAPIKey: "Create API key",
+            enabled: "Enabled",
+            disabled: "Disabled",
         },
         apiKeyEditScreen: {
             editAPIKey: "Edit API key",
@@ -153,6 +157,8 @@ const english = {
             deleteThisKey: "Delete this key",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "Deleting revokes the key at once. Clients holding it start getting 401s. Its model access rules are removed; historical accounting remains.",
+            apiKey: "API key",
+            showTheCurrentKey: "Show the current key",
         },
         apiKeyNewScreen: {
             createAPIKey: "Create API key",
@@ -164,6 +170,7 @@ const english = {
             enabled: "Enabled",
             loadModelAccessInventoryBeforeCreatingAKeyMessage:
                 "Load model access inventory before creating a key.",
+            creating: "Creating…",
         },
         apiKeysScreen: {
             apiKeys: "API keys",
@@ -176,6 +183,8 @@ const english = {
             searchAPIKeys: "Search API keys",
             searchByNameOrKey: "Search by name or key",
             theSecretHere: "the secret here",
+            on: "On",
+            off: "Off",
         },
         bulkPublicationScreen: {
             createAliases: "Create aliases",
@@ -188,6 +197,17 @@ const english = {
                 "Another selected row uses this public ID. Choose distinct explicit names.",
             openRoute: "Open route",
             createSelectedAliases: "Create selected aliases",
+            publicIDIsRequiredMessage: "Public ID is required.",
+            noDirectRoutes: "No direct routes",
+            modelVanishedItsNewRouteWillBeSuspended:
+                "Model vanished; its new route will be suspended",
+            modelEnabled: "Model enabled",
+            modelDisabled: "Model disabled",
+        },
+        connectionScreen: {
+            showTheTokenWhileTyping: "Show the token while typing",
+            probingTheGateway: "Probing the gateway…",
+            connect: "Connect",
         },
         homeScreen: {
             overview: "Overview",
@@ -229,6 +249,9 @@ const english = {
             discoverItsModelsFromUpstream: "Discover its models from upstream",
             issueAnAPIKeyForServingClients: "Issue an API key for serving clients",
             pointAClientAtAnEndpointBelow: "Point a client at an endpoint below",
+            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
+                "Inspect public routes for quota availability. These figures describe stored switches and inventory.",
+            noRequestsRecordedMessage: "No requests recorded.",
         },
         modelDetailScreen: {
             model: "Model",
@@ -253,6 +276,16 @@ const english = {
             provider: "Provider",
             discovery: "Discovery",
             status: "Status",
+            models: "Models",
+            overriddenByAdministratorMessage: "Overridden by administrator.",
+            fromTheLatestDiscoveryMessage: "From the latest discovery.",
+            unknownOmittedFromModelListingsMessage: "Unknown — omitted from model listings.",
+            noFactOnThisRowTheDefinitionsDeclarationMessage:
+                "No fact on this row — the definition's declaration decides.",
+            unknown: "Unknown",
+            noAutomaticEntry: "No automatic entry",
+            enabled: "Enabled",
+            disabled: "Disabled",
         },
         modelEditScreen: {
             editModel: "Edit model",
@@ -261,6 +294,7 @@ const english = {
             deleteThisModel: "Delete this model",
             deletingRemovesThisPhysicalModelAndItsDirectMessage:
                 "Deleting removes this physical model and its direct routes. Pool routes remain stored.",
+            model: "Model",
         },
         modelNewScreen: {
             createModel: "Create model",
@@ -278,6 +312,12 @@ const english = {
             upstreamID: "Upstream ID",
             modelSettings: "Model settings",
             enabled: "Enabled",
+            aModelBelongsToOneProviderMessage: "Required. A model belongs to one provider.",
+            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
+                "Required. Sent upstream verbatim — letters, numbers, and symbols only.",
+            carriedHereFromAModelTheUpstreamNoMessage:
+                "Required. Carried here from a model the upstream no longer reports — submitting claims it back under the settings below.",
+            creating: "Creating…",
         },
         modelRouteEditorScreen: {
             thisModelNameIsManagedAutomaticallyEditTheMessage:
@@ -297,6 +337,20 @@ const english = {
                 "Exact identifier requested on every member. Missing models do not prevent publication.",
             physicalModel: "Physical model",
             createPublicRoute: "Create public route",
+            editPublicRoute: "Edit public route",
+            publicRoutes: "Public routes",
+            aModelNameMaintainedAutomaticallyByItsProviderMessage:
+                "A model name maintained automatically by its provider or pool.",
+            clientsRequestThisPublicIDChangingItsTargetMessage:
+                "Clients request this public ID. Changing its target leaves that name intact.",
+            openPool: "Open pool",
+            openPhysicalModel: "Open physical model",
+            deleteThisPublicRouteQuestion: "Delete this public route?",
+            publicIDIsRequiredMessage: "Public ID is required.",
+            directPhysicalModel: "Direct physical model",
+            chooseAPool: "Choose a pool",
+            upstreamIDIsRequiredMessage: "Upstream ID is required.",
+            chooseAPhysicalModel: "Choose a physical model",
         },
         modelsScreen: {
             models: "Models",
@@ -314,6 +368,8 @@ const english = {
             searchModels: "Search models",
             searchByUpstreamIDOrProviderName: "Search by upstream ID or provider name",
             provider: "Provider",
+            noModelsOnAnyProviderYetDiscoverOrMessage:
+                "No models on any provider yet — discover or add one.",
         },
         notFoundScreen: {
             pageNotFound: "Page not found",
@@ -353,6 +409,15 @@ const english = {
             storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
                 "Stored observations. Refresh explicitly queries the upstream account. Reset clears restrictions and installs refresh grace; it does not reset upstream quota.",
             thisPoolHasNoMembersMessage: "This pool has no members.",
+            readingStoredAvailability: "Reading stored availability…",
+            quotaNotObserved: "Quota not observed",
+            quotaReadsUnsupported: "Quota reads unsupported",
+            administratorResetRefreshGraceInstalled: "Administrator reset; refresh grace installed",
+            accountEnabled: "Account enabled",
+            updatingAvailability: "Updating availability…",
+            allModels: "All models",
+            resetUnknown: "Reset unknown",
+            resetTimePassedRefreshRequired: "Reset time passed; refresh required",
         },
         providerDetailScreen: {
             provider: "Provider",
@@ -372,6 +437,17 @@ const english = {
                 "Discovered from upstream, or added by hand.",
             createModel: "Create model",
             allModels: "All models",
+            providers: "Providers",
+            createProvider: "Create provider",
+            enabled: "Enabled",
+            disabled: "Disabled",
+            theOAuthCredentialsHaveExpiredMessage: "The OAuth credentials have expired.",
+            noneExactUpstreamIDs: "None — exact upstream IDs",
+            discovering: "Discovering…",
+            discoverModels: "Discover models",
+            askingTheUpstreamWhatItReports: "Asking the upstream what it reports…",
+            noModelsOnThisProviderYetDiscoverWhatMessage:
+                "No models on this provider yet — discover what the provider reports, or add one by hand.",
         },
         providerEditScreen: {
             editProvider: "Edit provider",
@@ -382,6 +458,15 @@ const english = {
             thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
                 "This provider's definition evaluates requests against a base URL — restore one, or Revert.",
             deleteThisProvider: "Delete this provider",
+            provider: "Provider",
+            modelPrefix: "Model prefix",
+            aProviderNeedsANameMessage: "A provider needs a name.",
+            starting: "Starting…",
+            reconnectTheAccount: "Reconnect the account",
+            replacing: "Replacing…",
+            replaceTheCredentials: "Replace the credentials",
+            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
+                "Deleting removes the account and its pool memberships. It has no physical models.",
         },
         providerNewScreen: {
             createProvider: "Create provider",
@@ -413,6 +498,13 @@ const english = {
             resetToPreset: "Reset to preset",
             theConnectionRecipeIsInvalidOpenTheAdvancedMessage:
                 "The connection recipe is invalid — open the Advanced disclosure above for the offending path.",
+            modelPrefix: "Model prefix",
+            creating: "Creating…",
+            connecting: "Connecting…",
+            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
+                "Required. The upstream address this definition's requests evaluate against — the gateway refuses a flow start without one.",
+            starting: "Starting…",
+            startTheAuthorization: "Start the authorization",
         },
         providerPoolEditorScreen: {
             interchangeableAccountsForTheSameUpstreamServiceTriedMessage:
@@ -438,6 +530,12 @@ const english = {
             addAccount: "Add account",
             addMember: "Add member",
             createPool: "Create pool",
+            editPool: "Edit pool",
+            pools: "Pools",
+            deleteThisPoolItsMembershipIsRemovedMessage:
+                "Delete this pool? Its membership is removed.",
+            nameIsRequiredMessage: "Name is required.",
+            chooseAnAccount: "Choose an account",
         },
         providerQuotaCard: {
             upstreamQuota: "Upstream quota",
@@ -454,6 +552,15 @@ const english = {
             observed: "Observed",
             resetTimeReachedRefreshToUpdate: "Reset time reached; refresh to update",
             theUpstreamReturnedNoQuotaEntriesMessage: "The upstream returned no quota entries.",
+            periodUnknown: "Period unknown",
+            monthly: "Monthly",
+            unknown: "Unknown",
+            unlimited: "Unlimited",
+            resetUnknown: "Reset unknown",
+            readingQuota: "Reading quota…",
+            refreshingQuota: "Refreshing quota…",
+            refreshQuota: "Refresh quota",
+            retryQuota: "Retry quota",
         },
         providersScreen: {
             providers: "Providers",
@@ -485,6 +592,8 @@ const english = {
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "Publish a physical model directly or target a pool and exact upstream ID.",
             automaticPrefix: "Automatic · ",
+            on: "On",
+            off: "Off",
         },
         screenFrame: {
             readAgain: "Read again",
@@ -523,6 +632,12 @@ const english = {
             reasoning: "Reasoning",
             tokenTotalsSkipRowsWhereTheUpstreamReportedMessage:
                 "Token totals skip rows where the upstream reported no usage — an absent breakdown never inflates or deflates a total.",
+            querying: "Querying…",
+            runQuery: "Run query",
+            noFilterOrBoundNarrowsTheQuestionSoMessage:
+                "No filter or bound narrows the question, so an empty answer is the gateway's whole record — it holds no usage yet.",
+            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
+                "Nothing recorded matches these filters — widen the bounds, drop a filter, or query without one. Clear filters sits in the form above.",
         },
         usageScreen: {
             usage: "Usage",
@@ -542,6 +657,18 @@ const english = {
             filtersStayBehind: " — the window and every other filter stay behind.",
             streamMark: " · Stream",
             thisRowIsNoLongerListed: "This row is no longer listed.",
+            reading: "Reading…",
+            applyFilters: "Apply filters",
+            widenTheWindowDropAFilterOrReadMessage:
+                "Widen the window, drop a filter, or read the whole stream — Clear filters sits in the form above.",
+            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
+                "The gateway's filter locates rows; it never validates a value against them, so an unknown id or a status never recorded simply matches nothing.",
+            thatIsEveryRowThisFilterMatchesMessage: "That is every row this filter matches.",
+            thatIsEveryRecordedRowMessage: "That is every recorded row.",
+            aReadCycleIsReplacingTheStreamExtendMessage:
+                "A read cycle is replacing the stream — extend it once the cycle lands.",
+            loading: "Loading…",
+            loadMore: "Load more",
         },
         usageStats: {
             usage: "Usage",
@@ -665,252 +792,6 @@ const english = {
         managementToken: "Enter the management token.",
         nameEmpty: "Name cannot be empty.",
     },
-    additional: {
-        app: {
-            readThisScreensStateFromTheGatewayAgain:
-                "Read this screen's state from the gateway again",
-            thisScreenReadsNothingFromTheGatewaySo:
-                "This screen reads nothing from the gateway, so there is nothing to refresh",
-            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
-                "Disconnect and forget the stored token? Reconnecting means entering it again.",
-        },
-        apiKeyAccess: {
-            allow: "Allow",
-            deny: "Deny",
-            provider: "Provider",
-            pool: "Pool",
-            automatic: "Automatic",
-            alias: "Alias",
-        },
-        apiKeyForm: {
-            whichClientHoldsThisKeyMessage: "Required. Which client holds this key.",
-            aServingClientAuthenticatesWithItOnEveryMessage:
-                "Required. A serving client authenticates with it on every surface.",
-        },
-        clipboard: {
-            copyToClipboard: "Copy to clipboard",
-            copied: "Copied",
-            copy: "Copy",
-            theValueHere: "the value here",
-        },
-        confirmDeleteCard: {
-            deleting: "Deleting…",
-            deleteForGood: "Delete for good",
-        },
-        dirtyFormFooter: {
-            saving: "Saving…",
-            saveChanges: "Save changes",
-        },
-        layout: {
-            back: "Back",
-        },
-        modelForm: {
-            followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage:
-                "Following discovery — currently unknown, so listings omit it.",
-            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
-                "Following discovery — currently nothing is known, so the definition's declaration decides.",
-        },
-        providerForm: {
-            verifiedLive: "Verified live",
-            unverified: "Unverified",
-            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
-                "Required. The upstream address this definition's requests point at.",
-            upstreamAPIKey: "Upstream API key",
-            sentUpstreamWithEveryRequestNeverReturnedByMessage:
-                "Required. Sent upstream with every request. Never returned by the gateway.",
-            showTheAPIKeyWhileTyping: "Show the API key while typing",
-        },
-        providersTable: {
-            on: "On",
-            off: "Off",
-        },
-        usageFilterControls: {
-            allEndpoints: "All endpoints",
-        },
-        apiKeyDetailScreen: {
-            apiKeys: "API keys",
-            apiKey: "API key",
-            createAPIKey: "Create API key",
-            enabled: "Enabled",
-            disabled: "Disabled",
-        },
-        apiKeyEditScreen: {
-            apiKey: "API key",
-            editAPIKey: "Edit API key",
-            showTheCurrentKey: "Show the current key",
-        },
-        apiKeyNewScreen: {
-            creating: "Creating…",
-            createAPIKey: "Create API key",
-        },
-        apiKeysScreen: {
-            on: "On",
-            off: "Off",
-        },
-        bulkPublicationScreen: {
-            publicIDIsRequiredMessage: "Public ID is required.",
-            noDirectRoutes: "No direct routes",
-            modelVanishedItsNewRouteWillBeSuspended:
-                "Model vanished; its new route will be suspended",
-            modelEnabled: "Model enabled",
-            modelDisabled: "Model disabled",
-        },
-        connectionScreen: {
-            showTheTokenWhileTyping: "Show the token while typing",
-            probingTheGateway: "Probing the gateway…",
-            connect: "Connect",
-        },
-        homeScreen: {
-            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
-                "Inspect public routes for quota availability. These figures describe stored switches and inventory.",
-            noRequestsRecordedMessage: "No requests recorded.",
-        },
-        modelDetailScreen: {
-            models: "Models",
-            model: "Model",
-            overriddenByAdministratorMessage: "Overridden by administrator.",
-            fromTheLatestDiscoveryMessage: "From the latest discovery.",
-            unknownOmittedFromModelListingsMessage: "Unknown — omitted from model listings.",
-            noFactOnThisRowTheDefinitionsDeclarationMessage:
-                "No fact on this row — the definition's declaration decides.",
-            unknown: "Unknown",
-            noAutomaticEntry: "No automatic entry",
-            enabled: "Enabled",
-            disabled: "Disabled",
-        },
-        modelEditScreen: {
-            model: "Model",
-            editModel: "Edit model",
-        },
-        modelNewScreen: {
-            aModelBelongsToOneProviderMessage: "Required. A model belongs to one provider.",
-            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
-                "Required. Sent upstream verbatim — letters, numbers, and symbols only.",
-            carriedHereFromAModelTheUpstreamNoMessage:
-                "Required. Carried here from a model the upstream no longer reports — submitting claims it back under the settings below.",
-            creating: "Creating…",
-            createModel: "Create model",
-        },
-        modelRouteEditorScreen: {
-            createPublicRoute: "Create public route",
-            editPublicRoute: "Edit public route",
-            publicRoutes: "Public routes",
-            aModelNameMaintainedAutomaticallyByItsProviderMessage:
-                "A model name maintained automatically by its provider or pool.",
-            clientsRequestThisPublicIDChangingItsTargetMessage:
-                "Clients request this public ID. Changing its target leaves that name intact.",
-            openPool: "Open pool",
-            openPhysicalModel: "Open physical model",
-            deleteThisPublicRoute: "Delete this public route?",
-            publicIDIsRequiredMessage: "Public ID is required.",
-            publicID: "Public ID",
-            directPhysicalModel: "Direct physical model",
-            pool: "Pool",
-            chooseAPool: "Choose a pool",
-            upstreamIDIsRequiredMessage: "Upstream ID is required.",
-            upstreamID: "Upstream ID",
-            chooseAPhysicalModel: "Choose a physical model",
-        },
-        modelsScreen: {
-            noModelsOnAnyProviderYetDiscoverOrMessage:
-                "No models on any provider yet — discover or add one.",
-        },
-        poolAvailabilityCard: {
-            readingStoredAvailability: "Reading stored availability…",
-            quotaNotObserved: "Quota not observed",
-            quotaReadsUnsupported: "Quota reads unsupported",
-            administratorResetRefreshGraceInstalled: "Administrator reset; refresh grace installed",
-            accountEnabled: "Account enabled",
-            updatingAvailability: "Updating availability…",
-            allModels: "All models",
-            resetUnknown: "Reset unknown",
-            resetTimePassedRefreshRequired: "Reset time passed; refresh required",
-        },
-        providerDetailScreen: {
-            providers: "Providers",
-            provider: "Provider",
-            createProvider: "Create provider",
-            enabled: "Enabled",
-            disabled: "Disabled",
-            theOAuthCredentialsHaveExpiredMessage: "The OAuth credentials have expired.",
-            noneExactUpstreamIDs: "None — exact upstream IDs",
-            discovering: "Discovering…",
-            discoverModels: "Discover models",
-            askingTheUpstreamWhatItReports: "Asking the upstream what it reports…",
-            noModelsOnThisProviderYetDiscoverWhatMessage:
-                "No models on this provider yet — discover what the provider reports, or add one by hand.",
-        },
-        providerEditScreen: {
-            provider: "Provider",
-            editProvider: "Edit provider",
-            modelPrefix: "Model prefix",
-            aProviderNeedsANameMessage: "A provider needs a name.",
-            starting: "Starting…",
-            reconnectTheAccount: "Reconnect the account",
-            replacing: "Replacing…",
-            replaceTheCredentials: "Replace the credentials",
-            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
-                "Deleting removes the account and its pool memberships. It has no physical models.",
-        },
-        providerNewScreen: {
-            modelPrefix: "Model prefix",
-            creating: "Creating…",
-            createProvider: "Create provider",
-            connecting: "Connecting…",
-            connectTheAccount: "Connect the account",
-            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
-                "Required. The upstream address this definition's requests evaluate against — the gateway refuses a flow start without one.",
-            starting: "Starting…",
-            startTheAuthorization: "Start the authorization",
-        },
-        providerPoolEditorScreen: {
-            createPool: "Create pool",
-            editPool: "Edit pool",
-            pools: "Pools",
-            deleteThisPoolItsMembershipIsRemovedMessage:
-                "Delete this pool? Its membership is removed.",
-            nameIsRequiredMessage: "Name is required.",
-            modelPrefix: "Model prefix",
-            chooseAnAccount: "Choose an account",
-        },
-        providerQuotaCard: {
-            periodUnknown: "Period unknown",
-            monthly: "Monthly",
-            unknown: "Unknown",
-            unlimited: "Unlimited",
-            resetUnknown: "Reset unknown",
-            readingQuota: "Reading quota…",
-            refreshingQuota: "Refreshing quota…",
-            refreshQuota: "Refresh quota",
-            retryQuota: "Retry quota",
-        },
-        routingListsScreen: {
-            on: "On",
-            off: "Off",
-        },
-        usageQueryScreen: {
-            querying: "Querying…",
-            runQuery: "Run query",
-            noFilterOrBoundNarrowsTheQuestionSoMessage:
-                "No filter or bound narrows the question, so an empty answer is the gateway's whole record — it holds no usage yet.",
-            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
-                "Nothing recorded matches these filters — widen the bounds, drop a filter, or query without one. Clear filters sits in the form above.",
-        },
-        usageScreen: {
-            reading: "Reading…",
-            applyFilters: "Apply filters",
-            widenTheWindowDropAFilterOrReadMessage:
-                "Widen the window, drop a filter, or read the whole stream — Clear filters sits in the form above.",
-            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
-                "The gateway's filter locates rows; it never validates a value against them, so an unknown id or a status never recorded simply matches nothing.",
-            thatIsEveryRowThisFilterMatchesMessage: "That is every row this filter matches.",
-            thatIsEveryRecordedRowMessage: "That is every recorded row.",
-            aReadCycleIsReplacingTheStreamExtendMessage:
-                "A read cycle is replacing the stream — extend it once the cycle lands.",
-            loading: "Loading…",
-            loadMore: "Load more",
-        },
-    },
     operationNotices: {
         flowFailed: "The flow failed.",
         freshFlow: "Start a fresh flow and authorize it promptly.",
@@ -1013,14 +894,54 @@ const english = {
             theGatewayHoldsNoProviderHereItWasDeletedOrTheAddressWasTyped:
                 "The gateway holds no provider here. It was deleted, or the address was typed wrong. Nothing here can bring it back.",
         },
-        usageLabels: {
-            streamed: "Streamed",
-            nonstreamed: "Non-streamed",
+        app: {
+            readThisScreensStateFromTheGatewayAgain:
+                "Read this screen's state from the gateway again",
+            thisScreenReadsNothingFromTheGatewaySo:
+                "This screen reads nothing from the gateway, so there is nothing to refresh",
+            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
+                "Disconnect and forget the stored token? Reconnecting means entering it again.",
+        },
+        apiKeyForm: {
+            whichClientHoldsThisKeyMessage: "Required. Which client holds this key.",
+            aServingClientAuthenticatesWithItOnEveryMessage:
+                "Required. A serving client authenticates with it on every surface.",
+        },
+        clipboard: {
+            copyToClipboard: "Copy to clipboard",
+            copied: "Copied",
+            copy: "Copy",
+            theValueHere: "the value here",
+        },
+        confirmDeleteCard: {
+            deleting: "Deleting…",
+            deleteForGood: "Delete for good",
+        },
+        dirtyFormFooter: {
+            saving: "Saving…",
+            saveChanges: "Save changes",
+        },
+        layout: {
+            back: "Back",
+        },
+        providerForm: {
+            verifiedLive: "Verified live",
+            unverified: "Unverified",
+            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
+                "Required. The upstream address this definition's requests point at.",
+            upstreamAPIKey: "Upstream API key",
+            sentUpstreamWithEveryRequestNeverReturnedByMessage:
+                "Required. Sent upstream with every request. Never returned by the gateway.",
+            showTheAPIKeyWhileTyping: "Show the API key while typing",
         },
         apiKeyAccess: {
             inherit: "Inherit",
             allow: "Allow",
             deny: "Deny",
+            provider: "Provider",
+            pool: "Pool",
+            automatic: "Automatic",
+            alias: "Alias",
         },
         modelForm: {
             followingDiscoveryCurrentlyDeclaresNoLevels:
@@ -1033,6 +954,8 @@ const english = {
                 "Replaces the discovered value with a positive integer.",
             unset: "Unset",
             discoveredNothingKnown: "Discovered: nothing known.",
+            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
+                "Following discovery — currently nothing is known, so the definition's declaration decides.",
         },
         modelsTable: {
             ready: "Ready",
@@ -1047,6 +970,8 @@ const english = {
             valid: "Valid",
             expired: "Expired",
             stale: "Stale",
+            on: "On",
+            off: "Off",
         },
         usageFilterControls: {
             allOutcomes: "All outcomes",
@@ -1054,6 +979,7 @@ const english = {
             any: "Any",
             streamed: "Streamed",
             nonstreamed: "Non-streamed",
+            allEndpoints: "All endpoints",
         },
         usageFilter: {
             allTime: "All time",
@@ -1146,6 +1072,7 @@ const english = {
         enabledStored: "enabled of {{total}} stored",
         readyListed: "ready of {{total}} listed",
         copyEndpoint: "Copy the {{surface}} endpoint URL",
+        copyApiKeySecret: "Copy the secret of {{name}}",
         disabledCredential:
             "{{expiry}} The provider is disabled — reconnect when you re-enable it.",
         noKeysDetail:

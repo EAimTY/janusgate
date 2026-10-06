@@ -263,11 +263,13 @@ impl DefinitionPayload {
         self.validate_credential(&slots)?;
         self.validate_provisioning(&slots)?;
         self.validate_discovery(&slots)?;
-        self.validate_compaction(&slots)?;
+
         if let Some(quota) = &self.quota {
             validate_control_request(&quota.request, Stage::Quota, &slots)?;
             super::quota_validation::validate(quota)?;
         }
+
+        self.validate_compaction(&slots)?;
 
         Ok(())
     }
@@ -354,6 +356,27 @@ impl DefinitionPayload {
             ));
         }
 
+        // The client credentials render verbatim wherever a header row references them
+        // (README §5.1), so their bytes must be header-value bytes: a control byte — a pasted
+        // trailing newline foremost — would fail every such dispatch at runtime as a
+        // transport failure misclassified as upstream unavailability, the same
+        // misclassification the header-name rule exists for. URL and form destinations
+        // percent-encode their components, so the header contract is the strictest one the
+        // values face, and the recipe carries it once.
+        if http::HeaderValue::from_str(client_id).is_err() {
+            return Err(ValidationError::new(
+                "OAuth client ID carries text that is not a valid HTTP header value",
+            ));
+        }
+
+        if let Some(client_secret) = client_secret
+            && http::HeaderValue::from_str(client_secret).is_err()
+        {
+            return Err(ValidationError::new(
+                "OAuth client secret carries text that is not a valid HTTP header value",
+            ));
+        }
+
         match grant {
             Grant::AuthorizationCode {
                 authorize_url,
@@ -385,6 +408,9 @@ impl DefinitionPayload {
 
                 validate_response_descriptor(&authorization.response, "device authorization")?;
 
+                // The duplicate-target rule is the shared response-descriptor rule above; the
+                // loop aggregates the mapped targets for the required-shape checks and holds
+                // every carried target to its stage's produced vocabulary.
                 let mut targets = BTreeSet::new();
 
                 for field in &authorization.response.fields {
@@ -393,9 +419,8 @@ impl DefinitionPayload {
                         Target::UserCode => "user_code",
                         Target::VerificationUri => "verification_uri",
                         Target::VerificationUriComplete => "verification_uri_complete",
-                        Target::ExpiresInSeconds | Target::IntervalSeconds => {
-                            continue;
-                        }
+                        Target::ExpiresInSeconds => "expires_in_seconds",
+                        Target::IntervalSeconds => "interval_seconds",
                         _ => {
                             return Err(ValidationError::new(
                                 "device authorization response carries a target its stage \
@@ -404,11 +429,7 @@ impl DefinitionPayload {
                         }
                     };
 
-                    if !targets.insert(target) {
-                        return Err(ValidationError::new(format!(
-                            "device authorization response carries the `{target}` target twice"
-                        )));
-                    }
+                    targets.insert(target);
 
                     if matches!(field.target, Target::DeviceCode | Target::UserCode)
                         && !field.required
@@ -725,6 +746,34 @@ impl DefinitionPayload {
             TokenRefresh::None => {}
         }
 
+        // The provisioning stage's `secret` value is the exchange's access token — the flow's
+        // current token threaded through the completion (README §5.1, §5.4) — so an exchange
+        // that maps no `access_token` target passes it absent, and a provisioning expression
+        // referencing the part fails every flow's step with the stored-drift evaluation
+        // error. A token supplied by provisioning is reachable through the slot its
+        // extraction writes instead. The check lands after the refresh rules because the
+        // provisioning section follows the credential sections in the payload document.
+        if !exchange
+            .response
+            .fields
+            .iter()
+            .any(|field| matches!(field.target, Target::AccessToken))
+            && let Some(steps) = &self.provisioning
+            && steps.iter().any(|step| {
+                ExpressionSurface::Control(&step.request).references(&ValueExpr::Secret)
+                    || step.poll.as_ref().is_some_and(|poll| {
+                        ExpressionSurface::Control(&poll.request).references(&ValueExpr::Secret)
+                    })
+            })
+        {
+            return Err(ValidationError::new(
+                "provisioning references the `secret` value part, but the exchange response \
+                 maps no `access_token` target: the provisioning stage's secret is the \
+                 exchange's access token, so reference the slot a provisioning extraction \
+                 writes instead",
+            ));
+        }
+
         Ok(())
     }
 
@@ -754,12 +803,39 @@ impl DefinitionPayload {
                 slots.require_defined(skip_if, "provisioning step guard")?;
             }
 
+            reject_duplicate_targets(
+                step.extract.iter().map(|extraction| &extraction.target),
+                "provisioning step",
+            )?;
+
             for extraction in &step.extract {
                 validate_provision_extraction(extraction, &step.response_encoding)?;
             }
 
             if let Some(poll) = &step.poll {
                 validate_control_request(&poll.request, Stage::Provisioning, slots)?;
+
+                // An empty done path resolves the poll response's root, whose truthy read is
+                // always false: the poll would end only at budget exhaustion, never
+                // completing — so the chain must name at least one member.
+                if poll.done_path.0.is_empty() {
+                    return Err(ValidationError::new(
+                        "provisioning poll done path must not be empty",
+                    ));
+                }
+
+                validate_path(&poll.done_path, "provisioning poll done")?;
+
+                // The error path's empty chain is the configured no-error-inspection
+                // (README §5.4); a carried chain still names only non-empty members.
+                validate_path(&poll.error_path, "provisioning poll error")?;
+
+                reject_duplicate_targets(
+                    poll.result_extract
+                        .iter()
+                        .map(|extraction| &extraction.target),
+                    "provisioning poll",
+                )?;
 
                 for extraction in &poll.result_extract {
                     validate_provision_extraction(extraction, &poll.response_encoding)?;
@@ -824,7 +900,16 @@ impl DefinitionPayload {
                     ));
                 }
 
-                validate_path(response_path, "discovery pagination response path")?;
+                // An empty chain addresses the page root, which can never continue the walk:
+                // the root object reads as a malformed token on every page. The walk would
+                // fail on page one where the budget guard was the designed ending.
+                if response_path.0.is_empty() {
+                    return Err(ValidationError::new(
+                        "discovery pagination response path must not be empty",
+                    ));
+                }
+
+                validate_path(response_path, "discovery pagination response")?;
             }
 
             Some(Pagination::Cursor {
@@ -839,8 +924,25 @@ impl DefinitionPayload {
                     ));
                 }
 
-                validate_path(has_more_path, "discovery has-more path")?;
-                validate_path(last_id_path, "discovery last-identifier path")?;
+                // An empty has-more chain addresses the page root, whose truthy read is
+                // always false: the walk would end after page one with the budget guard never
+                // firing — the silent truncation README §5.5 forbids — so the chain must name
+                // at least one member.
+                if has_more_path.0.is_empty() {
+                    return Err(ValidationError::new(
+                        "discovery has-more path must not be empty",
+                    ));
+                }
+
+                validate_path(has_more_path, "discovery has-more")?;
+
+                if last_id_path.0.is_empty() {
+                    return Err(ValidationError::new(
+                        "discovery last-identifier path must not be empty",
+                    ));
+                }
+
+                validate_path(last_id_path, "discovery last-identifier")?;
             }
         }
 
@@ -1124,6 +1226,29 @@ fn require_non_empty_expr(expr: &StringExpr, what: &str) -> Result<(), Validatio
     }
 }
 
+/// Validates one header-row value part's operator-authored text: the literal segments —
+/// directly or inside a coalesce's arguments — must be bytes an HTTP header value can carry.
+/// Every other part is a dynamic value source whose runtime fold carries its own contract.
+fn check_header_value_part(part: &ValueExpr, what: &str) -> Result<(), ValidationError> {
+    match part {
+        ValueExpr::Literal { value } => {
+            if http::HeaderValue::from_str(value).is_err() {
+                return Err(ValidationError::new(format!(
+                    "{what} carries an invalid HTTP header value: the literal text `{value}`"
+                )));
+            }
+
+            Ok(())
+        }
+
+        ValueExpr::Coalesce { parts } => parts
+            .iter()
+            .try_for_each(|part| check_header_value_part(part, what)),
+
+        _ => Ok(()),
+    }
+}
+
 /// Validates one response path: every member non-empty.
 fn validate_path(path: &ResponsePath, what: &str) -> Result<(), ValidationError> {
     for member in &path.0 {
@@ -1177,11 +1302,26 @@ fn validate_capability_extraction(
         None => {}
     }
 
+    // The token-cap paths name a member inside each entry: an empty chain addresses the entry
+    // itself, which is never an integer, so the extraction would fail the refresh on every
+    // entry — the chains must name at least one member.
     if let Some(path) = &capabilities.max_input_tokens {
+        if path.0.is_empty() {
+            return Err(ValidationError::new(
+                "discovery max-input-tokens member path must not be empty",
+            ));
+        }
+
         validate_path(path, "discovery max-input-tokens")?;
     }
 
     if let Some(path) = &capabilities.max_output_tokens {
+        if path.0.is_empty() {
+            return Err(ValidationError::new(
+                "discovery max-output-tokens member path must not be empty",
+            ));
+        }
+
         validate_path(path, "discovery max-output-tokens")?;
     }
 
@@ -1279,8 +1419,12 @@ fn validate_control_request(
     Ok(())
 }
 
-/// Validates one response descriptor: non-empty paths, and — for a form-encoded response, whose
-/// fields are flat — exactly one path member.
+/// Validates one response descriptor: non-empty paths, no target stored into twice, and — for
+/// a form-encoded response, whose fields are flat — exactly one path member. The
+/// duplicate-target rule covers every stage-level descriptor (README §5.1): the fold applies
+/// the fields in order and a later present value silently overwrites the earlier one, so the
+/// earlier mapping is dead configuration. Cross-stage repeats stay allowed — several stages
+/// may write one slot, each from its own response.
 fn validate_response_descriptor(
     descriptor: &ResponseDescriptor,
     what: &str,
@@ -1295,7 +1439,50 @@ fn validate_response_descriptor(
         }
     }
 
+    reject_duplicate_targets(descriptor.fields.iter().map(|field| &field.target), what)
+}
+
+/// Rejects one extraction list that stores into one target twice: the fold applies the
+/// mappings in order and a later present value silently overwrites the earlier one, so the
+/// earlier mapping is dead configuration the definition can never observe.
+fn reject_duplicate_targets<'a>(
+    targets: impl IntoIterator<Item = &'a Target>,
+    what: &str,
+) -> Result<(), ValidationError> {
+    let mut seen: Vec<&Target> = Vec::new();
+
+    for target in targets {
+        if seen.contains(&target) {
+            return Err(ValidationError::new(format!(
+                "{what} carries the `{}` target twice: the mappings apply in order and the \
+                 earlier one is dead configuration",
+                target_name(target)
+            )));
+        }
+
+        seen.push(target);
+    }
+
     Ok(())
+}
+
+/// The human-readable name of one response target, rendered by rejections: the wire tag, with
+/// a slot target carrying its name.
+fn target_name(target: &Target) -> String {
+    match target {
+        Target::AccessToken => "access_token".to_string(),
+        Target::RefreshToken => "refresh_token".to_string(),
+        Target::ExpiresInSeconds => "expires_in_seconds".to_string(),
+        Target::IdToken => "id_token".to_string(),
+        Target::BaseUrl => "base_url".to_string(),
+        Target::Slot { name } => format!("slot:{name}"),
+        Target::DeviceCode => "device_code".to_string(),
+        Target::UserCode => "user_code".to_string(),
+        Target::VerificationUri => "verification_uri".to_string(),
+        Target::VerificationUriComplete => "verification_uri_complete".to_string(),
+        Target::IntervalSeconds => "interval_seconds".to_string(),
+        Target::ExpiresAtUnixSeconds => "expires_at_unix_seconds".to_string(),
+    }
 }
 
 /// Validates one provisioning extraction: its path, shape, and the form-encoding rule.
@@ -1355,8 +1542,21 @@ impl<'a> ExpressionWalk<'a> {
             .map(|_| ())
     }
 
-    /// Validates literal HTTP header rows using the shared structural owner.
+    /// Validates literal HTTP header rows using the shared structural owner, holding each
+    /// row's operator-authored value text to the HTTP header-value byte contract (README
+    /// §5.1): the row reaches the wire as a literal header value, and a control byte — a
+    /// trailing newline in a literal part foremost — would fail every dispatch at runtime as
+    /// a transport failure misclassified as upstream unavailability, the same
+    /// misclassification the header-name rule exists for. Dynamic value sources keep their
+    /// fold-time contracts; the configured client credentials carry the byte contract at the
+    /// recipe.
     fn headers(&mut self, rows: &[ParamRow], what: &str) -> Result<(), ValidationError> {
+        for row in rows {
+            for part in &row.value.0 {
+                check_header_value_part(part, what)?;
+            }
+        }
+
         self.surface(ExpressionSurface::Headers(rows), what)
             .map(|_| ())
     }
@@ -3978,7 +4178,9 @@ mod tests {
         // Retarget the Antigravity exchange's `access_token` row at a slot and add an
         // access-token extraction to the provisioning sequence instead: the exchange mapping no
         // longer carries the token row, and the refresh response stays defaulted. The
-        // sequence's own slot extractions stay in place so the fixture's later references hold.
+        // sequence's own slot extractions stay in place so the fixture's later references hold,
+        // and its `secret` references drop — the provisioning stage's secret is the exchange's
+        // access token, which the exchange no longer maps.
         let provisioning_only_token = |payload: &mut serde_json::Value| {
             payload["credential"]["exchange"]["response"]["fields"][0] = json!({
               "path": ["access_token"],
@@ -3994,6 +4196,12 @@ mod tests {
                   "shape": {"type": "string"},
                   "required": true
                 }));
+
+            let literal_bearer = json!([{ "type": "literal", "value": "Bearer supplied" }]);
+
+            payload["provisioning"][0]["request"]["headers"][0]["value"] = literal_bearer.clone();
+            payload["provisioning"][1]["request"]["headers"][0]["value"] = literal_bearer.clone();
+            payload["provisioning"][1]["poll"]["request"]["headers"][0]["value"] = literal_bearer;
         };
 
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
@@ -4297,6 +4505,434 @@ mod tests {
         });
 
         assert!(empty_strip_prefix.unwrap_err().contains("prefix"));
+
+        // A pagination continuation path that resolves the page root can never continue the
+        // walk: a token response path reads the root object as a malformed token on every
+        // page, and a has-more path reads it as false — ending the walk after page one, where
+        // only the budget guard would end it. That guard bypass is the silent truncation
+        // README §5.5 forbids, so the empty chain is rejected for both modes.
+        let empty_token_response_path = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["discovery"]["pagination"] = serde_json::json!({
+              "type": "token",
+              "request_param": "page",
+              "response_path": [],
+              "max_pages": 10
+            });
+        });
+
+        assert!(
+            empty_token_response_path
+                .unwrap_err()
+                .contains("pagination response path must not be empty")
+        );
+
+        let empty_has_more_path = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["discovery"]["pagination"]["has_more_path"] = serde_json::json!([]);
+        });
+
+        assert!(
+            empty_has_more_path
+                .unwrap_err()
+                .contains("has-more path must not be empty")
+        );
+
+        let empty_last_id_path = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["discovery"]["pagination"]["last_id_path"] = serde_json::json!([]);
+        });
+
+        assert!(
+            empty_last_id_path
+                .unwrap_err()
+                .contains("last-identifier path must not be empty")
+        );
+    }
+
+    /// A provisioning poll's done path must name a non-empty member chain: an empty chain
+    /// resolves the poll response's root, whose truthy read is always false, so the poll would
+    /// end only at budget exhaustion — never completing a step it could never finish. The
+    /// error path is the one empty spelling with meaning: the empty chain is the configured
+    /// no-error-inspection (README §5.4), so it stays accepted there while a carried chain
+    /// still names only non-empty members.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an empty done path validates or the no-inspection error path is rejected.
+    #[test]
+    fn rejects_an_empty_poll_done_path_but_keeps_the_no_inspection_error_path() {
+        let empty_done_path = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["provisioning"][1]["poll"]["done_path"] = serde_json::json!([]);
+        });
+
+        assert!(
+            empty_done_path
+                .unwrap_err()
+                .contains("provisioning poll done path must not be empty")
+        );
+
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["provisioning"][1]["poll"]["error_path"] = serde_json::json!([]);
+        })
+        .unwrap();
+
+        let empty_error_member = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["provisioning"][1]["poll"]["error_path"] = serde_json::json!([""]);
+        });
+
+        assert!(
+            empty_error_member
+                .unwrap_err()
+                .contains("provisioning poll error path")
+        );
+    }
+
+    /// The provisioning stage's `secret` value is the exchange's access token: an exchange
+    /// that maps no `access_token` target passes it absent, so a provisioning expression
+    /// referencing the part fails every flow's step at runtime with the stored-drift
+    /// evaluation error. The write boundary rejects the combination; with the reference
+    /// replaced — the extraction's slot, or plain text — the token supplied by provisioning
+    /// alone stays accepted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the unsatisfiable reference validates or the replaced one is rejected.
+    #[test]
+    fn rejects_provisioning_secret_references_without_an_exchange_token() {
+        // Antigravity references `secret` in its provisioning headers and takes the token from
+        // the exchange; moving the token supply to a provisioning extraction leaves the
+        // reference unsatisfiable at flow completion.
+        let drop_exchange_token = |payload: &mut serde_json::Value| {
+            let fields = &mut payload["credential"]["exchange"]["response"]["fields"];
+
+            let kept: Vec<_> = fields
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|field| field["target"]["type"] != "access_token")
+                .collect();
+
+            *fields = serde_json::Value::Array(kept);
+
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture carries a provisioning extract list"
+            )]
+            let extract = payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .expect("the fixture carries a provisioning extract list");
+
+            extract.push(serde_json::json!({
+                "path": ["access_token"],
+                "target": {"type": "access_token"},
+                "shape": {"type": "string"},
+                "required": true
+            }));
+
+            payload["credential"]["refresh"] = serde_json::json!({ "type": "none" });
+        };
+
+        let unsatisfiable = mutate_and_validate(good_antigravity_json(), |payload| {
+            drop_exchange_token(payload);
+        });
+
+        let error = unsatisfiable.unwrap_err();
+
+        assert!(
+            error.contains("provisioning") && error.contains("secret"),
+            "{error}"
+        );
+
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            drop_exchange_token(payload);
+
+            // Every provisioning request — the steps' and the polls' — drops the `secret`
+            // reference: the token rides no expression at all here.
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture carries a provisioning sequence"
+            )]
+            let steps = payload["provisioning"]
+                .as_array_mut()
+                .expect("the fixture carries a provisioning sequence");
+
+            for step in steps {
+                step["request"]["headers"][0]["value"] =
+                    serde_json::json!([{ "type": "literal", "value": "Bearer supplied" }]);
+
+                if let Some(poll) = step["poll"].as_object_mut() {
+                    #[expect(clippy::expect_used, reason = "the fixture poll carries header rows")]
+                    let headers = poll["request"]["headers"]
+                        .as_array_mut()
+                        .expect("the fixture poll carries header rows");
+
+                    headers[0]["value"] =
+                        serde_json::json!([{ "type": "literal", "value": "Bearer supplied" }]);
+                }
+            }
+        })
+        .unwrap();
+    }
+
+    /// Header rows reach the wire as literal header values: the operator-authored text a value
+    /// expression renders verbatim — its literal segments — must be bytes an HTTP header value
+    /// can carry, or every dispatch of the row fails at runtime as a transport failure
+    /// misclassified as upstream unavailability, the same misclassification the header-name
+    /// rule exists for. A literal inside a coalesce argument is operator-authored text too,
+    /// and the configured client credentials are held to the same byte contract once at the
+    /// recipe; dynamic value sources keep their fold-time contracts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if control-byte text validates or obs-text is rejected.
+    #[test]
+    fn rejects_invalid_header_row_value_text_and_client_credentials() {
+        // The inference path: a trailing newline is a control byte, not header-value text.
+        let trailing_newline = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["inference"]["headers"][1]["value"] = serde_json::json!([
+              { "type": "literal", "value": "antigravity\n" }
+            ]);
+        });
+
+        let error = trailing_newline.unwrap_err();
+
+        assert!(
+            error.contains("inference header") && error.contains("invalid HTTP header value"),
+            "{error}"
+        );
+
+        // The control path: the device-authorization request's header rows obey the same rule.
+        let control_newline = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["authorization"]["request"]["headers"][0]["value"] =
+                serde_json::json!([{ "type": "literal", "value": "application/json\n" }]);
+        });
+
+        assert!(
+            control_newline
+                .unwrap_err()
+                .contains("control request header")
+        );
+
+        // A literal inside a coalesce argument is operator-authored text too.
+        let coalesced_newline = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["inference"]["headers"][1]["value"] = serde_json::json!([
+              {
+                "type": "coalesce",
+                "parts": [
+                  { "type": "slot", "name": "project" },
+                  { "type": "literal", "value": "a\nb" }
+                ]
+              }
+            ]);
+        });
+
+        assert!(
+            coalesced_newline
+                .unwrap_err()
+                .contains("invalid HTTP header value")
+        );
+
+        // Obs-text bytes stay valid header-value text.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["inference"]["headers"][1]["value"] = serde_json::json!([
+              { "type": "literal", "value": "antigravity-®" }
+            ]);
+        })
+        .unwrap();
+
+        // The configured client credentials render verbatim wherever a header row references
+        // them, so the recipe carries the byte contract once.
+        let client_secret_newline = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::json!("client-secret\n");
+        });
+
+        assert!(client_secret_newline.unwrap_err().contains("client secret"));
+
+        let client_id_newline = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_id"] = serde_json::json!("client-id\n");
+        });
+
+        assert!(client_id_newline.unwrap_err().contains("client ID"));
+    }
+
+    /// One response mapping stores into one target once: the fold applies the fields in order
+    /// and a later present value silently overwrites the earlier one, so the earlier mapping
+    /// is dead configuration. The rule covers every stage-level response descriptor and each
+    /// provisioning extraction list; cross-stage repeats stay allowed — several stages may
+    /// write one slot, each from its own response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a duplicated target validates or a cross-stage repeat is rejected.
+    #[test]
+    fn rejects_duplicate_targets_within_one_response_descriptor() {
+        // The exchange mapping.
+        let duplicate_exchange_target = mutate_and_validate(good_antigravity_json(), |payload| {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture maps exchange response fields"
+            )]
+            let fields = payload["credential"]["exchange"]["response"]["fields"]
+                .as_array_mut()
+                .expect("the fixture maps exchange response fields");
+
+            fields.push(serde_json::json!({
+                "path": ["access_token"],
+                "target": {"type": "access_token"},
+                "required": false
+            }));
+        });
+
+        assert!(
+            duplicate_exchange_target
+                .unwrap_err()
+                .contains("carries the `access_token` target twice")
+        );
+
+        // A declared refresh mapping.
+        let duplicate_refresh_target = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["response"] = serde_json::json!({
+              "encoding": "json",
+              "fields": [
+                {
+                  "path": ["access_token"],
+                  "target": {"type": "access_token"},
+                  "required": true
+                },
+                {
+                  "path": ["token"],
+                  "target": {"type": "access_token"},
+                  "required": false
+                }
+              ]
+            });
+        });
+
+        let refresh_error = duplicate_refresh_target.unwrap_err();
+
+        assert!(
+            refresh_error.contains("token refresh")
+                && refresh_error.contains("access_token` target twice"),
+            "{refresh_error}"
+        );
+
+        // The device authorization mapping.
+        let duplicate_device_target = mutate_and_validate(good_copilot_json(), |payload| {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture maps device authorization response fields"
+            )]
+            let fields = payload["credential"]["grant"]["authorization"]["response"]["fields"]
+                .as_array_mut()
+                .expect("the fixture maps device authorization response fields");
+
+            fields.push(serde_json::json!({
+                "path": ["device_code"],
+                "target": {"type": "device_code"},
+                "required": false
+            }));
+        });
+
+        assert!(
+            duplicate_device_target
+                .unwrap_err()
+                .contains("target twice")
+        );
+
+        // The provisioning step's extractions.
+        let duplicate_step_target = mutate_and_validate(good_antigravity_json(), |payload| {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture carries a provisioning extract list"
+            )]
+            let extract = payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .expect("the fixture carries a provisioning extract list");
+
+            extract.push(serde_json::json!({
+                "path": ["other", "project"],
+                "target": {"type": "slot", "name": "project"},
+                "shape": {"type": "string"},
+                "required": false
+            }));
+        });
+
+        assert!(
+            duplicate_step_target
+                .unwrap_err()
+                .contains("carries the `slot:project` target twice")
+        );
+
+        // The poll's result extractions.
+        let duplicate_poll_target = mutate_and_validate(good_antigravity_json(), |payload| {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture carries a poll result-extract list"
+            )]
+            let result_extract = payload["provisioning"][1]["poll"]["result_extract"]
+                .as_array_mut()
+                .expect("the fixture carries a poll result-extract list");
+
+            result_extract.push(serde_json::json!({
+                "path": ["other"],
+                "target": {"type": "slot", "name": "project"},
+                "shape": {"type": "string"},
+                "required": false
+            }));
+        });
+
+        assert!(duplicate_poll_target.unwrap_err().contains("target twice"));
+
+        // Cross-stage repeats stay allowed: the fixture's provisioning step and its poll both
+        // write the `project` slot, each from its own response.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The payload validation follows the document order of the descriptor sections: the
+    /// `quota` section precedes the `compaction` section, so a payload carrying both invalid
+    /// names the quota rejection first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the compaction rejection precedes the quota one.
+    #[test]
+    fn validates_quota_before_compaction() {
+        let error = validate_json(json!({
+          "format": "openai_response",
+          "inference": {
+            "url": literal("https://upstream.example/v1/responses"),
+            "upstream_streaming": "match_client",
+          },
+          "credential": {"type": "api_key"},
+          "quota": {
+            "request": {
+              "method": "GET",
+              "url": [{"type": "literal", "value": "https://quota.example"}]
+            },
+            "sources": [{
+              "type": "object",
+              "key": "source",
+              "at": ["data"],
+              "is_required": false,
+              "entries": [{
+                "key": "entry",
+                "label": "",
+                "at": [],
+                "is_required": false,
+                "window": {"type": "unknown"},
+                "measurement": {"type": "unknown"},
+                "reset": {"type": "unknown"}
+              }]
+            }]
+          },
+          "compaction": {
+            "mechanisms": {
+              "responses_standalone_compact": {"default": "supported"}
+            }
+          },
+        }))
+        .unwrap_err();
+
+        assert!(error.contains("quota"), "{error}");
     }
 
     /// Header rows must carry valid HTTP header names: a stored invalid name would fail every
@@ -5466,8 +6102,11 @@ mod tests {
         .validate()
         .unwrap();
 
-        // Each malformed probe rejects, naming the offending element.
-        let probes: [(serde_json::Value, &str); 5] = [
+        // Each malformed probe rejects, naming the offending element. The token-cap member
+        // paths join the empty-member rule with an empty-chain rejection: an empty chain
+        // addresses the entry itself, which is never an integer, so the extraction would fail
+        // the refresh on every entry.
+        let probes: [(serde_json::Value, &str); 7] = [
             (
                 json!({
                     "thinking_levels": {
@@ -5489,8 +6128,16 @@ mod tests {
                 "thinking-level flag path must not be empty",
             ),
             (
+                json!({"max_input_tokens": []}),
+                "discovery max-input-tokens member path must not be empty",
+            ),
+            (
                 json!({"max_input_tokens": [""]}),
                 "discovery max-input-tokens path carries an empty member",
+            ),
+            (
+                json!({"max_output_tokens": []}),
+                "discovery max-output-tokens member path must not be empty",
             ),
             (
                 compaction_extraction(json!([]), json!(["supported"])),

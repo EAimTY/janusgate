@@ -90,13 +90,11 @@ export function ProviderPoolsScreen(props: { readonly api: ManagementApi }): JSX
                                                     pool.is_enabled
                                                         ? translation()(
                                                               ($) =>
-                                                                  $.additional.routingListsScreen
-                                                                      .on,
+                                                                  $.screens.routingListsScreen.on,
                                                           )
                                                         : translation()(
                                                               ($) =>
-                                                                  $.additional.routingListsScreen
-                                                                      .off,
+                                                                  $.screens.routingListsScreen.off,
                                                           )
                                                 }
                                             />

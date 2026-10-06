@@ -15,6 +15,22 @@ import {
 import { ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
+/**
+ * The pinned X-Msh client header set every Kimi Code request carries: the
+ * stable device slot, the platform, and the CLI user agent.
+ */
+const mshHeaders = [
+    paramRow("X-Msh-Device-Id", [
+        slot("device_id"),
+    ]),
+    paramRow("X-Msh-Platform", [
+        literal("macos"),
+    ]),
+    paramRow("User-Agent", [
+        literal("KimiCLI/1.0.0"),
+    ]),
+];
+
 /** Complete authored preset for kimi-code. */
 export const kimiCodePreset: ProviderPreset = {
     id: "kimi-code",
@@ -56,86 +72,86 @@ export const kimiCodePreset: ProviderPreset = {
                         value: "Account",
                     },
                     entries: [
-                        ratioEntry(
-                            "limit_5h",
-                            "Five-hour allowance",
-                            [
+                        ratioEntry({
+                            key: "limit_5h",
+                            label: "Five-hour allowance",
+                            at: [
                                 "limit_5h",
                             ],
-                            [
+                            valuePath: [
                                 "used_ratio",
                             ],
-                            {
+                            window: {
                                 type: "duration",
                                 seconds: 18000,
                             },
-                            [
+                            resetPath: [
                                 "reset_time",
                             ],
-                            "rfc3339",
-                            "number_or_numeric_string",
-                            "fraction",
-                        ),
-                        ratioEntry(
-                            "limit_7d",
-                            "Weekly allowance",
-                            [
+                            resetEncoding: "rfc3339",
+                            encoding: "number_or_numeric_string",
+                            scale: "fraction",
+                        }),
+                        ratioEntry({
+                            key: "limit_7d",
+                            label: "Weekly allowance",
+                            at: [
                                 "limit_7d",
                             ],
-                            [
+                            valuePath: [
                                 "used_ratio",
                             ],
-                            {
+                            window: {
                                 type: "duration",
                                 seconds: 604800,
                             },
-                            [
+                            resetPath: [
                                 "reset_time",
                             ],
-                            "rfc3339",
-                            "number_or_numeric_string",
-                            "fraction",
-                        ),
-                        ratioEntry(
-                            "limit_month_total",
-                            "Monthly total",
-                            [
+                            resetEncoding: "rfc3339",
+                            encoding: "number_or_numeric_string",
+                            scale: "fraction",
+                        }),
+                        ratioEntry({
+                            key: "limit_month_total",
+                            label: "Monthly total",
+                            at: [
                                 "limit_month_total",
                             ],
-                            [
+                            valuePath: [
                                 "used_ratio",
                             ],
-                            {
+                            window: {
                                 type: "calendar",
                                 unit: "month",
                             },
-                            [
+                            resetPath: [
                                 "reset_time",
                             ],
-                            "rfc3339",
-                            "number_or_numeric_string",
-                            "fraction",
-                        ),
-                        ratioEntry(
-                            "limit_month_code",
-                            "Monthly coding",
-                            [
+                            resetEncoding: "rfc3339",
+                            encoding: "number_or_numeric_string",
+                            scale: "fraction",
+                        }),
+                        ratioEntry({
+                            key: "limit_month_code",
+                            label: "Monthly coding",
+                            at: [
                                 "limit_month_code",
                             ],
-                            [
+                            valuePath: [
                                 "used_ratio",
                             ],
-                            {
+                            window: {
                                 type: "calendar",
                                 unit: "month",
                             },
-                            [
+                            resetPath: [
                                 "reset_time",
                             ],
-                            "rfc3339",
-                            "number_or_numeric_string",
-                            "fraction",
-                        ),
+                            resetEncoding: "rfc3339",
+                            encoding: "number_or_numeric_string",
+                            scale: "fraction",
+                        }),
                     ],
                 },
             ],
@@ -148,15 +164,7 @@ export const kimiCodePreset: ProviderPreset = {
             ],
             headers: [
                 bearerAuthorization(),
-                paramRow("X-Msh-Device-Id", [
-                    slot("device_id"),
-                ]),
-                paramRow("X-Msh-Platform", [
-                    literal("macos"),
-                ]),
-                paramRow("User-Agent", [
-                    literal("KimiCLI/1.0.0"),
-                ]),
+                ...mshHeaders,
             ],
             upstream_streaming: "match_client",
         },
@@ -178,15 +186,7 @@ export const kimiCodePreset: ProviderPreset = {
                             literal("https://auth.kimi.com/oauth/device_authorization"),
                         ],
                         headers: [
-                            paramRow("X-Msh-Device-Id", [
-                                slot("device_id"),
-                            ]),
-                            paramRow("X-Msh-Platform", [
-                                literal("macos"),
-                            ]),
-                            paramRow("User-Agent", [
-                                literal("KimiCLI/1.0.0"),
-                            ]),
+                            ...mshHeaders,
                         ],
                         body: deviceAuthorizationBody(),
                     },
@@ -201,15 +201,7 @@ export const kimiCodePreset: ProviderPreset = {
                         literal("https://auth.kimi.com/oauth/token"),
                     ],
                     headers: [
-                        paramRow("X-Msh-Device-Id", [
-                            slot("device_id"),
-                        ]),
-                        paramRow("X-Msh-Platform", [
-                            literal("macos"),
-                        ]),
-                        paramRow("User-Agent", [
-                            literal("KimiCLI/1.0.0"),
-                        ]),
+                        ...mshHeaders,
                     ],
                     body: deviceExchangeBody(),
                 },
@@ -227,15 +219,7 @@ export const kimiCodePreset: ProviderPreset = {
                         literal("https://auth.kimi.com/oauth/token"),
                     ],
                     headers: [
-                        paramRow("X-Msh-Device-Id", [
-                            slot("device_id"),
-                        ]),
-                        paramRow("X-Msh-Platform", [
-                            literal("macos"),
-                        ]),
-                        paramRow("User-Agent", [
-                            literal("KimiCLI/1.0.0"),
-                        ]),
+                        ...mshHeaders,
                     ],
                     body: {
                         kind: "form",

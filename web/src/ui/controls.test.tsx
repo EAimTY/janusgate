@@ -2,7 +2,7 @@ import { render } from "@solidjs/web";
 import { createSignal } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { createDisposals, drainWrites, optionRepr } from "../test-support/management-api";
-import { SelectField } from "./controls";
+import { SelectField, TextField } from "./controls";
 
 const disposes = createDisposals();
 
@@ -12,6 +12,17 @@ function theSelect(): HTMLSelectElement {
 
     if (!(control instanceof HTMLSelectElement)) {
         throw new Error("No select rendered");
+    }
+
+    return control;
+}
+
+/** The one text input the mounts below render. */
+function theInput(): HTMLInputElement {
+    const control = document.querySelector("input");
+
+    if (!(control instanceof HTMLInputElement)) {
+        throw new Error("No input rendered");
     }
 
     return control;
@@ -112,5 +123,40 @@ describe("SelectField", () => {
         expect(Array.from(select.options).map((option) => option.value)).toEqual([
             "alpha",
         ]);
+    });
+});
+
+describe("TextField", () => {
+    it("pairs aria-invalid with the standing error as the error comes and goes", async () => {
+        const [error, setError] = createSignal<string | null>(null);
+
+        disposes.push(
+            render(
+                () => (
+                    <TextField
+                        label="Name"
+                        value=""
+                        onInput={() => {}}
+                        error={error()}
+                    />
+                ),
+                document.body,
+            ),
+        );
+
+        // No standing error, no invalid state: a pristine field is honest.
+        expect(theInput().getAttribute("aria-invalid")).toBe("false");
+
+        setError("Name is required.");
+        await drainWrites();
+
+        // The state half of the announcement rides with the error paragraph
+        // the field already describes.
+        expect(theInput().getAttribute("aria-invalid")).toBe("true");
+
+        setError(null);
+        await drainWrites();
+
+        expect(theInput().getAttribute("aria-invalid")).toBe("false");
     });
 });

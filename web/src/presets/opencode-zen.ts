@@ -9,6 +9,13 @@ import {
 } from "./expressions";
 import type { ProviderPreset } from "./types";
 
+/**
+ * The pinned OpenCode Zen endpoint literals every variant composes. The
+ * payloads are immutable and serialized, so the shared nodes are safe.
+ */
+const zenV1 = literal("https://opencode.ai/zen/v1");
+const zenModels = literal("https://opencode.ai/zen/v1/models");
+
 /** Complete authored preset for zen-openai-chat-completions. */
 export const zenOpenaiChatCompletionsPreset: ProviderPreset = {
     id: "zen-openai-chat-completions",
@@ -26,7 +33,7 @@ export const zenOpenaiChatCompletionsPreset: ProviderPreset = {
         format: "openai_chat_completion",
         inference: {
             url: [
-                literal("https://opencode.ai/zen/v1"),
+                zenV1,
                 literal("/chat/completions"),
             ],
             headers: [
@@ -38,7 +45,7 @@ export const zenOpenaiChatCompletionsPreset: ProviderPreset = {
             type: "api_key",
         },
         discovery: openAiModelsDiscovery([
-            literal("https://opencode.ai/zen/v1/models"),
+            zenModels,
         ]),
     },
 };
@@ -60,7 +67,7 @@ export const zenOpenaiResponsesPreset: ProviderPreset = {
         format: "openai_response",
         inference: {
             url: [
-                literal("https://opencode.ai/zen/v1"),
+                zenV1,
                 literal("/responses"),
             ],
             headers: [
@@ -72,7 +79,7 @@ export const zenOpenaiResponsesPreset: ProviderPreset = {
             type: "api_key",
         },
         discovery: openAiModelsDiscovery([
-            literal("https://opencode.ai/zen/v1/models"),
+            zenModels,
         ]),
     },
 };
@@ -94,7 +101,7 @@ export const zenAnthropicMessagesPreset: ProviderPreset = {
         format: "anthropic_messages",
         inference: {
             url: [
-                literal("https://opencode.ai/zen/v1"),
+                zenV1,
                 literal("/v1/messages"),
             ],
             headers: [
@@ -112,7 +119,7 @@ export const zenAnthropicMessagesPreset: ProviderPreset = {
         },
         discovery: openAiModelsDiscovery(
             [
-                literal("https://opencode.ai/zen/v1/models"),
+                zenModels,
             ],
             [
                 paramRow("x-api-key", [
@@ -140,12 +147,12 @@ export const zenGeminiGenerateContentPreset: ProviderPreset = {
         format: "gemini_generate_content",
         inference: {
             url: [
-                literal("https://opencode.ai/zen/v1"),
+                zenV1,
                 model(),
                 literal(":generateContent"),
             ],
             stream_url: [
-                literal("https://opencode.ai/zen/v1"),
+                zenV1,
                 model(),
                 literal(":streamGenerateContent?alt=sse"),
             ],
@@ -161,7 +168,7 @@ export const zenGeminiGenerateContentPreset: ProviderPreset = {
         },
         discovery: openAiModelsDiscovery(
             [
-                literal("https://opencode.ai/zen/v1/models"),
+                zenModels,
             ],
             [
                 paramRow("x-goog-api-key", [

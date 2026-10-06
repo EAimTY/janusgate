@@ -1,17 +1,36 @@
 import { render } from "@solidjs/web";
-import { createSignal } from "solid-js";
+import { createRoot, createSignal } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GetProviderQuotaResponse } from "/src/management-api/generated/v0";
+import type {
+    DefinitionResponse,
+    GetProviderQuotaResponse,
+} from "/src/management-api/generated/v0";
+import { PROVIDER_PRESETS } from "/src/presets/catalog";
 import {
     bodyText,
     buttonWithText,
     createDisposals,
+    providerRow,
     settle,
+    stubManagementApi,
 } from "/src/test-support/management-api";
 import { ProviderQuotaCard } from "./provider-quota-card";
 import type { QuotaViewState } from "./quota-view";
+import { createProviderQuotaView } from "./quota-view";
 
 const disposes = createDisposals();
+const codexPreset = PROVIDER_PRESETS.find((value) => value.id === "codex");
+if (codexPreset === undefined) throw new Error("Codex fixture is required");
+const quotaDefinition: DefinitionResponse = {
+    ...codexPreset.payload,
+    name: "exact",
+    version: 2,
+    created_at: 1,
+};
+const quotaProvider = providerRow({
+    provider_definition_name: "exact",
+    provider_definition_version: 2,
+});
 const snapshot: GetProviderQuotaResponse = {
     observed_at: 1_000_000,
     quotas: [
@@ -282,5 +301,71 @@ describe("quota card observations", () => {
         });
         await settle();
         expect(bodyText()).toContain("Reading upstream quota");
+    });
+
+    it("reports a succeeded quota observation and never a failed one", async () => {
+        // The completion callback is the card's only word to the shell: a
+        // succeeded observation may stamp the shell's freshness (README
+        // §6.3.1), so the pin rides the real view over the stubbed wire — a
+        // failure states its diagnosis on the card and reports nothing,
+        // re-running no other read.
+        const get = vi
+            .fn()
+            .mockResolvedValueOnce(snapshot)
+            .mockRejectedValueOnce(new Error("quota upstream unavailable"))
+            .mockResolvedValueOnce({
+                observed_at: 456,
+                quotas: [],
+            });
+        const api = stubManagementApi({
+            listProviderDefinitions: async () => ({
+                provider_definitions: [
+                    quotaDefinition,
+                ],
+            }),
+            getProviderQuota: get,
+        });
+        const onQuotaReadComplete = vi.fn();
+        const view = createRoot((dispose) => {
+            disposes.push(dispose);
+            return createProviderQuotaView({
+                api: () => api,
+                provider: () => quotaProvider,
+                onQuotaReadComplete,
+            });
+        });
+        await settle();
+
+        // The capability check alone observes no quota: nothing to report.
+        expect(view.state().type).toBe("unobserved");
+        expect(onQuotaReadComplete).not.toHaveBeenCalled();
+
+        view.refresh();
+        await settle();
+        expect(view.state()).toMatchObject({
+            type: "ready",
+            snapshot,
+        });
+        expect(onQuotaReadComplete).toHaveBeenCalledTimes(1);
+
+        view.refresh();
+        await settle();
+        expect(view.state()).toMatchObject({
+            type: "ready",
+            refresh: {
+                type: "failed",
+            },
+        });
+        expect(onQuotaReadComplete).toHaveBeenCalledTimes(1);
+
+        view.refresh();
+        await settle();
+        expect(view.state()).toMatchObject({
+            type: "ready",
+            snapshot: {
+                observed_at: 456,
+            },
+        });
+        expect(onQuotaReadComplete).toHaveBeenCalledTimes(2);
     });
 });

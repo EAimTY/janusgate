@@ -280,10 +280,12 @@ pub(super) struct SseRenderer {
     /// Gateway-minted response identifier, stable across the stream.
     response_id: String,
 
-    /// Whether any reasoning delta was already rendered; a non-empty done renders only when
-    /// none preceded it (parsers emit either deltas plus an empty done, or a done carrying the
-    /// full text with no deltas — never both with overlapping text).
-    is_reasoning_streamed: bool,
+    /// Whether reasoning deltas were rendered since the last [`IrEvent::ReasoningDone`] —
+    /// mirroring the Aggregator's `pending_reasoning`: a done renders only text its own block's
+    /// deltas did not already deliver, and the state resets when the block closes so every later
+    /// done-only block still renders (parsers emit either deltas plus an empty done, or a done
+    /// carrying the full text with no deltas — never both with overlapping text).
+    is_reasoning_block_streamed: bool,
 
     /// Latest usage observed; rendered once terminally.
     usage: Option<IrUsage>,
@@ -301,7 +303,7 @@ impl SseRenderer {
         Self {
             model,
             response_id: format!("gen-{}", crate::ids::new_uuid()),
-            is_reasoning_streamed: false,
+            is_reasoning_block_streamed: false,
             usage: None,
             prompt_block_reason: None,
             projection: None,
@@ -374,7 +376,7 @@ impl ClientSseRenderer for SseRenderer {
             }])],
 
             IrEvent::ReasoningDelta(delta) => {
-                self.is_reasoning_streamed = true;
+                self.is_reasoning_block_streamed = true;
 
                 vec![self.parts_frame(vec![PartOut::Text {
                     text: delta.clone(),
@@ -382,14 +384,17 @@ impl ClientSseRenderer for SseRenderer {
                 }])]
             }
 
-            // A done carrying text renders it only when no deltas preceded it; the opaque
-            // payload is dropped on this surface.
+            // A done renders text only when its own block's deltas did not already deliver it;
+            // the block closes here either way, so the per-block state resets and a later
+            // done-only block still renders. The opaque payload is dropped on this surface.
             IrEvent::ReasoningDone { text, .. } => {
-                if text.is_empty() || self.is_reasoning_streamed {
+                let is_block_streamed = self.is_reasoning_block_streamed;
+
+                self.is_reasoning_block_streamed = false;
+
+                if text.is_empty() || is_block_streamed {
                     Vec::new()
                 } else {
-                    self.is_reasoning_streamed = true;
-
                     vec![self.parts_frame(vec![PartOut::Text {
                         text: text.clone(),
                         thought: Some(true),
@@ -775,5 +780,71 @@ mod tests {
         assert!(usage_frame.contains(r#""promptTokenCount":10"#));
         assert!(usage_frame.contains(r#""candidatesTokenCount":5"#));
         assert!(usage_frame.contains(r#""totalTokenCount":16"#));
+    }
+
+    /// Reasoning-block gating is per block: every done-only block renders its own thought part —
+    /// streaming and aggregated renderings agree when an upstream delivers several full-text
+    /// blocks (Anthropic thinking bodies, Interactions thought steps) — a done never renders the
+    /// text its own block's deltas already delivered, and a later done-only block still renders
+    /// after a delta-delivered block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any block's done renders twice or is dropped.
+    #[test]
+    fn gates_every_reasoning_done_by_its_own_block() {
+        let mut renderer = SseRenderer::new("m".to_string());
+
+        // Two done-only blocks: both render, each exactly once.
+        for text in ["first", "second"] {
+            let frames = renderer.render(&IrEvent::ReasoningDone {
+                text: text.to_string(),
+                signature: None,
+                opaque: Value::Null,
+            });
+
+            assert_eq!(
+                frames.len(),
+                1,
+                "done-only block `{text}` must render exactly once",
+            );
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the single rendered frame is asserted above"
+            )]
+            let frame = &frames[0];
+            assert!(
+                frame.contains(&format!(r#""text":"{text}""#)),
+                "the rendered block must carry its own text: {frame}",
+            );
+        }
+
+        // A delta-delivered block's done renders nothing, and the per-block state resets so the
+        // next done-only block renders again.
+        renderer.render(&IrEvent::ReasoningDelta("streamed".to_string()));
+
+        assert!(
+            renderer
+                .render(&IrEvent::ReasoningDone {
+                    text: "streamed".to_string(),
+                    signature: None,
+                    opaque: Value::Null,
+                })
+                .is_empty()
+        );
+
+        let frames = renderer.render(&IrEvent::ReasoningDone {
+            text: "third".to_string(),
+            signature: None,
+            opaque: Value::Null,
+        });
+
+        assert_eq!(frames.len(), 1, "a fresh done-only block must render");
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the single rendered frame is asserted above"
+        )]
+        let frame = &frames[0];
+        assert!(frame.contains(r#""text":"third""#));
     }
 }

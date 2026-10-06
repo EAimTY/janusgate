@@ -176,19 +176,6 @@ impl IrImage {
             "Image URLs must use the data:, http:, or https: schemes",
         ))
     }
-
-    /// Renders the image back into the OpenAI `image_url` form shared by the Chat Completions and
-    /// Responses codecs; the inverse of [`IrImage::from_url`].
-    pub(crate) fn to_url(&self) -> String {
-        match self {
-            Self::Inline {
-                mime_type,
-                data_base64,
-            } => format!("data:{mime_type};base64,{data_base64}"),
-
-            Self::Url(url) => url.clone(),
-        }
-    }
 }
 
 /// One typed segment of a message.

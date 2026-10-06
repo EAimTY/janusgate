@@ -137,8 +137,8 @@ export function ApiKeyAccess(props: {
                     <p class="text-[13px] text-ink">
                         {translation()(($) => $.controls.defaultModelAccessLabel)}{" "}
                         {props.policy.default_access === "allow"
-                            ? translation()(($) => $.additional.apiKeyAccess.allow)
-                            : translation()(($) => $.additional.apiKeyAccess.deny)}
+                            ? translation()(($) => $.helpers.apiKeyAccess.allow)
+                            : translation()(($) => $.helpers.apiKeyAccess.deny)}
                     </p>
                 }
             >
@@ -176,8 +176,8 @@ export function ApiKeyAccess(props: {
                         <span>
                             {missing.label} ·{" "}
                             {missing.access === "allow"
-                                ? translation()(($) => $.additional.apiKeyAccess.allow)
-                                : translation()(($) => $.additional.apiKeyAccess.deny)}
+                                ? translation()(($) => $.helpers.apiKeyAccess.allow)
+                                : translation()(($) => $.helpers.apiKeyAccess.deny)}
                         </span>
                         <Show when={props.onChange}>
                             <Button
@@ -222,10 +222,8 @@ export function ApiKeyAccess(props: {
                                     <h4 class="break-words text-[13px] font-semibold text-ink">
                                         <bdi dir="auto">{owner.name}</bdi> ·{" "}
                                         {owner.identity.type === "provider"
-                                            ? translation()(
-                                                  ($) => $.additional.apiKeyAccess.provider,
-                                              )
-                                            : translation()(($) => $.additional.apiKeyAccess.pool)}
+                                            ? translation()(($) => $.helpers.apiKeyAccess.provider)
+                                            : translation()(($) => $.helpers.apiKeyAccess.pool)}
                                     </h4>
                                     <p class="mt-1 text-[13px] text-ink-faint">
                                         {accessLabel(
@@ -278,12 +276,10 @@ export function ApiKeyAccess(props: {
                                                     {route.is_automatic
                                                         ? translation()(
                                                               ($) =>
-                                                                  $.additional.apiKeyAccess
-                                                                      .automatic,
+                                                                  $.helpers.apiKeyAccess.automatic,
                                                           )
                                                         : translation()(
-                                                              ($) =>
-                                                                  $.additional.apiKeyAccess.alias,
+                                                              ($) => $.helpers.apiKeyAccess.alias,
                                                           )}
                                                 </p>
                                                 <p class="mt-1 text-[13px] text-ink">

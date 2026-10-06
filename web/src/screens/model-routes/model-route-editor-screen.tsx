@@ -118,23 +118,19 @@ export function ModelRouteEditorScreen(props: {
                     title={
                         props.routeId === null
                             ? translation()(
-                                  ($) => $.additional.modelRouteEditorScreen.createPublicRoute,
+                                  ($) => $.screens.modelRouteEditorScreen.createPublicRoute,
                               )
-                            : translation()(
-                                  ($) => $.additional.modelRouteEditorScreen.editPublicRoute,
-                              )
+                            : translation()(($) => $.screens.modelRouteEditorScreen.editPublicRoute)
                     }
                     backHref={hrefs.modelRoutes()}
-                    backLabel={translation()(
-                        ($) => $.additional.modelRouteEditorScreen.publicRoutes,
-                    )}
+                    backLabel={translation()(($) => $.screens.modelRouteEditorScreen.publicRoutes)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="model_route"
                     headerTitle={translation()(
-                        ($) => $.additional.modelRouteEditorScreen.editPublicRoute,
+                        ($) => $.screens.modelRouteEditorScreen.editPublicRoute,
                     )}
                 />
             }
@@ -147,8 +143,7 @@ export function ModelRouteEditorScreen(props: {
                                 ? route.public_id
                                 : route.id === null
                                   ? translation()(
-                                        ($) =>
-                                            $.additional.modelRouteEditorScreen.createPublicRoute,
+                                        ($) => $.screens.modelRouteEditorScreen.createPublicRoute,
                                     )
                                   : editIdentifierMessage(route.public_id)
                         }
@@ -156,18 +151,18 @@ export function ModelRouteEditorScreen(props: {
                             route.is_automatic
                                 ? translation()(
                                       ($) =>
-                                          $.additional.modelRouteEditorScreen
+                                          $.screens.modelRouteEditorScreen
                                               .aModelNameMaintainedAutomaticallyByItsProviderMessage,
                                   )
                                 : translation()(
                                       ($) =>
-                                          $.additional.modelRouteEditorScreen
+                                          $.screens.modelRouteEditorScreen
                                               .clientsRequestThisPublicIDChangingItsTargetMessage,
                                   )
                         }
                         backHref={hrefs.modelRoutes()}
                         backLabel={translation()(
-                            ($) => $.additional.modelRouteEditorScreen.publicRoutes,
+                            ($) => $.screens.modelRouteEditorScreen.publicRoutes,
                         )}
                     />
                     <HoldNotice
@@ -197,12 +192,11 @@ export function ModelRouteEditorScreen(props: {
                                     >
                                         {route.target?.type === "pool"
                                             ? translation()(
-                                                  ($) =>
-                                                      $.additional.modelRouteEditorScreen.openPool,
+                                                  ($) => $.screens.modelRouteEditorScreen.openPool,
                                               )
                                             : translation()(
                                                   ($) =>
-                                                      $.additional.modelRouteEditorScreen
+                                                      $.screens.modelRouteEditorScreen
                                                           .openPhysicalModel,
                                               )}
                                     </ButtonLink>
@@ -257,7 +251,7 @@ function RouteDelete(props: {
                         .clientsRequestingItsPublicIDWillReceiveModelnotfoundMessage,
             )}
             question={translation()(
-                ($) => $.additional.modelRouteEditorScreen.deleteThisPublicRoute,
+                ($) => $.screens.modelRouteEditorScreen.deleteThisPublicRouteQuestion,
             )}
             onConfirm={remove}
         />
@@ -288,6 +282,14 @@ function RouteForm(props: {
     const [upstreamId, setUpstreamId] = createSignal(
         initial?.type === "pool" ? initial.upstream_id : "",
     );
+    // The identity fields' emptiness errors open only once the field has
+    // received input — a pristine form is not an error (the app's
+    // lazy-error convention), and switching the target type to pool must not
+    // convict the untouched Upstream ID from its first paint. A typed-invalid
+    // value names itself wherever it was typed; the save gate holds the
+    // action until the identity stands.
+    const [hasPublicIdInput, setHasPublicIdInput] = createSignal(false);
+    const [hasUpstreamInput, setHasUpstreamInput] = createSignal(false);
     const target = (): ModelRouteTarget | null =>
         targetType() === "direct"
             ? modelId() === ""
@@ -400,15 +402,20 @@ function RouteForm(props: {
                     <TextField
                         label={translation()(($) => $.screens.modelRouteEditorScreen.publicID)}
                         value={publicId()}
-                        onInput={setPublicId}
+                        onInput={(value) => {
+                            setHasPublicIdInput(true);
+                            setPublicId(value);
+                        }}
                         error={
-                            publicId() === ""
-                                ? translation()(
-                                      ($) =>
-                                          $.additional.modelRouteEditorScreen
-                                              .publicIDIsRequiredMessage,
-                                  )
-                                : routingTokenError(publicId(), "publicId")
+                            hasPublicIdInput()
+                                ? publicId() === ""
+                                    ? translation()(
+                                          ($) =>
+                                              $.screens.modelRouteEditorScreen
+                                                  .publicIDIsRequiredMessage,
+                                      )
+                                    : routingTokenError(publicId(), "publicId")
+                                : null
                         }
                         hint={translation()(
                             ($) =>
@@ -424,14 +431,12 @@ function RouteForm(props: {
                             {
                                 value: "direct",
                                 label: translation()(
-                                    ($) => $.additional.modelRouteEditorScreen.directPhysicalModel,
+                                    ($) => $.screens.modelRouteEditorScreen.directPhysicalModel,
                                 ),
                             },
                             {
                                 value: "pool",
-                                label: translation()(
-                                    ($) => $.additional.modelRouteEditorScreen.pool,
-                                ),
+                                label: translation()(($) => $.screens.modelRouteEditorScreen.pool),
                             },
                         ]}
                         onChange={setTargetType}
@@ -450,7 +455,7 @@ function RouteForm(props: {
                                         props.pools,
                                         (pool) => pool.name,
                                         translation()(
-                                            ($) => $.additional.modelRouteEditorScreen.chooseAPool,
+                                            ($) => $.screens.modelRouteEditorScreen.chooseAPool,
                                         ),
                                     )}
                                     onChange={setPoolId}
@@ -461,15 +466,20 @@ function RouteForm(props: {
                                         ($) => $.screens.modelRouteEditorScreen.upstreamID,
                                     )}
                                     value={upstreamId()}
-                                    onInput={setUpstreamId}
+                                    onInput={(value) => {
+                                        setHasUpstreamInput(true);
+                                        setUpstreamId(value);
+                                    }}
                                     error={
-                                        upstreamId() === ""
-                                            ? translation()(
-                                                  ($) =>
-                                                      $.additional.modelRouteEditorScreen
-                                                          .upstreamIDIsRequiredMessage,
-                                              )
-                                            : routingTokenError(upstreamId(), "upstreamId")
+                                        hasUpstreamInput()
+                                            ? upstreamId() === ""
+                                                ? translation()(
+                                                      ($) =>
+                                                          $.screens.modelRouteEditorScreen
+                                                              .upstreamIDIsRequiredMessage,
+                                                  )
+                                                : routingTokenError(upstreamId(), "upstreamId")
+                                            : null
                                     }
                                     hint={translation()(
                                         ($) =>
@@ -490,7 +500,7 @@ function RouteForm(props: {
                                 props.models,
                                 (model) => `${model.provider} · ${model.upstream_id}`,
                                 translation()(
-                                    ($) => $.additional.modelRouteEditorScreen.chooseAPhysicalModel,
+                                    ($) => $.screens.modelRouteEditorScreen.chooseAPhysicalModel,
                                 ),
                             )}
                             onChange={setModelId}

@@ -5,15 +5,8 @@ use log::LevelFilter;
 use std::{num::NonZero, time::Duration};
 
 /// Default maximum number of concurrent database pool connections.
-///
-/// # Panics
-///
-/// Never: the literal 4 is nonzero, and the `expect` states that invariant.
 pub(super) fn max_connections() -> NonZero<usize> {
-    #[expect(clippy::expect_used, reason = "the literal 4 is nonzero")]
-    let connections = NonZero::new(4).expect("4 is nonzero");
-
-    connections
+    positive_usize::<4>()
 }
 
 /// Default minimum log severity.
@@ -27,15 +20,8 @@ pub(super) fn pool_timeout() -> Duration {
 }
 
 /// Default request-accounting retention, in whole days.
-///
-/// # Panics
-///
-/// Never: the literal 90 is nonzero, and the `expect` states that invariant.
 pub(super) fn api_logs_retention_days() -> NonZero<u32> {
-    #[expect(clippy::expect_used, reason = "the literal 90 is nonzero")]
-    let days = NonZero::new(90).expect("90 is nonzero");
-
-    days
+    positive::<90>()
 }
 
 /// Constructs one positive first-party default constant.
@@ -44,6 +30,17 @@ pub(super) fn api_logs_retention_days() -> NonZero<u32> {
 ///
 /// Panics if a first-party default literal is zero.
 fn positive<const VALUE: u32>() -> NonZero<u32> {
+    #[expect(clippy::expect_used, reason = "all default constants are positive")]
+    let value = NonZero::new(VALUE).expect("default is positive");
+    value
+}
+
+/// Constructs one positive first-party default `usize` constant.
+///
+/// # Panics
+///
+/// Panics if a first-party default literal is zero.
+fn positive_usize<const VALUE: usize>() -> NonZero<usize> {
     #[expect(clippy::expect_used, reason = "all default constants are positive")]
     let value = NonZero::new(VALUE).expect("default is positive");
     value
@@ -65,12 +62,6 @@ pub(super) fn sticky_retry_timeout_seconds() -> NonZero<u32> {
 }
 
 /// Default maximum number of individually counted affinity entries.
-///
-/// # Panics
-///
-/// Never: the first-party literal 100000 is positive.
 pub(super) fn sticky_maximum_entries() -> NonZero<usize> {
-    #[expect(clippy::expect_used, reason = "the literal 100000 is positive")]
-    let entries = NonZero::new(100000).expect("default is positive");
-    entries
+    positive_usize::<100000>()
 }

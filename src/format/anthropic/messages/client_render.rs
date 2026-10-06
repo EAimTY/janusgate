@@ -785,14 +785,21 @@ impl SseRenderer {
 
             self.next_index += 1;
 
+            // The start- and delta-frame decisions share one probe, so the two framings cannot
+            // disagree per block: a block with string content rides the threshold start plus
+            // its summary delta, every other block delivers the whole block in its start.
+            let delta_content = if self.is_threshold_compaction {
+                compaction_block_content(block)
+            } else {
+                None
+            };
+
             frames.push(Self::frame(
                 "content_block_start",
                 &VerbatimBlockStartPayload {
                     kind: "content_block_start",
                     index,
-                    content_block: if self.is_threshold_compaction
-                        && compaction_block_content(block).is_some()
-                    {
+                    content_block: if delta_content.is_some() {
                         threshold_block_start(block)
                     } else {
                         CompactionStart::Complete(block.clone())
@@ -802,9 +809,7 @@ impl SseRenderer {
 
             // A block without string content — the native null-content no-op — carries no
             // delta: its start already delivered the whole block.
-            if self.is_threshold_compaction
-                && let Some(content) = compaction_block_content(block)
-            {
+            if let Some(content) = delta_content {
                 frames.push(Self::frame(
                     "content_block_delta",
                     &ContentBlockDeltaPayload {

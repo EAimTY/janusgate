@@ -202,6 +202,53 @@ describe("reduceConnectionState", () => {
         });
     });
 
+    it("cancels only a probe in flight, into a clean unconnected state", () => {
+        // A cancel is control flow, never a refusal: it applies only while a
+        // probe runs and lands carrying no failure — nothing to diagnose and
+        // no address to seed from.
+        expect(
+            reduceConnectionState(
+                {
+                    status: "verifying",
+                },
+                {
+                    type: "connectionCancelled",
+                },
+            ),
+        ).toEqual({
+            status: "unconnected",
+            failure: null,
+            forgottenBaseUrl: null,
+        });
+
+        const connected: ConnectionState = {
+            status: "connected",
+            connection,
+        };
+
+        expect(
+            reduceConnectionState(connected, {
+                type: "connectionCancelled",
+            }),
+        ).toBe(connected);
+
+        const failed: ConnectionState = {
+            status: "unconnected",
+            failure: {
+                message: "previous failure",
+                cause: null,
+                baseUrl: null,
+            },
+            forgottenBaseUrl: null,
+        };
+
+        expect(
+            reduceConnectionState(failed, {
+                type: "connectionCancelled",
+            }),
+        ).toBe(failed);
+    });
+
     it("forgets into an unconnected state that carries the forgotten address", () => {
         // From a connected session the address the pair served travels so the
         // setup form reopens with it; from any other state there is no

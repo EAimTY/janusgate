@@ -93,14 +93,14 @@ export function CopyButton(props: {
         <>
             <Button
                 glyph="copy"
-                title={props.label ?? t()(($) => $.additional.clipboard.copyToClipboard)}
+                title={props.label ?? t()(($) => $.helpers.clipboard.copyToClipboard)}
                 ariaLabel={props.ariaLabel}
                 isDisabled={(props.isDisabled ?? false) || props.value === ""}
                 onClick={() => void copy()}
             >
                 {copyState() === "copied"
-                    ? t()(($) => $.additional.clipboard.copied)
-                    : (props.label ?? t()(($) => $.additional.clipboard.copy))}
+                    ? t()(($) => $.helpers.clipboard.copied)
+                    : (props.label ?? t()(($) => $.helpers.clipboard.copy))}
             </Button>
             <Show when={copyState() === "refused"}>
                 <span
@@ -108,7 +108,7 @@ export function CopyButton(props: {
                     role="status"
                 >
                     {t()(($) => $.dynamicMessages.refusedClipboard, {
-                        subject: props.subject ?? t()(($) => $.additional.clipboard.theValueHere),
+                        subject: props.subject ?? t()(($) => $.helpers.clipboard.theValueHere),
                     })}
                 </span>
             </Show>

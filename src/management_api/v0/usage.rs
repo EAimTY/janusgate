@@ -198,7 +198,8 @@ pub(super) struct QueryUsageRequest {
 }
 
 /// The composite bucket key of one aggregation row (README §7.1): one field per requested
-/// dimension, exactly the requested ones, in request order on the wire. The enums use their
+/// dimension, exactly the requested ones — a fixed object serialized in declaration order, while
+/// the request order drives the bucket list's ordering. The enums use their
 /// recorded vocabularies; `http_status` renders `null` for the bucket the never-answered rows
 /// form — its nullable mirror (rule 2).
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -283,7 +284,8 @@ impl UsageBucketKey {
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UsageBucket {
-    /// Bucket key: exactly the requested dimensions, in request order.
+    /// Bucket key: exactly the requested dimensions; the request order drives the bucket
+    /// ordering.
     pub key: UsageBucketKey,
 
     /// Number of accounting rows in the bucket.

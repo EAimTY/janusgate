@@ -68,10 +68,14 @@ pub struct Poll {
     /// The wire encoding the poll response arrives in.
     pub response_encoding: ResponseEncoding,
 
-    /// The path whose boolean marks the operation done.
+    /// The path whose boolean marks the operation done: a non-empty member chain, whose empty
+    /// spelling the write boundary rejects — it would address the response root, whose truthy
+    /// read is always false, and the poll would end only at budget exhaustion.
     pub done_path: ResponsePath,
 
-    /// The path carrying the terminal failure payload of a completed operation.
+    /// The path carrying the terminal failure payload of a completed operation; the empty
+    /// chain is the configured no-error-inspection, and the poll never fails on a payload
+    /// under it (README §5.4).
     pub error_path: ResponsePath,
 
     /// The extractions folding the completed operation's response into the working state.

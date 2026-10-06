@@ -6,14 +6,16 @@ import type {
     Poll,
     ProvisionExtraction,
     ProvisioningStep,
+    ResponseEncoding,
     TokenRefresh,
 } from "../generated/v0";
 import {
     expectArray,
     expectBoolean,
     expectDeclaredKeys,
-    expectInteger,
+    expectNonEmptyString,
     expectOneOf,
+    expectPositiveInteger,
     expectRecord,
     expectString,
     isPresentValue,
@@ -28,8 +30,17 @@ import {
 } from "./control";
 import { expectParamRows, expectStringExpr } from "./expressions";
 
-/** One provisioning extraction: the path, its target, the shape, and the flag. */
-function expectProvisionExtraction(value: unknown, context: string): ProvisionExtraction {
+/**
+ * One provisioning extraction: the path, its target, the shape, and the flag.
+ * A form-encoded step's extractions address flat form fields, so a carried
+ * path names exactly one member — the rule the gateway holds every
+ * extraction to (README §5.4).
+ */
+function expectProvisionExtraction(
+    value: unknown,
+    context: string,
+    encoding: ResponseEncoding,
+): ProvisionExtraction {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
         record,
@@ -42,26 +53,54 @@ function expectProvisionExtraction(value: unknown, context: string): ProvisionEx
         context,
     );
 
-    return {
+    const extraction: ProvisionExtraction = {
         path: expectResponsePath(Reflect.get(record, "path"), `${context}.path`),
         target: expectResponseTarget(Reflect.get(record, "target"), `${context}.target`),
         shape: expectExtractionShape(Reflect.get(record, "shape"), `${context}.shape`),
         required: expectBoolean(Reflect.get(record, "required"), `${context}.required`),
     };
+
+    if (encoding === "form" && extraction.path.length !== 1) {
+        throw new ContractViolationError(
+            `${context} must address a flat form field and carry exactly one path member`,
+        );
+    }
+
+    return extraction;
 }
 
 /** The extractions of one provisioning step or poll, when the key is present. */
-function expectProvisionExtractions(value: unknown, context: string): Array<ProvisionExtraction> {
+function expectProvisionExtractions(
+    value: unknown,
+    context: string,
+    encoding: ResponseEncoding,
+): Array<ProvisionExtraction> {
     return expectArray(value, context).map((entry, index) =>
-        expectProvisionExtraction(entry, `${context}[${index}]`),
+        expectProvisionExtraction(entry, `${context}[${index}]`, encoding),
     );
 }
 
-/** The terminal status codes of an exchange or a grant-mode token refresh. */
+/**
+ * The terminal status codes of an exchange or a grant-mode token refresh
+ * (README §5.1): the carrying list is one the gateway's `Vec1` type parses,
+ * so it is never empty, and an empty code can never match a status.
+ */
 function expectTerminalCodes(value: unknown, context: string): Array<string> {
-    return expectArray(value, context).map((code, index) =>
-        expectString(code, `${context}[${index}]`),
-    );
+    const codes = expectArray(value, context);
+
+    if (codes.length === 0) {
+        throw new ContractViolationError(`${context} must not be empty`);
+    }
+
+    return codes.map((code, index) => {
+        const parsed = expectString(code, `${context}[${index}]`);
+
+        if (parsed === "") {
+            throw new ContractViolationError(`${context}[${index}] must not be an empty code`);
+        }
+
+        return parsed;
+    });
 }
 
 /** The long-running operation poll of a provisioning step (README §5.4). */
@@ -89,9 +128,20 @@ function expectPoll(value: unknown, context: string): Poll {
         ),
         done_path: expectResponsePath(Reflect.get(record, "done_path"), `${context}.done_path`),
         error_path: expectResponsePath(Reflect.get(record, "error_path"), `${context}.error_path`),
-        interval_ms: expectInteger(Reflect.get(record, "interval_ms"), `${context}.interval_ms`),
-        budget_ms: expectInteger(Reflect.get(record, "budget_ms"), `${context}.budget_ms`),
+        interval_ms: expectPositiveInteger(
+            Reflect.get(record, "interval_ms"),
+            `${context}.interval_ms`,
+        ),
+        budget_ms: expectPositiveInteger(Reflect.get(record, "budget_ms"), `${context}.budget_ms`),
     };
+
+    // An empty done path resolves the poll response's root, whose truthy read
+    // is always false: the poll would end only at budget exhaustion, never
+    // completing. The error path's empty chain is the configured
+    // no-error-inspection, so only the done path is held to a whole chain.
+    if (poll.done_path.length === 0) {
+        throw new ContractViolationError(`${context}.done_path must not be empty`);
+    }
 
     const resultExtract = Reflect.get(record, "result_extract");
 
@@ -99,6 +149,7 @@ function expectPoll(value: unknown, context: string): Poll {
         poll.result_extract = expectProvisionExtractions(
             resultExtract,
             `${context}.result_extract`,
+            poll.response_encoding,
         );
     }
 
@@ -131,7 +182,11 @@ function expectProvisioningStep(value: unknown, context: string): ProvisioningSt
     const extract = Reflect.get(record, "extract");
 
     if (extract !== undefined) {
-        step.extract = expectProvisionExtractions(extract, `${context}.extract`);
+        step.extract = expectProvisionExtractions(
+            extract,
+            `${context}.extract`,
+            step.response_encoding,
+        );
     }
 
     const skipIf = Reflect.get(record, "skip_if");
@@ -217,13 +272,21 @@ function expectGrant(value: unknown, context: string): Grant {
             "a PKCE mode",
         );
 
+        const authorizeUrl = expectStringExpr(
+            Reflect.get(record, "authorize_url"),
+            `${context}.authorize_url`,
+        );
+
+        if (authorizeUrl.length === 0) {
+            throw new ContractViolationError(
+                `${context}.authorize_url must carry at least one expression part`,
+            );
+        }
+
         const grant: Grant = {
             type: "authorization_code",
-            authorize_url: expectStringExpr(
-                Reflect.get(record, "authorize_url"),
-                `${context}.authorize_url`,
-            ),
-            redirect_uri: expectString(
+            authorize_url: authorizeUrl,
+            redirect_uri: expectNonEmptyString(
                 Reflect.get(record, "redirect_uri"),
                 `${context}.redirect_uri`,
             ),
@@ -280,7 +343,7 @@ function expectGrant(value: unknown, context: string): Grant {
         const fallback = Reflect.get(record, "expires_in_fallback_seconds");
 
         if (isPresentValue(fallback)) {
-            grant.expires_in_fallback_seconds = expectInteger(
+            grant.expires_in_fallback_seconds = expectPositiveInteger(
                 fallback,
                 `${context}.expires_in_fallback_seconds`,
             );
@@ -417,7 +480,10 @@ export function expectCredential(value: unknown, context: string): CredentialAcq
             }
         > = {
             type: "oauth",
-            client_id: expectString(Reflect.get(record, "client_id"), `${context}.client_id`),
+            client_id: expectNonEmptyString(
+                Reflect.get(record, "client_id"),
+                `${context}.client_id`,
+            ),
             grant: expectGrant(Reflect.get(record, "grant"), `${context}.grant`),
             exchange: expectExchange(Reflect.get(record, "exchange"), `${context}.exchange`),
             refresh: expectTokenRefresh(Reflect.get(record, "refresh"), `${context}.refresh`),
@@ -426,13 +492,13 @@ export function expectCredential(value: unknown, context: string): CredentialAcq
         const clientSecret = Reflect.get(record, "client_secret");
 
         if (isPresentValue(clientSecret)) {
-            oauth.client_secret = expectString(clientSecret, `${context}.client_secret`);
+            oauth.client_secret = expectNonEmptyString(clientSecret, `${context}.client_secret`);
         }
 
         const lifetime = Reflect.get(record, "access_token_lifetime_seconds");
 
         if (isPresentValue(lifetime)) {
-            oauth.access_token_lifetime_seconds = expectInteger(
+            oauth.access_token_lifetime_seconds = expectPositiveInteger(
                 lifetime,
                 `${context}.access_token_lifetime_seconds`,
             );

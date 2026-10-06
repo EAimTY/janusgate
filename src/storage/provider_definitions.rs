@@ -11,7 +11,7 @@ use crate::{
     database::{Database, Row, Transaction, params},
     provider::definition::{DefinitionPayload, ProviderDefinition},
 };
-use std::num::NonZeroI64;
+use std::{num::NonZeroI64, sync::LazyLock};
 
 /// Column order of definition selects, consumed positionally by
 /// [`definition_from_row_offset`].
@@ -22,6 +22,38 @@ pub(crate) const DEFINITION_COLUMNS: &str = "name, version, format, inference, c
 /// reads the stored row back through: one spelling for both the creation and the successor
 /// insert, identical to [`DEFINITION_COLUMNS`].
 const INSERT_COLUMNS: &str = DEFINITION_COLUMNS;
+
+/// The version-1 insert of a fresh definition name: a fully fixed statement over
+/// [`INSERT_COLUMNS`], built once.
+static INSERT_FIRST_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "INSERT INTO provider_definitions ({INSERT_COLUMNS}) \
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+         RETURNING {INSERT_COLUMNS}"
+    )
+});
+
+/// The successor-version insert: a fully fixed statement over [`INSERT_COLUMNS`], built once.
+static INSERT_NEXT_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "INSERT INTO provider_definitions ({INSERT_COLUMNS}) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         RETURNING {INSERT_COLUMNS}"
+    )
+});
+
+/// The `(name, version)` definition read: a fully fixed statement, built once.
+static FIND_DEFINITION_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {DEFINITION_COLUMNS} FROM provider_definitions WHERE name = ?1 AND version = ?2"
+    )
+});
+
+/// The every-version listing, ordered by name then version: a fully fixed statement, built
+/// once.
+static LIST_DEFINITIONS_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!("SELECT {DEFINITION_COLUMNS} FROM provider_definitions ORDER BY name, version")
+});
 
 /// A new definition version about to be inserted.
 pub(crate) struct NewDefinition<'a> {
@@ -116,11 +148,7 @@ async fn insert_first(
 ) -> Result<ProviderDefinition, Error> {
     database
         .query(
-            format!(
-                "INSERT INTO provider_definitions ({INSERT_COLUMNS}) \
-                 VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-                 RETURNING {INSERT_COLUMNS}"
-            ),
+            INSERT_FIRST_SQL.as_str(),
             params![
                 definition.name,
                 definition.payload.format.as_str(),
@@ -173,11 +201,7 @@ pub(crate) async fn insert_next_in_transaction(
 
     transaction
         .query(
-            format!(
-                "INSERT INTO provider_definitions ({INSERT_COLUMNS}) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
-                 RETURNING {INSERT_COLUMNS}"
-            ),
+            INSERT_NEXT_SQL.as_str(),
             params![
                 definition.name,
                 base_version.get() + 1,
@@ -212,12 +236,8 @@ async fn find_definition_on<E: SqlExecutor>(
     name: &str,
     version: NonZeroI64,
 ) -> Result<Option<ProviderDefinition>, Error> {
-    let sql = format!(
-        "SELECT {DEFINITION_COLUMNS} FROM provider_definitions WHERE name = ?1 AND version = ?2"
-    );
-
     executor
-        .query(sql, params![name, version.get()])
+        .query(FIND_DEFINITION_SQL.as_str(), params![name, version.get()])
         .await?
         .first()
         .map(|row| definition_from_row_offset(row, 0))
@@ -259,11 +279,8 @@ pub(crate) async fn find_definition_in_transaction(
 pub(crate) async fn list_definitions(
     database: &Database,
 ) -> Result<Vec<ProviderDefinition>, Error> {
-    let sql =
-        format!("SELECT {DEFINITION_COLUMNS} FROM provider_definitions ORDER BY name, version");
-
     database
-        .query(sql, ())
+        .query(LIST_DEFINITIONS_SQL.as_str(), ())
         .await?
         .iter()
         .map(|row| definition_from_row_offset(row, 0))

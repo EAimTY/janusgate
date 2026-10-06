@@ -138,6 +138,10 @@ const traditionalChinese = {
             name: "名稱",
             created: "建立時間",
             status: "狀態",
+            apiKeys: "API 金鑰",
+            createAPIKey: "建立 API 金鑰",
+            enabled: "已啟用",
+            disabled: "已停用",
         },
         apiKeyEditScreen: {
             editAPIKey: "編輯 API 金鑰",
@@ -149,6 +153,8 @@ const traditionalChinese = {
             deleteThisKey: "刪除此金鑰",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "刪除後金鑰立即失效，持有此金鑰的用戶端會開始收到 401。此金鑰的模型存取權限規則會一併移除；歷史用量記錄仍會保留。",
+            apiKey: "API 金鑰",
+            showTheCurrentKey: "顯示目前的密鑰",
         },
         apiKeyNewScreen: {
             createAPIKey: "建立 API 金鑰",
@@ -160,6 +166,7 @@ const traditionalChinese = {
             enabled: "已啟用",
             loadModelAccessInventoryBeforeCreatingAKeyMessage:
                 "建立金鑰前，請先載入模型存取權限清單。",
+            creating: "正在建立…",
         },
         apiKeysScreen: {
             apiKeys: "API 金鑰",
@@ -172,6 +179,8 @@ const traditionalChinese = {
             searchAPIKeys: "搜尋 API 金鑰",
             searchByNameOrKey: "依名稱或金鑰搜尋",
             theSecretHere: "此處的密鑰",
+            on: "開啟",
+            off: "關閉",
         },
         bulkPublicationScreen: {
             createAliases: "建立別名",
@@ -184,6 +193,16 @@ const traditionalChinese = {
                 "另一個選取的資料列已使用此公開 ID。請選擇互不相同的明確名稱。",
             openRoute: "開啟路由",
             createSelectedAliases: "建立選取的別名",
+            publicIDIsRequiredMessage: "必須填寫公開 ID。",
+            noDirectRoutes: "沒有直接路由",
+            modelVanishedItsNewRouteWillBeSuspended: "模型已消失；其新路由將暫停服務",
+            modelEnabled: "模型已啟用",
+            modelDisabled: "模型已停用",
+        },
+        connectionScreen: {
+            showTheTokenWhileTyping: "輸入時顯示權杖",
+            probingTheGateway: "正在探測閘道…",
+            connect: "連線",
         },
         homeScreen: {
             overview: "總覽",
@@ -224,6 +243,9 @@ const traditionalChinese = {
             discoverItsModelsFromUpstream: "從上游探索其模型",
             issueAnAPIKeyForServingClients: "為取用服務的用戶端簽發 API 金鑰",
             pointAClientAtAnEndpointBelow: "將用戶端指向下方的端點",
+            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
+                "請在公開模型路由中檢查配額可用性。這些數字描述的是已儲存的開關與模型清單。",
+            noRequestsRecordedMessage: "沒有請求記錄。",
         },
         modelDetailScreen: {
             model: "模型",
@@ -248,6 +270,16 @@ const traditionalChinese = {
             provider: "上游帳戶",
             discovery: "探索",
             status: "狀態",
+            models: "模型",
+            overriddenByAdministratorMessage: "已由管理員覆寫。",
+            fromTheLatestDiscoveryMessage: "來自最近一次的探索。",
+            unknownOmittedFromModelListingsMessage: "未知 — 模型清單會略過。",
+            noFactOnThisRowTheDefinitionsDeclarationMessage:
+                "此資料列沒有相關資訊 — 由定義中的宣告決定。",
+            unknown: "未知",
+            noAutomaticEntry: "沒有自動項目",
+            enabled: "已啟用",
+            disabled: "已停用",
         },
         modelEditScreen: {
             editModel: "編輯模型",
@@ -256,6 +288,7 @@ const traditionalChinese = {
             deleteThisModel: "刪除此模型",
             deletingRemovesThisPhysicalModelAndItsDirectMessage:
                 "刪除會移除此實體模型及其直接路由。帳戶池路由仍會保留。",
+            model: "模型",
         },
         modelNewScreen: {
             createModel: "建立模型",
@@ -273,6 +306,12 @@ const traditionalChinese = {
             upstreamID: "上游 ID",
             modelSettings: "模型設定",
             enabled: "已啟用",
+            aModelBelongsToOneProviderMessage: "必填。模型只屬於一個上游帳戶。",
+            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
+                "必填。會原樣送往上游 — 只能包含英文字母、數字與符號。",
+            carriedHereFromAModelTheUpstreamNoMessage:
+                "必填。此處帶入的是上游已不再回報的模型 — 提交後會依下方設定將其取回。",
+            creating: "正在建立…",
         },
         modelRouteEditorScreen: {
             thisModelNameIsManagedAutomaticallyEditTheMessage:
@@ -292,6 +331,20 @@ const traditionalChinese = {
                 "向每個成員要求的確切識別碼。成員缺少模型並不會妨礙發佈。",
             physicalModel: "實體模型",
             createPublicRoute: "建立公開模型路由",
+            editPublicRoute: "編輯公開模型路由",
+            publicRoutes: "公開模型路由",
+            aModelNameMaintainedAutomaticallyByItsProviderMessage:
+                "由其上游帳戶或帳戶池自動維護的模型名稱。",
+            clientsRequestThisPublicIDChangingItsTargetMessage:
+                "用戶端會要求此公開 ID。變更其目標不會影響該名稱。",
+            openPool: "開啟帳戶池",
+            openPhysicalModel: "開啟實體模型",
+            deleteThisPublicRouteQuestion: "要刪除此公開模型路由嗎？",
+            publicIDIsRequiredMessage: "必須填寫公開 ID。",
+            directPhysicalModel: "直接實體模型",
+            chooseAPool: "選擇帳戶池",
+            upstreamIDIsRequiredMessage: "必須填寫上游 ID。",
+            chooseAPhysicalModel: "選擇實體模型",
         },
         modelsScreen: {
             models: "模型",
@@ -309,6 +362,8 @@ const traditionalChinese = {
             searchModels: "搜尋模型",
             searchByUpstreamIDOrProviderName: "依上游 ID 或帳戶名稱搜尋",
             provider: "上游帳戶",
+            noModelsOnAnyProviderYetDiscoverOrMessage:
+                "任何上游帳戶都還沒有模型 — 請探索或新增一個。",
         },
         notFoundScreen: {
             pageNotFound: "找不到頁面",
@@ -348,6 +403,15 @@ const traditionalChinese = {
             storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
                 "已儲存的觀測結果。重新整理會實際查詢上游帳戶。重設會清除限制並設定重新整理寬限期；不會重設上游配額。",
             thisPoolHasNoMembersMessage: "此帳戶池沒有成員。",
+            readingStoredAvailability: "正在讀取已儲存的可用性…",
+            quotaNotObserved: "尚未觀測到配額",
+            quotaReadsUnsupported: "不支援讀取配額",
+            administratorResetRefreshGraceInstalled: "管理員已重設；已設定重新整理寬限期",
+            accountEnabled: "帳戶已啟用",
+            updatingAvailability: "正在更新可用性…",
+            allModels: "所有模型",
+            resetUnknown: "重設時間未知",
+            resetTimePassedRefreshRequired: "重設時間已過；需要重新整理",
         },
         providerDetailScreen: {
             provider: "上游帳戶",
@@ -366,6 +430,17 @@ const traditionalChinese = {
             discoveredFromUpstreamOrAddedByHandMessage: "從上游探索而來，或手動新增。",
             createModel: "建立模型",
             allModels: "所有模型",
+            providers: "上游帳戶",
+            createProvider: "建立上游帳戶",
+            enabled: "已啟用",
+            disabled: "已停用",
+            theOAuthCredentialsHaveExpiredMessage: "OAuth 認證資訊已過期。",
+            noneExactUpstreamIDs: "無 — 使用確切的上游 ID",
+            discovering: "正在探索…",
+            discoverModels: "探索模型",
+            askingTheUpstreamWhatItReports: "正在詢問上游回報的內容…",
+            noModelsOnThisProviderYetDiscoverWhatMessage:
+                "此上游帳戶尚無模型 — 請探索上游所回報的模型，或手動新增一個。",
         },
         providerEditScreen: {
             editProvider: "編輯上游帳戶",
@@ -376,6 +451,15 @@ const traditionalChinese = {
             thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
                 "此上游帳戶的定義需要以基礎 URL 評估請求 — 請還原一個，或選擇「還原」。",
             deleteThisProvider: "刪除此上游帳戶",
+            provider: "上游帳戶",
+            modelPrefix: "模型前綴",
+            aProviderNeedsANameMessage: "上游帳戶必須有名稱。",
+            starting: "正在開始…",
+            reconnectTheAccount: "重新連線帳戶",
+            replacing: "正在取代…",
+            replaceTheCredentials: "取代認證資訊",
+            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
+                "刪除會移除此帳戶及其帳戶池成員資格。此帳戶沒有實體模型。",
         },
         providerNewScreen: {
             createProvider: "建立上游帳戶",
@@ -404,6 +488,13 @@ const traditionalChinese = {
             resetToPreset: "重設為預設",
             theConnectionRecipeIsInvalidOpenTheAdvancedMessage:
                 "連線設定無效 — 請展開上方的「進階」區段，查看有問題的路徑。",
+            modelPrefix: "模型前綴",
+            creating: "正在建立…",
+            connecting: "正在連線…",
+            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
+                "必填。此定義的請求所要評估的上游位址 — 缺少時閘道會拒絕啟動流程。",
+            starting: "正在開始…",
+            startTheAuthorization: "開始授權",
         },
         providerPoolEditorScreen: {
             interchangeableAccountsForTheSameUpstreamServiceTriedMessage:
@@ -429,6 +520,11 @@ const traditionalChinese = {
             addAccount: "新增帳戶",
             addMember: "新增成員",
             createPool: "建立帳戶池",
+            editPool: "編輯帳戶池",
+            pools: "帳戶池",
+            deleteThisPoolItsMembershipIsRemovedMessage: "要刪除此帳戶池嗎？其成員資格會一併移除。",
+            nameIsRequiredMessage: "必須填寫名稱。",
+            chooseAnAccount: "選擇帳戶",
         },
         providerQuotaCard: {
             upstreamQuota: "上游配額",
@@ -444,6 +540,15 @@ const traditionalChinese = {
             observed: "觀測時間",
             resetTimeReachedRefreshToUpdate: "已到重設時間；請重新整理以更新",
             theUpstreamReturnedNoQuotaEntriesMessage: "上游未回傳任何配額項目。",
+            periodUnknown: "週期未知",
+            monthly: "每月",
+            unknown: "未知",
+            unlimited: "無限制",
+            resetUnknown: "重設時間未知",
+            readingQuota: "正在讀取配額…",
+            refreshingQuota: "正在重新整理配額…",
+            refreshQuota: "重新整理配額",
+            retryQuota: "重試配額",
         },
         providersScreen: {
             providers: "上游帳戶",
@@ -475,6 +580,8 @@ const traditionalChinese = {
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "直接發佈實體模型，或指定帳戶池與確切的上游 ID。",
             automaticPrefix: "自動 · ",
+            on: "開啟",
+            off: "關閉",
         },
         screenFrame: {
             readAgain: "重新讀取",
@@ -512,6 +619,12 @@ const traditionalChinese = {
             reasoning: "推理",
             tokenTotalsSkipRowsWhereTheUpstreamReportedMessage:
                 "權杖加總會略過上游未回報用量的資料列 — 缺少的細項絕不會灌大或縮小總計。",
+            querying: "正在查詢…",
+            runQuery: "執行查詢",
+            noFilterOrBoundNarrowsTheQuestionSoMessage:
+                "沒有篩選條件或界線可縮小查詢範圍，因此空的回答就代表閘道的全部記錄 — 目前還沒有任何用量。",
+            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
+                "沒有記錄符合這些篩選條件 — 請放寬界線、移除篩選條件，或在不加篩選的情況下查詢。上方表單中可找到「清除篩選」。",
         },
         usageScreen: {
             usage: "用量",
@@ -531,6 +644,18 @@ const traditionalChinese = {
             filtersStayBehind: " — 時間範圍與所有其他篩選條件都保留於此處。",
             streamMark: " · 串流",
             thisRowIsNoLongerListed: "此資料列已不在清單中。",
+            reading: "正在讀取…",
+            applyFilters: "套用篩選",
+            widenTheWindowDropAFilterOrReadMessage:
+                "請放寬時間範圍、移除篩選條件，或讀取整份串流 — 上方表單中可找到「清除篩選」。",
+            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
+                "閘道的篩選是用來找出資料列；它不會驗證值是否符合，因此未知的 id 或從未記錄過的狀態只會找不到任何結果。",
+            thatIsEveryRowThisFilterMatchesMessage: "這就是此篩選條件符合的每一個資料列。",
+            thatIsEveryRecordedRowMessage: "這就是每一個已記錄的資料列。",
+            aReadCycleIsReplacingTheStreamExtendMessage:
+                "目前有讀取循環正在取代串流 — 待循環完成後再延伸。",
+            loading: "正在載入…",
+            loadMore: "載入更多",
         },
         usageStats: {
             usage: "用量",
@@ -641,249 +766,6 @@ const traditionalChinese = {
         managementToken: "請輸入管理權杖。",
         nameEmpty: "名稱不能是空的。",
     },
-    additional: {
-        app: {
-            readThisScreensStateFromTheGatewayAgain: "再次從閘道讀取此頁面的狀態",
-            thisScreenReadsNothingFromTheGatewaySo:
-                "此頁面不會從閘道讀取任何內容，因此沒有可重新整理的東西",
-            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
-                "要中斷連線並清除已儲存的權杖嗎？重新連線時必須再次輸入權杖。",
-        },
-        apiKeyAccess: {
-            allow: "允許",
-            deny: "拒絕",
-            provider: "上游帳戶",
-            pool: "帳戶池",
-            automatic: "自動",
-            alias: "別名",
-        },
-        apiKeyForm: {
-            whichClientHoldsThisKeyMessage: "必填。指出哪個用戶端持有此金鑰。",
-            aServingClientAuthenticatesWithItOnEveryMessage:
-                "必填。取用服務的用戶端會在每個介面上用它進行驗證。",
-        },
-        clipboard: {
-            copyToClipboard: "複製到剪貼簿",
-            copied: "已複製",
-            copy: "複製",
-            theValueHere: "此處的值",
-        },
-        confirmDeleteCard: {
-            deleting: "正在刪除…",
-            deleteForGood: "永久刪除",
-        },
-        dirtyFormFooter: {
-            saving: "正在儲存…",
-            saveChanges: "儲存變更",
-        },
-        layout: {
-            back: "返回",
-        },
-        modelForm: {
-            followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage:
-                "依循探索結果 — 目前未知，因此清單會略過此項。",
-            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
-                "依循探索結果 — 目前沒有任何已知資訊，因此由定義中的宣告決定。",
-        },
-        providerForm: {
-            verifiedLive: "已實測",
-            unverified: "未驗證",
-            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
-                "必填。此定義的請求所指向的上游位址。",
-            upstreamAPIKey: "上游 API 金鑰",
-            sentUpstreamWithEveryRequestNeverReturnedByMessage:
-                "必填。每個請求都會送往上游。閘道永遠不會回傳。",
-            showTheAPIKeyWhileTyping: "輸入時顯示 API 金鑰",
-        },
-        providersTable: {
-            on: "開啟",
-            off: "關閉",
-        },
-        usageFilterControls: {
-            allEndpoints: "所有端點",
-        },
-        apiKeyDetailScreen: {
-            apiKeys: "API 金鑰",
-            apiKey: "API 金鑰",
-            createAPIKey: "建立 API 金鑰",
-            enabled: "已啟用",
-            disabled: "已停用",
-        },
-        apiKeyEditScreen: {
-            apiKey: "API 金鑰",
-            editAPIKey: "編輯 API 金鑰",
-            showTheCurrentKey: "顯示目前的密鑰",
-        },
-        apiKeyNewScreen: {
-            creating: "正在建立…",
-            createAPIKey: "建立 API 金鑰",
-        },
-        apiKeysScreen: {
-            on: "開啟",
-            off: "關閉",
-        },
-        bulkPublicationScreen: {
-            publicIDIsRequiredMessage: "必須填寫公開 ID。",
-            noDirectRoutes: "沒有直接路由",
-            modelVanishedItsNewRouteWillBeSuspended: "模型已消失；其新路由將暫停服務",
-            modelEnabled: "模型已啟用",
-            modelDisabled: "模型已停用",
-        },
-        connectionScreen: {
-            showTheTokenWhileTyping: "輸入時顯示權杖",
-            probingTheGateway: "正在探測閘道…",
-            connect: "連線",
-        },
-        homeScreen: {
-            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
-                "請在公開模型路由中檢查配額可用性。這些數字描述的是已儲存的開關與模型清單。",
-            noRequestsRecordedMessage: "沒有請求記錄。",
-        },
-        modelDetailScreen: {
-            models: "模型",
-            model: "模型",
-            overriddenByAdministratorMessage: "已由管理員覆寫。",
-            fromTheLatestDiscoveryMessage: "來自最近一次的探索。",
-            unknownOmittedFromModelListingsMessage: "未知 — 模型清單會略過。",
-            noFactOnThisRowTheDefinitionsDeclarationMessage:
-                "此資料列沒有相關資訊 — 由定義中的宣告決定。",
-            unknown: "未知",
-            noAutomaticEntry: "沒有自動項目",
-            enabled: "已啟用",
-            disabled: "已停用",
-        },
-        modelEditScreen: {
-            model: "模型",
-            editModel: "編輯模型",
-        },
-        modelNewScreen: {
-            aModelBelongsToOneProviderMessage: "必填。模型只屬於一個上游帳戶。",
-            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
-                "必填。會原樣送往上游 — 只能包含英文字母、數字與符號。",
-            carriedHereFromAModelTheUpstreamNoMessage:
-                "必填。此處帶入的是上游已不再回報的模型 — 提交後會依下方設定將其取回。",
-            creating: "正在建立…",
-            createModel: "建立模型",
-        },
-        modelRouteEditorScreen: {
-            createPublicRoute: "建立公開模型路由",
-            editPublicRoute: "編輯公開模型路由",
-            publicRoutes: "公開模型路由",
-            aModelNameMaintainedAutomaticallyByItsProviderMessage:
-                "由其上游帳戶或帳戶池自動維護的模型名稱。",
-            clientsRequestThisPublicIDChangingItsTargetMessage:
-                "用戶端會要求此公開 ID。變更其目標不會影響該名稱。",
-            openPool: "開啟帳戶池",
-            openPhysicalModel: "開啟實體模型",
-            deleteThisPublicRoute: "要刪除此公開模型路由嗎？",
-            publicIDIsRequiredMessage: "必須填寫公開 ID。",
-            publicID: "公開 ID",
-            directPhysicalModel: "直接實體模型",
-            pool: "帳戶池",
-            chooseAPool: "選擇帳戶池",
-            upstreamIDIsRequiredMessage: "必須填寫上游 ID。",
-            upstreamID: "上游 ID",
-            chooseAPhysicalModel: "選擇實體模型",
-        },
-        modelsScreen: {
-            noModelsOnAnyProviderYetDiscoverOrMessage:
-                "任何上游帳戶都還沒有模型 — 請探索或新增一個。",
-        },
-        poolAvailabilityCard: {
-            readingStoredAvailability: "正在讀取已儲存的可用性…",
-            quotaNotObserved: "尚未觀測到配額",
-            quotaReadsUnsupported: "不支援讀取配額",
-            administratorResetRefreshGraceInstalled: "管理員已重設；已設定重新整理寬限期",
-            accountEnabled: "帳戶已啟用",
-            updatingAvailability: "正在更新可用性…",
-            allModels: "所有模型",
-            resetUnknown: "重設時間未知",
-            resetTimePassedRefreshRequired: "重設時間已過；需要重新整理",
-        },
-        providerDetailScreen: {
-            providers: "上游帳戶",
-            provider: "上游帳戶",
-            createProvider: "建立上游帳戶",
-            enabled: "已啟用",
-            disabled: "已停用",
-            theOAuthCredentialsHaveExpiredMessage: "OAuth 認證資訊已過期。",
-            noneExactUpstreamIDs: "無 — 使用確切的上游 ID",
-            discovering: "正在探索…",
-            discoverModels: "探索模型",
-            askingTheUpstreamWhatItReports: "正在詢問上游回報的內容…",
-            noModelsOnThisProviderYetDiscoverWhatMessage:
-                "此上游帳戶尚無模型 — 請探索上游所回報的模型，或手動新增一個。",
-        },
-        providerEditScreen: {
-            provider: "上游帳戶",
-            editProvider: "編輯上游帳戶",
-            modelPrefix: "模型前綴",
-            aProviderNeedsANameMessage: "上游帳戶必須有名稱。",
-            starting: "正在開始…",
-            reconnectTheAccount: "重新連線帳戶",
-            replacing: "正在取代…",
-            replaceTheCredentials: "取代認證資訊",
-            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
-                "刪除會移除此帳戶及其帳戶池成員資格。此帳戶沒有實體模型。",
-        },
-        providerNewScreen: {
-            modelPrefix: "模型前綴",
-            creating: "正在建立…",
-            createProvider: "建立上游帳戶",
-            connecting: "正在連線…",
-            connectTheAccount: "連線帳戶",
-            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
-                "必填。此定義的請求所要評估的上游位址 — 缺少時閘道會拒絕啟動流程。",
-            starting: "正在開始…",
-            startTheAuthorization: "開始授權",
-        },
-        providerPoolEditorScreen: {
-            createPool: "建立帳戶池",
-            editPool: "編輯帳戶池",
-            pools: "帳戶池",
-            deleteThisPoolItsMembershipIsRemovedMessage: "要刪除此帳戶池嗎？其成員資格會一併移除。",
-            nameIsRequiredMessage: "必須填寫名稱。",
-            modelPrefix: "模型前綴",
-            chooseAnAccount: "選擇帳戶",
-        },
-        providerQuotaCard: {
-            periodUnknown: "週期未知",
-            monthly: "每月",
-            unknown: "未知",
-            unlimited: "無限制",
-            resetUnknown: "重設時間未知",
-            readingQuota: "正在讀取配額…",
-            refreshingQuota: "正在重新整理配額…",
-            refreshQuota: "重新整理配額",
-            retryQuota: "重試配額",
-        },
-        routingListsScreen: {
-            on: "開啟",
-            off: "關閉",
-        },
-        usageQueryScreen: {
-            querying: "正在查詢…",
-            runQuery: "執行查詢",
-            noFilterOrBoundNarrowsTheQuestionSoMessage:
-                "沒有篩選條件或界線可縮小查詢範圍，因此空的回答就代表閘道的全部記錄 — 目前還沒有任何用量。",
-            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
-                "沒有記錄符合這些篩選條件 — 請放寬界線、移除篩選條件，或在不加篩選的情況下查詢。上方表單中可找到「清除篩選」。",
-        },
-        usageScreen: {
-            reading: "正在讀取…",
-            applyFilters: "套用篩選",
-            widenTheWindowDropAFilterOrReadMessage:
-                "請放寬時間範圍、移除篩選條件，或讀取整份串流 — 上方表單中可找到「清除篩選」。",
-            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
-                "閘道的篩選是用來找出資料列；它不會驗證值是否符合，因此未知的 id 或從未記錄過的狀態只會找不到任何結果。",
-            thatIsEveryRowThisFilterMatchesMessage: "這就是此篩選條件符合的每一個資料列。",
-            thatIsEveryRecordedRowMessage: "這就是每一個已記錄的資料列。",
-            aReadCycleIsReplacingTheStreamExtendMessage:
-                "目前有讀取循環正在取代串流 — 待循環完成後再延伸。",
-            loading: "正在載入…",
-            loadMore: "載入更多",
-        },
-    },
     operationNotices: {
         flowFailed: "流程失敗。",
         freshFlow: "請重新開始一個流程，並儘快完成授權。",
@@ -977,14 +859,53 @@ const traditionalChinese = {
             theGatewayHoldsNoProviderHereItWasDeletedOrTheAddressWasTyped:
                 "閘道中沒有這個上游帳戶。它可能已被刪除，或位址輸入有誤。這裡無法將它救回。",
         },
-        usageLabels: {
-            streamed: "串流",
-            nonstreamed: "非串流",
+        app: {
+            readThisScreensStateFromTheGatewayAgain: "再次從閘道讀取此頁面的狀態",
+            thisScreenReadsNothingFromTheGatewaySo:
+                "此頁面不會從閘道讀取任何內容，因此沒有可重新整理的東西",
+            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
+                "要中斷連線並清除已儲存的權杖嗎？重新連線時必須再次輸入權杖。",
+        },
+        apiKeyForm: {
+            whichClientHoldsThisKeyMessage: "必填。指出哪個用戶端持有此金鑰。",
+            aServingClientAuthenticatesWithItOnEveryMessage:
+                "必填。取用服務的用戶端會在每個介面上用它進行驗證。",
+        },
+        clipboard: {
+            copyToClipboard: "複製到剪貼簿",
+            copied: "已複製",
+            copy: "複製",
+            theValueHere: "此處的值",
+        },
+        confirmDeleteCard: {
+            deleting: "正在刪除…",
+            deleteForGood: "永久刪除",
+        },
+        dirtyFormFooter: {
+            saving: "正在儲存…",
+            saveChanges: "儲存變更",
+        },
+        layout: {
+            back: "返回",
+        },
+        providerForm: {
+            verifiedLive: "已實測",
+            unverified: "未驗證",
+            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
+                "必填。此定義的請求所指向的上游位址。",
+            upstreamAPIKey: "上游 API 金鑰",
+            sentUpstreamWithEveryRequestNeverReturnedByMessage:
+                "必填。每個請求都會送往上游。閘道永遠不會回傳。",
+            showTheAPIKeyWhileTyping: "輸入時顯示 API 金鑰",
         },
         apiKeyAccess: {
             inherit: "繼承",
             allow: "允許",
             deny: "拒絕",
+            provider: "上游帳戶",
+            pool: "帳戶池",
+            automatic: "自動",
+            alias: "別名",
         },
         modelForm: {
             followingDiscoveryCurrentlyDeclaresNoLevels: "依循探索結果 — 目前未宣告任何等級。",
@@ -995,6 +916,8 @@ const traditionalChinese = {
             replacesTheDiscoveredValueWithAPositiveInteger: "以正整數取代已探索的值。",
             unset: "未設定",
             discoveredNothingKnown: "已探索：沒有任何已知資訊。",
+            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
+                "依循探索結果 — 目前沒有任何已知資訊，因此由定義中的宣告決定。",
         },
         modelsTable: {
             ready: "就緒",
@@ -1009,6 +932,8 @@ const traditionalChinese = {
             valid: "有效",
             expired: "已過期",
             stale: "從未有效",
+            on: "開啟",
+            off: "關閉",
         },
         usageFilterControls: {
             allOutcomes: "所有結果",
@@ -1016,6 +941,7 @@ const traditionalChinese = {
             any: "不限",
             streamed: "串流",
             nonstreamed: "非串流",
+            allEndpoints: "所有端點",
         },
         usageFilter: {
             allTime: "所有時間",
@@ -1099,6 +1025,7 @@ const traditionalChinese = {
         enabledStored: "已儲存 {{total}} 個中的已啟用數量",
         readyListed: "已列出 {{total}} 個中的就緒數量",
         copyEndpoint: "複製 {{surface}} 端點 URL",
+        copyApiKeySecret: "複製 {{name}} 的密鑰",
         disabledCredential: "{{expiry}} 上游帳戶已停用 — 重新啟用時請重新連線。",
         noKeysDetail: " 取用服務的用戶端需要 API 金鑰才能驗證 — 少了它，閘道就沒有就緒的模型清單。",
     },

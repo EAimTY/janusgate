@@ -171,8 +171,8 @@ function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
                     tone={props.apiKey.is_enabled ? "ok" : "muted"}
                     label={
                         props.apiKey.is_enabled
-                            ? translation()(($) => $.additional.apiKeysScreen.on)
-                            : translation()(($) => $.additional.apiKeysScreen.off)
+                            ? translation()(($) => $.screens.apiKeysScreen.on)
+                            : translation()(($) => $.screens.apiKeysScreen.off)
                     }
                 />
             }
@@ -180,6 +180,11 @@ function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
                 <CopyButton
                     value={props.apiKey.key}
                     subject={translation()(($) => $.screens.apiKeysScreen.theSecretHere)}
+                    // Every row repeats the visible Copy label, so the
+                    // accessible name says which key's secret is taken.
+                    ariaLabel={translation()(($) => $.dynamicMessages.copyApiKeySecret, {
+                        name: props.apiKey.name,
+                    })}
                 />
             }
         />

@@ -114,9 +114,7 @@ export function BulkPublicationScreen(props: {
         const value = draft(id);
         if (!value.isSelected) return null;
         if (value.publicId === "")
-            return translation()(
-                ($) => $.additional.bulkPublicationScreen.publicIDIsRequiredMessage,
-            );
+            return translation()(($) => $.screens.bulkPublicationScreen.publicIDIsRequiredMessage);
         const tokenError = routingTokenError(value.publicId, "publicId");
         if (tokenError !== null) return tokenError;
         return models().some(
@@ -279,7 +277,7 @@ export function BulkPublicationScreen(props: {
                                             {directCount(model.id) === 0
                                                 ? translation()(
                                                       ($) =>
-                                                          $.additional.bulkPublicationScreen
+                                                          $.screens.bulkPublicationScreen
                                                               .noDirectRoutes,
                                                   )
                                                 : translation()(
@@ -295,18 +293,18 @@ export function BulkPublicationScreen(props: {
                                             {model.discovery_state === "vanished"
                                                 ? translation()(
                                                       ($) =>
-                                                          $.additional.bulkPublicationScreen
+                                                          $.screens.bulkPublicationScreen
                                                               .modelVanishedItsNewRouteWillBeSuspended,
                                                   )
                                                 : model.is_enabled
                                                   ? translation()(
                                                         ($) =>
-                                                            $.additional.bulkPublicationScreen
+                                                            $.screens.bulkPublicationScreen
                                                                 .modelEnabled,
                                                     )
                                                   : translation()(
                                                         ($) =>
-                                                            $.additional.bulkPublicationScreen
+                                                            $.screens.bulkPublicationScreen
                                                                 .modelDisabled,
                                                     )}
                                         </p>

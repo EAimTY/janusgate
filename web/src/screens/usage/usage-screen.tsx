@@ -1,19 +1,16 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import {
-    buildUsageFilter,
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
     hasUsageFilterFieldsExcept,
-    namedSubjects,
-    soleSubject,
     statusError,
+    streamAggregatesSubject,
     USAGE_OUTCOME_FAILURES,
     USAGE_QUERY_SUBJECT_FIELDS,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
-    type UsageQuerySubject,
 } from "/src/features/usage/filter";
 import { UsageFilterControls } from "/src/features/usage/filter-controls";
 import {
@@ -363,8 +360,8 @@ export function UsageScreen(props: {
                             isDisabled={statusError(draft().statusInput) !== null}
                         >
                             {read.isReading()
-                                ? translation()(($) => $.additional.usageScreen.reading)
-                                : translation()(($) => $.additional.usageScreen.applyFilters)}
+                                ? translation()(($) => $.screens.usageScreen.reading)
+                                : translation()(($) => $.screens.usageScreen.applyFilters)}
                         </Button>
                         <Show when={hasUsageFilter(draft())}>
                             <Button
@@ -426,12 +423,12 @@ export function UsageScreen(props: {
                                 )}
                                 detail={translation()(
                                     ($) =>
-                                        $.additional.usageScreen
+                                        $.screens.usageScreen
                                             .widenTheWindowDropAFilterOrReadMessage,
                                 )}
                                 fix={translation()(
                                     ($) =>
-                                        $.additional.usageScreen
+                                        $.screens.usageScreen
                                             .theGatewaysFilterLocatesRowsItNeverValidatesMessage,
                                 )}
                             />
@@ -456,13 +453,12 @@ export function UsageScreen(props: {
                                 {hasUsageFilter(props.filter)
                                     ? translation()(
                                           ($) =>
-                                              $.additional.usageScreen
+                                              $.screens.usageScreen
                                                   .thatIsEveryRowThisFilterMatchesMessage,
                                       )
                                     : translation()(
                                           ($) =>
-                                              $.additional.usageScreen
-                                                  .thatIsEveryRecordedRowMessage,
+                                              $.screens.usageScreen.thatIsEveryRecordedRowMessage,
                                       )}
                             </p>
                         }
@@ -484,7 +480,7 @@ export function UsageScreen(props: {
                                         read.isReading()
                                             ? translation()(
                                                   ($) =>
-                                                      $.additional.usageScreen
+                                                      $.screens.usageScreen
                                                           .aReadCycleIsReplacingTheStreamExtendMessage,
                                               )
                                             : undefined
@@ -492,8 +488,8 @@ export function UsageScreen(props: {
                                     onClick={() => void loadMore()}
                                 >
                                     {isLoadingMore()
-                                        ? translation()(($) => $.additional.usageScreen.loading)
-                                        : translation()(($) => $.additional.usageScreen.loadMore)}
+                                        ? translation()(($) => $.screens.usageScreen.loading)
+                                        : translation()(($) => $.screens.usageScreen.loadMore)}
                                 </Button>
                             </div>
                         </div>
@@ -501,35 +497,6 @@ export function UsageScreen(props: {
                 </Show>
             </Show>
         </div>
-    );
-}
-
-/**
- * The aggregates subject the stream's standing draft carries: its entity
- * narrow, when exactly one of provider, model, or key is named, as the
- * aggregates page's prefilled subject — so crossing to the aggregates page
- * from a stream whose form names an entity keeps asking about that entity
- * instead of silently totaling the whole gateway, applied or not. The narrow
- * is read off the wire filter [`buildUsageFilter`] spells — the one trusted
- * conversion from the form's strings to row ids — so this link's subject
- * cannot drift from the question the form holds. A draft naming no entity,
- * or more than one, carries no subject: a subject is one entity, and a
- * compound narrow belongs to the aggregates page's own filter, not to a
- * link. The window and every non-entity field stay behind — only the entity
- * subject crosses, the aggregates page's window semantics being its own.
- */
-function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | undefined {
-    const wire = buildUsageFilter(filter);
-
-    // `buildUsageFilter` names a wire field with exactly one id — one draft
-    // field, one wire value — so the list's first element is the id the walk
-    // reads.
-    return (
-        soleSubject(
-            namedSubjects(
-                (dimension) => wire[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField]?.[0] ?? null,
-            ),
-        ) ?? undefined
     );
 }
 

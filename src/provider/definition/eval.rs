@@ -22,7 +22,8 @@ pub(crate) enum RenderedJson<'a, T> {
     Text(String),
     /// The codec's concrete request, serialized directly at its placeholder.
     Body(&'a T),
-    /// Operator-authored member names and their evaluated values.
+    /// Operator-authored member names and their evaluated values, carried in the canonical
+    /// lexicographic name order of [`TemplateNode::Object`](super::template::TemplateNode).
     Object(BTreeMap<&'a str, Self>),
     /// Ordered evaluated template elements.
     Array(Vec<Self>),
@@ -173,9 +174,9 @@ impl<'a> ValueEnv<'a> {
 
     /// Builds the stage environment of one device-flow poll attempt (README §5.3): the working
     /// base URL, the flow's slots, the configured client credentials, and the flow's device code
-    /// are exactly the values the stage's expressions may reference. The same environment serves
-    /// the completion's provisioning sequence, whose expressions may additionally reference the
-    /// stage values a provisioning stage carries.
+    /// are exactly the values the stage's expressions may reference. The completion's
+    /// provisioning sequence rebuilds its own environment per request through
+    /// [`ValueEnv::for_provisioning`], which additionally carries the credential secret.
     #[must_use]
     pub(crate) fn for_device_poll(
         slots: &'a BTreeMap<String, String>,
@@ -238,11 +239,11 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of one upstream model discovery (README §5.5): the stored
-    /// base URL, the credential secret, and the stored slots are exactly the values the stage's
-    /// expressions may reference.
+    /// Builds the stage environment of the stored-credential reads — upstream model discovery
+    /// (README §5.5) and the read-only quota query: the stored base URL, the credential secret,
+    /// and the stored slots are exactly the values the stage's expressions may reference.
     #[must_use]
-    pub(crate) fn for_discovery(
+    pub(crate) fn for_stored_credential(
         slots: &'a BTreeMap<String, String>,
         base_url: Option<&'a str>,
         secret: &'a str,

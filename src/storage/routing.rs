@@ -5,6 +5,7 @@ use crate::{
     database::{Database, Row, Transaction, params},
     routing::{ModelRouteTarget, ProviderPoolMember},
 };
+use std::collections::HashSet;
 
 #[cfg(test)]
 #[path = "routing_tests.rs"]
@@ -74,47 +75,59 @@ pub(super) fn route_from_row(row: &Row) -> Result<ModelRoute, Error> {
     })
 }
 
-/// Lists pool rows and membership in one coherent database snapshot.
+/// Lists pools and their complete ordered membership in one coherent snapshot: a single
+/// LEFT-JOIN read ordered by pool name and member priority — every pool's rows contiguous —
+/// grouped into pools in Rust, the joined shape [`super::route_listing`]'s listing uses.
 ///
 /// # Errors
 ///
 /// Returns database errors.
+///
+/// # Panics
+///
+/// Panics if a member row's pool group was not opened by an earlier row of the same pool id,
+/// which the `ORDER BY pool.name` contiguity of the join makes impossible.
 pub(crate) async fn list_pools(database: &Database) -> Result<Vec<ProviderPool>, Error> {
-    let mut transaction = database.transaction().await?;
-    let rows = transaction
+    let rows = database
         .query(
-            "SELECT id, name, is_enabled, model_prefix FROM provider_pools ORDER BY name",
+            "SELECT pool.id, pool.name, pool.is_enabled, pool.model_prefix, \
+             member.provider_id, member.priority \
+             FROM provider_pools pool \
+             LEFT JOIN provider_pool_members member ON member.pool_id = pool.id \
+             ORDER BY pool.name, member.priority",
             (),
         )
         .await?;
-    let mut pools = Vec::with_capacity(rows.len());
+
+    let mut pools = Vec::new();
+    let mut current_pool_id = None;
     for row in &rows {
         let id: i64 = row.get(0)?;
-        let members = transaction
-            .query(
-                "SELECT provider_id, priority FROM provider_pool_members WHERE pool_id = \
-                 ?1 ORDER BY priority",
-                params![id],
-            )
-            .await?;
-        pools.push(ProviderPool {
-            id,
-            name: row.get(1)?,
-            model_prefix: row.get(3)?,
-            is_enabled: row.get::<i64>(2)? != 0,
-            members: members
-                .iter()
-                .map(|member| {
-                    Ok::<_, Error>(ProviderPoolMember {
-                        provider_id: member.get(0)?,
-                        priority: member.get(1)?,
-                    })
-                })
-                .collect::<Result<_, Error>>()?,
-        });
+        // One pool's joined rows are contiguous, so a new pool id opens its own group.
+        if current_pool_id != Some(id) {
+            pools.push(ProviderPool {
+                id,
+                name: row.get(1)?,
+                model_prefix: row.get(3)?,
+                is_enabled: row.get::<i64>(2)? != 0,
+                members: Vec::new(),
+            });
+            current_pool_id = Some(id);
+        }
+        // A pool without members contributes one row whose member columns are `NULL`.
+        if let Some(provider_id) = row.get(4)? {
+            #[expect(
+                clippy::expect_used,
+                reason = "the group for this pool id was opened by an earlier row"
+            )]
+            let pool = pools.last_mut().expect("the pool group is open");
+            pool.members.push(ProviderPoolMember {
+                provider_id,
+                priority: row.get(5)?,
+            });
+        }
     }
-    transaction.commit().await?;
-    Ok::<_, Error>(pools)
+    Ok(pools)
 }
 
 /// Lists every authored route, including disabled or presently unavailable targets.
@@ -185,7 +198,9 @@ async fn require_free_name(
     Ok::<_, Error>(())
 }
 
-/// Validates desired account references before deleting any existing membership.
+/// Validates desired account references before deleting any existing membership: one
+/// `WHERE id IN` probe covers every desired member, and the first member — in authored order —
+/// whose account is absent is reported, the identical outcome one probe per member produced.
 ///
 /// # Errors
 ///
@@ -194,10 +209,31 @@ async fn require_members(
     transaction: &mut Transaction,
     members: &[ProviderPoolMember],
 ) -> Result<(), Error> {
-    for member in members {
-        require_entity(transaction, "providers", "Provider", member.provider_id).await?;
+    let ids: Vec<i64> = members.iter().map(|member| member.provider_id).collect();
+    if ids.is_empty() {
+        return Ok(());
     }
-    Ok::<_, Error>(())
+    let rows = transaction
+        .query(
+            format!(
+                "SELECT id FROM providers WHERE id IN ({})",
+                super::in_placeholders(ids.len()),
+            ),
+            ids,
+        )
+        .await?;
+    let present: HashSet<i64> = rows
+        .iter()
+        .map(|row| row.get(0))
+        .collect::<Result<_, _>>()?;
+    for member in members {
+        if !present.contains(&member.provider_id) {
+            return Err(Error::NotFound {
+                message: super::provider_not_found_message(member.provider_id),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Replaces the ordered membership without unique-priority intermediate collisions.

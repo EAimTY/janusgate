@@ -39,7 +39,9 @@ pub(super) const SLOW_DOWN_PENALTY_SECONDS: i64 = 5;
 /// The expiry of a token response, resolved per README §5.3: a positive reported `expires_in`,
 /// else a future `exp` claim of the access token, else the definition's explicitly configured
 /// lifetime, else no expiry at all. A reported non-positive `expires_in` or a non-future `exp`
-/// claim is a malformed token response, never silently treated as missing.
+/// claim is a malformed token response, never silently treated as missing, and a configured
+/// lifetime beyond the database clock's range is a malformed definition, never silently
+/// treated as absent.
 pub(super) fn resolve_expiry(
     expires_in_seconds: Option<i64>,
     access_token: Option<&str>,
@@ -66,12 +68,14 @@ pub(super) fn resolve_expiry(
     if let Some(access_token) = access_token
         && let Some(exp) = jwt_exp_claim(access_token)
     {
+        // The overflow arm is its own failure class: a magnitude this large may be far in the
+        // future — it merely cannot scale to the database clock — so it never renders as a
+        // past-expiry violation. The value is omitted because the saturating claim read
+        // (`jwt_exp_claim`) cannot report the pre-saturation magnitude truthfully.
         let exp_micros =
             exp.checked_mul(unix_time::MICROS_PER_SEC)
                 .ok_or_else(|| Error::Unavailable {
-                    detail: format!(
-                        "malformed token response: `exp` claim must be in the future, got {exp}"
-                    ),
+                    detail: "malformed token response: `exp` claim overflow".to_string(),
                 })?;
 
         let now = unix_time::unix_now_micros();
@@ -87,11 +91,19 @@ pub(super) fn resolve_expiry(
         return Ok(Some(exp_micros));
     }
 
-    let Some(lifetime) =
-        configured_lifetime_seconds.and_then(|lifetime| i64::try_from(lifetime.get()).ok())
-    else {
+    let Some(lifetime) = configured_lifetime_seconds else {
         return Ok(None);
     };
+
+    // A configured lifetime beyond the `i64` range the database clock scales it into is stored
+    // drift: it fails as a malformed definition instead of silently reading as absent and
+    // resolving no expiry at all.
+    let lifetime = i64::try_from(lifetime.get()).map_err(|_| Error::Unavailable {
+        detail: format!(
+            "malformed definition: `access_token_lifetime_seconds` is out of range, got {}",
+            lifetime.get()
+        ),
+    })?;
 
     Ok(Some(unix_time::seconds_from_now(lifetime).ok_or_else(
         || Error::Unavailable {
@@ -415,8 +427,7 @@ fn classify_exchange_rejection(
     match classify_error_code(&code, terminal_codes) {
         ExchangeProduct::Other(code) => Err(Error::Rejected {
             status,
-            detail: crate::http_body::truncate_excerpt(&format!("upstream error `{code}`"))
-                .to_string(),
+            detail: crate::http_body::truncate_excerpt(&format!("upstream error `{code}`")),
         }),
 
         classified => Ok(classified),
@@ -641,11 +652,12 @@ mod tests {
 
     use super::{
         ExchangeOutcome, ExchangeProduct, IdTokenClaim, Target, absorb_exchange_slots,
-        apply_exchange_target, classify_error_code, jwt_exp_claim, token_error_code,
+        apply_exchange_target, classify_error_code, jwt_exp_claim, resolve_expiry,
+        token_error_code,
     };
     use crate::provider::{control::Extracted, definition::template::ResponsePath};
     use base64::{Engine as _, engine::general_purpose};
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, num::NonZeroU64};
 
     /// Pins the token-endpoint error-code reader across every wire shape the researched upstreams
     /// send: the RFC 6749 §5.2 string form, the object form carrying the code in `error.code`,
@@ -933,6 +945,111 @@ mod tests {
         assert_eq!(
             jwt_exp_claim(&jwt_with_exp(serde_json::json!("soon"))),
             None
+        );
+    }
+
+    /// An `exp` claim whose second magnitude cannot scale to the database clock's microseconds
+    /// is an overflow — its own failure class, distinct from a genuinely past claim, whose
+    /// message keeps the must-be-in-the-future diagnosis. A magnitude so large the saturating
+    /// cast maps it to `i64::MAX` overflows the same way, and the overflow message never prints
+    /// the fabricated saturated value.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn an_exp_claim_beyond_the_microsecond_clock_is_an_overflow_not_a_past_expiry() {
+        // 10^13 seconds is far in the future yet overflows the microsecond scaling.
+        #[expect(
+            clippy::panic,
+            reason = "an overflowing exp passing as a past expiry is the failure report"
+        )]
+        let Err(overflow) = resolve_expiry(
+            None,
+            Some(&jwt_with_exp(serde_json::json!(10_000_000_000_000_u64))),
+            None,
+        ) else {
+            panic!("an exp beyond the microsecond clock must fail the resolution");
+        };
+
+        assert!(
+            overflow.to_string().contains("`exp` claim overflow"),
+            "{}",
+            overflow
+        );
+
+        assert!(
+            !overflow.to_string().contains("must be in the future"),
+            "{}",
+            overflow
+        );
+
+        // A magnitude the saturating cast maps to i64::MAX overflows identically, and the
+        // message never renders the fabricated saturated value.
+        #[expect(
+            clippy::panic,
+            reason = "an astronomic exp passing as a past expiry is the failure report"
+        )]
+        let Err(astronomic) =
+            resolve_expiry(None, Some(&jwt_with_exp(serde_json::json!(1e300))), None)
+        else {
+            panic!("an astronomic exp must fail the resolution");
+        };
+
+        let rendered = astronomic.to_string();
+
+        assert!(rendered.contains("`exp` claim overflow"), "{rendered}");
+
+        assert!(
+            !rendered.contains("9223372036854775807"),
+            "the saturated cast value must never render: {rendered}"
+        );
+
+        // A genuinely past claim keeps the future diagnosis, carrying its true value.
+        #[expect(
+            clippy::panic,
+            reason = "a future exp failing the resolution is the failure report"
+        )]
+        let Err(past) = resolve_expiry(
+            None,
+            Some(&jwt_with_exp(serde_json::json!(1_750_000_000))),
+            None,
+        ) else {
+            panic!("a past exp must fail the resolution");
+        };
+
+        assert!(
+            past.to_string()
+                .contains("must be in the future, got 1750000000"),
+            "{}",
+            past
+        );
+    }
+
+    /// A configured access-token lifetime beyond the database clock's `i64` range is stored
+    /// drift: the resolution fails as a malformed definition instead of silently reading the
+    /// configuration as absent and resolving no expiry at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn an_out_of_range_configured_lifetime_is_malformed_definition_drift() {
+        #[expect(
+            clippy::panic,
+            reason = "an out-of-range configured lifetime reading as absent is the failure report"
+        )]
+        let Err(error) = resolve_expiry(None, None, Some(NonZeroU64::MAX)) else {
+            panic!("a non-i64 configured lifetime is stored drift");
+        };
+
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("malformed definition"), "{rendered}");
+
+        assert!(
+            rendered.contains("access_token_lifetime_seconds"),
+            "{rendered}"
         );
     }
 }

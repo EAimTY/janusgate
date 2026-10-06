@@ -59,9 +59,9 @@ function duration(seconds: number): string {
 function period(window: QuotaWindow): string {
     switch (window.type) {
         case "unknown":
-            return translation()(($) => $.additional.providerQuotaCard.periodUnknown);
+            return translation()(($) => $.screens.providerQuotaCard.periodUnknown);
         case "calendar":
-            return translation()(($) => $.additional.providerQuotaCard.monthly);
+            return translation()(($) => $.screens.providerQuotaCard.monthly);
         case "duration":
             return duration(window.seconds);
     }
@@ -71,9 +71,9 @@ function period(window: QuotaWindow): string {
 function measurementText(measurement: QuotaMeasurement): JSX.Element {
     switch (measurement.type) {
         case "unknown":
-            return translation()(($) => $.additional.providerQuotaCard.unknown);
+            return translation()(($) => $.screens.providerQuotaCard.unknown);
         case "unlimited":
-            return translation()(($) => $.additional.providerQuotaCard.unlimited);
+            return translation()(($) => $.screens.providerQuotaCard.unlimited);
         case "ratio":
             return translation()(($) => $.quotaMessages.used, {
                 percentage: formatNumber(measurement.used_fraction, "percentage"),
@@ -117,9 +117,9 @@ function measurementAccessibleText(measurement: QuotaMeasurement): string {
                 percentage: formatNumber(measurement.used_fraction, "percentage"),
             });
         case "unknown":
-            return translation()(($) => $.additional.providerQuotaCard.unknown);
+            return translation()(($) => $.screens.providerQuotaCard.unknown);
         case "unlimited":
-            return translation()(($) => $.additional.providerQuotaCard.unlimited);
+            return translation()(($) => $.screens.providerQuotaCard.unlimited);
     }
 }
 
@@ -134,7 +134,7 @@ function fill(measurement: QuotaMeasurement): number | null {
 function resetText(reset: QuotaReset, now: number): JSX.Element {
     switch (reset.type) {
         case "unknown":
-            return translation()(($) => $.additional.providerQuotaCard.resetUnknown);
+            return translation()(($) => $.screens.providerQuotaCard.resetUnknown);
         case "date":
             return quotaFactMessage("dateReset", reset.date);
         case "at":
@@ -258,13 +258,11 @@ export function ProviderQuotaCard(props: { readonly view: ProviderQuotaView }): 
                     >
                         {isBusy()
                             ? ready() === null
-                                ? translation()(($) => $.additional.providerQuotaCard.readingQuota)
-                                : translation()(
-                                      ($) => $.additional.providerQuotaCard.refreshingQuota,
-                                  )
+                                ? translation()(($) => $.screens.providerQuotaCard.readingQuota)
+                                : translation()(($) => $.screens.providerQuotaCard.refreshingQuota)
                             : notice() === null
-                              ? translation()(($) => $.additional.providerQuotaCard.refreshQuota)
-                              : translation()(($) => $.additional.providerQuotaCard.retryQuota)}
+                              ? translation()(($) => $.screens.providerQuotaCard.refreshQuota)
+                              : translation()(($) => $.screens.providerQuotaCard.retryQuota)}
                     </Button>
                 </Show>
             </CardHeader>

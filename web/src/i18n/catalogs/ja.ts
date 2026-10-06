@@ -141,6 +141,10 @@ const japanese = {
             name: "名前",
             created: "作成日時",
             status: "ステータス",
+            apiKeys: "API キー",
+            createAPIKey: "API キーを作成",
+            enabled: "有効",
+            disabled: "無効",
         },
         apiKeyEditScreen: {
             editAPIKey: "API キーを編集",
@@ -154,6 +158,8 @@ const japanese = {
             deleteThisKey: "このキーを削除",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "削除するとキーは即座に失効します。このキーを保持するクライアントは 401 を受け取るようになります。モデルアクセスのルールも削除されますが、過去の集計は残ります。",
+            apiKey: "API キー",
+            showTheCurrentKey: "現在のキーを表示",
         },
         apiKeyNewScreen: {
             createAPIKey: "API キーを作成",
@@ -166,6 +172,7 @@ const japanese = {
             enabled: "有効",
             loadModelAccessInventoryBeforeCreatingAKeyMessage:
                 "キーを作成する前に、モデルアクセスのインベントリを読み込んでください。",
+            creating: "作成しています…",
         },
         apiKeysScreen: {
             apiKeys: "API キー",
@@ -178,6 +185,8 @@ const japanese = {
             searchAPIKeys: "API キーを検索",
             searchByNameOrKey: "名前またはキーで検索",
             theSecretHere: "このシークレット",
+            on: "オン",
+            off: "オフ",
         },
         bulkPublicationScreen: {
             createAliases: "別名を作成",
@@ -191,6 +200,17 @@ const japanese = {
                 "別の選択行がこの公開 ID を使用しています。重複しない明示的な名前を選んでください。",
             openRoute: "ルートを開く",
             createSelectedAliases: "選択した別名を作成",
+            publicIDIsRequiredMessage: "公開 ID は必須です。",
+            noDirectRoutes: "直接ルートなし",
+            modelVanishedItsNewRouteWillBeSuspended:
+                "モデルが報告されなくなりました。新しいルートは一時停止されます",
+            modelEnabled: "モデルは有効です",
+            modelDisabled: "モデルは無効です",
+        },
+        connectionScreen: {
+            showTheTokenWhileTyping: "入力中はトークンを表示",
+            probingTheGateway: "ゲートウェイを確認しています…",
+            connect: "接続",
         },
         homeScreen: {
             overview: "概要",
@@ -233,6 +253,9 @@ const japanese = {
             discoverItsModelsFromUpstream: "上流からモデルを検出",
             issueAnAPIKeyForServingClients: "推論クライアント用の API キーを発行",
             pointAClientAtAnEndpointBelow: "クライアントを以下のエンドポイントに向ける",
+            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
+                "割り当ての可用性は公開ルートで確認してください。これらの数値は、保存済みのスイッチとインベントリを表すものです。",
+            noRequestsRecordedMessage: "リクエストは記録されていません。",
         },
         modelDetailScreen: {
             model: "モデル",
@@ -257,6 +280,16 @@ const japanese = {
             provider: "プロバイダー",
             discovery: "検出",
             status: "ステータス",
+            models: "モデル",
+            overriddenByAdministratorMessage: "管理者が上書きしています。",
+            fromTheLatestDiscoveryMessage: "直近の検出結果です。",
+            unknownOmittedFromModelListingsMessage: "不明 — モデル一覧では省略されます。",
+            noFactOnThisRowTheDefinitionsDeclarationMessage:
+                "この行には情報がありません。定義の宣言が決めます。",
+            unknown: "不明",
+            noAutomaticEntry: "自動エントリなし",
+            enabled: "有効",
+            disabled: "無効",
         },
         modelEditScreen: {
             editModel: "モデルを編集",
@@ -265,6 +298,7 @@ const japanese = {
             deleteThisModel: "このモデルを削除",
             deletingRemovesThisPhysicalModelAndItsDirectMessage:
                 "削除すると、この物理モデルとその直接ルートが削除されます。プールのルートは保存されたままです。",
+            model: "モデル",
         },
         modelNewScreen: {
             createModel: "モデルを作成",
@@ -282,6 +316,12 @@ const japanese = {
             upstreamID: "上流 ID",
             modelSettings: "モデル設定",
             enabled: "有効",
+            aModelBelongsToOneProviderMessage: "必須。モデルは 1 つのプロバイダーに属します。",
+            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
+                "必須。上流へそのまま送信されます。英数字と記号のみを使用します。",
+            carriedHereFromAModelTheUpstreamNoMessage:
+                "必須。上流が報告しなくなったモデルから引き継いだものです。送信すると、以下の設定でそのモデルを取り戻します。",
+            creating: "作成しています…",
         },
         modelRouteEditorScreen: {
             thisModelNameIsManagedAutomaticallyEditTheMessage:
@@ -301,6 +341,20 @@ const japanese = {
                 "各メンバーに対して要求する正確な識別子です。モデルを持たないメンバーがあっても、公開は妨げられません。",
             physicalModel: "物理モデル",
             createPublicRoute: "公開ルートを作成",
+            editPublicRoute: "公開ルートを編集",
+            publicRoutes: "公開ルート",
+            aModelNameMaintainedAutomaticallyByItsProviderMessage:
+                "プロバイダーまたはアカウントプールによって自動的に維持されるモデル名です。",
+            clientsRequestThisPublicIDChangingItsTargetMessage:
+                "クライアントはこの公開 ID を要求します。ターゲットを変更しても、この名前はそのままです。",
+            openPool: "アカウントプールを開く",
+            openPhysicalModel: "物理モデルを開く",
+            deleteThisPublicRouteQuestion: "この公開ルートを削除しますか？",
+            publicIDIsRequiredMessage: "公開 ID は必須です。",
+            directPhysicalModel: "物理モデルを直接指定",
+            chooseAPool: "アカウントプールを選択",
+            upstreamIDIsRequiredMessage: "上流 ID は必須です。",
+            chooseAPhysicalModel: "物理モデルを選択",
         },
         modelsScreen: {
             models: "モデル",
@@ -318,6 +372,8 @@ const japanese = {
             searchModels: "モデルを検索",
             searchByUpstreamIDOrProviderName: "上流 ID またはプロバイダー名で検索",
             provider: "プロバイダー",
+            noModelsOnAnyProviderYetDiscoverOrMessage:
+                "どのプロバイダーにもモデルがありません。検出するか、手動で追加してください。",
         },
         notFoundScreen: {
             pageNotFound: "ページが見つかりません",
@@ -357,6 +413,16 @@ const japanese = {
             storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
                 "保存済みの観測結果です。更新すると、上流アカウントに明示的に照会します。リセットは制限を解除して更新の猶予を設定しますが、上流の割り当てはリセットしません。",
             thisPoolHasNoMembersMessage: "このアカウントプールにはメンバーがいません。",
+            readingStoredAvailability: "保存済みの可用性を読み取っています…",
+            quotaNotObserved: "割り当ては未観測",
+            quotaReadsUnsupported: "割り当ての読み取りに非対応",
+            administratorResetRefreshGraceInstalled:
+                "管理者がリセット済み。更新の猶予を設定しました",
+            accountEnabled: "アカウントは有効です",
+            updatingAvailability: "可用性を更新しています…",
+            allModels: "すべてのモデル",
+            resetUnknown: "リセット時刻は不明",
+            resetTimePassedRefreshRequired: "リセット時刻を過ぎました。更新が必要です",
         },
         providerDetailScreen: {
             provider: "プロバイダー",
@@ -376,6 +442,17 @@ const japanese = {
                 "上流から検出したモデル、または手動で追加したモデルです。",
             createModel: "モデルを作成",
             allModels: "すべてのモデル",
+            providers: "プロバイダー",
+            createProvider: "プロバイダーを作成",
+            enabled: "有効",
+            disabled: "無効",
+            theOAuthCredentialsHaveExpiredMessage: "OAuth の認証情報が失効しています。",
+            noneExactUpstreamIDs: "なし — 上流 ID をそのまま使用",
+            discovering: "検出しています…",
+            discoverModels: "モデルを検出",
+            askingTheUpstreamWhatItReports: "上流が報告する内容を問い合わせています…",
+            noModelsOnThisProviderYetDiscoverWhatMessage:
+                "このプロバイダーにはまだモデルがありません。プロバイダーが報告する内容を検出するか、手動で追加してください。",
         },
         providerEditScreen: {
             editProvider: "プロバイダーを編集",
@@ -386,6 +463,15 @@ const japanese = {
             thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
                 "このプロバイダーの定義は、リクエストをベース URL に対して評価します。復元するか、「元に戻す」を選んでください。",
             deleteThisProvider: "このプロバイダーを削除",
+            provider: "プロバイダー",
+            modelPrefix: "モデルプレフィックス",
+            aProviderNeedsANameMessage: "プロバイダーには名前が必要です。",
+            starting: "開始しています…",
+            reconnectTheAccount: "アカウントを再接続",
+            replacing: "置き換えています…",
+            replaceTheCredentials: "認証情報を置き換え",
+            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
+                "削除すると、このアカウントとそのアカウントプールのメンバーシップが削除されます。物理モデルはありません。",
         },
         providerNewScreen: {
             createProvider: "プロバイダーを作成",
@@ -417,6 +503,13 @@ const japanese = {
             resetToPreset: "プリセットに戻す",
             theConnectionRecipeIsInvalidOpenTheAdvancedMessage:
                 "接続レシピが無効です。問題のある箇所は、上記の詳細設定を開いて確認してください。",
+            modelPrefix: "モデルプレフィックス",
+            creating: "作成しています…",
+            connecting: "接続しています…",
+            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
+                "必須。この定義のリクエストが評価の対象とする上流アドレスです。これがないと、ゲートウェイはフローの開始を拒否します。",
+            starting: "開始しています…",
+            startTheAuthorization: "認可を開始",
         },
         providerPoolEditorScreen: {
             interchangeableAccountsForTheSameUpstreamServiceTriedMessage:
@@ -442,6 +535,12 @@ const japanese = {
             addAccount: "アカウントを追加",
             addMember: "メンバーを追加",
             createPool: "アカウントプールを作成",
+            editPool: "アカウントプールを編集",
+            pools: "アカウントプール",
+            deleteThisPoolItsMembershipIsRemovedMessage:
+                "このアカウントプールを削除しますか？メンバーシップが削除されます。",
+            nameIsRequiredMessage: "名前は必須です。",
+            chooseAnAccount: "アカウントを選択",
         },
         providerQuotaCard: {
             upstreamQuota: "上流の割り当て",
@@ -458,6 +557,15 @@ const japanese = {
             observed: "観測日時",
             resetTimeReachedRefreshToUpdate: "リセット時刻に達しました。更新して反映してください",
             theUpstreamReturnedNoQuotaEntriesMessage: "上流は割り当ての項目を返しませんでした。",
+            periodUnknown: "期間不明",
+            monthly: "毎月",
+            unknown: "不明",
+            unlimited: "無制限",
+            resetUnknown: "リセット時刻は不明",
+            readingQuota: "割り当てを読み取っています…",
+            refreshingQuota: "割り当てを更新しています…",
+            refreshQuota: "割り当てを更新",
+            retryQuota: "割り当てを再取得",
         },
         providersScreen: {
             providers: "プロバイダー",
@@ -489,6 +597,8 @@ const japanese = {
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "物理モデルを直接公開するか、アカウントプールと正確な上流 ID を指定します。",
             automaticPrefix: "自動 · ",
+            on: "オン",
+            off: "オフ",
         },
         screenFrame: {
             readAgain: "もう一度読む",
@@ -527,6 +637,12 @@ const japanese = {
             reasoning: "推論",
             tokenTotalsSkipRowsWhereTheUpstreamReportedMessage:
                 "トークンの合計は、上流が使用量を報告しなかった行を除外します。内訳がないからといって、合計が増えたり減ったりすることはありません。",
+            querying: "クエリを実行しています…",
+            runQuery: "クエリを実行",
+            noFilterOrBoundNarrowsTheQuestionSoMessage:
+                "絞り込みも範囲も指定されていないため、空の結果はゲートウェイの全記録を意味します。まだ使用量がありません。",
+            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
+                "これらの絞り込みに一致する記録はありません。範囲を広げるか、絞り込みを外すか、絞り込みなしでクエリを実行してください。上のフォームに「絞り込みを解除」があります。",
         },
         usageScreen: {
             usage: "使用量",
@@ -548,6 +664,18 @@ const japanese = {
             filtersStayBehind: " — 期間とその他のフィルタはすべてこちらに残ります。",
             streamMark: " · ストリーミング",
             thisRowIsNoLongerListed: "この行は一覧にありません。",
+            reading: "読み取っています…",
+            applyFilters: "絞り込みを適用",
+            widenTheWindowDropAFilterOrReadMessage:
+                "期間を広げるか、絞り込みを外すか、ストリーム全体を読み取ってください。上のフォームに「絞り込みを解除」があります。",
+            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
+                "ゲートウェイの絞り込みは行を探すだけで、値の妥当性は検証しません。存在しない ID や、記録されていないステータスは、単に何にも一致しません。",
+            thatIsEveryRowThisFilterMatchesMessage: "この絞り込みに一致する行はこれですべてです。",
+            thatIsEveryRecordedRowMessage: "記録されている行はこれですべてです。",
+            aReadCycleIsReplacingTheStreamExtendMessage:
+                "読み取りサイクルがストリームを置き換えています。サイクルが完了してから、続きを読み込んでください。",
+            loading: "読み込んでいます…",
+            loadMore: "さらに読み込む",
         },
         usageStats: {
             usage: "使用量",
@@ -670,252 +798,6 @@ const japanese = {
         managementToken: "管理トークンを入力してください。",
         nameEmpty: "名前は空にできません。",
     },
-    additional: {
-        app: {
-            readThisScreensStateFromTheGatewayAgain: "この画面の状態をゲートウェイから読み直す",
-            thisScreenReadsNothingFromTheGatewaySo:
-                "この画面はゲートウェイから何も読み取らないため、更新する内容はありません",
-            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
-                "切断して保存済みのトークンを破棄しますか？再接続するには、もう一度入力が必要です。",
-        },
-        apiKeyAccess: {
-            allow: "許可",
-            deny: "拒否",
-            provider: "プロバイダー",
-            pool: "アカウントプール",
-            automatic: "自動",
-            alias: "別名",
-        },
-        apiKeyForm: {
-            whichClientHoldsThisKeyMessage: "必須。このキーを保持するクライアントです。",
-            aServingClientAuthenticatesWithItOnEveryMessage:
-                "必須。推論クライアントは、すべてのインターフェースでこのキーによる認証を行います。",
-        },
-        clipboard: {
-            copyToClipboard: "クリップボードにコピー",
-            copied: "コピーしました",
-            copy: "コピー",
-            theValueHere: "この値",
-        },
-        confirmDeleteCard: {
-            deleting: "削除しています…",
-            deleteForGood: "完全に削除",
-        },
-        dirtyFormFooter: {
-            saving: "保存しています…",
-            saveChanges: "変更を保存",
-        },
-        layout: {
-            back: "戻る",
-        },
-        modelForm: {
-            followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage:
-                "検出値に従います。現在は不明なため、一覧では省略されます。",
-            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
-                "検出値に従います。現在は何も判明していないため、定義の宣言が決めます。",
-        },
-        providerForm: {
-            verifiedLive: "実測で確認済み",
-            unverified: "未確認",
-            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
-                "必須。この定義のリクエストが向かう上流アドレスです。",
-            upstreamAPIKey: "上流の API キー",
-            sentUpstreamWithEveryRequestNeverReturnedByMessage:
-                "必須。すべてのリクエストとともに上流へ送信されます。ゲートウェイが返すことはありません。",
-            showTheAPIKeyWhileTyping: "入力中は API キーを表示",
-        },
-        providersTable: {
-            on: "オン",
-            off: "オフ",
-        },
-        usageFilterControls: {
-            allEndpoints: "すべてのエンドポイント",
-        },
-        apiKeyDetailScreen: {
-            apiKeys: "API キー",
-            apiKey: "API キー",
-            createAPIKey: "API キーを作成",
-            enabled: "有効",
-            disabled: "無効",
-        },
-        apiKeyEditScreen: {
-            apiKey: "API キー",
-            editAPIKey: "API キーを編集",
-            showTheCurrentKey: "現在のキーを表示",
-        },
-        apiKeyNewScreen: {
-            creating: "作成しています…",
-            createAPIKey: "API キーを作成",
-        },
-        apiKeysScreen: {
-            on: "オン",
-            off: "オフ",
-        },
-        bulkPublicationScreen: {
-            publicIDIsRequiredMessage: "公開 ID は必須です。",
-            noDirectRoutes: "直接ルートなし",
-            modelVanishedItsNewRouteWillBeSuspended:
-                "モデルが報告されなくなりました。新しいルートは一時停止されます",
-            modelEnabled: "モデルは有効です",
-            modelDisabled: "モデルは無効です",
-        },
-        connectionScreen: {
-            showTheTokenWhileTyping: "入力中はトークンを表示",
-            probingTheGateway: "ゲートウェイを確認しています…",
-            connect: "接続",
-        },
-        homeScreen: {
-            inspectPublicRoutesForQuotaAvailabilityTheseFiguresMessage:
-                "割り当ての可用性は公開ルートで確認してください。これらの数値は、保存済みのスイッチとインベントリを表すものです。",
-            noRequestsRecordedMessage: "リクエストは記録されていません。",
-        },
-        modelDetailScreen: {
-            models: "モデル",
-            model: "モデル",
-            overriddenByAdministratorMessage: "管理者が上書きしています。",
-            fromTheLatestDiscoveryMessage: "直近の検出結果です。",
-            unknownOmittedFromModelListingsMessage: "不明 — モデル一覧では省略されます。",
-            noFactOnThisRowTheDefinitionsDeclarationMessage:
-                "この行には情報がありません。定義の宣言が決めます。",
-            unknown: "不明",
-            noAutomaticEntry: "自動エントリなし",
-            enabled: "有効",
-            disabled: "無効",
-        },
-        modelEditScreen: {
-            model: "モデル",
-            editModel: "モデルを編集",
-        },
-        modelNewScreen: {
-            aModelBelongsToOneProviderMessage: "必須。モデルは 1 つのプロバイダーに属します。",
-            sentUpstreamVerbatimLettersNumbersAndSymbolsOnlyMessage:
-                "必須。上流へそのまま送信されます。英数字と記号のみを使用します。",
-            carriedHereFromAModelTheUpstreamNoMessage:
-                "必須。上流が報告しなくなったモデルから引き継いだものです。送信すると、以下の設定でそのモデルを取り戻します。",
-            creating: "作成しています…",
-            createModel: "モデルを作成",
-        },
-        modelRouteEditorScreen: {
-            createPublicRoute: "公開ルートを作成",
-            editPublicRoute: "公開ルートを編集",
-            publicRoutes: "公開ルート",
-            aModelNameMaintainedAutomaticallyByItsProviderMessage:
-                "プロバイダーまたはアカウントプールによって自動的に維持されるモデル名です。",
-            clientsRequestThisPublicIDChangingItsTargetMessage:
-                "クライアントはこの公開 ID を要求します。ターゲットを変更しても、この名前はそのままです。",
-            openPool: "アカウントプールを開く",
-            openPhysicalModel: "物理モデルを開く",
-            deleteThisPublicRoute: "この公開ルートを削除しますか？",
-            publicIDIsRequiredMessage: "公開 ID は必須です。",
-            publicID: "公開 ID",
-            directPhysicalModel: "物理モデルを直接指定",
-            pool: "アカウントプール",
-            chooseAPool: "アカウントプールを選択",
-            upstreamIDIsRequiredMessage: "上流 ID は必須です。",
-            upstreamID: "上流 ID",
-            chooseAPhysicalModel: "物理モデルを選択",
-        },
-        modelsScreen: {
-            noModelsOnAnyProviderYetDiscoverOrMessage:
-                "どのプロバイダーにもモデルがありません。検出するか、手動で追加してください。",
-        },
-        poolAvailabilityCard: {
-            readingStoredAvailability: "保存済みの可用性を読み取っています…",
-            quotaNotObserved: "割り当ては未観測",
-            quotaReadsUnsupported: "割り当ての読み取りに非対応",
-            administratorResetRefreshGraceInstalled:
-                "管理者がリセット済み。更新の猶予を設定しました",
-            accountEnabled: "アカウントは有効です",
-            updatingAvailability: "可用性を更新しています…",
-            allModels: "すべてのモデル",
-            resetUnknown: "リセット時刻は不明",
-            resetTimePassedRefreshRequired: "リセット時刻を過ぎました。更新が必要です",
-        },
-        providerDetailScreen: {
-            providers: "プロバイダー",
-            provider: "プロバイダー",
-            createProvider: "プロバイダーを作成",
-            enabled: "有効",
-            disabled: "無効",
-            theOAuthCredentialsHaveExpiredMessage: "OAuth の認証情報が失効しています。",
-            noneExactUpstreamIDs: "なし — 上流 ID をそのまま使用",
-            discovering: "検出しています…",
-            discoverModels: "モデルを検出",
-            askingTheUpstreamWhatItReports: "上流が報告する内容を問い合わせています…",
-            noModelsOnThisProviderYetDiscoverWhatMessage:
-                "このプロバイダーにはまだモデルがありません。プロバイダーが報告する内容を検出するか、手動で追加してください。",
-        },
-        providerEditScreen: {
-            provider: "プロバイダー",
-            editProvider: "プロバイダーを編集",
-            modelPrefix: "モデルプレフィックス",
-            aProviderNeedsANameMessage: "プロバイダーには名前が必要です。",
-            starting: "開始しています…",
-            reconnectTheAccount: "アカウントを再接続",
-            replacing: "置き換えています…",
-            replaceTheCredentials: "認証情報を置き換え",
-            deletingRemovesTheAccountAndItsPoolMembershipsMessage:
-                "削除すると、このアカウントとそのアカウントプールのメンバーシップが削除されます。物理モデルはありません。",
-        },
-        providerNewScreen: {
-            modelPrefix: "モデルプレフィックス",
-            creating: "作成しています…",
-            createProvider: "プロバイダーを作成",
-            connecting: "接続しています…",
-            connectTheAccount: "アカウントを接続",
-            theUpstreamAddressThisDefinitionsRequestsEvaluateAgainstMessage:
-                "必須。この定義のリクエストが評価の対象とする上流アドレスです。これがないと、ゲートウェイはフローの開始を拒否します。",
-            starting: "開始しています…",
-            startTheAuthorization: "認可を開始",
-        },
-        providerPoolEditorScreen: {
-            createPool: "アカウントプールを作成",
-            editPool: "アカウントプールを編集",
-            pools: "アカウントプール",
-            deleteThisPoolItsMembershipIsRemovedMessage:
-                "このアカウントプールを削除しますか？メンバーシップが削除されます。",
-            nameIsRequiredMessage: "名前は必須です。",
-            modelPrefix: "モデルプレフィックス",
-            chooseAnAccount: "アカウントを選択",
-        },
-        providerQuotaCard: {
-            periodUnknown: "期間不明",
-            monthly: "毎月",
-            unknown: "不明",
-            unlimited: "無制限",
-            resetUnknown: "リセット時刻は不明",
-            readingQuota: "割り当てを読み取っています…",
-            refreshingQuota: "割り当てを更新しています…",
-            refreshQuota: "割り当てを更新",
-            retryQuota: "割り当てを再取得",
-        },
-        routingListsScreen: {
-            on: "オン",
-            off: "オフ",
-        },
-        usageQueryScreen: {
-            querying: "クエリを実行しています…",
-            runQuery: "クエリを実行",
-            noFilterOrBoundNarrowsTheQuestionSoMessage:
-                "絞り込みも範囲も指定されていないため、空の結果はゲートウェイの全記録を意味します。まだ使用量がありません。",
-            nothingRecordedMatchesTheseFiltersWidenTheBoundsMessage:
-                "これらの絞り込みに一致する記録はありません。範囲を広げるか、絞り込みを外すか、絞り込みなしでクエリを実行してください。上のフォームに「絞り込みを解除」があります。",
-        },
-        usageScreen: {
-            reading: "読み取っています…",
-            applyFilters: "絞り込みを適用",
-            widenTheWindowDropAFilterOrReadMessage:
-                "期間を広げるか、絞り込みを外すか、ストリーム全体を読み取ってください。上のフォームに「絞り込みを解除」があります。",
-            theGatewaysFilterLocatesRowsItNeverValidatesMessage:
-                "ゲートウェイの絞り込みは行を探すだけで、値の妥当性は検証しません。存在しない ID や、記録されていないステータスは、単に何にも一致しません。",
-            thatIsEveryRowThisFilterMatchesMessage: "この絞り込みに一致する行はこれですべてです。",
-            thatIsEveryRecordedRowMessage: "記録されている行はこれですべてです。",
-            aReadCycleIsReplacingTheStreamExtendMessage:
-                "読み取りサイクルがストリームを置き換えています。サイクルが完了してから、続きを読み込んでください。",
-            loading: "読み込んでいます…",
-            loadMore: "さらに読み込む",
-        },
-    },
     operationNotices: {
         flowFailed: "フローに失敗しました。",
         freshFlow: "新しいフローを開始し、速やかに承認してください。",
@@ -1009,14 +891,53 @@ const japanese = {
             theGatewayHoldsNoProviderHereItWasDeletedOrTheAddressWasTyped:
                 "ゲートウェイにこのプロバイダーはありません。削除されたか、アドレスが誤っています。ここから復元することはできません。",
         },
-        usageLabels: {
-            streamed: "ストリーミング",
-            nonstreamed: "非ストリーミング",
+        app: {
+            readThisScreensStateFromTheGatewayAgain: "この画面の状態をゲートウェイから読み直す",
+            thisScreenReadsNothingFromTheGatewaySo:
+                "この画面はゲートウェイから何も読み取らないため、更新する内容はありません",
+            disconnectAndForgetTheStoredTokenReconnectingMeansMessage:
+                "切断して保存済みのトークンを破棄しますか？再接続するには、もう一度入力が必要です。",
+        },
+        apiKeyForm: {
+            whichClientHoldsThisKeyMessage: "必須。このキーを保持するクライアントです。",
+            aServingClientAuthenticatesWithItOnEveryMessage:
+                "必須。推論クライアントは、すべてのインターフェースでこのキーによる認証を行います。",
+        },
+        clipboard: {
+            copyToClipboard: "クリップボードにコピー",
+            copied: "コピーしました",
+            copy: "コピー",
+            theValueHere: "この値",
+        },
+        confirmDeleteCard: {
+            deleting: "削除しています…",
+            deleteForGood: "完全に削除",
+        },
+        dirtyFormFooter: {
+            saving: "保存しています…",
+            saveChanges: "変更を保存",
+        },
+        layout: {
+            back: "戻る",
+        },
+        providerForm: {
+            verifiedLive: "実測で確認済み",
+            unverified: "未確認",
+            theUpstreamAddressThisDefinitionsRequestsPointAtMessage:
+                "必須。この定義のリクエストが向かう上流アドレスです。",
+            upstreamAPIKey: "上流の API キー",
+            sentUpstreamWithEveryRequestNeverReturnedByMessage:
+                "必須。すべてのリクエストとともに上流へ送信されます。ゲートウェイが返すことはありません。",
+            showTheAPIKeyWhileTyping: "入力中は API キーを表示",
         },
         apiKeyAccess: {
             inherit: "継承",
             allow: "許可",
             deny: "拒否",
+            provider: "プロバイダー",
+            pool: "アカウントプール",
+            automatic: "自動",
+            alias: "別名",
         },
         modelForm: {
             followingDiscoveryCurrentlyDeclaresNoLevels:
@@ -1029,6 +950,8 @@ const japanese = {
                 "検出された値を、正の整数で置き換えます。",
             unset: "未設定",
             discoveredNothingKnown: "検出結果：何も判明していません。",
+            followingDiscoveryCurrentlyNothingIsKnownSoTheMessage:
+                "検出値に従います。現在は何も判明していないため、定義の宣言が決めます。",
         },
         modelsTable: {
             ready: "準備完了",
@@ -1043,6 +966,8 @@ const japanese = {
             valid: "有効",
             expired: "期限切れ",
             stale: "有効になったことがない",
+            on: "オン",
+            off: "オフ",
         },
         usageFilterControls: {
             allOutcomes: "すべての結果",
@@ -1050,6 +975,7 @@ const japanese = {
             any: "任意",
             streamed: "ストリーミング",
             nonstreamed: "非ストリーミング",
+            allEndpoints: "すべてのエンドポイント",
         },
         usageFilter: {
             allTime: "全期間",
@@ -1139,6 +1065,7 @@ const japanese = {
         enabledStored: "保存済み {{total}} 件のうち有効な件数",
         readyListed: "一覧 {{total}} 件のうち準備完了の件数",
         copyEndpoint: "{{surface}} エンドポイントの URL をコピー",
+        copyApiKeySecret: "{{name}} のシークレットをコピー",
         disabledCredential: "{{expiry}} プロバイダーは無効です。有効に戻したら再接続してください。",
         noKeysDetail:
             " 推論クライアントは API キーで認証します。キーがないと、ゲートウェイに準備完了のインベントリがありません。",

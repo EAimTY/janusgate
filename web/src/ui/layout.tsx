@@ -91,7 +91,7 @@ export function PageHeader(props: {
                         class="inline-flex w-fit items-center gap-1 text-[13px] font-medium text-ink-dim transition-colors duration-150 ease-out hover:text-ink"
                     >
                         <Glyph name="chev-left" />
-                        {props.backLabel ?? translation()(($) => $.additional.layout.back)}
+                        {props.backLabel ?? translation()(($) => $.helpers.layout.back)}
                     </AppLink>
                 )}
             </Show>

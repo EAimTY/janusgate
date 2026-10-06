@@ -314,62 +314,44 @@ impl From<ProviderError> for Error {
 
 impl From<GatewayError> for Error {
     fn from(error: GatewayError) -> Self {
-        Self::from(&error)
-    }
-}
-
-impl From<&GatewayError> for Error {
-    fn from(error: &GatewayError) -> Self {
         match error {
             GatewayError::InvalidRequest(error) => {
                 let message = error.to_string();
 
                 Self::MalformedRequest {
-                    param: error.param.clone(),
+                    param: error.param,
                     message,
                 }
             }
 
-            GatewayError::ModelNotFound { model } => Self::ModelNotFound {
-                model: model.clone(),
-            },
-            GatewayError::PoolUnavailable { model } => Self::PoolUnavailable {
-                model: model.clone(),
-            },
+            GatewayError::ModelNotFound { model } => Self::ModelNotFound { model },
+            GatewayError::PoolUnavailable { model } => Self::PoolUnavailable { model },
 
-            GatewayError::PoolQuotaExhausted { model, retry_after } => Self::PoolQuotaExhausted {
-                model: model.clone(),
-                retry_after: *retry_after,
-            },
-
-            GatewayError::BoundAccountUnavailable { model } => Self::BoundAccountUnavailable {
-                model: model.clone(),
-            },
-            GatewayError::BoundAccountQuotaExhausted { model, retry_after } => {
-                Self::BoundAccountQuotaExhausted {
-                    model: model.clone(),
-                    retry_after: *retry_after,
-                }
+            GatewayError::PoolQuotaExhausted { model, retry_after } => {
+                Self::PoolQuotaExhausted { model, retry_after }
             }
-            GatewayError::RoutingStateConflict { model } => Self::RoutingStateConflict {
-                model: model.clone(),
-            },
+
+            GatewayError::BoundAccountUnavailable { model } => {
+                Self::BoundAccountUnavailable { model }
+            }
+            GatewayError::BoundAccountQuotaExhausted { model, retry_after } => {
+                Self::BoundAccountQuotaExhausted { model, retry_after }
+            }
+            GatewayError::RoutingStateConflict { model } => Self::RoutingStateConflict { model },
 
             GatewayError::Upstream { status, detail } => Self::Upstream {
-                status: *status,
-                message: detail.clone(),
+                status,
+                message: detail,
             },
             GatewayError::QuotaRejected { status, detail, .. } => Self::QuotaRejected {
-                status: *status,
-                message: detail.clone(),
+                status,
+                message: detail,
             },
 
-            GatewayError::Unavailable { detail } => Self::UpstreamUnavailable {
-                message: detail.clone(),
-            },
+            GatewayError::Unavailable { detail } => Self::UpstreamUnavailable { message: detail },
 
             // The provider-failure classification lives once, in `From<ProviderError>`.
-            GatewayError::Provider(error) => Self::from(error.clone()),
+            GatewayError::Provider(error) => Self::from(error),
 
             GatewayError::Storage(StorageError::InactiveApiKey { .. }) => Self::InvalidApiKey,
             GatewayError::Storage(_) | GatewayError::Internal { .. } => Self::Internal,

@@ -762,17 +762,8 @@ fn seal_summary(
     );
 
     let retained_units = retained
-        .map(|message| {
-            let identity = ItemIdentity::for_message(0, &message, None);
-
-            let mut overlap = instruction_overlap.clone();
-            overlap.push(identity.clone());
-
-            (vec![(identity, vec![message])], overlap)
-        })
-        .unwrap_or_else(|| (Vec::new(), instruction_overlap));
-
-    let (retained_units, overlap_identities) = retained_units;
+        .map(|message| vec![vec![message]])
+        .unwrap_or_default();
 
     let plan = history::GatewayCheckpointPlan {
         summary_input_messages: Vec::new(),
@@ -780,10 +771,10 @@ fn seal_summary(
         retained_state_items: Vec::new(),
         preserved_instructions: instruction_items
             .iter()
-            .zip(overlap_identities.iter())
+            .zip(instruction_overlap.iter())
             .map(|(item, identity)| (identity.clone(), item.role, item.text.clone()))
             .collect(),
-        overlap_identities,
+        overlap_identities: instruction_overlap,
         summary_budget: 4096,
         retention_budget: 8192,
     };
@@ -1245,6 +1236,77 @@ async fn responses_trigger_backed_by_claude_on_demand() {
         requests[2].header("anthropic-beta"),
         Some("compact-2026-09-04")
     );
+
+    drop(scenario);
+}
+
+/// An on-demand mechanism whose declaration carries no overlay headers and no
+/// supported default still dispatches natively when the model's support facts
+/// resolve it supported: the declaration's existence gates the stage and the
+/// effective support resolves independently of the declared default, an
+/// absent overlay dispatching with none (the checkpoint adapter's own rule).
+///
+/// # Panics
+///
+/// Panics when the pipeline diverges from the scenario's contract.
+#[tokio::test]
+async fn on_demand_model_facts_dispatch_without_declared_overlay_headers() {
+    // The declaration exists with an unknown default and no overlay headers —
+    // the write-valid posture whose support the model facts alone resolve.
+    let section = json!({
+        "mechanisms": {
+            "messages_on_demand_compaction": {},
+        },
+    });
+
+    let on_demand_facts = facts(&[(
+        Mechanism::MessagesOnDemandCompaction,
+        MechanismSupport::Supported,
+    )]);
+
+    let scenario = scenario(
+        UpstreamFormat::AnthropicMessages,
+        Some(section),
+        Some(&on_demand_facts),
+        None,
+        false,
+        vec![anthropic_message(
+            json!([{"type": "compaction", "content": "claude summary", "signature":
+            "sig-native"}]),
+            "end_turn",
+            300,
+            40,
+        )],
+    )
+    .await;
+
+    let (status, body) = post_messages(
+        &scenario,
+        Some("compact-2026-09-04"),
+        json!({
+            "model": MODEL,
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "old question"}],
+            "compaction": {"type": "summarize"},
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+
+    // One dispatch — the native on-demand call — carrying no overlay header.
+    let requests = assert_count(&scenario, 1);
+    assert_eq!(requests[0].line(), "POST /messages");
+    assert_eq!(requests[0].header("anthropic-beta"), None);
+
+    let on_demand = recorded_body(&scenario, 0);
+    assert_eq!(on_demand["compaction"], json!({"type": "summarize"}));
+
+    // The native block renders as the compact-only artifact.
+    assert_eq!(body["stop_reason"], "compaction");
+    assert_eq!(body["content"][0]["type"], "compaction");
+    assert_eq!(body["content"][0]["content"], "claude summary");
+    assert_eq!(body["content"][0]["signature"], "sig-native");
 
     drop(scenario);
 }
@@ -4072,7 +4134,7 @@ fn review_retention_preserves_parallel_tool_exchange() {
         let kept: Vec<_> = plan
             .retained_units
             .iter()
-            .flat_map(|(_, messages)| messages.iter())
+            .flat_map(|messages| messages.iter())
             .collect();
         assert_eq!(
             kept.len(),
@@ -6286,8 +6348,8 @@ async fn messages_native_no_summary_binds_only_actual_answer_history() {
             blocks.extend([
                 json!({"type":"thinking","thinking":"reason λ","signature":"signed",
                 }),
-                json!({"type":"redacted_thinking","data":{"z":[2,{"z":false,"a":null}],
-                        "a":"encrypted"}}),
+                json!({"type":"redacted_thinking",
+                        "data":"{\"z\":[2,{\"z\":false,\"a\":null}],\"a\":\"encrypted\"}"}),
             ]);
             blocks.extend([
                 json!({"type":"text","text":"answer λ"}),

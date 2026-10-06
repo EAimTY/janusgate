@@ -62,16 +62,16 @@ export function ApiKeyDetailScreen(props: {
                 <PageHeader
                     title={translation()(($) => $.screens.apiKeyDetailScreen.apiKey)}
                     backHref={hrefs.apiKeys()}
-                    backLabel={translation()(($) => $.additional.apiKeyDetailScreen.apiKeys)}
+                    backLabel={translation()(($) => $.screens.apiKeyDetailScreen.apiKeys)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="api_key"
-                    headerTitle={translation()(($) => $.additional.apiKeyDetailScreen.apiKey)}
+                    headerTitle={translation()(($) => $.screens.apiKeyDetailScreen.apiKey)}
                     createAction={{
                         href: hrefs.apiKeyNew(),
-                        label: translation()(($) => $.additional.apiKeyDetailScreen.createAPIKey),
+                        label: translation()(($) => $.screens.apiKeyDetailScreen.createAPIKey),
                     }}
                 />
             }
@@ -84,14 +84,14 @@ export function ApiKeyDetailScreen(props: {
                             instant: formatTimestamp(row.created_at),
                         })}
                         backHref={hrefs.apiKeys()}
-                        backLabel={translation()(($) => $.additional.apiKeyDetailScreen.apiKeys)}
+                        backLabel={translation()(($) => $.screens.apiKeyDetailScreen.apiKeys)}
                     >
                         <Badge
                             tone={row.is_enabled ? "ok" : "muted"}
                             label={
                                 row.is_enabled
-                                    ? translation()(($) => $.additional.apiKeyDetailScreen.enabled)
-                                    : translation()(($) => $.additional.apiKeyDetailScreen.disabled)
+                                    ? translation()(($) => $.screens.apiKeyDetailScreen.enabled)
+                                    : translation()(($) => $.screens.apiKeyDetailScreen.disabled)
                             }
                         />
                         <ButtonLink href={hrefs.apiKeyEdit(row.id)}>
@@ -137,11 +137,9 @@ export function ApiKeyDetailScreen(props: {
                                 label={translation()(($) => $.screens.apiKeyDetailScreen.status)}
                                 value={
                                     row.is_enabled
-                                        ? translation()(
-                                              ($) => $.additional.apiKeyDetailScreen.enabled,
-                                          )
+                                        ? translation()(($) => $.screens.apiKeyDetailScreen.enabled)
                                         : translation()(
-                                              ($) => $.additional.apiKeyDetailScreen.disabled,
+                                              ($) => $.screens.apiKeyDetailScreen.disabled,
                                           )
                                 }
                             />

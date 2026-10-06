@@ -12,12 +12,19 @@ import {
     expectArray,
     expectBoolean,
     expectDeclaredKeys,
+    expectNonEmptyString,
     expectOneOf,
     expectRecord,
     expectString,
     isPresentValue,
 } from "../validation-primitives";
-import { expectParamRows, expectStringExpr, expectTemplateNode } from "./expressions";
+import {
+    countTemplateBodyNodes,
+    expectHeaderRows,
+    expectParamRows,
+    expectStringExpr,
+    expectTemplateNode,
+} from "./expressions";
 
 /** One control body: a form-encoded field set or a typed JSON tree (README §5.1). */
 function expectControlBody(value: unknown, context: string): ControlBody {
@@ -59,7 +66,14 @@ function expectControlBody(value: unknown, context: string): ControlBody {
     throw new ContractViolationError(`${context}.kind is not a control body: ${kind}`);
 }
 
-/** One control request: method, URL, headers, query, and body (README §5.1). */
+/**
+ * One control request: method, URL, headers, query, and body (README §5.1).
+ * The rules apply at every stage the request serves, since the walk is the
+ * one the quota descriptor, the OAuth recipe, the provisioning steps, and the
+ * discovery all parse through: the URL carries at least one expression part,
+ * a GET never carries a body, and a JSON body never carries the inference
+ * body placeholder.
+ */
 export function expectControlRequest(value: unknown, context: string): ControlRequest {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -84,15 +98,21 @@ export function expectControlRequest(value: unknown, context: string): ControlRe
         "a control method",
     );
 
+    const url = expectStringExpr(Reflect.get(record, "url"), `${context}.url`);
+
+    if (url.length === 0) {
+        throw new ContractViolationError(`${context}.url must carry at least one expression part`);
+    }
+
     const request: ControlRequest = {
         method,
-        url: expectStringExpr(Reflect.get(record, "url"), `${context}.url`),
+        url,
     };
 
     const headers = Reflect.get(record, "headers");
 
     if (headers !== undefined) {
-        request.headers = expectParamRows(headers, `${context}.headers`);
+        request.headers = expectHeaderRows(headers, `${context}.headers`);
     }
 
     const query = Reflect.get(record, "query");
@@ -104,16 +124,28 @@ export function expectControlRequest(value: unknown, context: string): ControlRe
     const body = Reflect.get(record, "body");
 
     if (isPresentValue(body)) {
-        request.body = expectControlBody(body, `${context}.body`);
+        if (method === "GET") {
+            throw new ContractViolationError(`${context} must not carry a body on a GET request`);
+        }
+
+        const controlBody = expectControlBody(body, `${context}.body`);
+
+        if (controlBody.kind === "json" && countTemplateBodyNodes(controlBody.node) !== 0) {
+            throw new ContractViolationError(
+                `${context}.body must not carry the inference body placeholder`,
+            );
+        }
+
+        request.body = controlBody;
     }
 
     return request;
 }
 
-/** One response path: the ordered member chain (README §5.1). */
+/** One response path: the ordered member chain, every member non-empty (README §5.1). */
 export function expectResponsePath(value: unknown, context: string): ResponsePath {
     return expectArray(value, context).map((member, index) =>
-        expectString(member, `${context}[${index}]`),
+        expectNonEmptyString(member, `${context}[${index}]`),
     );
 }
 
@@ -192,7 +224,11 @@ function expectResponseField(
     };
 }
 
-/** One response descriptor: the encoding and its field mappings (README §5.1). */
+/**
+ * One response descriptor: the encoding and its field mappings (README §5.1).
+ * A form-encoded response's fields are flat, so every path of one addresses
+ * exactly one member — the rule the gateway holds every descriptor to.
+ */
 export function expectResponseDescriptor(value: unknown, context: string): ResponseDescriptor {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -204,12 +240,23 @@ export function expectResponseDescriptor(value: unknown, context: string): Respo
         context,
     );
 
-    return {
+    const descriptor: ResponseDescriptor = {
         encoding: expectResponseEncoding(Reflect.get(record, "encoding"), `${context}.encoding`),
         fields: expectArray(Reflect.get(record, "fields"), `${context}.fields`).map(
             (field, index) => expectResponseField(field, `${context}.fields[${index}]`),
         ),
     };
+
+    if (
+        descriptor.encoding === "form" &&
+        descriptor.fields.some((field) => field.path.length !== 1)
+    ) {
+        throw new ContractViolationError(
+            `${context} paths address flat form fields and carry exactly one member`,
+        );
+    }
+
+    return descriptor;
 }
 
 /** The declared shape of one extracted value (README §5.4). */

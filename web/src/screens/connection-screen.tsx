@@ -1,18 +1,12 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createSignal, Show } from "solid-js";
-import {
-    ConnectionProbeCancelled,
-    cancelConnectionProbe,
-    connectionService,
-    deadlineController,
-    PROBE_TIMEOUT_MS,
-} from "/src/connection/app-service";
+import { createSignal, Show } from "solid-js";
+import { cancelConnectionProbe, connectionService } from "/src/connection/app-service";
+import { createConnectionDiagnosis } from "/src/connection/diagnosis-view";
 import { normalizeBaseUrl } from "/src/connection/model";
 import { translation } from "/src/i18n";
 import { LanguageControl } from "/src/i18n/language-control";
 import { setupCorsMessage, setupTokenMessage } from "/src/i18n/rich";
 import { baseUrlFailureMessage } from "/src/i18n/validation-messages";
-import { type Diagnosis, diagnoseFailure, probeReachability } from "/src/management-api/diagnosis";
 import { CopyButton } from "/src/ui/clipboard";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
@@ -39,7 +33,6 @@ export function ConnectionScreen(): JSX.Element {
     // retracts its error without another submit (the app's lazy-error
     // convention).
     const [hasSubmitted, setHasSubmitted] = createSignal(false);
-    const [diagnosis, setDiagnosis] = createSignal<Diagnosis | null>(null);
 
     const state = connectionService.connectionState;
     const isVerifying = (): boolean => state().status === "verifying";
@@ -55,11 +48,12 @@ export function ConnectionScreen(): JSX.Element {
     let isAddressSeeded = false;
 
     /**
-     * Closes out the interrupted attempt: the token, the reveal state, the
-     * fields' inline errors, and any diagnosis clear at once. The address
-     * clears only when nothing seeded it — exactly a pristine first visit's
-     * hand-typed address — while a seeded address survives, because losing it
-     * would demand the origin retype the seed exists to spare.
+     * Closes out the interrupted attempt: the token, the reveal state, and
+     * the fields' inline errors clear at once. The address clears only when
+     * nothing seeded it — exactly a pristine first visit's hand-typed
+     * address — while a seeded address survives, because losing it would
+     * demand the origin retype the seed exists to spare. The diagnosis is
+     * the diagnosis machine's own: a cancellation's landing clears it there.
      */
     const resetForm = (): void => {
         if (!isAddressSeeded) {
@@ -68,13 +62,12 @@ export function ConnectionScreen(): JSX.Element {
         setToken("");
         setHasSubmitted(false);
         setIsTokenVisible(false);
-        setDiagnosis(null);
     };
 
     /**
      * Ends the probe in flight and closes out the interrupted attempt
-     * (`resetForm`). The aborted probe's landing is then recognized by its
-     * cause below, so no failure is ever seeded from a cancelled attempt.
+     * (`resetForm`). The cancelled attempt's landing is the machine's
+     * cancellation — no failure, nothing to seed or diagnose from it.
      */
     const cancelProbe = (): void => {
         resetForm();
@@ -97,94 +90,20 @@ export function ConnectionScreen(): JSX.Element {
             ? translation()(($) => $.connectionValidation.managementToken)
             : null;
 
-    createEffect(
-        () => {
-            const current = state();
-            return current.status === "unconnected" ? current : null;
-        },
-        (unconnected) => {
-            // A cancelled probe lands here like any refusal — the service
-            // records every probe outcome — but cancellation is control
-            // flow, never a failure: the interrupted form closes out through
-            // the reset above, bypassing the seeding below entirely. The
-            // recognition is the landing's cause, so a genuine refusal after
-            // the cancel seeds exactly as it always did.
-            if (unconnected?.failure?.cause instanceof ConnectionProbeCancelled) {
-                resetForm();
-                return;
-            }
-
-            // The refusal seeds from the address its failure carried — a
-            // mid-session 401's, so the field reopens with it and a later
-            // edit of the field cannot misattribute the failure — and a
-            // deliberate forget seeds from the address the connection
-            // served, so the standard token rotation (disconnect, forget,
-            // paste, connect) never demands an origin retype. The token is
-            // never carried or seeded: it is a bearer secret only the user
-            // can re-enter.
-            const seedBaseUrl =
-                unconnected?.failure?.baseUrl ?? unconnected?.forgottenBaseUrl ?? null;
-
+    // The refused probe's diagnosis and its reachability refinement live in
+    // the connection machine's own hook; the screen keeps the form it drives:
+    // a refusal's or forget's address seeds the field, and a cancelled
+    // attempt's landing carries no failure, so it seeds and diagnoses nothing.
+    const diagnosis = createConnectionDiagnosis({
+        state,
+        fieldBaseUrl: baseUrl,
+        onSeed: (seedBaseUrl) => {
             if (seedBaseUrl !== null) {
                 setBaseUrl(seedBaseUrl);
                 isAddressSeeded = true;
             }
-
-            const failure = unconnected?.failure ?? null;
-
-            if (failure === null) {
-                // Connected, verifying, pristine, or freshly forgotten: a
-                // forget diagnoses nothing, because nothing was refused.
-                setDiagnosis(null);
-                return;
-            }
-
-            const attempted = failure.baseUrl ?? baseUrl();
-            const context = {
-                baseUrl: attempted,
-                pageOrigin,
-                action: "connect" as const,
-            };
-            const initial = diagnoseFailure(failure.cause ?? failure.message, context);
-
-            setDiagnosis(initial);
-
-            if (initial.kind !== "no-answer") {
-                return;
-            }
-
-            // The probe separates "nothing is listening" from "the browser blocked
-            // the response"; it is only worth a request while the answer is open.
-            // This diagnosis owns its probe: a re-run of this effect (a newer
-            // refusal) or the screen going away aborts it, so superseded
-            // diagnoses never leave an in-flight probe behind (README §6.4).
-            // The deadline stays on as the secondary backstop, so a
-            // blackhole address cannot leave the refinement pending minutes
-            // after the screen gave up. The flag still discards an answer
-            // that outlives this diagnosis, the aborted probe's "unknown"
-            // included.
-            let isCurrent = true;
-            const refinementController = deadlineController(PROBE_TIMEOUT_MS);
-
-            void probeReachability(attempted, refinementController.signal).then((reachability) => {
-                if (!isCurrent) {
-                    return;
-                }
-
-                setDiagnosis(
-                    diagnoseFailure(failure.cause ?? failure.message, {
-                        ...context,
-                        reachability,
-                    }),
-                );
-            });
-
-            return () => {
-                isCurrent = false;
-                refinementController.abort();
-            };
         },
-    );
+    });
 
     const submit = (event: SubmitEvent): void => {
         event.preventDefault();
@@ -300,7 +219,7 @@ export function ConnectionScreen(): JSX.Element {
 
                     <SecretRevealToggle
                         caption={translation()(
-                            ($) => $.additional.connectionScreen.showTheTokenWhileTyping,
+                            ($) => $.screens.connectionScreen.showTheTokenWhileTyping,
                         )}
                         isVisible={isTokenVisible()}
                         onToggle={setIsTokenVisible}
@@ -313,10 +232,8 @@ export function ConnectionScreen(): JSX.Element {
                             isBusy={isVerifying()}
                         >
                             {isVerifying()
-                                ? translation()(
-                                      ($) => $.additional.connectionScreen.probingTheGateway,
-                                  )
-                                : translation()(($) => $.additional.connectionScreen.connect)}
+                                ? translation()(($) => $.screens.connectionScreen.probingTheGateway)
+                                : translation()(($) => $.screens.connectionScreen.connect)}
                         </Button>
                         <Show when={isVerifying()}>
                             <Button

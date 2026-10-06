@@ -99,7 +99,7 @@ async fn query_fenced(
         .ok_or(Error::NotConfigured {
             provider_id: provider.id,
         })?;
-    let environment = ValueEnv::for_discovery(
+    let environment = ValueEnv::for_stored_credential(
         provider.credentials.slots(),
         provider.base_url.as_deref(),
         provider.credentials.secret(),

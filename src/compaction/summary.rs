@@ -39,15 +39,18 @@ pub(crate) const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
 /// Builds the internal summarizer request from the restored window and the
 /// gateway checkpoint plan (README §6.8).
 ///
-/// The request is the restored window's clone with: the supplied instructions
-/// replacing the default prompt (their absence keeping the default); the
-/// eligible older prefix as input history plus the fixed closing user
-/// instruction; tool selection off; the tool definitions kept only when the
-/// retained region carries native state whose replay may require the exact
+/// The request carries the restored window's serving facts with: the supplied
+/// instructions replacing the default prompt (their absence keeping the
+/// default); the eligible older prefix as input history plus the fixed closing
+/// user instruction; tool selection off; the tool definitions kept only when
+/// the retained region carries native state whose replay may require the exact
 /// tool prefix, and dropped otherwise; the output bound by the summary budget
 /// and the caller's compact-only output cap, whichever is smaller; the response
 /// format dropped; and the sampling controls and reasoning effort preserved.
 /// The opaque state items never ride the summarizer.
+///
+/// The request is built field by field from the borrowed window, so the
+/// covered history and state are never cloned just to be overwritten.
 ///
 /// Consumes the plan's summary input messages: they become the summarizer's
 /// input history, and no later consumer of the plan reads them.
@@ -58,39 +61,43 @@ pub(crate) fn plan_summary_request(
     instructions: Option<&str>,
     output_cap: Option<u64>,
 ) -> IrRequest {
-    let mut summarizer = restored.clone();
+    let mut messages = std::mem::take(&mut plan.summary_input_messages);
 
-    summarizer.instructions = Some(
-        instructions
-            .map(str::to_string)
-            .unwrap_or_else(|| String::from(DEFAULT_SUMMARY_PROMPT)),
-    );
-
-    summarizer.messages = std::mem::take(&mut plan.summary_input_messages);
-    summarizer.messages.push(IrMessage {
+    messages.push(IrMessage {
         role: IrRole::User,
         parts: vec![IrPart::Text {
             text: String::from(SUMMARY_CLOSING_INSTRUCTION),
         }],
     });
 
-    // Tool selection is off for the inference; the definitions ride along only
-    // when the retained native state may require their exact prefix, so
-    // suppressing them cannot invalidate the state being summarized.
-    summarizer.tool_choice = Some(IrToolChoice::None);
-    if plan.retained_state_items.is_empty() {
-        summarizer.tools = Vec::new();
+    IrRequest {
+        has_compaction_trigger: restored.has_compaction_trigger,
+        model: restored.model.clone(),
+        instructions: Some(
+            instructions
+                .map(str::to_string)
+                .unwrap_or_else(|| String::from(DEFAULT_SUMMARY_PROMPT)),
+        ),
+        messages,
+        // Tool selection is off for the inference; the definitions ride along
+        // only when the retained native state may require their exact prefix,
+        // so suppressing them cannot invalidate the state being summarized.
+        tools: if plan.retained_state_items.is_empty() {
+            Vec::new()
+        } else {
+            restored.tools.clone()
+        },
+        tool_choice: Some(IrToolChoice::None),
+        temperature: restored.temperature,
+        top_p: restored.top_p,
+        max_output_tokens: Some(match output_cap {
+            Some(cap) => plan.summary_budget.min(cap),
+            None => plan.summary_budget,
+        }),
+        response_format: None,
+        reasoning_effort: restored.reasoning_effort,
+        state_items: Vec::new(),
     }
-
-    summarizer.max_output_tokens = Some(match output_cap {
-        Some(cap) => plan.summary_budget.min(cap),
-        None => plan.summary_budget,
-    });
-
-    summarizer.response_format = None;
-    summarizer.state_items = Vec::new();
-
-    summarizer
 }
 
 /// Validates a completed summary inference and returns its text.

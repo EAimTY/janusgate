@@ -97,7 +97,7 @@ fn usage_to_ir(usage: &UpstreamUsage) -> IrUsage {
 /// boundary: any listed status hits, or the bounded error body's `code` or
 /// `param` member matches a listed value. An absent classifier never positively
 /// classifies.
-pub(crate) async fn classify_failure(
+pub(crate) fn classify_failure(
     classifier: Option<&crate::provider::definition::compaction::UnsupportedClassifier>,
     status: reqwest::StatusCode,
     body: &str,
@@ -193,10 +193,15 @@ pub(crate) async fn responses_standalone(
     )
     .await
     .map_err(GatewayError::from)?;
-    let mut ir = ir.clone();
-    ir.model = routing.model.upstream_id.clone();
-    let ir = &ir;
-    let body = render_compact_request_body(ir).map_err(GatewayError::from)?;
+    // The renderer speaks the upstream model identifier, so the dispatched
+    // request is one copy with only the model substituted. A renderer taking
+    // the upstream model directly would spare the copy.
+    let ir = IrRequest {
+        model: routing.model.upstream_id.clone(),
+        ..ir.clone()
+    };
+
+    let body = render_compact_request_body(&ir).map_err(GatewayError::from)?;
 
     let request = gateway::build_internal_request(
         &context.data_plane,
@@ -227,26 +232,23 @@ pub(crate) async fn responses_standalone(
             // The operation's own classifier decides first; the compaction
             // section's declaration classifier backs it up.
             let classification =
-                match classify_failure(operation.unsupported.as_ref(), status, &detail).await {
+                match classify_failure(operation.unsupported.as_ref(), status, &detail) {
                     Some(classification) => Some(classification),
 
-                    None => {
-                        classify_failure(
-                            routing
-                                .provider
-                                .definition
-                                .payload
-                                .compaction
-                                .as_ref()
-                                .and_then(|section| {
-                                    section.mechanisms.responses_standalone_compact.as_ref()
-                                })
-                                .and_then(|declaration| declaration.unsupported.as_ref()),
-                            status,
-                            &detail,
-                        )
-                        .await
-                    }
+                    None => classify_failure(
+                        routing
+                            .provider
+                            .definition
+                            .payload
+                            .compaction
+                            .as_ref()
+                            .and_then(|section| {
+                                section.mechanisms.responses_standalone_compact.as_ref()
+                            })
+                            .and_then(|declaration| declaration.unsupported.as_ref()),
+                        status,
+                        &detail,
+                    ),
                 };
 
             if let Some(classification) = classification {
@@ -274,12 +276,13 @@ pub(crate) async fn responses_standalone(
         /// Reported usage survives an invalid compacted window.
         usage: Option<UpstreamUsage>,
     }
+
     if let Ok(report) = serde_json::from_slice::<UsageReport>(body) {
+        // Recording only: stamping is single-owner, the executor or the
+        // serving layer stamps the draft from the returned ledger.
         ledger.record(report.usage.as_ref().map(usage_to_ir));
-        if report.usage.is_some() {
-            log.stamp_billed_usage(ledger.reported_billed_totals());
-        }
     }
+
     let native = parse_compact_response(body).map_err(GatewayError::from)?;
 
     Ok(native)
@@ -316,10 +319,13 @@ pub(crate) async fn count_tokens(
     )
     .await
     .map_err(GatewayError::from)?;
-    let mut ir = ir.clone();
-    ir.model = routing.model.upstream_id.clone();
-    let ir = &ir;
-    let body = crate::format::anthropic::messages::render_count_tokens_request(ir)
+    // One copy with only the model substituted, as in [`responses_standalone`].
+    let ir = IrRequest {
+        model: routing.model.upstream_id.clone(),
+        ..ir.clone()
+    };
+
+    let body = crate::format::anthropic::messages::render_count_tokens_request(&ir)
         .map_err(GatewayError::from)?;
 
     let request = gateway::build_internal_request(
@@ -442,11 +448,14 @@ pub(crate) async fn messages_on_demand(
     )
     .await
     .map_err(GatewayError::from)?;
-    let mut ir = ir.clone();
-    ir.model = routing.model.upstream_id.clone();
-    let ir = &ir;
+    // One copy with only the model substituted, as in [`responses_standalone`].
+    let ir = IrRequest {
+        model: routing.model.upstream_id.clone(),
+        ..ir.clone()
+    };
+
     let body = messages::render_on_demand_body(
-        ir,
+        &ir,
         gateway::is_upstream_streaming(&provider.definition.payload.inference, false),
         instructions,
         max_tokens,
@@ -483,7 +492,7 @@ pub(crate) async fn messages_on_demand(
             let detail = body.lossy_text();
             let excerpt = crate::http_body::truncate_excerpt(&detail);
 
-            if let Some(classification) = classify_failure(classifier, status, &detail).await {
+            if let Some(classification) = classify_failure(classifier, status, &detail) {
                 return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
             }
 

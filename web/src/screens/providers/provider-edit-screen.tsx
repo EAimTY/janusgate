@@ -130,13 +130,13 @@ export function ProviderEditScreen(props: {
                 <PageHeader
                     title={translation()(($) => $.screens.providerEditScreen.editProvider)}
                     backHref={hrefs.providerDetail(props.providerId)}
-                    backLabel={translation()(($) => $.additional.providerEditScreen.provider)}
+                    backLabel={translation()(($) => $.screens.providerEditScreen.provider)}
                 />
             }
             notFound={
                 <RowNotFound
                     kind="provider"
-                    headerTitle={translation()(($) => $.additional.providerEditScreen.editProvider)}
+                    headerTitle={translation()(($) => $.screens.providerEditScreen.editProvider)}
                 />
             }
         >
@@ -145,7 +145,7 @@ export function ProviderEditScreen(props: {
                     <PageHeader
                         title={editNameMessage(row.name)}
                         backHref={hrefs.providerDetail(row.id)}
-                        backLabel={translation()(($) => $.additional.providerEditScreen.provider)}
+                        backLabel={translation()(($) => $.screens.providerEditScreen.provider)}
                     />
 
                     <HoldNotice
@@ -434,7 +434,7 @@ function DetailsCard(props: {
                         isNamePresent()
                             ? null
                             : translation()(
-                                  ($) => $.additional.providerEditScreen.aProviderNeedsANameMessage,
+                                  ($) => $.screens.providerEditScreen.aProviderNeedsANameMessage,
                               )
                     }
                     isDisabled={form.isSaving()}
@@ -542,12 +542,11 @@ function CredentialsCard(props: {
                                 >
                                     {props.oauth.isStarting()
                                         ? translation()(
-                                              ($) => $.additional.providerEditScreen.starting,
+                                              ($) => $.screens.providerEditScreen.starting,
                                           )
                                         : translation()(
                                               ($) =>
-                                                  $.additional.providerEditScreen
-                                                      .reconnectTheAccount,
+                                                  $.screens.providerEditScreen.reconnectTheAccount,
                                           )}
                                 </Button>
                             </div>
@@ -566,10 +565,10 @@ function CredentialsCard(props: {
                                 flow={props.oauth}
                                 startedFlow={startedFlow}
                                 busyLabel={translation()(
-                                    ($) => $.additional.providerEditScreen.replacing,
+                                    ($) => $.screens.providerEditScreen.replacing,
                                 )}
                                 submitLabel={translation()(
-                                    ($) => $.additional.providerEditScreen.replaceTheCredentials,
+                                    ($) => $.screens.providerEditScreen.replaceTheCredentials,
                                 )}
                                 class="flex flex-col gap-4"
                             />
@@ -609,7 +608,7 @@ function DangerCard(props: {
                 props.modelCount === 0
                     ? translation()(
                           ($) =>
-                              $.additional.providerEditScreen
+                              $.screens.providerEditScreen
                                   .deletingRemovesTheAccountAndItsPoolMembershipsMessage,
                       )
                     : translation()(($) => $.counts.providerDeleted, {

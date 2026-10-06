@@ -645,11 +645,12 @@ pub(crate) struct ApiLog {
     pub(crate) reasoning_tokens: Option<i64>,
 }
 
-/// The bucket key of one aggregation row (README §7.1): one value per requested dimension —
-/// in request order on the wire — and `None` for every dimension the aggregation did not
-/// request. `http_status` is `None` both for an unrequested dimension and for the bucket the
-/// `NULL` rows form; the wire layer decides the field's presence from the requested
-/// dimensions and renders that bucket as `null`.
+/// The bucket key of one aggregation row (README §7.1): a fixed declaration-ordered object
+/// carrying exactly the requested dimensions — `None` for every dimension the aggregation
+/// did not request — while the request order drives only the bucket ordering, never the
+/// wire layout of the key. `http_status` is `None` both for an unrequested dimension and for
+/// the bucket the `NULL` rows form; the wire layer decides the field's presence from the
+/// requested dimensions and renders that bucket as `null`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub(crate) struct UsageBucketKey {
     /// Grouped public route identity.

@@ -212,9 +212,7 @@ export function ThinkingLevelsOverrideFields(props: {
     const discoveredLine = (): string => {
         if (props.discovered === null) {
             return translation()(
-                ($) =>
-                    $.additional.modelForm
-                        .followingDiscoveryCurrentlyUnknownSoListingsOmitItMessage,
+                ($) => $.helpers.modelForm.followingDiscoveryCurrentlyUnknownSoListingsOmitIt,
             );
         }
 
@@ -456,7 +454,7 @@ export function CompactionSupportOverrideFields(props: {
 
         if (discovered === null) {
             return translation()(
-                ($) => $.additional.modelForm.followingDiscoveryCurrentlyNothingIsKnownSoTheMessage,
+                ($) => $.helpers.modelForm.followingDiscoveryCurrentlyNothingIsKnownSoTheMessage,
             );
         }
 
@@ -475,7 +473,7 @@ export function CompactionSupportOverrideFields(props: {
 
         if (stated.length === 0) {
             return translation()(
-                ($) => $.additional.modelForm.followingDiscoveryCurrentlyNothingIsKnownSoTheMessage,
+                ($) => $.helpers.modelForm.followingDiscoveryCurrentlyNothingIsKnownSoTheMessage,
             );
         }
 

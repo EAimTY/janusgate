@@ -126,14 +126,20 @@ fn form_decode(component: &str) -> String {
         let step = match byte {
             b'+' => Step::Push(b' '),
 
-            b'%' => match bytes
-                .get(index + 1..index + 3)
-                .and_then(|hex| std::str::from_utf8(hex).ok())
-                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
-            {
-                Some(decoded_byte) => Step::Skip(decoded_byte, 3),
+            b'%' => match bytes.get(index + 1..index + 3) {
+                // Both escape bytes are decoded as hexadecimal nibbles, symmetric to
+                // `hex_digit`'s encoding: `u8::from_str_radix` accepts a leading `+`, which
+                // would decode a `%+5` escape as the byte `0x05` instead of rendering its
+                // `%` verbatim.
+                Some([high, low]) => match (hex_value(*high), hex_value(*low)) {
+                    (Some(high_nibble), Some(low_nibble)) => {
+                        Step::Skip((high_nibble << 4) | low_nibble, 3)
+                    }
 
-                None => Step::Push(b'%'),
+                    _ => Step::Push(b'%'),
+                },
+
+                _ => Step::Push(b'%'),
             },
 
             byte => Step::Push(byte),
@@ -174,6 +180,18 @@ fn hex_digit(nibble: u8) -> char {
     match nibble {
         0..=9 => char::from(b'0' + nibble),
         _ => char::from(b'A' + (nibble - 10)),
+    }
+}
+
+/// The numeric value of one ASCII hexadecimal digit byte, in either alphabet, or `None` for
+/// any other byte. The decode-side twin of [`hex_digit`].
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+
+        _ => None,
     }
 }
 
@@ -699,6 +717,24 @@ mod tests {
         assert_eq!(built.url().query(), Some("scope=a%20b%2Bc&page=2"));
 
         assert_eq!(built.url().fragment(), Some("tenant"));
+    }
+
+    /// The form decoder renders a `%XX` escape as its byte only when both following bytes are
+    /// hexadecimal digits: `u8::from_str_radix` accepts a leading `+`, so an unguarded parse
+    /// would decode the `%+5` escape as the byte `0x05` instead of its documented rendering —
+    /// the verbatim `%` with the walk continuing after it. Valid escapes decode in both
+    /// hex alphabets, and a truncated escape renders its `%` verbatim.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a decoded field diverges from its documented rendering.
+    #[test]
+    fn form_decode_renders_invalid_escapes_verbatim() {
+        let decoded = parse_form("plus=%2Bb%20c%2bd&invalid=%+5x&truncated=%Ag");
+
+        assert_eq!(decoded.get("plus").map(String::as_str), Some("+b c+d"));
+        assert_eq!(decoded.get("invalid").map(String::as_str), Some("% 5x"));
+        assert_eq!(decoded.get("truncated").map(String::as_str), Some("%Ag"));
     }
 
     /// The shared query-row join inserts the `?`/`&` separator into the URL's query component

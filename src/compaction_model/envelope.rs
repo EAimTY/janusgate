@@ -42,10 +42,11 @@ pub(crate) struct GatewaySummaryPayload {
     /// Exact native state retained beside the messages, with restored-window offsets.
     pub(crate) retained_state_items: Vec<crate::ir::StateItem>,
 
-    /// Identities the checkpoint covers — the summarized instruction items and
-    /// retained units — so replay can distinguish proven overlap from new
-    /// entries. Bounded: the covered conversational content itself is never
-    /// copied here.
+    /// The identities of the preserved instruction items the checkpoint
+    /// covers, so replay can distinguish proven instruction overlap from new
+    /// entries — the conversation prefix is superseded wholesale at the
+    /// boundary offset and never matched by identity. Bounded: the covered
+    /// conversational content itself is never copied here.
     pub(crate) overlap_identities: Vec<ItemIdentity>,
 }
 
@@ -67,11 +68,9 @@ pub(crate) struct PreservedInstruction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RetainedUnit {
-    /// The unit's stable identity (the identity of its first message).
-    pub(crate) identity: ItemIdentity,
-
     /// The unit's messages in order, in the protocol-neutral IR form every
-    /// format renders.
+    /// format renders. The conversation prefix supersedes wholesale at the
+    /// checkpoint boundary, so the unit carries no identity of its own.
     pub(crate) messages: Vec<IrMessage>,
 }
 
@@ -285,16 +284,6 @@ mod tests {
                     text: String::from("be terse"),
                 }],
                 retained_units: vec![super::RetainedUnit {
-                    identity: ItemIdentity::for_message(
-                        0,
-                        &IrMessage {
-                            role: IrRole::User,
-                            parts: vec![IrPart::Text {
-                                text: String::from("recent"),
-                            }],
-                        },
-                        None,
-                    ),
                     messages: vec![IrMessage {
                         role: IrRole::User,
                         parts: vec![IrPart::Text {

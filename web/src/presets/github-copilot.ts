@@ -10,7 +10,7 @@ import {
     paramRow,
     slot,
 } from "./expressions";
-import { field, numberField } from "./quota-helpers";
+import { ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for github-copilot. */
@@ -56,47 +56,28 @@ export const githubCopilotPreset: ProviderPreset = {
                         type: "map_key",
                     },
                     entries: [
-                        {
+                        ratioEntry({
                             key: "allowance",
-                            routing: {
-                                type: "monitoring_only",
-                            },
                             label: "Allowance",
                             at: [],
-                            is_required: true,
+                            isRequired: true,
                             window: {
                                 type: "unknown",
                             },
-                            is_unlimited: field(
-                                [
-                                    "unlimited",
-                                ],
-                                true,
-                            ),
-                            measurement: {
-                                type: "ratio",
-                                value: numberField(
-                                    [
-                                        "percent_remaining",
-                                    ],
-                                    "number",
-                                    true,
-                                ),
-                                scale: "percent",
-                                direction: "remaining",
-                            },
-                            reset: {
-                                type: "field",
-                                field: field(
-                                    [
-                                        "quota_reset_date",
-                                    ],
-                                    false,
-                                    "root",
-                                ),
-                                encoding: "date",
-                            },
-                        },
+                            valuePath: [
+                                "percent_remaining",
+                            ],
+                            isValueRequired: true,
+                            direction: "remaining",
+                            unlimitedPath: [
+                                "unlimited",
+                            ],
+                            resetPath: [
+                                "quota_reset_date",
+                            ],
+                            resetEncoding: "date",
+                            resetBase: "root",
+                        }),
                     ],
                 },
             ],

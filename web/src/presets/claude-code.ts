@@ -60,60 +60,60 @@ export const claudeCodePreset: ProviderPreset = {
                         value: "Account",
                     },
                     entries: [
-                        ratioEntry(
-                            "five_hour",
-                            "Five-hour allowance",
-                            [
+                        ratioEntry({
+                            key: "five_hour",
+                            label: "Five-hour allowance",
+                            at: [
                                 "five_hour",
                             ],
-                            [
+                            valuePath: [
                                 "utilization",
                             ],
-                            {
+                            window: {
                                 type: "duration",
                                 seconds: 18000,
                             },
-                            [
+                            resetPath: [
                                 "resets_at",
                             ],
-                            "rfc3339",
-                        ),
-                        ratioEntry(
-                            "seven_day",
-                            "Weekly allowance",
-                            [
+                            resetEncoding: "rfc3339",
+                        }),
+                        ratioEntry({
+                            key: "seven_day",
+                            label: "Weekly allowance",
+                            at: [
                                 "seven_day",
                             ],
-                            [
+                            valuePath: [
                                 "utilization",
                             ],
-                            {
+                            window: {
                                 type: "duration",
                                 seconds: 604800,
                             },
-                            [
+                            resetPath: [
                                 "resets_at",
                             ],
-                            "rfc3339",
-                        ),
-                        ratioEntry(
-                            "seven_day_sonnet",
-                            "Sonnet weekly allowance",
-                            [
+                            resetEncoding: "rfc3339",
+                        }),
+                        ratioEntry({
+                            key: "seven_day_sonnet",
+                            label: "Sonnet weekly allowance",
+                            at: [
                                 "seven_day_sonnet",
                             ],
-                            [
+                            valuePath: [
                                 "utilization",
                             ],
-                            {
+                            window: {
                                 type: "duration",
                                 seconds: 604800,
                             },
-                            [
+                            resetPath: [
                                 "resets_at",
                             ],
-                            "rfc3339",
-                        ),
+                            resetEncoding: "rfc3339",
+                        }),
                     ],
                 },
             ],

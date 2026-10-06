@@ -355,6 +355,22 @@ fn definition_version_invalid(param: &'static str) -> Error {
     )))
 }
 
+/// Parses a definition-version request parameter into its storage type. The version contract is
+/// positivity — the schema's `CHECK version > 0` makes any non-positive version unrepresentable —
+/// and [`NonZeroI64`] alone admits negatives, so every path reading a version gates through this
+/// one parse: a non-positive value is the malformed-parameter rejection
+/// ([`definition_version_invalid`]) shared by every such path, never a missing-reference
+/// classification downstream.
+///
+/// # Errors
+///
+/// Returns [`definition_version_invalid`] for a non-positive version.
+fn definition_version(version: i64, param: &'static str) -> Result<NonZeroI64, Error> {
+    NonZeroI64::new(version)
+        .filter(|version| version.is_positive())
+        .ok_or_else(|| definition_version_invalid(param))
+}
+
 /// Builds the rejection for a definition rebind that names only one half of the
 /// `(provider_definition_name, provider_definition_version)` reference pair — the one spelling
 /// `providers:update`'s rebind fields and `oauth:reauthorize`'s explicit target share, because the
@@ -380,9 +396,7 @@ async fn resolve_definition(
     name: &str,
     version: i64,
 ) -> Result<crate::provider::ProviderDefinition, Error> {
-    let Some(version) = NonZeroI64::new(version) else {
-        return Err(definition_version_invalid("provider_definition_version"));
-    };
+    let version = definition_version(version, "provider_definition_version")?;
 
     crate::storage::provider_definitions::find_definition(database, name, version)
         .await?
@@ -811,12 +825,90 @@ line",
         }
     }
 
+    /// Verifies the shared definition-version parse every version-reading path goes through: any
+    /// non-positive version — zero and the negatives `NonZeroI64` alone admits alike — renders
+    /// the shared malformed-parameter rejection naming the parameter, while a positive version
+    /// parses through unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a version parses or rejects outside its contract.
+    #[test]
+    fn parses_the_definition_version_parameter() {
+        for version in [0, -1, -7, i64::MIN] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the rejection is the documented side of this call"
+            )]
+            let error =
+                super::definition_version(version, "provider_definition_version").unwrap_err();
+
+            #[expect(
+                clippy::panic,
+                reason = "a divergent rejection variant is the failure report"
+            )]
+            let ManagementError::InvalidDefinition(validation) = &error else {
+                panic!("version {version} rendered a divergent rejection: {error:?}");
+            };
+
+            assert!(
+                validation.message.contains("provider_definition_version"),
+                "version {version} rejected without naming the parameter: {validation:?}"
+            );
+        }
+
+        for version in [1, 2, i64::MAX] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the positive version is constructed to parse"
+            )]
+            let parsed = super::definition_version(version, "base_version").unwrap();
+
+            assert_eq!(parsed.get(), version);
+        }
+    }
+
+    /// A non-positive definition version renders the shared malformed-parameter rejection on the
+    /// resolution prelude even against an existing definition name — never the unknown-pair 404 —
+    /// because the schema's `CHECK version > 0` makes such a version unrepresentable (README §3,
+    /// §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture fails to insert or a rejection diverges.
+    #[tokio::test]
+    async fn resolves_a_non_positive_version_to_the_parameter_rejection() {
+        let (database, _guard) = crate::test_support::create_test_database().await;
+
+        crate::test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        for version in [0, -3] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the rejection is the documented side of this call"
+            )]
+            let error = super::resolve_definition(&database, "static-def", version)
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(error, ManagementError::InvalidDefinition(_)),
+                "version {version} rendered a divergent rejection: {error:?}"
+            );
+        }
+    }
+
     /// Verifies the base URL composition: a non-empty `http://` or `https://` URL of printable
     /// ASCII without whitespace.
     ///
     /// # Panics
     ///
-    /// Panics if a URL parses or rejects outside its contract.
+    /// Panics if a URL parses or rejects outside the composition contract.
     #[test]
     fn enforces_the_base_url_composition() {
         for valid in [

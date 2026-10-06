@@ -4,6 +4,7 @@ use super::{EmptyResponse, Error, route};
 use crate::{context::Context, routing::ProviderPoolMember, storage::routing};
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
+use log::info;
 use serde::{Deserialize, Serialize};
 
 route! {
@@ -159,6 +160,7 @@ pub(super) async fn create(
         &request.members,
     )
     .await?;
+    info!("created provider pool {} (`{}`)", id, request.name);
     Ok(Json(CreateProviderPoolResponse {
         provider_pool_id: id,
     }))
@@ -180,6 +182,7 @@ pub(super) async fn update(
         &request.members,
     )
     .await?;
+    info!("updated provider pool `{}`", request.name);
     Ok(Json(EmptyResponse {}))
 }
 
@@ -205,6 +208,8 @@ pub(super) async fn delete(
     })
     .await?;
 
+    info!("deleted provider pool {}", request.provider_pool_id);
+
     Ok(Json(EmptyResponse {}))
 }
 
@@ -221,7 +226,7 @@ fn validate_fields(name: &str, members: &[ProviderPoolMember]) -> Result<(), Err
         if !providers.insert(member.provider_id) || !priorities.insert(member.priority) {
             return Err(Error::Validation {
                 param: "members",
-                message: "Pool members require unique provider IDs and priorities".to_string(),
+                message: "`members` require unique provider IDs and priorities".to_string(),
             });
         }
     }

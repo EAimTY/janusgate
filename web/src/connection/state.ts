@@ -57,6 +57,14 @@ export type ConnectionEvent =
           readonly failure: ConnectionFailure;
       }
     | {
+          /**
+           * The operator cancelled the probe in flight: control flow, never a
+           * refusal (README §3.1) — no gateway refused, so no failure lands
+           * and setup reopens with nothing to diagnose or seed from.
+           */
+          readonly type: "connectionCancelled";
+      }
+    | {
           readonly type: "connectionForgotten";
           /**
            * The forgotten connection's address, captured by the service
@@ -74,9 +82,10 @@ export const initialConnectionState: ConnectionState = {
 /**
  * Applies one lifecycle event. Events that do not apply to the current state
  * leave it untouched: a submission is only meaningful without a connection, an
- * acceptance only while verifying, and a rejection (a failed probe or a 401
- * answering a management call) always lands on setup with the gateway's
- * failure.
+ * acceptance only while verifying, a cancellation only while a probe runs, and
+ * a rejection (a failed probe or a 401 answering a management call) always
+ * lands on setup with the gateway's failure — while a cancellation lands on
+ * setup carrying no failure at all, because no gateway refused.
  */
 export function reduceConnectionState(
     state: ConnectionState,
@@ -116,6 +125,18 @@ export function reduceConnectionState(
                 failure: event.failure,
                 forgottenBaseUrl: null,
             };
+
+        case "connectionCancelled":
+            // A cancel is the machine's own control flow, never a refusal: it
+            // applies only to a probe in flight and reopens setup carrying no
+            // failure — nothing to diagnose, nothing to seed an address from.
+            return state.status === "verifying"
+                ? {
+                      status: "unconnected",
+                      failure: null,
+                      forgottenBaseUrl: null,
+                  }
+                : state;
 
         case "connectionForgotten":
             return {
