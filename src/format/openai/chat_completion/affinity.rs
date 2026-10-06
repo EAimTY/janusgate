@@ -1,55 +1,9 @@
-//! Incremental projection of actual Chat Completions frames, independent of upstream IR identities.
+//! Incremental projection of actual Chat Completions render points, independent of upstream IR
+//! identities.
 
 use crate::affinity::fingerprint::{Identity, PreparedCall, Projector, Role};
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-
-/// Only emitted conversation fields participate; resource IDs, reasoning, usage, and finish
-/// metadata remain outside these concrete readback shapes.
-#[derive(Serialize, Deserialize)]
-struct Frame {
-    /// One served choice, or an empty terminal usage chunk.
-    choices: Vec<Choice>,
-}
-
-/// Conversation-bearing portion of one emitted choice.
-#[derive(Serialize, Deserialize)]
-struct Choice {
-    /// Actually rendered incremental message fields.
-    delta: Delta,
-}
-
-/// Fields that survive Chat Completions client replay.
-#[derive(Serialize, Deserialize)]
-struct Delta {
-    /// Actual text bytes, concatenated independently of interleaved tool chunks.
-    content: Option<String>,
-    /// Outward-indexed tool deltas, absent on text/role/finish chunks.
-    tool_calls: Option<Vec<CallDelta>>,
-}
-
-/// Actual wire tool fields, without inferred or authoritative upstream-done replacements.
-#[derive(Serialize, Deserialize)]
-struct CallDelta {
-    /// Dense outward ordinal assigned on first rendered sight.
-    index: usize,
-    /// Actual emitted ID fragment, absent on continuation chunks.
-    id: Option<String>,
-    /// Actual function fields, absent on signature-only chunks.
-    function: Option<FunctionDelta>,
-    /// Complete emitted replay signature, absent except its actual companion chunk.
-    thought_signature: Option<String>,
-}
-
-/// Actual function delta bytes in their emitted order.
-#[derive(Serialize, Deserialize)]
-struct FunctionDelta {
-    /// Emitted name fragment, absent on argument-only continuation chunks.
-    name: Option<String>,
-    /// Emitted JSON argument fragment.
-    arguments: String,
-}
 
 /// One in-flight tool's client-side assembly; finalized calls retain only field digests.
 #[derive(Default)]
@@ -107,59 +61,46 @@ impl Output {
         }
     }
 
-    /// Observes only actual frames after their renderer has reconciled residuals and identities.
-    ///
-    /// # Panics
-    ///
-    /// Panics if this codec emits malformed static SSE framing or malformed first-party JSON.
-    pub(super) fn observe(&mut self, frames: &[String]) {
+    /// Hashes the assistant text bytes of an actual rendered content delta at its typed render
+    /// point. The leading role chunk carries the empty string only, which the projector ignores.
+    pub(super) fn text(&mut self, text: &str) {
         if !self.is_fingerprintable {
             return;
         }
-        for frame in frames {
-            #[expect(
-                clippy::expect_used,
-                reason = "this codec's own frames have static data framing"
-            )]
-            let data = frame
-                .strip_prefix("data: ")
-                .and_then(|frame| frame.strip_suffix("\n\n"))
-                .expect("rendered data frame has its static delimiters");
-            if data == "[DONE]" {
-                continue;
-            }
-            #[expect(
-                clippy::expect_used,
-                reason = "concrete emitted Chat payloads are valid JSON"
-            )]
-            let frame: Frame = serde_json::from_str(data).expect("rendered Chat frame parses");
-            for choice in frame.choices {
-                if let Some(text) = choice.delta.content {
-                    self.projector.text(Role::Assistant, text.as_bytes());
-                }
-                for delta in choice.delta.tool_calls.into_iter().flatten() {
-                    let slot = self
-                        .calls
-                        .entry(delta.index)
-                        .or_insert_with(|| Slot::Open(Call::default()));
-                    let Slot::Open(call) = slot else {
-                        self.is_fingerprintable = false;
-                        return;
-                    };
-                    if let Some(id) = delta.id {
-                        call.id.get_or_insert_with(String::new).push_str(&id);
-                    }
-                    if let Some(function) = delta.function {
-                        if let Some(name) = function.name {
-                            call.name.get_or_insert_with(String::new).push_str(&name);
-                        }
-                        call.arguments.push_str(&function.arguments);
-                    }
-                    if let Some(signature) = delta.thought_signature {
-                        call.signature = Some(signature);
-                    }
-                }
-            }
+        self.projector.text(Role::Assistant, text.as_bytes());
+    }
+
+    /// Observes the actual wire fragments of one rendered tool-call delta chunk at its outward
+    /// ordinal: the identity and name fragments the chunk revealed (absent members carry
+    /// nothing), the argument bytes it delivered, and the chunk's replay signature when present.
+    pub(super) fn call_delta(
+        &mut self,
+        index: usize,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments: &str,
+        thought_signature: Option<&str>,
+    ) {
+        if !self.is_fingerprintable {
+            return;
+        }
+        let slot = self
+            .calls
+            .entry(index)
+            .or_insert_with(|| Slot::Open(Call::default()));
+        let Slot::Open(call) = slot else {
+            self.is_fingerprintable = false;
+            return;
+        };
+        if let Some(id) = id {
+            call.id.get_or_insert_with(String::new).push_str(id);
+        }
+        if let Some(name) = name {
+            call.name.get_or_insert_with(String::new).push_str(name);
+        }
+        call.arguments.push_str(arguments);
+        if let Some(signature) = thought_signature {
+            call.signature = Some(signature.to_string());
         }
     }
 

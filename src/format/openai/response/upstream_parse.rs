@@ -12,7 +12,7 @@ use crate::{
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 /// Parses upstream Responses payloads — SSE events or a full JSON body — into IR events.
@@ -211,8 +211,7 @@ pub(crate) type InputTokensDetails = PromptTokensDetails;
 pub(crate) type OutputTokensDetails = CompletionTokensDetails;
 
 /// One protocol output item, with arbitrary JSON confined to native compaction state.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 enum OutputItem {
     /// Ordinary output fields consumed by the IR translator.
     Ordinary(OutputFields),
@@ -258,7 +257,7 @@ impl OutputItem {
 
 /// One upstream output item: the union of the fields the gateway reads across the item kinds it
 /// maps to IR events. Items of other kinds carry none of them and are ignored.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct OutputFields {
     /// Item kind discriminator.
     #[serde(rename = "type", default)]
@@ -292,7 +291,7 @@ struct OutputFields {
 /// One content part of a `message` item. Refusal text is message text: it rides the same text
 /// channel as `output_text` parts (README §6.2). Parts of other kinds carry no text and are
 /// ignored.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum ContentPart {
     /// Assistant output text.
@@ -317,7 +316,7 @@ enum ContentPart {
 }
 
 /// One summary part of a `reasoning` item.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum SummaryPart {
     /// Reasoning summary text.

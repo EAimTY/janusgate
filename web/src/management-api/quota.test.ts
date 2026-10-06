@@ -268,7 +268,7 @@ describe("quota response validation", () => {
                         seconds: 0,
                     },
                 },
-                /window\.seconds must be a safe positive integer/,
+                /window\.seconds must be a safe integer of at least 1/,
             ],
             [
                 {
@@ -341,9 +341,6 @@ describe("authored quota routing", () => {
                             key: "models",
                             at: [],
                             is_required: true,
-                            scope: {
-                                type: "unknown",
-                            },
                             entries: [
                                 {
                                     key: "allowance",

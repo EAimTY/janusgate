@@ -541,6 +541,14 @@ impl Cache {
     ) -> Decision {
         let mut state = self.lock();
         state.prune(now);
+
+        // One registration posture for the whole lookup, computed under this
+        // same lock: the touches below never change entry counts, and every
+        // Bound path here carries evidence — a touched anchor or a committed
+        // retry with its access record — that pins a non-empty access index,
+        // so the computed value is `true` at each of them.
+        let can_register = state.can_register();
+
         let artifact = evidence.artifact.and_then(|digest| {
             let key = AnchorKey::new(namespace, Anchor::Artifact(digest));
             state
@@ -572,7 +580,6 @@ impl Cache {
             if let Some(key) = retry_key {
                 state.touch_retry(key, now);
             }
-            let can_register = state.can_register();
             return Decision::Bound(BoundLease {
                 lease: state.lease(self, namespace, None, can_register),
                 provider_id,
@@ -580,7 +587,7 @@ impl Cache {
         }
         if let Some(AnchorValue::One(provider_id)) = history {
             return Decision::Bound(BoundLease {
-                lease: state.lease(self, namespace, None, true),
+                lease: state.lease(self, namespace, None, can_register),
                 provider_id,
             });
         }
@@ -590,7 +597,7 @@ impl Cache {
                 state.touch_retry(key, now);
             }
             return Decision::Bound(BoundLease {
-                lease: state.lease(self, namespace, None, true),
+                lease: state.lease(self, namespace, None, can_register),
                 provider_id,
             });
         }

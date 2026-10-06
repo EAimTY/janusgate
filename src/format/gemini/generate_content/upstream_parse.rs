@@ -206,7 +206,9 @@ impl UpstreamParser {
             events.extend(format::message_start_once(&mut self.is_started, id, model));
         }
 
-        if let Some(candidate) = primary_candidate(&value.candidates) {
+        if let Some(candidate) =
+            format::primary(&value.candidates, |candidate| candidate.index == Some(0))
+        {
             if let Some(content) = &candidate.content {
                 for part in &content.parts {
                     self.ingest_part(part, &mut events);
@@ -356,16 +358,6 @@ impl UpstreamEventParser for UpstreamParser {
     fn finish(&mut self) -> Vec<IrEvent> {
         format::degrade_finish_once(&mut self.is_finished)
     }
-}
-
-/// Selects the primary candidate of an upstream `candidates` array: the entry whose `index` is 0,
-/// tolerating index-less upstreams by taking the first entry instead. Parallel candidates beyond
-/// the primary are not supported and the remainder is ignored.
-fn primary_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
-    candidates
-        .iter()
-        .find(|candidate| candidate.index == Some(0))
-        .or_else(|| candidates.first())
 }
 
 /// Maps a Gemini `finishReason` to the canonical reason.

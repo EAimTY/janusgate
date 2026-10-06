@@ -1,5 +1,15 @@
 import { translation } from "../i18n";
-import { base, clientId, deviceCode, literal, paramRow, secret, slot } from "./expressions";
+import {
+    base,
+    bearerAuthorization,
+    deviceAuthorizationBody,
+    deviceAuthorizationResponse,
+    deviceExchangeBody,
+    literal,
+    openAiModelsDiscovery,
+    paramRow,
+    slot,
+} from "./expressions";
 import { field, numberField } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
@@ -51,9 +61,7 @@ export const githubCopilotPreset: ProviderPreset = {
                             routing: {
                                 type: "monitoring_only",
                             },
-                            get label() {
-                                return translation()(($) => $.helpers.presetQuotas.allowance);
-                            },
+                            label: "Allowance",
                             at: [],
                             is_required: true,
                             window: {
@@ -100,10 +108,7 @@ export const githubCopilotPreset: ProviderPreset = {
                 literal("/chat/completions"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
                 paramRow("Copilot-Integration-Id", [
                     literal("vscode-chat"),
                 ]),
@@ -138,65 +143,9 @@ export const githubCopilotPreset: ProviderPreset = {
                                 literal("application/json"),
                             ]),
                         ],
-                        body: {
-                            kind: "form",
-                            fields: [
-                                paramRow("client_id", [
-                                    clientId(),
-                                ]),
-                            ],
-                        },
+                        body: deviceAuthorizationBody(),
                     },
-                    response: {
-                        encoding: "json",
-                        fields: [
-                            {
-                                path: [
-                                    "device_code",
-                                ],
-                                target: {
-                                    type: "device_code",
-                                },
-                                required: true,
-                            },
-                            {
-                                path: [
-                                    "user_code",
-                                ],
-                                target: {
-                                    type: "user_code",
-                                },
-                                required: true,
-                            },
-                            {
-                                path: [
-                                    "verification_uri",
-                                ],
-                                target: {
-                                    type: "verification_uri",
-                                },
-                                required: false,
-                            },
-                            {
-                                path: [
-                                    "expires_in",
-                                ],
-                                target: {
-                                    type: "expires_in_seconds",
-                                },
-                                required: false,
-                            },
-                            {
-                                path: [
-                                    "interval",
-                                ],
-                                target: {
-                                    type: "interval_seconds",
-                                },
-                                required: false,
-                            },
-                        ],
-                    },
+                    response: deviceAuthorizationResponse(false),
                 },
                 expires_in_fallback_seconds: 900,
             },
@@ -211,20 +160,7 @@ export const githubCopilotPreset: ProviderPreset = {
                             literal("application/json"),
                         ]),
                     ],
-                    body: {
-                        kind: "form",
-                        fields: [
-                            paramRow("grant_type", [
-                                literal("urn:ietf:params:oauth:grant-type:device_code"),
-                            ]),
-                            paramRow("client_id", [
-                                clientId(),
-                            ]),
-                            paramRow("device_code", [
-                                deviceCode(),
-                            ]),
-                        ],
-                    },
+                    body: deviceExchangeBody(),
                 },
                 response: {
                     encoding: "json",
@@ -317,35 +253,17 @@ export const githubCopilotPreset: ProviderPreset = {
                 ],
             },
         ],
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                    paramRow("Copilot-Integration-Id", [
-                        literal("vscode-chat"),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery(
+            [
+                base(),
+                literal("/models"),
+            ],
+            [
+                bearerAuthorization(),
+                paramRow("Copilot-Integration-Id", [
+                    literal("vscode-chat"),
+                ]),
+            ],
+        ),
     },
 };

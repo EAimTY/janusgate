@@ -254,7 +254,7 @@ function networkDiagnosis(context: ActionContext, rawDetail: string): Diagnosis 
             rawDetail,
             kind: "unreachable",
             get title() {
-                return networkTitleMessage(translation(), "unreachable", baseUrl);
+                return networkTitleMessage("unreachable", baseUrl);
             },
             get detail() {
                 return translation()(($) => $.diagnosis.theBrowserCouldNotCompleteTheConnection);
@@ -279,7 +279,7 @@ function networkDiagnosis(context: ActionContext, rawDetail: string): Diagnosis 
             rawDetail,
             kind: "mixed-content",
             get title() {
-                return networkTitleMessage(translation(), "mixed-content", baseUrl);
+                return networkTitleMessage("mixed-content", baseUrl);
             },
             get detail() {
                 return translation()(
@@ -301,7 +301,7 @@ function networkDiagnosis(context: ActionContext, rawDetail: string): Diagnosis 
                 rawDetail,
                 kind: "blocked",
                 get title() {
-                    return networkTitleMessage(translation(), "blocked", baseUrl);
+                    return networkTitleMessage("blocked", baseUrl);
                 },
                 get detail() {
                     return translation()(
@@ -319,7 +319,7 @@ function networkDiagnosis(context: ActionContext, rawDetail: string): Diagnosis 
                 rawDetail,
                 kind: "unreachable",
                 get title() {
-                    return networkTitleMessage(translation(), "unreachable", baseUrl);
+                    return networkTitleMessage("unreachable", baseUrl);
                 },
                 get detail() {
                     return translation()(
@@ -341,7 +341,7 @@ function networkDiagnosis(context: ActionContext, rawDetail: string): Diagnosis 
                 rawDetail,
                 kind: "no-answer",
                 get title() {
-                    return networkTitleMessage(translation(), "no-answer", baseUrl);
+                    return networkTitleMessage("no-answer", baseUrl);
                 },
                 get detail() {
                     return translation()(($) => $.diagnosis.theBrowserReceivedNoAnswerItCouldRead);

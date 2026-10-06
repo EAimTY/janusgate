@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
+import { readModelRoutes, readModels, readProviderPools } from "/src/features/inventory/read";
 import { translation } from "/src/i18n";
 import { directTargetMessage, missingDirectTargetMessage, poolTargetMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
@@ -26,15 +27,9 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
         load: async (signal) => {
             const [publicRoutes, inventory, poolRows] = await readAll(
                 signal,
-                {
-                    run: (signal) => props.api.listModelRoutes(signal),
-                },
-                {
-                    run: (signal) => props.api.listModels({}, signal),
-                },
-                {
-                    run: (signal) => props.api.listProviderPools(signal),
-                },
+                readModelRoutes(props.api),
+                readModels(props.api, {}),
+                readProviderPools(props.api),
             );
             setRoutes(publicRoutes.model_routes);
             setModels(inventory.models);
@@ -100,39 +95,48 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
                 >
                     <ul class="flex flex-col gap-2">
                         <For each={routes()}>
-                            {(route) => (
-                                <li>
-                                    <RowLink
-                                        href={
-                                            route.is_automatic
-                                                ? route.target.type === "direct"
-                                                    ? hrefs.modelDetail(route.target.model_id)
-                                                    : hrefs.providerPoolEdit(route.target.pool_id)
-                                                : hrefs.modelRouteEdit(route.id)
-                                        }
-                                        primary={route.public_id}
-                                        secondary={`${route.is_automatic ? "Automatic · " : ""}${targetLabel(route)}`}
-                                        badges={
-                                            <Badge
-                                                tone={route.is_enabled ? "ok" : "muted"}
-                                                label={
-                                                    route.is_enabled
-                                                        ? translation()(
-                                                              ($) =>
-                                                                  $.additional.routingListsScreen
-                                                                      .on,
+                            {(route) => {
+                                const automatic = route.is_automatic
+                                    ? translation()(
+                                          ($) => $.screens.routingListsScreen.automaticPrefix,
+                                      )
+                                    : "";
+                                return (
+                                    <li>
+                                        <RowLink
+                                            href={
+                                                route.is_automatic
+                                                    ? route.target.type === "direct"
+                                                        ? hrefs.modelDetail(route.target.model_id)
+                                                        : hrefs.providerPoolEdit(
+                                                              route.target.pool_id,
                                                           )
-                                                        : translation()(
-                                                              ($) =>
-                                                                  $.additional.routingListsScreen
-                                                                      .off,
-                                                          )
-                                                }
-                                            />
-                                        }
-                                    />
-                                </li>
-                            )}
+                                                    : hrefs.modelRouteEdit(route.id)
+                                            }
+                                            primary={route.public_id}
+                                            secondary={`${automatic}${targetLabel(route)}`}
+                                            badges={
+                                                <Badge
+                                                    tone={route.is_enabled ? "ok" : "muted"}
+                                                    label={
+                                                        route.is_enabled
+                                                            ? translation()(
+                                                                  ($) =>
+                                                                      $.additional
+                                                                          .routingListsScreen.on,
+                                                              )
+                                                            : translation()(
+                                                                  ($) =>
+                                                                      $.additional
+                                                                          .routingListsScreen.off,
+                                                              )
+                                                    }
+                                                />
+                                            }
+                                        />
+                                    </li>
+                                );
+                            }}
                         </For>
                     </ul>
                 </Show>

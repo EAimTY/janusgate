@@ -1,8 +1,14 @@
 import type { Inference, RenderOption, UpstreamStreaming } from "../generated/v0";
 import { parseQuotaExhaustion } from "../quota";
-import { expectArray, expectRecord, expectString } from "../validation-primitives";
+import {
+    expectArray,
+    expectDeclaredKeys,
+    expectOneOf,
+    expectRecord,
+    expectString,
+    isPresentValue,
+} from "../validation-primitives";
 import { expectParamRows, expectStringExpr, expectTemplateNode } from "./expressions";
-import { expectDeclaredKeys, expectOneOf, isPresentValue } from "./validation";
 
 /** The upstream streaming mode a definition pins (README §5.2). */
 function expectUpstreamStreaming(value: unknown, context: string): UpstreamStreaming {

@@ -9,7 +9,7 @@
 //! gateway extension (408 `DEADLINE_EXCEEDED`, 416 `OUT_OF_RANGE`, 502 `UNAVAILABLE`) for
 //! mirrored upstream statuses, and `UNKNOWN` where the vocabulary has no member.
 
-use crate::api::Error;
+use super::Error;
 use axum::http::StatusCode;
 use serde::Serialize;
 

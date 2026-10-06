@@ -2,10 +2,11 @@
 
 use super::{Error, routing::ModelRoute};
 use crate::{
-    database::{Database, Transaction, params},
+    database::{Database, Transaction, Value, params},
     provider::{Model, Provider},
     routing::ModelRouteTarget,
 };
+use std::collections::HashMap;
 
 /// One authored pool member, including unavailable accounts and missing physical inventory.
 #[derive(Debug, Clone)]
@@ -174,6 +175,11 @@ pub(super) async fn read_target(
 
 /// Loads ordered real members, preserving disabled accounts and absent exact models.
 ///
+/// The member inventory is read in three statements — the authored order, then the members'
+/// accounts over their ids, then their exact upstream models over the same ids — mapping each
+/// result back by its provider id, so the per-dispatch admission path never pays a statement
+/// per member.
+///
 /// # Errors
 ///
 /// Returns database failures or malformed stored rows.
@@ -193,32 +199,79 @@ async fn read_members(
             params![pool_id],
         )
         .await?;
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let member_ids: Vec<i64> = rows
+        .iter()
+        .map(|row| row.get(0))
+        .collect::<Result<_, _>>()?;
+
+    // Both batched queries spell one `?N` placeholder per member: the provider read numbers
+    // the member ids from `?1`, the model read from `?2` behind the shared upstream id.
+    let member_placeholders = |start: usize| {
+        member_ids
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!("?{}", index + start))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let member_id_params: Vec<Value> = member_ids.iter().map(|id| Value::from(*id)).collect();
+
+    let provider_rows = transaction
+        .query(
+            format!(
+                "SELECT {} {} WHERE p.id IN ({})",
+                super::providers::PROVIDER_COLUMNS,
+                super::providers::PROVIDER_JOINED_FROM,
+                member_placeholders(1)
+            ),
+            member_id_params,
+        )
+        .await?;
+    let mut providers = HashMap::with_capacity(provider_rows.len());
+    for row in &provider_rows {
+        let provider = super::providers::provider_from_row(row)?;
+        providers.insert(provider.id, provider);
+    }
+
+    let mut model_params = Vec::with_capacity(member_ids.len() + 1);
+    model_params.push(Value::Text(upstream_id.to_string()));
+    model_params.extend(member_ids.iter().map(|id| Value::from(*id)));
+    let model_rows = transaction
+        .query(
+            format!(
+                "SELECT provider_id, {} FROM models \
+             WHERE upstream_id = ?1 AND provider_id IN ({})",
+                super::models::MODEL_COLUMNS,
+                member_placeholders(2)
+            ),
+            model_params,
+        )
+        .await?;
+    let mut models = HashMap::with_capacity(model_rows.len());
+    for row in &model_rows {
+        let model = super::models::model_from_row_offset(row, 1)?;
+        models.insert(row.get::<i64>(0)?, model);
+    }
+
     let mut members = Vec::with_capacity(rows.len());
     for row in &rows {
         let provider_id: i64 = row.get(0)?;
-        let provider =
-            super::providers::find_provider_by_id_in_transaction(transaction, provider_id).await?;
         #[expect(
             clippy::expect_used,
             reason = "member account foreign references hold throughout the snapshot"
         )]
-        let provider = provider.expect("stored member's provider exists");
-        let rows = transaction
-            .query(
-                format!(
-                    "SELECT {} FROM models WHERE provider_id = ?1 AND upstream_id = ?2",
-                    super::models::MODEL_COLUMNS
-                ),
-                params![provider_id, upstream_id],
-            )
-            .await?;
+        let provider = providers
+            .remove(&provider_id)
+            .expect("stored member's provider exists");
         members.push(MemberSnapshot {
             priority: row.get(1)?,
             provider,
-            model: rows
-                .first()
-                .map(super::models::model_from_row)
-                .transpose()?,
+            model: models.remove(&provider_id),
         });
     }
     members.sort_by_key(|member| member.priority);

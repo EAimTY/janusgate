@@ -8,10 +8,10 @@
 
 use super::Error;
 use crate::{
-    compaction::support_facts::CompactionSupportFacts,
+    compaction_model::support_facts::CompactionSupportFacts,
     database::{Database, Row, Transaction, TursoError, Value, params, params::IntoValue},
-    ir::IrReasoningLevel,
     provider::{DiscoveredModel, DiscoveryState, Model, Provider},
+    vocabulary::ReasoningLevel,
 };
 
 /// One model row with the provider identity needed for listing.
@@ -39,7 +39,7 @@ pub(crate) struct ModelCreate<'a> {
     pub(crate) is_enabled: bool,
 
     /// Thinking-level override; `None` keeps the (unknown, for a fresh row) discovered value.
-    pub(crate) thinking_levels_override: Option<&'a [IrReasoningLevel]>,
+    pub(crate) thinking_levels_override: Option<&'a [ReasoningLevel]>,
 
     /// Maximum-input-tokens override; `None` keeps the discovered value.
     pub(crate) max_input_tokens_override: Option<i64>,
@@ -63,7 +63,7 @@ pub(crate) struct ModelUpdate<'a> {
     pub(crate) is_enabled: bool,
 
     /// Thinking-level override; `None` keeps the discovered value.
-    pub(crate) thinking_levels_override: Option<&'a [IrReasoningLevel]>,
+    pub(crate) thinking_levels_override: Option<&'a [ReasoningLevel]>,
 
     /// Maximum-input-tokens override; `None` keeps the discovered value.
     pub(crate) max_input_tokens_override: Option<i64>,
@@ -89,7 +89,7 @@ pub(crate) struct EnabledModel {
     pub(crate) provider_name: String,
 
     /// Effective thinking levels; `None` when unknown.
-    pub(crate) thinking_levels: Option<Vec<IrReasoningLevel>>,
+    pub(crate) thinking_levels: Option<Vec<ReasoningLevel>>,
 
     /// Effective maximum input tokens; `None` when unknown.
     pub(crate) max_input_tokens: Option<i64>,
@@ -124,31 +124,6 @@ async fn find_model_in_transaction(
         .await?;
 
     rows.first().map(model_from_row).transpose()
-}
-
-/// Fetches one model row joined with its provider by the row's identifier inside a transaction —
-/// the lookup behind the row-addressed `models:update`.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the query fails or a row is malformed.
-async fn find_provider_model_in_transaction(
-    transaction: &mut Transaction,
-    model_id: i64,
-) -> Result<Option<ProviderModelJoin>, Error> {
-    let rows = transaction
-        .query(
-            format!(
-                "SELECT {}, {} {} WHERE m.id = ?1",
-                super::providers::PROVIDER_COLUMNS,
-                MODEL_COLUMNS_JOINED,
-                super::providers::PROVIDER_JOINED_FROM_MODELS
-            ),
-            params![model_id],
-        )
-        .await?;
-
-    rows.first().map(provider_model_from_row).transpose()
 }
 
 /// Reads back one model row with its provider facts by row id inside a transaction.
@@ -293,42 +268,26 @@ pub(crate) async fn apply_discovered_models(
             )
             .await?;
 
+        // One upsert per discovered row: an existing natural key flips its state back to
+        // `discovered` and rewrites its capability base columns to this refresh's facts —
+        // `NULL` for a fact this refresh did not extract, so a stored value is always the
+        // latest upstream knowledge, never stale residue (README §3) — while the serving switch
+        // and the overrides are never touched; an absent key inserts enabled and discovered.
         for model in discovered {
-            if let Some(existing) =
-                find_model_in_transaction(&mut transaction, provider.id, &model.upstream_id).await?
-            {
-                // The row exists: flip its state back to `discovered` and rewrite its capability
-                // base columns to this refresh's facts — `NULL` for a fact this refresh did not
-                // extract, so a stored value is always the latest upstream knowledge, never stale
-                // residue (README §3). The overrides are never touched.
-                transaction
-                    .execute(
-                        "UPDATE models SET discovery_state = ?2, thinking_levels = ?3, \
-                         max_input_tokens = ?4, max_output_tokens = ?5, \
-                         compaction_support = ?6 WHERE id = ?1",
-                        params![
-                            existing.id,
-                            DiscoveryState::Discovered,
-                            levels_into_value(model.thinking_levels.as_deref())?,
-                            model.max_input_tokens,
-                            model.max_output_tokens,
-                            support_facts_into_value(model.compaction.as_ref())?,
-                        ],
-                    )
-                    .await?;
-
-                continue;
-            }
-
             transaction
                 .execute(
                     "INSERT INTO models (provider_id, upstream_id, is_enabled, discovery_state, \
-                     thinking_levels, max_input_tokens, \
-                     max_output_tokens, compaction_support) \
-                     VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
+                     thinking_levels, max_input_tokens, max_output_tokens, compaction_support) \
+                     VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7) \
+                     ON CONFLICT (provider_id, upstream_id) DO UPDATE SET \
+                     discovery_state = excluded.discovery_state, \
+                     thinking_levels = excluded.thinking_levels, \
+                     max_input_tokens = excluded.max_input_tokens, \
+                     max_output_tokens = excluded.max_output_tokens, \
+                     compaction_support = excluded.compaction_support",
                     params![
                         provider.id,
-                        model.upstream_id.clone(),
+                        model.upstream_id.as_str(),
                         DiscoveryState::Discovered,
                         levels_into_value(model.thinking_levels.as_deref())?,
                         model.max_input_tokens,
@@ -476,13 +435,20 @@ pub(crate) async fn update_model_overrides_checked(
     update: ModelUpdate<'_>,
 ) -> Result<ModelEntry, Error> {
     in_retryable_transaction!(database, transaction, async {
-        let Some(_joined) =
-            find_provider_model_in_transaction(&mut transaction, update.model_id).await?
-        else {
+        // A bare existence gate: the write touches only the model row, so the full
+        // provider-and-definition join would be read and parsed only to be thrown away.
+        if transaction
+            .query(
+                "SELECT id FROM models WHERE id = ?1",
+                params![update.model_id],
+            )
+            .await?
+            .is_empty()
+        {
             return Err(Error::NotFound {
                 message: super::model_not_found_message(update.model_id),
             });
-        };
+        }
 
         transaction
             .execute(
@@ -607,7 +573,7 @@ fn discovery_state_from_value(value: Value) -> Result<DiscoveryState, Error> {
 fn levels_from_column(
     value: Option<String>,
     column: &str,
-) -> Result<Option<Vec<IrReasoningLevel>>, Error> {
+) -> Result<Option<Vec<ReasoningLevel>>, Error> {
     let Some(json) = value else {
         return Ok(None);
     };
@@ -619,7 +585,7 @@ fn levels_from_column(
     parsed
         .into_iter()
         .map(|level| {
-            IrReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| Error::Drift {
+            ReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| Error::Drift {
                 message: format!("{column} column carries the foreign level `{level}`"),
             })
         })
@@ -631,7 +597,7 @@ fn levels_from_column(
 /// unknown state, else the set's canonical JSON array text. The caller passes a canonicalized set
 /// (both write paths canonicalize before storage, README §3), so the rendering needs no
 /// re-canonicalization.
-fn levels_into_value(levels: Option<&[IrReasoningLevel]>) -> Result<Value, TursoError> {
+fn levels_into_value(levels: Option<&[ReasoningLevel]>) -> Result<Value, TursoError> {
     let Some(levels) = levels else {
         return Ok(Value::Null);
     };
@@ -769,11 +735,11 @@ pub(super) fn discovered(upstream_id: &str) -> DiscoveredModel {
 /// caps, and two known compaction facts (on-demand supported, threshold unsupported).
 #[cfg(test)]
 pub(super) fn discovered_with_capabilities(upstream_id: &str) -> DiscoveredModel {
-    use crate::compaction::mechanism::{Mechanism, MechanismSupport};
+    use crate::compaction_model::mechanism::{Mechanism, MechanismSupport};
 
     DiscoveredModel {
         upstream_id: upstream_id.to_string(),
-        thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
+        thinking_levels: Some(vec![ReasoningLevel::Low, ReasoningLevel::High]),
         max_input_tokens: Some(200_000),
         max_output_tokens: Some(32_768),
         compaction: CompactionSupportFacts::from_pairs([
@@ -792,13 +758,13 @@ pub(super) fn discovered_with_capabilities(upstream_id: &str) -> DiscoveredModel
 #[cfg(test)]
 mod tests {
     use super::{
-        CompactionSupportFacts, DiscoveryState, Error, IrReasoningLevel, ModelCreate, ModelUpdate,
+        CompactionSupportFacts, DiscoveryState, Error, ModelCreate, ModelUpdate, ReasoningLevel,
         apply_discovered_models, delete_model_checked, discovered, discovered_with_capabilities,
         insert_model_checked, list_enabled_models_with_owner, list_model_entries,
         update_model_overrides_checked,
     };
     use crate::{
-        compaction::mechanism::{Mechanism, MechanismSupport},
+        compaction_model::mechanism::{Mechanism, MechanismSupport},
         storage::test_support::{entry, insert_test_provider},
         test_support,
     };
@@ -1146,7 +1112,7 @@ mod tests {
 
         assert_eq!(
             a.model.thinking_levels,
-            Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High])
+            Some(vec![ReasoningLevel::Low, ReasoningLevel::High])
         );
         assert_eq!(a.model.max_input_tokens, Some(200_000));
         assert_eq!(a.model.max_output_tokens, Some(32_768));
@@ -1163,7 +1129,7 @@ mod tests {
             ModelUpdate {
                 model_id: a_id,
                 is_enabled: true,
-                thinking_levels_override: Some(&[IrReasoningLevel::Max]),
+                thinking_levels_override: Some(&[ReasoningLevel::Max]),
                 max_input_tokens_override: None,
                 max_output_tokens_override: Some(999_999),
                 compaction_support_override: Some(&override_facts),
@@ -1191,7 +1157,7 @@ mod tests {
             .find(|model| model.public_id == "p1-a")
             .expect("the row is listed");
 
-        assert_eq!(listed_a.thinking_levels, Some(vec![IrReasoningLevel::Max]));
+        assert_eq!(listed_a.thinking_levels, Some(vec![ReasoningLevel::Max]));
         assert_eq!(listed_a.max_input_tokens, Some(200_000));
         assert_eq!(listed_a.max_output_tokens, Some(999_999));
         assert_eq!(
@@ -1235,7 +1201,7 @@ mod tests {
         assert_eq!(a.model.compaction_support, None);
         assert_eq!(
             a.model.thinking_levels_override,
-            Some(vec![IrReasoningLevel::Max])
+            Some(vec![ReasoningLevel::Max])
         );
         assert_eq!(a.model.max_output_tokens_override, Some(999_999));
         assert_eq!(
@@ -1284,7 +1250,7 @@ mod tests {
                 provider_id,
                 upstream_id: "a",
                 is_enabled: true,
-                thinking_levels_override: Some(&[IrReasoningLevel::None]),
+                thinking_levels_override: Some(&[ReasoningLevel::None]),
                 max_input_tokens_override: Some(1_000_000),
                 max_output_tokens_override: None,
                 compaction_support_override: Some(&claim_facts),
@@ -1297,7 +1263,7 @@ mod tests {
         assert_eq!(claimed.model.max_input_tokens, None);
         assert_eq!(
             claimed.model.thinking_levels_override,
-            Some(vec![IrReasoningLevel::None])
+            Some(vec![ReasoningLevel::None])
         );
         assert_eq!(claimed.model.max_input_tokens_override, Some(1_000_000));
         assert_eq!(claimed.model.compaction_support, None);

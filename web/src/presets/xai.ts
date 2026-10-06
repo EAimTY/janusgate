@@ -1,5 +1,5 @@
 import { translation } from "../i18n";
-import { base, literal, paramRow, secret } from "./expressions";
+import { base, bearerAuthorization, literal, openAiModelsDiscovery } from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for xai. */
@@ -26,43 +26,17 @@ export const xaiPreset: ProviderPreset = {
                 literal("/responses"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
             ],
             upstream_streaming: "match_client",
         },
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery([
+            base(),
+            literal("/models"),
+        ]),
         compaction: {
             strategy: "native_preferred",
             summary_budget: 4096,
@@ -77,10 +51,7 @@ export const xaiPreset: ProviderPreset = {
                             literal("/responses/compact"),
                         ],
                         headers: [
-                            paramRow("Authorization", [
-                                literal("Bearer "),
-                                secret(),
-                            ]),
+                            bearerAuthorization(),
                         ],
                     },
                 },

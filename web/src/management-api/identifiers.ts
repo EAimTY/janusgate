@@ -1,4 +1,6 @@
 import { translation } from "/src/i18n";
+import { ContractViolationError } from "/src/management-api/errors";
+import { expectNonEmptyString } from "/src/management-api/validation-primitives";
 
 /**
  * Composition rules for machine-consumed management fields (gateway README
@@ -25,6 +27,17 @@ const COMPOSITION_PATTERN = /^[!-~]+$/u;
  */
 export function isRoutingToken(value: string): boolean {
     return COMPOSITION_PATTERN.test(value) && !value.includes("/") && !value.includes(":");
+}
+
+/** Exact authored model token; selectors never derive IDs from a presentation label. */
+export function expectModelIdentifier(value: unknown, context: string): string {
+    const identifier = expectNonEmptyString(value, context);
+
+    if (!isRoutingToken(identifier)) {
+        throw new ContractViolationError(`${context} is not a routing token: ${identifier}`);
+    }
+
+    return identifier;
 }
 
 /**

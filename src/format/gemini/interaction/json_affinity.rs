@@ -1,6 +1,6 @@
 //! Borrowed Interactions JSON output projection through the accepted replay vocabulary.
 
-use super::{ContentBlock, RenderStep, TypedStep};
+use super::{ContentBlock, RenderStep, TypedStep, client_render::JsonResponse};
 use crate::affinity::{
     Digest,
     fingerprint::{
@@ -8,6 +8,15 @@ use crate::affinity::{
     },
 };
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap as _};
+
+/// Projects the actual rendered Interaction resource: emitted ordered steps through borrowed
+/// accepted-replay field views.
+pub(super) fn project_json_response(response: &JsonResponse, projector: &mut Projector) -> bool {
+    response
+        .steps()
+        .iter()
+        .all(|step| project_step(step, projector))
+}
 
 /// Accepted native thought fields, borrowing text and opaque annotation fragments.
 #[derive(Deserialize)]
@@ -153,10 +162,7 @@ enum ThoughtKind {
 pub(super) fn project_step(step: &RenderStep, projector: &mut Projector) -> bool {
     match step {
         RenderStep::Typed(TypedStep::ModelOutput { content }) => {
-            for block in content {
-                let ContentBlock::Text { text } = block else {
-                    return false;
-                };
+            for ContentBlock::Text { text } in content {
                 projector.text(Role::Assistant, text.as_bytes());
             }
         }
@@ -164,7 +170,13 @@ pub(super) fn project_step(step: &RenderStep, projector: &mut Projector) -> bool
             id,
             name,
             arguments,
-        }) if arguments.is_object() => {
+        }) => {
+            // A rendered function_call always carries the parsed arguments object; a stored
+            // divergence is unreplayable withholds its anchor.
+            if !arguments.is_object() {
+                return false;
+            }
+
             projector.call(Role::Assistant, Identity::Wire(id), name, arguments, None);
         }
         RenderStep::Typed(TypedStep::Thought { summary, signature }) => {
@@ -175,16 +187,6 @@ pub(super) fn project_step(step: &RenderStep, projector: &mut Projector) -> bool
                         ContentBlock::Text { text } => Content::Text {
                             text,
                             annotations: None,
-                        },
-                        ContentBlock::Image {
-                            uri,
-                            data,
-                            mime_type,
-                        } => Content::Image {
-                            uri: uri.as_deref(),
-                            data: data.as_deref(),
-                            mime_type: mime_type.as_deref(),
-                            resolution: None,
                         },
                     })
                     .collect()
@@ -197,7 +199,6 @@ pub(super) fn project_step(step: &RenderStep, projector: &mut Projector) -> bool
             };
             project_thought(projector, summary, signature);
         }
-        RenderStep::Typed(_) => return false,
     }
     true
 }

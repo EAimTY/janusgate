@@ -63,7 +63,7 @@ pub(crate) struct UpstreamParser {
     /// The last `usage.iterations` array the upstream reported, verbatim: one entry per
     /// sampling iteration a native compaction performed. Last observation wins, like every
     /// other usage column; the compaction outward render decides the entries' shape.
-    pub(crate) compaction_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    pub(crate) compaction_iterations: Vec<crate::ir::compaction::UsageIteration>,
 
     /// Whether the upstream reported the `compaction` stop reason. The canonical finish
     /// vocabulary has no compaction member, so the parser emits the ordinary `Stop` finish and
@@ -147,7 +147,7 @@ struct UpstreamUsage {
     /// Raw vendor iteration entries: one entry per sampling iteration a native compaction
     /// performed, captured verbatim for the compaction outward render.
     #[serde(default)]
-    iterations: Option<Vec<crate::format::compaction_wire::UsageIteration>>,
+    iterations: Option<Vec<crate::ir::compaction::UsageIteration>>,
 }
 
 /// The upstream output token breakdown.
@@ -696,8 +696,15 @@ impl UpstreamParser {
 
                 open.tool_arguments.push_str(&partial_json);
 
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the ToolUse-kind guard above proves the block carries the ordinal \
+                              its start event assigned"
+                )]
+                let ordinal = open.tool_ordinal.expect("tool blocks carry their ordinal");
+
                 vec![IrEvent::ToolCallDelta {
-                    index: open.tool_ordinal.unwrap_or_default(),
+                    index: ordinal,
                     call_id: None,
                     name: None,
                     arguments_delta: partial_json,
@@ -737,6 +744,11 @@ impl UpstreamParser {
     /// empty-text done carrying the streamed signature, whose opaque replay payload includes the
     /// signature exactly like the complete-body path, tool blocks complete their call, and text
     /// blocks need no closing event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a ToolUse-kind tracked block carries no call ordinal — a first-party parser
+    /// invariant: the start event assigns one to every tool block it opens.
     fn ingest_block_stop(&mut self, event: ContentBlockStopEvent) -> Vec<IrEvent> {
         let content_index = event.index as usize;
         if let Some(position) = self
@@ -789,13 +801,22 @@ impl UpstreamParser {
                 }),
             }],
 
-            OpenBlockKind::ToolUse => vec![IrEvent::ToolCallDone {
-                index: open.tool_ordinal.unwrap_or_default(),
-                call_id: open.tool_id,
-                name: open.tool_name,
-                arguments: open.tool_arguments,
-                thought_signature: None,
-            }],
+            OpenBlockKind::ToolUse => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the match arm proves the block carries the ordinal its start \
+                              event assigned"
+                )]
+                let ordinal = open.tool_ordinal.expect("tool blocks carry their ordinal");
+
+                vec![IrEvent::ToolCallDone {
+                    index: ordinal,
+                    call_id: open.tool_id,
+                    name: open.tool_name,
+                    arguments: open.tool_arguments,
+                    thought_signature: None,
+                }]
+            }
         }
     }
 

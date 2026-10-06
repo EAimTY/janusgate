@@ -90,7 +90,6 @@ const japanese = {
     },
     rich: {
         connected: "[[baseUrl]] に接続しました — トークンはこのブラウザーにのみ保存されます。",
-        providerModel: "[[modelId]] は [[providerLink]] が所有しています。",
         setupToken: "そのインスタンスの設定ファイルにある [[setting]] が管理トークンです。",
         setupCors:
             "そのインスタンスの [[setting]] でこのアプリのオリジンを許可してください — ただし、このアプリがゲートウェイ自身から配信されている場合は不要です。",
@@ -151,6 +150,7 @@ const japanese = {
             enabled: "有効",
             replacingTheSecretRevokesTheOldValueOnMessage:
                 "シークレットを置き換えると、保存時に以前の値は失効します。",
+            aKeyNeedsASecret: "キーにはシークレットが必要です。",
             deleteThisKey: "このキーを削除",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "削除するとキーは即座に失効します。このキーを保持するクライアントは 401 を受け取るようになります。モデルアクセスのルールも削除されますが、過去の集計は残ります。",
@@ -159,6 +159,7 @@ const japanese = {
             createAPIKey: "API キーを作成",
             oneSecretYourServingClientsShareMessage:
                 "推論クライアントが共有する 1 つのシークレットです。",
+            apiKeysBackLabel: "API キー",
             key: "キー",
             theSecretHoldsLettersNumbersAndSymbolsOnlyMessage:
                 "シークレットに使えるのは英数字と記号のみで、空白は含められません。ほかのどのキーとも重複しない値にしてください。",
@@ -182,9 +183,12 @@ const japanese = {
             createAliases: "別名を作成",
             choosePhysicalModelsAndAuthorTheirPublicIDsMessage:
                 "物理モデルを選び、その公開 ID を設定します。選択したモデルごとに有効な直接ルートが 1 つ作成されます。名前の競合は報告され、自動で改名や上書きは行われません。",
+            inventoryBackLabel: "インベントリ",
             noPhysicalModelsToAlias: "別名を作成できる物理モデルがありません",
             discoverOrAddInventoryFirstMessage:
                 "先にモデルを検出するか、インベントリを追加してください。",
+            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
+                "別の選択行がこの公開 ID を使用しています。重複しない明示的な名前を選んでください。",
             openRoute: "ルートを開く",
             createSelectedAliases: "選択した別名を作成",
         },
@@ -217,6 +221,14 @@ const japanese = {
                 "プロバイダーは 1 つの上流アカウントです。モデルは検出した時点で取り込まれます。",
             createYourFirstProvider: "最初のプロバイダーを作成",
             connectedToTheGateway: "ゲートウェイに接続済み",
+            discoverModels: "モデルを検出",
+            createAPIKey: "API キーを作成",
+            openAndDiscover: "開いて検出",
+            reviewModels: "モデルを確認",
+            credentialNotFresh: "認証情報が有効になったことがありません",
+            credentialExpired: "認証情報が失効しています",
+            reconnect: "再接続",
+            openProvider: "プロバイダーを開く",
             createAProvider: "プロバイダーを作成",
             discoverItsModelsFromUpstream: "上流からモデルを検出",
             issueAnAPIKeyForServingClients: "推論クライアント用の API キーを発行",
@@ -224,6 +236,8 @@ const japanese = {
         },
         modelDetailScreen: {
             model: "モデル",
+            upstreamOnProvider: "{{provider}} の {{upstreamId}}。",
+            modelsBackLabel: "モデル",
             capabilities: "機能",
             whatTheModelListingsDeclareForThisModelMessage:
                 "モデル一覧がこのモデルについて宣言している内容です。ここでの設定がリクエストを制限することはなく、応答は上流が返すとおりになります。",
@@ -233,6 +247,7 @@ const japanese = {
             compaction: "圧縮",
             theRowsOwnCompactionFactsTheOverrideElseMessage:
                 "この行自身の圧縮情報です。上書きがあればそれを使い、なければ直近の検出結果を使います。どちらにもない部分は、定義の宣言が決めます。",
+            noLevels: "レベルなし",
             addAlias: "別名を追加",
             editModel: "モデルを編集",
             details: "詳細",
@@ -261,6 +276,7 @@ const japanese = {
             createProvider: "プロバイダーを作成",
             aModelAddedByHandIsNeverRemovedMessage:
                 "手動で追加したモデルが自動で削除されることはありません。検出で失われたモデルも取り戻せます。",
+            models: "モデル",
             identity: "識別情報",
             provider: "プロバイダー",
             upstreamID: "上流 ID",
@@ -295,6 +311,9 @@ const japanese = {
             noModelsYet: "モデルはまだありません",
             addAProviderFirstThenDiscoverItsModelsMessage:
                 "先にプロバイダーを追加してから、そのモデルを検出してください。手動で追加することもできます。",
+            thisProviderHoldsNoModels: "このプロバイダーにはモデルがありません。",
+            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
+                "このプロバイダーは一覧にありません。プロバイダーの絞り込みで別のものを選んでください。",
             createProvider: "プロバイダーを作成",
             searchModels: "モデルを検索",
             searchByUpstreamIDOrProviderName: "上流 ID またはプロバイダー名で検索",
@@ -327,6 +346,8 @@ const japanese = {
             theVerificationURL: "確認 URL",
             approveTheCodeAtTheVerificationPageThisMessage:
                 "確認ページでコードを承認してください。このページはゲートウェイに結果を問い合わせ続け、フローが完了するとすぐに先へ進みます。",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "フローが完了するまで、このページに留まってください。コンソール内を移動すると、フローは破棄されます。",
         },
         poolAvailabilityCard: {
             refreshQuota: "割り当てを更新",
@@ -362,12 +383,15 @@ const japanese = {
             credentials: "認証情報",
             oauthCredentialsExpireReconnectingReplacesThemMessage:
                 "OAuth の認証情報は失効します。再接続すると置き換えられます。",
+            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
+                "このプロバイダーの定義は、リクエストをベース URL に対して評価します。復元するか、「元に戻す」を選んでください。",
             deleteThisProvider: "このプロバイダーを削除",
         },
         providerNewScreen: {
             createProvider: "プロバイダーを作成",
             oneUpstreamAccountPickThePresetTheCredentialMessage:
                 "1 つの上流アカウントです。プリセットを選ぶと、それに沿って認証情報の経路が決まります。",
+            providersBackLabel: "プロバイダー",
             readAgain: "もう一度読む",
             preset: "プリセット",
             switchPreset: "プリセットを切り替え",
@@ -377,6 +401,8 @@ const japanese = {
             theKeyIsWriteonlyTheGatewayNeverReturnsMessage:
                 "キーは書き込み専用です。ゲートウェイが返すことはありません。",
             connectTheAccount: "アカウントを接続",
+            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
+                "認可が有効な間はロックされます。プロバイダーは、フロー開始時に送信された内容から作成されます。",
             approveAccessWhereTheFlowPointsThenLetMessage:
                 "フローが示す場所でアクセスを承認し、そのまま完了させてください。このアプリが認証情報を保存することはありません。",
             upstreamBaseURL: "上流ベース URL",
@@ -430,6 +456,7 @@ const japanese = {
             readingUpstreamQuota: "上流の割り当てを読み取っています…",
             showingThePreviousReadingMessage: "前回の読み取り結果を表示しています。",
             observed: "観測日時",
+            resetTimeReachedRefreshToUpdate: "リセット時刻に達しました。更新して反映してください",
             theUpstreamReturnedNoQuotaEntriesMessage: "上流は割り当ての項目を返しませんでした。",
         },
         providersScreen: {
@@ -453,6 +480,7 @@ const japanese = {
             noPoolsYet: "アカウントプールはまだありません",
             createANamedPoolWithAModelPrefixMessage:
                 "名前付きのアカウントプールを、モデルプレフィックス付きで作成します。メンバーのモデルは自動的に公開されます。",
+            noModelPrefix: "なし",
             publicRoutes: "公開ルート",
             modelNamesClientsRequestStandaloneProvidersAndPoolsMessage:
                 "クライアントが要求するモデル名です。単独プロバイダーとアカウントプールはモデル名を自動的に公開します。追加の別名は任意です。",
@@ -460,6 +488,7 @@ const japanese = {
             noPublicRoutesYet: "公開ルートはまだありません",
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "物理モデルを直接公開するか、アカウントプールと正確な上流 ID を指定します。",
+            automaticPrefix: "自動 · ",
         },
         screenFrame: {
             readAgain: "もう一度読む",
@@ -483,6 +512,10 @@ const japanese = {
             exclusiveInThisBrowsersZoneLike20260923T1000BlankMessage:
                 "この値を含みません。このブラウザーのタイムゾーンで指定し、例：2026-09-23T10:00。空欄なら上限を設けません。",
             clearFilters: "絞り込みを解除",
+            usageBackLabel: "使用量",
+            theQueryDidNotRunAFilterValueIsInvalid:
+                "クエリは実行されませんでした。絞り込みの値が無効です。",
+            total: "合計",
             nothingRecordedInThisWindowMessage: "この期間には記録がありません。",
             noRowsInThisWindowMessage: "この期間には行がありません。",
             bucket: "集計単位",
@@ -512,6 +545,9 @@ const japanese = {
                 "ゲートウェイが上流へ送信した時点で、送信済みの推論リクエストごとに 1 行が表示されます。トラフィックがあるのに何も表示されない場合は、ゲートウェイの設定ファイルの api_logs セクションを確認してください。",
             noRecordedRequestsMatchThisFilterMessage:
                 "この絞り込みに一致する記録済みのリクエストはありません。",
+            filtersStayBehind: " — 期間とその他のフィルタはすべてこちらに残ります。",
+            streamMark: " · ストリーミング",
+            thisRowIsNoLongerListed: "この行は一覧にありません。",
         },
         usageStats: {
             usage: "使用量",
@@ -534,7 +570,6 @@ const japanese = {
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage: "上流はこのモデルを報告しなくなりました。",
-            itServesNothingMeanwhileMessage: "それまでの間、このモデルは何も提供しません。",
         },
     },
     diagnosis: {
@@ -883,8 +918,6 @@ const japanese = {
     },
     operationNotices: {
         flowFailed: "フローに失敗しました。",
-        flowGone:
-            "この認可フローは完了できなくなりました。state が失効したか、すでに使用されています。",
         freshFlow: "新しいフローを開始し、速やかに承認してください。",
         flowExpired: "フローが失効しました。",
         flowExpiryPassed: "このページが結果を待つ間に、フローの有効期限が過ぎました。",
@@ -892,9 +925,6 @@ const japanese = {
         pollFailed: "最後の結果ポーリングに失敗しました。",
         invalidDefinition: "この定義 JSON は、ゲートウェイが保存できる定義ではありません。",
         fixDefinition: "JSON を修正して再度送信してください。何も書き込まれていません。",
-        invalidFilter: "クエリは実行されませんでした。絞り込みの値が無効です。",
-        previousQuery:
-            "以下に表示されているのは、まだ前回のクエリの結果です。インライン エラーが出ている項目が問題箇所です。",
         fixFilter: "その項目を修正してから、もう一度クエリを実行してください。",
         discoveryPending: "[[providerName]] からモデルを検出しています…",
         discoveryQuery: "上流が現在報告している内容を問い合わせています。",
@@ -924,12 +954,6 @@ const japanese = {
         identifiers: {
             baseURLMustBeAnHttpOrHttpsAddressWithNoSpaces:
                 "ベース URL は http:// または https:// のアドレスで、空白を含めないでください。",
-        },
-        presetQuotas: {
-            primaryWindow: "第 1 期間",
-            secondaryWindow: "第 2 期間",
-            allowance: "割り当て",
-            modelAllowance: "モデルの割り当て",
         },
         presets: {
             anyEndpointSpeakingTheOpenAIResponsesProtocolWithAStaticKey:
@@ -967,55 +991,11 @@ const japanese = {
             zenOverTheGeminiGenerateContentProtocolWithAStaticKey:
                 "静的キーを使い、Gemini GenerateContent プロトコル経由で接続する Zen。",
         },
-        apiKeyEditScreen: {
-            aKeyNeedsASecret: "キーにはシークレットが必要です。",
-        },
-        bulkPublicationScreen: {
-            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
-                "別の選択行がこの公開 ID を使用しています。重複しない明示的な名前を選んでください。",
-        },
-        homeScreen: {
-            discoverModels: "モデルを検出",
-            createAPIKey: "API キーを作成",
-            openAndDiscover: "開いて検出",
-            reviewModels: "モデルを確認",
-            credentialNotFresh: "認証情報が有効になったことがありません",
-            credentialExpired: "認証情報が失効しています",
-            reconnect: "再接続",
-            openProvider: "プロバイダーを開く",
-        },
-        modelDetailScreen: {
-            noLevels: "レベルなし",
-        },
-        modelNewScreen: {
-            models: "モデル",
-            provider: "プロバイダー",
-        },
-        modelsScreen: {
-            thisProviderHoldsNoModels: "このプロバイダーにはモデルがありません。",
-            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
-                "このプロバイダーは一覧にありません。プロバイダーの絞り込みで別のものを選んでください。",
-        },
-        oauthFlowView: {
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "フローが完了するまで、このページに留まってください。コンソール内を移動すると、フローは破棄されます。",
-        },
         oauthFlow: {
             thatPasteHoldsNeitherABareCodeNorAURLWithACodeCopy:
                 "貼り付けられた内容は、コードそのものでも、コードを含む URL でもありません。ログイン後に到達したアドレス全体か、そのコードだけをコピーして、ここに貼り付けてください。",
             theFlowStaysLiveThisPageKeepsAskingForTheOutcome:
                 "フローは有効なままで、このページは結果を問い合わせ続けます。",
-        },
-        providerEditScreen: {
-            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
-                "このプロバイダーの定義は、リクエストをベース URL に対して評価します。復元するか、「元に戻す」を選んでください。",
-        },
-        providerNewScreen: {
-            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
-                "認可が有効な間はロックされます。プロバイダーは、フロー開始時に送信された内容から作成されます。",
-        },
-        providerQuotaCard: {
-            resetTimeReachedRefreshToUpdate: "リセット時刻に達しました。更新して反映してください",
         },
         rowNotFound: {
             theGatewayHoldsNoPoolHereItWasDeletedOrTheAddressWasTyped:
@@ -1032,14 +1012,6 @@ const japanese = {
         usageLabels: {
             streamed: "ストリーミング",
             nonstreamed: "非ストリーミング",
-        },
-        usageQueryScreen: {
-            theQueryDidNotRunAFilterValueIsInvalid:
-                "クエリは実行されませんでした。絞り込みの値が無効です。",
-            total: "合計",
-        },
-        usageScreen: {
-            thisRowIsNoLongerListed: "この行は一覧にありません。",
         },
         apiKeyAccess: {
             inherit: "継承",
@@ -1084,6 +1056,8 @@ const japanese = {
             last24Hours: "直近 24 時間",
             last7Days: "直近 7 日間",
             last30Days: "直近 30 日間",
+            invalidStatusList:
+                "HTTP ステータスには、200, 429 のようなプレーンな整数をカンマ区切りで指定してください。ステータスで絞り込まない場合は空欄にします。",
         },
     },
     validation: {
@@ -1165,9 +1139,6 @@ const japanese = {
         enabledStored: "保存済み {{total}} 件のうち有効な件数",
         readyListed: "一覧 {{total}} 件のうち準備完了の件数",
         copyEndpoint: "{{surface}} エンドポイントの URL をコピー",
-        noModels: "にはまだモデルがありません。",
-        noReadyModels:
-            "には準備完了のインベントリがありません — すべてのモデルが無効か、報告されなくなっています。",
         disabledCredential: "{{expiry}} プロバイダーは無効です。有効に戻したら再接続してください。",
         noKeysDetail:
             " 推論クライアントは API キーで認証します。キーがないと、ゲートウェイに準備完了のインベントリがありません。",

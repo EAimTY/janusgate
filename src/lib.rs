@@ -17,6 +17,7 @@ mod accounting;
 mod affinity;
 mod api;
 mod compaction;
+mod compaction_model;
 mod config;
 mod context;
 mod database;
@@ -29,6 +30,7 @@ mod ir;
 mod logging;
 mod management_api;
 mod provider;
+mod router_fallback;
 mod routing;
 mod routing_text;
 mod security;
@@ -39,6 +41,7 @@ mod storage;
 #[cfg(test)]
 mod test_support;
 mod unix_time;
+mod vocabulary;
 
 #[cfg(feature = "management-api-typescript-bindings")]
 pub use management_api::generate_typescript_bindings;

@@ -5,7 +5,7 @@ use crate::{
     accounting::ApiLogOutcome,
     api::{Error, log_error},
     format::{ClientFormat, ClientSseRenderer},
-    gateway::IrEventStream,
+    gateway::{IrEventStream, UsageTracker},
     ir::{Aggregator, IrAggregation, IrEvent, IrUsage},
     storage::api_logs::{self, ApiLogDraft},
 };
@@ -88,21 +88,36 @@ pub(super) fn prerendered_sse_response(
     Ok(response)
 }
 
+/// The checkpoint prefix a checkpoint-continue lifecycle renders ahead of its
+/// live continuation: the executor's surface decides the variant, and each
+/// variant carries exactly the pairing that surface's lifecycle produces — the
+/// executor outcomes can never merge or confuse the two.
+#[derive(Clone)]
+pub(super) enum CheckpointPrefix {
+    /// The Responses surface's checkpoint items; no iteration entries ride it.
+    Responses(Vec<crate::format::compaction_wire::Checkpoint>),
+
+    /// The Messages surface's checkpoint blocks beside the lifecycle's
+    /// vendor-shaped iteration entries.
+    Messages(
+        Vec<crate::format::compaction_wire::Checkpoint>,
+        Vec<crate::ir::compaction::UsageIteration>,
+    ),
+}
+
 /// The execution coordinator's selected JSON rendering for one delivery.
 #[derive(Clone)]
 pub(super) enum AggregationRender {
     /// Preserves the format's ordinary rendering semantics.
     Ordinary,
+
     /// A prepared checkpoint prefix and the operation's reported iteration entries.
     WithPrefix {
-        /// The single format-specific checkpoint vector selected by execution.
-        checkpoints: Vec<crate::format::compaction_wire::Checkpoint>,
-        /// Vendor-shaped operation usage entries.
-        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+        /// The single surface's checkpoint prefix selected by execution.
+        prefix: CheckpointPrefix,
     },
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Starts detached non-streaming delivery using the coordinator's selected ordinary or
 /// checkpoint-prefixed JSON render. Its single task owns draining, affinity publication,
 /// handoff, and final accounting independently of the handler's lifetime.
@@ -183,15 +198,21 @@ pub(super) async fn aggregated_response_task<TFormat>(
     let aggregation = aggregated_response(events, |aggregation| {
         let response = match &render {
             AggregationRender::Ordinary => TFormat::render_json_response(&public_id, aggregation),
-            AggregationRender::WithPrefix {
-                checkpoints,
-                iterations,
-            } => TFormat::render_json_response_with_prefix(
-                &public_id,
-                aggregation,
-                checkpoints,
-                iterations,
-            ),
+            AggregationRender::WithPrefix { prefix } => {
+                let (checkpoints, iterations): (
+                    &[crate::format::compaction_wire::Checkpoint],
+                    &[crate::ir::compaction::UsageIteration],
+                ) = match prefix {
+                    CheckpointPrefix::Responses(items) => (items, &[]),
+                    CheckpointPrefix::Messages(blocks, iterations) => (blocks, iterations),
+                };
+                TFormat::render_json_response_with_prefix(
+                    &public_id,
+                    aggregation,
+                    checkpoints,
+                    iterations,
+                )
+            }
         };
         // Known handler departure creates no completed output. A later failed terminal handoff
         // leaves the already-created account hint harmless, without claiming client receipt.
@@ -288,22 +309,16 @@ pub(super) fn sse_response(
         // Whether any frame reached the client's channel; the first one declares HTTP 200.
         let mut is_status_declared = false;
 
-        // The last usage the stream reported, recorded best-effort at finalization.
-        let mut usage: Option<IrUsage> = None;
-        let mut iteration_usage: Option<IrUsage> = None;
+        // The usage the stream reported, recorded best-effort at finalization: the iteration
+        // totals override the ordinary usage ([`UsageTracker`]).
+        let mut usage_tracker = UsageTracker::default();
         // A codec can render no additional terminal frame when usage is absent; EOF completes it.
         let mut has_completed_output = false;
 
         while let Some(item) = events.next().await {
             match item {
                 Ok(event) => {
-                    if let IrEvent::CompactionMetadata { iterations, .. } = &event {
-                        iteration_usage =
-                            crate::compaction::accounting::reported_iteration_totals(iterations);
-                    }
-                    if let IrEvent::Usage(reported) = &event {
-                        usage = Some(*reported);
-                    }
+                    usage_tracker.observe(&event);
 
                     has_completed_output |= matches!(event, IrEvent::Done);
                     let frames = renderer.render(&event);
@@ -356,7 +371,7 @@ pub(super) fn sse_response(
                                 &log,
                                 ApiLogOutcome::ClientAborted,
                                 declared_status(is_status_declared),
-                                iteration_usage.or(usage),
+                                usage_tracker.resolved(),
                             )
                             .await;
 
@@ -383,7 +398,7 @@ pub(super) fn sse_response(
                             &log,
                             ApiLogOutcome::ClientAborted,
                             declared_status(is_status_declared),
-                            iteration_usage.or(usage),
+                            usage_tracker.resolved(),
                         )
                         .await;
 
@@ -397,7 +412,7 @@ pub(super) fn sse_response(
                         &log,
                         outcome,
                         Some(i64::from(StatusCode::OK.as_u16())),
-                        iteration_usage.or(usage),
+                        usage_tracker.resolved(),
                     )
                     .await;
 
@@ -412,7 +427,7 @@ pub(super) fn sse_response(
                 &log,
                 ApiLogOutcome::ClientAborted,
                 declared_status(is_status_declared),
-                iteration_usage.or(usage),
+                usage_tracker.resolved(),
             )
             .await;
             return;
@@ -430,7 +445,7 @@ pub(super) fn sse_response(
             &log,
             ApiLogOutcome::Completed,
             Some(i64::from(StatusCode::OK.as_u16())),
-            iteration_usage.or(usage),
+            usage_tracker.resolved(),
         )
         .await;
         drop(affinity);
@@ -474,36 +489,29 @@ where
 {
     let mut aggregator = Aggregator::default();
 
-    // The last usage the stream reported, kept beside either way the stream settles: a mid-stream
-    // failure does not undo the usage the upstream already delivered.
-    let mut last_usage: Option<IrUsage> = None;
-    let mut iteration_usage = None;
+    // The usage the stream reported, kept beside either way the stream settles: a mid-stream
+    // failure does not undo the usage the upstream already delivered, and the iteration totals
+    // override the ordinary usage ([`UsageTracker`]).
+    let mut usage_tracker = UsageTracker::default();
 
     let mut events = events;
 
     while let Some(item) = events.next().await {
         match item {
             Ok(event) => {
-                if let IrEvent::Usage(reported) = &event {
-                    last_usage = Some(*reported);
-                }
-
-                if let IrEvent::CompactionMetadata { iterations, .. } = &event {
-                    iteration_usage =
-                        crate::compaction::accounting::reported_iteration_totals(iterations);
-                }
+                usage_tracker.observe(&event);
                 aggregator.ingest(&event);
             }
 
-            Err(error) => return Err((Error::from(error), iteration_usage.or(last_usage))),
+            Err(error) => return Err((Error::from(error), usage_tracker.resolved())),
         }
     }
 
     let aggregation = aggregator.finish();
-    let usage = crate::compaction::accounting::reported_iteration_totals(
-        &aggregation.compaction_iterations,
-    )
-    .or(aggregation.usage);
+
+    // The aggregator retains the same last-wins observations the tracker holds, so the resolved
+    // stream usage is the aggregation's own resolved usage.
+    let usage = usage_tracker.resolved();
 
     Ok((
         json_response(StatusCode::OK, &render_json_fn(&aggregation)),

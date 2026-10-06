@@ -239,7 +239,7 @@ export function ConnectionScreen(): JSX.Element {
                             ($) => $.connection.aRunningJanusGateInstanceReachableFromThisBrowser,
                         )}
                     </RequirementStep>
-                    <RequirementStep index={2}>{setupTokenMessage(translation())}</RequirementStep>
+                    <RequirementStep index={2}>{setupTokenMessage()}</RequirementStep>
                     <RequirementStep index={3}>
                         <span class="flex flex-wrap items-center gap-x-4 gap-y-2">
                             <span
@@ -253,7 +253,7 @@ export function ConnectionScreen(): JSX.Element {
                                 subject={translation()(($) => $.connection.theOriginBesideIt)}
                                 ariaLabel={translation()(($) => $.connection.copyThisAppsOrigin)}
                             />
-                            <span class="basis-full">{setupCorsMessage(translation())}</span>
+                            <span class="basis-full">{setupCorsMessage()}</span>
                         </span>
                     </RequirementStep>
                 </ol>

@@ -2,7 +2,8 @@
 //! SSE frames or an aggregated non-streaming body.
 
 use crate::{
-    format::{self, ClientSseRenderer, openai::error::OpenAiErrorEnvelope},
+    api::error::openai::OpenAiErrorEnvelope,
+    format::{self, ClientSseRenderer},
     ids,
     ir::{IrAggregation, IrEvent, IrUsage},
     sse, unix_time,
@@ -24,8 +25,8 @@ pub(crate) struct ChatCompletionResponse {
     /// Public model name the client addressed.
     model: String,
 
-    /// The single served choice.
-    choices: Vec<ResponseChoice>,
+    /// The single served choice, read by the aggregated-body projection.
+    pub(super) choices: Vec<ResponseChoice>,
 
     /// Token accounting.
     usage: TokenUsage,
@@ -74,12 +75,12 @@ pub(super) struct SseRenderer {
 
 /// The single aggregated choice.
 #[derive(Debug, Serialize)]
-struct ResponseChoice {
+pub(super) struct ResponseChoice {
     /// Always 0: the gateway serves one choice per request.
     index: u32,
 
     /// The complete assistant message.
-    message: AssistantMessage,
+    pub(super) message: AssistantMessage,
 
     /// Official `logprobs` member: required-nullable on the official choice schema, which the
     /// gateway never populates because it tracks no token probabilities, so the member renders
@@ -104,12 +105,12 @@ struct ChoiceLogprobs {
 
 /// The complete aggregated assistant message.
 #[derive(Debug, Serialize)]
-struct AssistantMessage {
+pub(super) struct AssistantMessage {
     /// Always `assistant`.
     role: &'static str,
 
     /// The full assistant text, `null` for a turn that produced none.
-    content: Option<String>,
+    pub(super) content: Option<String>,
 
     /// Official `refusal` member: required-nullable on the official response message schema,
     /// which the gateway never populates because it never produces refusals, so the member
@@ -122,35 +123,35 @@ struct AssistantMessage {
 
     /// Completed tool calls, omitted when the turn made none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tool_calls: Vec<MessageToolCall>,
+    pub(super) tool_calls: Vec<MessageToolCall>,
 }
 
 /// One completed tool call of an aggregated message.
 #[derive(Debug, Serialize)]
-struct MessageToolCall {
+pub(super) struct MessageToolCall {
     /// Invocation identifier.
-    id: String,
+    pub(super) id: String,
 
     /// Tool kind, `function`.
     #[serde(rename = "type")]
     tool_type: &'static str,
 
     /// The complete function invocation.
-    function: MessageFunction,
+    pub(super) function: MessageFunction,
 
     /// Upstream thought signature the client must replay on the next turn.
     #[serde(skip_serializing_if = "Option::is_none")]
-    thought_signature: Option<String>,
+    pub(super) thought_signature: Option<String>,
 }
 
 /// The complete function invocation of an aggregated tool call.
 #[derive(Debug, Serialize)]
-struct MessageFunction {
+pub(super) struct MessageFunction {
     /// Invoked function name.
-    name: String,
+    pub(super) name: String,
 
     /// Complete JSON-encoded arguments text.
-    arguments: String,
+    pub(super) arguments: String,
 }
 
 /// One streamed Chat Completions chunk (the `chat.completion.chunk` shape).
@@ -268,12 +269,15 @@ struct TokenUsage {
 }
 
 impl TokenUsage {
-    /// Renders one observation.
+    /// Renders one observation. The total adds with `saturating_add`: for every token count whose
+    /// sum fits `u64` — every count a real upstream reports — the rendered total is the exact sum,
+    /// and a third-party total can never panic (debug) or wrap (release) the renderer the way a
+    /// plain add could at overflow.
     fn render(usage: IrUsage) -> Self {
         Self {
             prompt_tokens: usage.input_tokens,
             completion_tokens: usage.output_tokens,
-            total_tokens: usage.input_tokens + usage.output_tokens,
+            total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
         }
     }
 }
@@ -343,6 +347,34 @@ impl SseRenderer {
         self.outward_indexes.push((ir_index, outward_index));
         outward_index
     }
+
+    /// Renders one tool-call delta chunk; a pooled projection observes the same wire fragments at
+    /// the typed render point, without re-parsing the rendered frame.
+    fn tool_delta_frame(&mut self, tool_call: DeltaToolCall) -> String {
+        if let Some(projection) = self.projection.as_mut() {
+            projection.call_delta(
+                tool_call.index,
+                tool_call.id.as_deref(),
+                tool_call
+                    .function
+                    .as_ref()
+                    .and_then(|part| part.name.as_deref()),
+                tool_call
+                    .function
+                    .as_ref()
+                    .map_or("", |part| part.arguments.as_str()),
+                tool_call.thought_signature.as_deref(),
+            );
+        }
+
+        self.chunk_frame(
+            Delta {
+                tool_calls: Some(vec![tool_call]),
+                ..Delta::default()
+            },
+            None,
+        )
+    }
 }
 
 impl ClientSseRenderer for SseRenderer {
@@ -360,6 +392,7 @@ impl ClientSseRenderer for SseRenderer {
                 } else {
                     self.is_role_sent = true;
 
+                    // The role chunk carries the empty string only; the projector ignores it.
                     vec![self.chunk_frame(
                         Delta {
                             role: Some("assistant"),
@@ -371,13 +404,19 @@ impl ClientSseRenderer for SseRenderer {
                 }
             }
 
-            IrEvent::TextDelta(delta) => vec![self.chunk_frame(
-                Delta {
-                    content: Some(delta.clone()),
-                    ..Delta::default()
-                },
-                None,
-            )],
+            IrEvent::TextDelta(delta) => {
+                if let Some(projection) = self.projection.as_mut() {
+                    projection.text(delta);
+                }
+
+                vec![self.chunk_frame(
+                    Delta {
+                        content: Some(delta.clone()),
+                        ..Delta::default()
+                    },
+                    None,
+                )]
+            }
 
             IrEvent::ReasoningDelta(delta) => vec![self.chunk_frame(
                 Delta {
@@ -436,13 +475,7 @@ impl ClientSseRenderer for SseRenderer {
                     thought_signature: None,
                 };
 
-                vec![self.chunk_frame(
-                    Delta {
-                        tool_calls: Some(vec![tool_call]),
-                        ..Delta::default()
-                    },
-                    None,
-                )]
+                vec![self.tool_delta_frame(tool_call)]
             }
 
             IrEvent::ToolCallDone {
@@ -478,13 +511,7 @@ impl ClientSseRenderer for SseRenderer {
                             thought_signature: thought_signature.clone(),
                         };
 
-                        vec![self.chunk_frame(
-                            Delta {
-                                tool_calls: Some(vec![tool_call]),
-                                ..Delta::default()
-                            },
-                            None,
-                        )]
+                        vec![self.tool_delta_frame(tool_call)]
                     }
 
                     Some(streamed) => {
@@ -499,41 +526,35 @@ impl ClientSseRenderer for SseRenderer {
                         // the done, so `strip_prefix` silently skips the residual argument frame of
                         // a done whose arguments are not a superstring of the streamed bytes
                         // (README §6.2); the skipped done's other content still renders.
-                        if let Some(unstreamed) = arguments.strip_prefix(streamed.as_str())
-                            && !unstreamed.is_empty()
-                        {
-                            frames.push(self.chunk_frame(
-                                Delta {
-                                    tool_calls: Some(vec![DeltaToolCall {
-                                        index: outward_index,
-                                        id: None,
-                                        tool_type: None,
-                                        function: Some(DeltaFunction {
-                                            name: None,
-                                            arguments: unstreamed.to_string(),
-                                        }),
-                                        thought_signature: None,
-                                    }]),
-                                    ..Delta::default()
-                                },
-                                None,
-                            ));
+                        //
+                        // The residual is owned before rendering so the borrowed streamed prefix
+                        // releases its borrow of the renderer before the mutable render point.
+                        let residual = arguments
+                            .strip_prefix(streamed.as_str())
+                            .filter(|unstreamed| !unstreamed.is_empty())
+                            .map(str::to_string);
+
+                        if let Some(unstreamed) = residual {
+                            frames.push(self.tool_delta_frame(DeltaToolCall {
+                                index: outward_index,
+                                id: None,
+                                tool_type: None,
+                                function: Some(DeltaFunction {
+                                    name: None,
+                                    arguments: unstreamed,
+                                }),
+                                thought_signature: None,
+                            }));
                         }
 
                         if let Some(signature) = thought_signature {
-                            frames.push(self.chunk_frame(
-                                Delta {
-                                    tool_calls: Some(vec![DeltaToolCall {
-                                        index: outward_index,
-                                        id: None,
-                                        tool_type: None,
-                                        function: None,
-                                        thought_signature: Some(signature.clone()),
-                                    }]),
-                                    ..Delta::default()
-                                },
-                                None,
-                            ));
+                            frames.push(self.tool_delta_frame(DeltaToolCall {
+                                index: outward_index,
+                                id: None,
+                                tool_type: None,
+                                function: None,
+                                thought_signature: Some(signature.clone()),
+                            }));
                         }
 
                         frames
@@ -571,16 +592,15 @@ impl ClientSseRenderer for SseRenderer {
                 frames
             }
         };
-        if let Some(projection) = self.projection.as_mut() {
-            projection.observe(&frames);
-            if let IrEvent::ToolCallDone { index, .. } = event
-                && let Some((_, outward_index)) = self
-                    .outward_indexes
-                    .iter()
-                    .find(|(ir_index, _)| ir_index == index)
-            {
-                projection.complete_call(*outward_index);
-            }
+        // A done completes its call after the frames carrying its final fragments rendered.
+        if let IrEvent::ToolCallDone { index, .. } = event
+            && let Some((_, outward_index)) = self
+                .outward_indexes
+                .iter()
+                .find(|(ir_index, _)| ir_index == index)
+            && let Some(projection) = self.projection.as_mut()
+        {
+            projection.complete_call(*outward_index);
         }
         frames
     }
@@ -599,7 +619,7 @@ impl ClientSseRenderer for SseRenderer {
     /// classified once through the shared API error (README §6.7).
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let envelope = OpenAiErrorEnvelope {
-            error: crate::format::openai::error::render_body(error),
+            error: crate::api::error::openai::render_body(error),
         };
 
         sse::format_data_frame(&format::render_json(&envelope))
@@ -650,33 +670,6 @@ pub(super) fn render_json_response(
         }],
         usage: TokenUsage::render(aggregation.usage.unwrap_or_default()),
     }
-}
-
-/// Projects the actual assistant message; reasoning_content is discarded by Chat replay.
-pub(super) fn project_json_response(
-    response: &ChatCompletionResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    for choice in &response.choices {
-        if let Some(text) = &choice.message.content {
-            projector.text(
-                crate::affinity::fingerprint::Role::Assistant,
-                text.as_bytes(),
-            );
-        }
-        for call in &choice.message.tool_calls {
-            if !crate::format::affinity::project_call(
-                projector,
-                &call.id,
-                &call.function.name,
-                &call.function.arguments,
-                call.thought_signature.as_deref(),
-            ) {
-                return false;
-            }
-        }
-    }
-    true
 }
 
 #[cfg(test)]

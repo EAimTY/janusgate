@@ -138,7 +138,7 @@ pub(crate) fn extract(
                     }
                     QuotaSource::Object { .. } => {}
                 }
-                let scope = scope_value(scope, &context)?;
+                let scope = scope_value(scope.as_ref(), &context)?;
                 for configured in entries {
                     active_entry = Some(configured.key.as_str());
                     if let Some(observation) =
@@ -276,16 +276,15 @@ fn routing_value(
     }
 }
 
-/// Resolves scope independently of an entry's restriction label.
+/// Resolves scope independently of an entry's restriction label; an absent scope is the
+/// unknown scope.
 fn scope_value(
-    source: &QuotaScopeSource,
+    source: Option<&QuotaTextSource>,
     context: &Context<'_>,
 ) -> Result<QuotaScope, ExtractionReason> {
     let name = match source {
-        QuotaScopeSource::Unknown => None,
-        QuotaScopeSource::Literal { value } => Some(value.clone()),
-        QuotaScopeSource::Field { field, encoding } => field_text(field, *encoding, context)?,
-        QuotaScopeSource::MapKey => context.map_key.map(nonempty).transpose()?,
+        Some(source) => text(source, context)?,
+        None => None,
     };
     Ok(name.map_or(QuotaScope::Unknown, |name| QuotaScope::Named { name }))
 }
@@ -441,7 +440,7 @@ fn window(
 }
 
 /// Validates an exact calendar date while keeping its timezone unspecified.
-pub(crate) fn is_valid_date(value: &str) -> bool {
+fn is_valid_date(value: &str) -> bool {
     value.len() == 10
         && value.bytes().enumerate().all(|(index, byte)| {
             if index == 4 || index == 7 {

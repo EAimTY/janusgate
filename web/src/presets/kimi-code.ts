@@ -1,15 +1,18 @@
 import { translation } from "../i18n";
 import {
-    bearer,
+    bearerAuthorization,
     clientId,
-    deviceCode,
+    deviceAuthorizationBody,
+    deviceAuthorizationResponse,
+    deviceExchangeBody,
     literal,
+    openAiModelsDiscovery,
     paramRow,
     refreshToken,
-    secret,
     slot,
+    tokenExchangeResponse,
 } from "./expressions";
-import { numberField, ratioEntry } from "./quota-helpers";
+import { ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for kimi-code. */
@@ -29,9 +32,12 @@ export const kimiCodePreset: ProviderPreset = {
     payload: {
         quota: {
             request: {
-                ...bearer("https://api.kimi.com/coding/v1/usages"),
+                method: "GET",
+                url: [
+                    literal("https://api.kimi.com/coding/v1/usages"),
+                ],
                 headers: [
-                    ...(bearer("").headers ?? []),
+                    bearerAuthorization(),
                     paramRow("Accept", [
                         literal("application/json"),
                     ]),
@@ -50,134 +56,86 @@ export const kimiCodePreset: ProviderPreset = {
                         value: "Account",
                     },
                     entries: [
-                        {
-                            ...ratioEntry(
+                        ratioEntry(
+                            "limit_5h",
+                            "Five-hour allowance",
+                            [
                                 "limit_5h",
-                                "Five-hour allowance",
-                                [
-                                    "limit_5h",
-                                ],
-                                [
-                                    "used_ratio",
-                                ],
-                                {
-                                    type: "duration",
-                                    seconds: 18000,
-                                },
-                                [
-                                    "reset_time",
-                                ],
-                                "rfc3339",
-                                "number_or_numeric_string",
-                            ),
-                            measurement: {
-                                type: "ratio",
-                                value: numberField(
-                                    [
-                                        "used_ratio",
-                                    ],
-                                    "number_or_numeric_string",
-                                ),
-                                scale: "fraction",
-                                direction: "used",
+                            ],
+                            [
+                                "used_ratio",
+                            ],
+                            {
+                                type: "duration",
+                                seconds: 18000,
                             },
-                        },
-                        {
-                            ...ratioEntry(
+                            [
+                                "reset_time",
+                            ],
+                            "rfc3339",
+                            "number_or_numeric_string",
+                            "fraction",
+                        ),
+                        ratioEntry(
+                            "limit_7d",
+                            "Weekly allowance",
+                            [
                                 "limit_7d",
-                                "Weekly allowance",
-                                [
-                                    "limit_7d",
-                                ],
-                                [
-                                    "used_ratio",
-                                ],
-                                {
-                                    type: "duration",
-                                    seconds: 604800,
-                                },
-                                [
-                                    "reset_time",
-                                ],
-                                "rfc3339",
-                                "number_or_numeric_string",
-                            ),
-                            measurement: {
-                                type: "ratio",
-                                value: numberField(
-                                    [
-                                        "used_ratio",
-                                    ],
-                                    "number_or_numeric_string",
-                                ),
-                                scale: "fraction",
-                                direction: "used",
+                            ],
+                            [
+                                "used_ratio",
+                            ],
+                            {
+                                type: "duration",
+                                seconds: 604800,
                             },
-                        },
-                        {
-                            ...ratioEntry(
+                            [
+                                "reset_time",
+                            ],
+                            "rfc3339",
+                            "number_or_numeric_string",
+                            "fraction",
+                        ),
+                        ratioEntry(
+                            "limit_month_total",
+                            "Monthly total",
+                            [
                                 "limit_month_total",
-                                "Monthly total",
-                                [
-                                    "limit_month_total",
-                                ],
-                                [
-                                    "used_ratio",
-                                ],
-                                {
-                                    type: "calendar",
-                                    unit: "month",
-                                },
-                                [
-                                    "reset_time",
-                                ],
-                                "rfc3339",
-                                "number_or_numeric_string",
-                            ),
-                            measurement: {
-                                type: "ratio",
-                                value: numberField(
-                                    [
-                                        "used_ratio",
-                                    ],
-                                    "number_or_numeric_string",
-                                ),
-                                scale: "fraction",
-                                direction: "used",
+                            ],
+                            [
+                                "used_ratio",
+                            ],
+                            {
+                                type: "calendar",
+                                unit: "month",
                             },
-                        },
-                        {
-                            ...ratioEntry(
+                            [
+                                "reset_time",
+                            ],
+                            "rfc3339",
+                            "number_or_numeric_string",
+                            "fraction",
+                        ),
+                        ratioEntry(
+                            "limit_month_code",
+                            "Monthly coding",
+                            [
                                 "limit_month_code",
-                                "Monthly coding",
-                                [
-                                    "limit_month_code",
-                                ],
-                                [
-                                    "used_ratio",
-                                ],
-                                {
-                                    type: "calendar",
-                                    unit: "month",
-                                },
-                                [
-                                    "reset_time",
-                                ],
-                                "rfc3339",
-                                "number_or_numeric_string",
-                            ),
-                            measurement: {
-                                type: "ratio",
-                                value: numberField(
-                                    [
-                                        "used_ratio",
-                                    ],
-                                    "number_or_numeric_string",
-                                ),
-                                scale: "fraction",
-                                direction: "used",
+                            ],
+                            [
+                                "used_ratio",
+                            ],
+                            {
+                                type: "calendar",
+                                unit: "month",
                             },
-                        },
+                            [
+                                "reset_time",
+                            ],
+                            "rfc3339",
+                            "number_or_numeric_string",
+                            "fraction",
+                        ),
                     ],
                 },
             ],
@@ -189,10 +147,7 @@ export const kimiCodePreset: ProviderPreset = {
                 literal("/chat/completions"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
                 paramRow("X-Msh-Device-Id", [
                     slot("device_id"),
                 ]),
@@ -233,74 +188,9 @@ export const kimiCodePreset: ProviderPreset = {
                                 literal("KimiCLI/1.0.0"),
                             ]),
                         ],
-                        body: {
-                            kind: "form",
-                            fields: [
-                                paramRow("client_id", [
-                                    clientId(),
-                                ]),
-                            ],
-                        },
+                        body: deviceAuthorizationBody(),
                     },
-                    response: {
-                        encoding: "json",
-                        fields: [
-                            {
-                                path: [
-                                    "device_code",
-                                ],
-                                target: {
-                                    type: "device_code",
-                                },
-                                required: true,
-                            },
-                            {
-                                path: [
-                                    "user_code",
-                                ],
-                                target: {
-                                    type: "user_code",
-                                },
-                                required: true,
-                            },
-                            {
-                                path: [
-                                    "verification_uri_complete",
-                                ],
-                                target: {
-                                    type: "verification_uri_complete",
-                                },
-                                required: false,
-                            },
-                            {
-                                path: [
-                                    "verification_uri",
-                                ],
-                                target: {
-                                    type: "verification_uri",
-                                },
-                                required: false,
-                            },
-                            {
-                                path: [
-                                    "expires_in",
-                                ],
-                                target: {
-                                    type: "expires_in_seconds",
-                                },
-                                required: false,
-                            },
-                            {
-                                path: [
-                                    "interval",
-                                ],
-                                target: {
-                                    type: "interval_seconds",
-                                },
-                                required: false,
-                            },
-                        ],
-                    },
+                    response: deviceAuthorizationResponse(true),
                 },
                 expires_in_fallback_seconds: 900,
             },
@@ -321,53 +211,9 @@ export const kimiCodePreset: ProviderPreset = {
                             literal("KimiCLI/1.0.0"),
                         ]),
                     ],
-                    body: {
-                        kind: "form",
-                        fields: [
-                            paramRow("grant_type", [
-                                literal("urn:ietf:params:oauth:grant-type:device_code"),
-                            ]),
-                            paramRow("client_id", [
-                                clientId(),
-                            ]),
-                            paramRow("device_code", [
-                                deviceCode(),
-                            ]),
-                        ],
-                    },
+                    body: deviceExchangeBody(),
                 },
-                response: {
-                    encoding: "json",
-                    fields: [
-                        {
-                            path: [
-                                "access_token",
-                            ],
-                            target: {
-                                type: "access_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "refresh_token",
-                            ],
-                            target: {
-                                type: "refresh_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "expires_in",
-                            ],
-                            target: {
-                                type: "expires_in_seconds",
-                            },
-                            required: false,
-                        },
-                    ],
-                },
+                response: tokenExchangeResponse(),
                 terminal_codes: [
                     "expired_token",
                     "access_denied",
@@ -411,31 +257,8 @@ export const kimiCodePreset: ProviderPreset = {
                 ],
             },
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    literal("https://api.kimi.com/coding/v1/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery([
+            literal("https://api.kimi.com/coding/v1/models"),
+        ]),
     },
 };

@@ -1,6 +1,5 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
-import { registerDirtyForm } from "/src/dirty-form-registry";
 import {
     type AccessInventory,
     isSamePolicy,
@@ -15,6 +14,7 @@ import {
 } from "/src/features/api-keys/api-key-form";
 import { readPublishedInventory } from "/src/features/inventory/read";
 import { translation } from "/src/i18n";
+import { registerLeaveGuardSubject } from "/src/leave-guard-registry";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyAccessControl } from "/src/management-api/generated/v0";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
@@ -78,16 +78,16 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
             setInventory(await readOne(signal, readPublishedInventory(props.api, null)));
         },
     });
-    const registration = registerDirtyForm();
+    const seat = registerLeaveGuardSubject();
     createEffect(
         () =>
             name() !== "" ||
             secret() !== "" ||
             !isEnabled() ||
             !isSamePolicy(policy(), newAccessControl()),
-        registration.reportDirty,
+        seat.reportGuarded,
     );
-    onCleanup(registration.unregister);
+    onCleanup(seat.release);
 
     /** Inline error for the name, shown where it was typed. */
     const nameError = (): string | null => (hasNameInput() ? apiKeyNameError(name()) : null);
@@ -122,7 +122,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
             ),
         }),
         onCreated: (result) => {
-            registration.reportDirty(false);
+            seat.reportGuarded(false);
             navigate(hrefs.apiKeyDetail(result.api_key.id));
         },
     });
@@ -137,7 +137,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                     ($) => $.screens.apiKeyNewScreen.oneSecretYourServingClientsShareMessage,
                 )}
                 backHref={hrefs.apiKeys()}
-                backLabel="API keys"
+                backLabel={translation()(($) => $.screens.apiKeyNewScreen.apiKeysBackLabel)}
             />
 
             <ReadNotice

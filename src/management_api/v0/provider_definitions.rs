@@ -137,6 +137,7 @@ pub(super) struct DefinitionEnvelope {
 /// Handles `POST /provider-definitions:list`.
 pub(super) async fn list(
     State(context): State<Context>,
+    WithRejection(Json(_request), _): WithRejection<Json<ListProviderDefinitionsRequest>, Error>,
 ) -> Result<Json<ListProviderDefinitionsResponse>, Error> {
     let definitions = storage::provider_definitions::list_definitions(&context.database).await?;
 
@@ -189,6 +190,24 @@ pub(super) async fn update(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<UpdateProviderDefinitionRequest>, Error>,
 ) -> Result<Json<DefinitionEnvelope>, Error> {
+    let stored = handle_update(&context.database, request).await?;
+
+    Ok(Json(DefinitionEnvelope {
+        provider_definition: DefinitionResponse::from_definition(&stored),
+    }))
+}
+
+/// Extends one definition name's history with its validated successor version.
+///
+/// # Errors
+///
+/// Returns [`Error`] for an empty name, a non-positive base version, an invalid payload, a
+/// stale base version against an existing name, an unknown definition name, and storage
+/// failures.
+async fn handle_update(
+    database: &crate::database::Database,
+    request: UpdateProviderDefinitionRequest,
+) -> Result<crate::provider::ProviderDefinition, Error> {
     super::validate_identifier("name", &request.name)?;
 
     let Some(base_version) = NonZeroI64::new(request.base_version) else {
@@ -201,7 +220,7 @@ pub(super) async fn update(
         .map_err(Error::InvalidDefinition)?;
 
     let stored = storage::provider_definitions::insert_definition(
-        &context.database,
+        database,
         storage::provider_definitions::NewDefinition {
             name: &request.name,
             base_version: Some(base_version),
@@ -210,11 +229,7 @@ pub(super) async fn update(
         },
     )
     .await
-    .map_err(|error| match error {
-        storage::Error::Conflict { message } => Error::StaleDefinitionVersion { message },
-        storage::Error::NotFound { message } => Error::StaleDefinitionVersion { message },
-        other => other.into(),
-    })?;
+    .map_err(|error| definition_insert_error(error, request.name.clone(), base_version))?;
 
     info!(
         "created provider definition `{}` version {}",
@@ -222,7 +237,136 @@ pub(super) async fn update(
         stored.version.get()
     );
 
-    Ok(Json(DefinitionEnvelope {
-        provider_definition: DefinitionResponse::from_definition(&stored),
-    }))
+    Ok(stored)
+}
+
+/// Classifies the insert of a successor version: a stored latest version behind the request's
+/// base is the stale-version conflict, an unknown definition name is the version's
+/// unknown-reference 404 carrying the exact referenced pair — a missing name collides with
+/// nothing — and every other storage failure keeps its own classification.
+fn definition_insert_error(error: storage::Error, name: String, base_version: NonZeroI64) -> Error {
+    match error {
+        storage::Error::Conflict { message } => Error::StaleDefinitionVersion { message },
+
+        storage::Error::NotFound { .. } => Error::DefinitionNotFound {
+            name,
+            version: base_version.get(),
+        },
+
+        other => other.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, UpdateProviderDefinitionRequest, definition_insert_error, handle_update};
+    use crate::{format::UpstreamFormat, storage, test_support};
+    use std::num::NonZeroI64;
+
+    /// Builds one `provider-definitions:update` request: the fixture payload under the given
+    /// name, succeeding the given base version.
+    fn update_request(name: &str, base_version: i64) -> UpdateProviderDefinitionRequest {
+        UpdateProviderDefinitionRequest {
+            name: name.to_string(),
+            base_version,
+            payload: crate::test_support::static_key_definition_payload(
+                UpstreamFormat::OpenAiChatCompletion,
+            ),
+        }
+    }
+
+    /// The successor-version insert classifies its two reference failures apart: a stored latest
+    /// version behind the request's base is the conflict, an unknown definition name is the
+    /// version's unknown-reference 404 carrying the exact referenced pair, and every other
+    /// storage failure keeps its own classification.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a classification diverges.
+    #[test]
+    fn classifies_the_successor_insert_failures() {
+        #[expect(clippy::expect_used, reason = "the fixture base version is positive")]
+        let base_version = NonZeroI64::new(1).expect("the fixture base version is positive");
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::StaleDefinitionVersion { message } = definition_insert_error(
+            storage::Error::Conflict {
+                message: "stale".to_string(),
+            },
+            "static-def".to_string(),
+            base_version,
+        ) else {
+            panic!("a stale base version classifies as the conflict");
+        };
+
+        assert_eq!(message, "stale");
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::DefinitionNotFound { name, version } = definition_insert_error(
+            storage::Error::NotFound {
+                message: "does not exist".to_string(),
+            },
+            "absent-def".to_string(),
+            base_version,
+        ) else {
+            panic!("an unknown definition name classifies as the unknown-reference 404");
+        };
+
+        assert_eq!(name, "absent-def");
+        assert_eq!(version, 1);
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::Storage(storage::Error::Database(_)) = definition_insert_error(
+            storage::Error::Database(crate::database::Error::PoolClosed),
+            "static-def".to_string(),
+            base_version,
+        ) else {
+            panic!("an unrelated storage failure keeps its own classification");
+        };
+    }
+
+    /// `provider-definitions:update` against an existing name whose stored latest version is
+    /// behind the request's base renders the stale-version conflict through the live write path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture fails to insert or the rejection diverges.
+    #[tokio::test]
+    async fn a_stale_base_against_an_existing_name_renders_the_conflict() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        let error = handle_update(&database, update_request("static-def", 2))
+            .await
+            .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::StaleDefinitionVersion { message } = error else {
+            panic!("a stale base version against an existing name renders the conflict");
+        };
+
+        assert!(message.contains("static-def"), "{message}");
+    }
 }

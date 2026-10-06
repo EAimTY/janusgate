@@ -1,8 +1,17 @@
 //! Product-independent quota descriptor vocabulary (README §5.10).
+//!
+//! A [`QuotaDescriptor`] is one read-only control request plus an ordered list of extraction
+//! sources. Extraction is atomic and strict: absent or null optional sources and entries are
+//! omitted, missing optional facts become explicit unknown variants, and a malformed present
+//! value fails the complete reading. The three path contexts every [`QuotaField`] selects from
+//! are the response `root`, the `item` a source selected, and the `entry` object an entry's own
+//! `at` member addresses; the `entry` context is unavailable while evaluating source scope or
+//! array identity, where the entry object does not exist yet.
 
 use super::template::{ControlRequest, ResponsePath};
 use crate::provider::quota::SafeDuration;
 use serde::{Deserialize, Serialize};
+use vec1::Vec1;
 
 /// One read-only quota query and its ordered extraction sources.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -11,8 +20,15 @@ use serde::{Deserialize, Serialize};
 pub struct QuotaDescriptor {
     /// The authenticated control request.
     pub request: ControlRequest,
-    /// Nonempty ordered sources, validated at the management write boundary.
-    pub sources: Vec<QuotaSource>,
+    /// Nonempty ordered sources; the carrying `Vec1` type rejects an empty list at parse.
+    /// Result order follows the declared source order; an empty collection inside an otherwise
+    /// well-formed response extracts no observations, while a present malformed value fails the
+    /// whole reading.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(as = "Vec<QuotaSource>")
+    )]
+    pub sources: Vec1<QuotaSource>,
 }
 
 /// One independently identified allowance within a source item.
@@ -20,13 +36,16 @@ pub struct QuotaDescriptor {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct QuotaEntryExtraction {
-    /// Stable entry identity segment.
+    /// Stable entry identity segment, unique among the source's entries and carried verbatim
+    /// into the restriction key tuple.
     pub key: String,
-    /// Human-readable restriction name.
+    /// Human-readable restriction name; presentation only — it never selects models or implies
+    /// account-wide applicability.
     pub label: String,
-    /// Object path relative to the selected item.
+    /// Object path relative to the selected item; the object it addresses becomes the entry
+    /// context for the entry's own field selections.
     pub at: ResponsePath,
-    /// Whether an absent entry fails extraction.
+    /// Whether an absent entry fails extraction; an absent optional entry is omitted.
     pub is_required: bool,
     /// Allowance period mapping.
     pub window: QuotaWindowSource,
@@ -37,7 +56,8 @@ pub struct QuotaEntryExtraction {
     /// Authored dispatch applicability, independent of presentation scope and labels.
     #[serde(default)]
     pub routing: QuotaRoutingSource,
-    /// Optional explicit boolean that bypasses numeric measurement extraction.
+    /// Optional explicit boolean that bypasses numeric measurement extraction: a present `true`
+    /// yields the unlimited measurement without reading the numeric fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub is_unlimited: Option<QuotaField>,
@@ -53,14 +73,20 @@ pub enum QuotaRoutingSource {
     MonitoringOnly,
     /// Applies to every exact physical model on the account.
     AllModels,
-    /// Applies only to the nonempty set of exact IDs resolved in this entry's contexts.
+    /// Applies only to the nonempty set of exact IDs resolved in this entry's contexts; the
+    /// carrying `Vec1` type rejects an empty set at parse.
     Models {
         /// Required text sources; unresolved values invalidate the complete observation.
-        upstream_ids: Vec<QuotaTextSource>,
+        #[cfg_attr(
+            feature = "management-api-typescript-bindings",
+            ts(as = "Vec<QuotaTextSource>")
+        )]
+        upstream_ids: Vec1<QuotaTextSource>,
     },
 }
 
-/// A scalar selection with an explicit response context.
+/// A scalar selection with an explicit response context: the path resolves from the declared
+/// [`QuotaFieldBase`] context, and the empty path selects the context object itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -69,11 +95,12 @@ pub struct QuotaField {
     pub base: QuotaFieldBase,
     /// Object-member chain; empty selects the context itself.
     pub path: ResponsePath,
-    /// Whether absence fails extraction.
+    /// Whether absence fails extraction; absence of an optional field yields the unknown fact.
     pub is_required: bool,
 }
 
-/// A numeric field with an explicit wire encoding.
+/// A numeric field with an explicit wire encoding: the encoding names the accepted JSON
+/// representation, and a present value in any other representation fails the whole reading.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -84,95 +111,109 @@ pub struct QuotaNumberField {
     pub encoding: QuotaNumberEncoding,
 }
 
-/// One source collection; its order and identity determine result order.
+/// One source collection; its order and identity determine result order. Every source carries a
+/// stable `key` — unique among the descriptor's sources and the first segment of every identity
+/// tuple its items produce — and the root-relative `at` path selecting the collection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuotaSource {
-    /// The Object mapping.
+    /// A single whole object: the value `at` addresses is the one item, carrying no identity
+    /// segment beyond the source key. A non-object value fails the reading.
     Object {
-        /// The configured key.
+        /// Stable source identity segment, unique among the descriptor's sources.
         key: String,
-        /// The configured at.
+        /// Root-relative object-member path selecting the item.
         at: ResponsePath,
-        /// The configured is required.
+        /// Whether an absent source fails extraction; an absent optional source is omitted.
         is_required: bool,
-        /// The configured scope.
-        scope: QuotaScopeSource,
-        /// The configured entries.
-        entries: Vec<QuotaEntryExtraction>,
+        /// Optional named scope resolved once against the root and the single item; absent is
+        /// the unknown scope.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        scope: Option<QuotaTextSource>,
+        /// Nonempty ordered entry extractions applied to the item; the carrying `Vec1` type
+        /// rejects an empty list at parse.
+        #[cfg_attr(
+            feature = "management-api-typescript-bindings",
+            ts(as = "Vec<QuotaEntryExtraction>")
+        )]
+        entries: Vec1<QuotaEntryExtraction>,
     },
-    /// The Array mapping.
+    /// An array whose elements are the items, in declared upstream order. Every item must be an
+    /// object carrying the required identity fields.
     Array {
-        /// The configured key.
+        /// Stable source identity segment, unique among the descriptor's sources.
         key: String,
-        /// The configured at.
+        /// Root-relative object-member path selecting the array.
         at: ResponsePath,
-        /// The configured is required.
+        /// Whether an absent source fails extraction; an absent optional source is omitted.
         is_required: bool,
-        /// The configured identity.
-        identity: Vec<QuotaTextSource>,
-        /// The configured scope.
-        scope: QuotaScopeSource,
-        /// The configured entries.
-        entries: Vec<QuotaEntryExtraction>,
+        /// Nonempty ordered identity text sources evaluated per item against the root and the
+        /// item; at least one must be a required item-base field, and `map_key` is unavailable.
+        /// The carrying `Vec1` type rejects an empty list at parse.
+        #[cfg_attr(
+            feature = "management-api-typescript-bindings",
+            ts(as = "Vec<QuotaTextSource>")
+        )]
+        identity: Vec1<QuotaTextSource>,
+        /// Optional named scope resolved per item; absent is the unknown scope.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        scope: Option<QuotaTextSource>,
+        /// Nonempty ordered entry extractions applied to each item; the carrying `Vec1` type
+        /// rejects an empty list at parse.
+        #[cfg_attr(
+            feature = "management-api-typescript-bindings",
+            ts(as = "Vec<QuotaEntryExtraction>")
+        )]
+        entries: Vec1<QuotaEntryExtraction>,
     },
-    /// The Map mapping.
+    /// An object whose members are the items, visited in lexicographic key order; each member
+    /// name is the item's identity segment. The member key is available to the scope as
+    /// `map_key`.
     Map {
-        /// The configured key.
+        /// Stable source identity segment, unique among the descriptor's sources.
         key: String,
-        /// The configured at.
+        /// Root-relative object-member path selecting the object.
         at: ResponsePath,
-        /// The configured is required.
+        /// Whether an absent source fails extraction; an absent optional source is omitted.
         is_required: bool,
-        /// The configured scope.
-        scope: QuotaScopeSource,
-        /// The configured entries.
-        entries: Vec<QuotaEntryExtraction>,
+        /// Optional named scope resolved per member, where `map_key` selects the member key;
+        /// absent is the unknown scope.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        scope: Option<QuotaTextSource>,
+        /// Nonempty ordered entry extractions applied to each member value; the carrying
+        /// `Vec1` type rejects an empty list at parse.
+        #[cfg_attr(
+            feature = "management-api-typescript-bindings",
+            ts(as = "Vec<QuotaEntryExtraction>")
+        )]
+        entries: Vec1<QuotaEntryExtraction>,
     },
 }
 
-/// A nonempty text fact or identity segment.
+/// A nonempty text fact, identity segment, or scope name; the one text-source vocabulary the
+/// array identity, the scope, and the routing selectors share.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuotaTextSource {
-    /// The Literal mapping.
+    /// Author-configured constant text.
     Literal {
-        /// The configured value.
+        /// The exact text.
         value: String,
     },
-    /// The Field mapping.
+    /// A text field read through its declared context and encoding; a present value of the
+    /// wrong encoding fails the reading.
     Field {
-        /// The configured field.
+        /// The scalar selection.
         field: QuotaField,
-        /// The configured encoding.
+        /// Accepted text representation.
         encoding: QuotaTextEncoding,
     },
-    /// The MapKey mapping.
-    MapKey,
-}
-
-/// An optional named scope, independent of the restriction label.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaScopeSource {
-    /// The Unknown mapping.
-    Unknown,
-    /// The Literal mapping.
-    Literal {
-        /// The configured value.
-        value: String,
-    },
-    /// The Field mapping.
-    Field {
-        /// The configured field.
-        field: QuotaField,
-        /// The configured encoding.
-        encoding: QuotaTextEncoding,
-    },
-    /// The MapKey mapping.
+    /// The enclosing map source's member key; available only in a map context.
     MapKey,
 }
 
@@ -181,113 +222,121 @@ pub enum QuotaScopeSource {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuotaWindowSource {
-    /// The Unknown mapping.
+    /// The period is unknown; a fixed-seconds, calendar-month, or duration-field mapping that
+    /// never resolves becomes this unknown window.
     Unknown,
-    /// The Duration mapping.
+    /// A fixed positive whole-second allowance duration.
     Duration {
-        /// The configured seconds.
+        /// The configured duration in seconds.
         seconds: SafeDuration,
     },
-    /// The Calendar mapping.
+    /// A calendar period; a calendar month has no guessed alignment.
     Calendar {
-        /// The configured unit.
+        /// The calendar unit.
         unit: QuotaCalendarUnit,
     },
-    /// The DurationField mapping.
+    /// A duration read from an upstream field through its declared numeric encoding and unit;
+    /// the resolved magnitude must be a positive whole number of the declared unit.
     DurationField {
-        /// The configured value.
+        /// The numeric field carrying the duration magnitude.
         value: QuotaNumberField,
-        /// The configured unit.
+        /// The unit the upstream magnitude is expressed in.
         unit: QuotaDurationUnit,
     },
 }
 
-/// The active quota measurement and its normalization direction.
+/// The active quota measurement and its normalization direction. Used values may exceed limits;
+/// remaining ratios must lie within their scale, and remaining counters cannot exceed their
+/// positive limit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuotaMeasurementSource {
-    /// The Unknown mapping.
+    /// The measurement is unknown; a mapping whose optional numeric fields are absent becomes
+    /// this unknown measurement only after the present fields validate.
     Unknown,
-    /// The Ratio mapping.
+    /// A fraction or percentage of an allowance, read in the declared direction.
     Ratio {
-        /// The configured value.
+        /// The numeric field carrying the ratio magnitude.
         value: QuotaNumberField,
-        /// The configured scale.
+        /// The scale the magnitude is expressed on.
         scale: QuotaRatioScale,
-        /// The configured direction.
+        /// Whether the magnitude reports used or remaining allowance.
         direction: QuotaDirection,
     },
-    /// The Counter mapping.
+    /// A used or remaining amount against a positive limit, in the declared unit.
     Counter {
-        /// The configured value.
+        /// The numeric field carrying the used or remaining amount.
         value: QuotaNumberField,
-        /// The configured limit.
+        /// The numeric field carrying the positive limit.
         limit: QuotaNumberField,
-        /// The configured direction.
+        /// Whether the amount reports used or remaining allowance.
         direction: QuotaDirection,
-        /// The configured unit.
+        /// The configured unit text of both amounts.
         unit: String,
     },
-    /// The Remaining mapping.
+    /// A remaining-only amount without a declared limit, in the declared unit.
     Remaining {
-        /// The configured value.
+        /// The numeric field carrying the remaining amount.
         value: QuotaNumberField,
-        /// The configured unit.
+        /// The configured unit text of the amount.
         unit: String,
     },
 }
 
-/// Reset metadata mapping without timestamp-format guessing.
+/// Reset metadata mapping without timestamp-format guessing: the encoding names the exact wire
+/// representation, and a present value in any other representation fails the reading.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuotaResetSource {
-    /// The Unknown mapping.
+    /// The reset instant is unknown.
     Unknown,
-    /// The Field mapping.
+    /// The reset instant read from a field in one exact representation.
     Field {
-        /// The configured field.
+        /// The scalar selection.
         field: QuotaField,
-        /// The configured encoding.
+        /// Accepted reset representation.
         encoding: QuotaResetEncoding,
     },
 }
 
-/// Scalar selection context.
+/// The context object a [`QuotaField`] path resolves from.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaFieldBase {
-    /// The Root representation.
+    /// The complete decoded response root.
     Root,
-    /// The Item representation.
+    /// The item the enclosing source selected.
     Item,
-    /// The Entry representation.
+    /// The object the enclosing entry's own `at` path addresses; unavailable while evaluating
+    /// source scope or array identity.
     Entry,
 }
 
-/// Identity text representation.
+/// Accepted text representation of a [`QuotaTextSource::Field`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaTextEncoding {
-    /// The String representation.
+    /// A JSON string.
     String,
-    /// The Integer representation.
+    /// A JSON integer, read by its exact spelling — never through floating-point conversion.
     Integer,
 }
 
-/// Accepted numeric wire representation.
+/// Accepted numeric wire representation of a [`QuotaNumberField`]: numeric strings use the JSON
+/// number grammar without whitespace, signs other than a leading minus, or nonfinite spellings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaNumberEncoding {
-    /// The Number representation.
+    /// A JSON number only.
     Number,
-    /// The NumericString representation.
+    /// A strict JSON numeric string only.
     NumericString,
-    /// The NumberOrNumericString representation.
+    /// Either a JSON number or a strict JSON numeric string.
     NumberOrNumericString,
 }
 
@@ -296,35 +345,35 @@ pub enum QuotaNumberEncoding {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaCalendarUnit {
-    /// The Month representation.
+    /// One calendar month, carrying no guessed alignment.
     Month,
 }
 
-/// Fixed duration unit.
+/// Fixed duration unit of a [`QuotaWindowSource::DurationField`] magnitude.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaDurationUnit {
-    /// The Seconds representation.
+    /// Seconds.
     Seconds,
-    /// The Minutes representation.
+    /// Minutes.
     Minutes,
-    /// The Hours representation.
+    /// Hours.
     Hours,
-    /// The Days representation.
+    /// Days.
     Days,
-    /// The Weeks representation.
+    /// Weeks.
     Weeks,
 }
 
-/// Ratio magnitude scale.
+/// Ratio magnitude scale of a [`QuotaMeasurementSource::Ratio`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaRatioScale {
-    /// The Fraction representation.
+    /// A magnitude within `[0, 1]`.
     Fraction,
-    /// The Percent representation.
+    /// A magnitude within `[0, 100]`.
     Percent,
 }
 
@@ -333,23 +382,23 @@ pub enum QuotaRatioScale {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaDirection {
-    /// The Used representation.
+    /// The magnitude reports consumed allowance.
     Used,
-    /// The Remaining representation.
+    /// The magnitude reports remaining allowance.
     Remaining,
 }
 
-/// Explicit reset representation.
+/// Exact reset representation of a [`QuotaResetSource::Field`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaResetEncoding {
-    /// The UnixSeconds representation.
+    /// Whole Unix seconds; the instant keeps its exact value.
     UnixSeconds,
-    /// The UnixMilliseconds representation.
+    /// Whole Unix milliseconds; the instant keeps its exact value.
     UnixMilliseconds,
-    /// The Rfc3339 representation.
+    /// An RFC 3339 instant, rejecting any nonzero fractional digit beyond microseconds.
     Rfc3339,
-    /// The Date representation.
+    /// A calendar date without a time or timezone; never an absolute instant on its own.
     Date,
 }

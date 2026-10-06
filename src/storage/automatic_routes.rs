@@ -1,8 +1,11 @@
 //! Automatic model exposure owned by standalone providers and pools.
 
-use super::{Error, routing::route_from_row};
+use super::{
+    Error,
+    routing::{route_from_row, target_columns},
+};
 use crate::{
-    database::{Transaction, params},
+    database::{Transaction, Value, params},
     routing::ModelRouteTarget,
 };
 use std::collections::BTreeSet;
@@ -87,21 +90,53 @@ pub(super) async fn synchronize(transaction: &mut Transaction) -> Result<(), Err
     {
         return Ok(());
     }
+    // The authored namespace is probed once for every distinct desired name — a single query
+    // over all of them replaces a probe per entry — while the first offending entry in desired
+    // order, a name an authored route holds or a duplicate, reports the conflict.
     let mut names = BTreeSet::new();
+    let mut distinct = Vec::new();
+    let mut duplicate = None;
     for entry in &entries {
-        if !names.insert(&entry.public_id)
-            || !transaction
-                .query(
-                    "SELECT id FROM model_routes WHERE public_id = ?1 AND is_automatic = 0",
-                    params![entry.public_id.as_str()],
-                )
-                .await?
-                .is_empty()
-        {
-            return Err(Error::Conflict {
-                message: format!("Public model ID `{}` is already taken", entry.public_id),
-            });
+        if !names.insert(&entry.public_id) {
+            duplicate = Some(&entry.public_id);
+            break;
         }
+        distinct.push(entry.public_id.as_str());
+    }
+
+    let taken = if distinct.is_empty() {
+        BTreeSet::new()
+    } else {
+        let placeholders = (1..=distinct.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        transaction
+            .query(
+                format!(
+                    "SELECT public_id FROM model_routes \
+                     WHERE is_automatic = 0 AND public_id IN ({placeholders})"
+                ),
+                distinct
+                    .iter()
+                    .map(|name| Value::Text((*name).into()))
+                    .collect::<Vec<_>>(),
+            )
+            .await?
+            .iter()
+            .map(|row| row.get::<String>(0))
+            .collect::<Result<BTreeSet<_>, _>>()?
+    };
+
+    let offender = entries
+        .iter()
+        .find(|entry| taken.contains(&entry.public_id))
+        .map(|entry| &entry.public_id)
+        .or(duplicate);
+    if let Some(public_id) = offender {
+        return Err(Error::Conflict {
+            message: format!("Public model ID `{public_id}` is already taken"),
+        });
     }
     // Public routing tokens cannot contain `:`. Park surviving names in this transaction-only
     // namespace so overlapping prefix renames are unique at every statement, without deleting
@@ -130,13 +165,7 @@ pub(super) async fn synchronize(transaction: &mut Transaction) -> Result<(), Err
                 .await?;
             continue;
         }
-        let (model_id, pool_id, upstream_id) = match entry.target {
-            ModelRouteTarget::Direct { model_id } => (Some(model_id), None, None),
-            ModelRouteTarget::Pool {
-                pool_id,
-                upstream_id,
-            } => (None, Some(pool_id), Some(upstream_id)),
-        };
+        let (model_id, pool_id, upstream_id) = target_columns(&entry.target);
         transaction.execute(
             "INSERT INTO model_routes (public_id, model_id, pool_id, upstream_id, is_automatic) \
              VALUES (?1, ?2, ?3, ?4, 1)",

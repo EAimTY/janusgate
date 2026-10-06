@@ -1,8 +1,8 @@
 import { createRoot, createSignal } from "solid-js";
 import { describe, expect, it } from "vitest";
-import { hasDirtyForms } from "../dirty-form-registry";
 import { isSameApiKeyRow } from "../features/api-keys/row-equality";
 import { isSameModelRow, isSameProviderRow } from "../features/inventory/row-equality";
+import { hasGuardedSubjects } from "../leave-guard-registry";
 import type { ApiKeyResponse, ProviderResponse } from "../management-api/generated/v0";
 import { ErrorCode } from "../management-api/generated/v0";
 import { performManagementCall } from "../management-api/outcome";
@@ -700,6 +700,57 @@ describe("row-identity predicates", () => {
                 id: 8,
             }),
         ).toBe(false);
+        // The access policy rides the walk as a structural override: a
+        // different policy breaks the identity, and the same rules in a
+        // different order keep it.
+        expect(
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
+                access_control: {
+                    ...identityApiKeyRow.access_control,
+                    default_access: "allow",
+                },
+            }),
+        ).toBe(false);
+        const ruledRow = {
+            ...identityApiKeyRow,
+            access_control: {
+                default_access: "deny" as const,
+                owner_defaults: [
+                    {
+                        type: "provider" as const,
+                        provider_id: 1,
+                        access: "allow" as const,
+                    },
+                    {
+                        type: "pool" as const,
+                        pool_id: 2,
+                        access: "deny" as const,
+                    },
+                ],
+                route_overrides: [],
+            },
+        };
+        expect(
+            isSameApiKeyRow(ruledRow, {
+                ...ruledRow,
+                access_control: {
+                    ...ruledRow.access_control,
+                    owner_defaults: [
+                        {
+                            type: "pool",
+                            pool_id: 2,
+                            access: "deny",
+                        },
+                        {
+                            type: "provider",
+                            provider_id: 1,
+                            access: "allow",
+                        },
+                    ],
+                },
+            }),
+        ).toBe(true);
     });
 });
 
@@ -954,26 +1005,26 @@ describe("createEditRow", () => {
 
         // No dirt stands before the form reports any.
         await settle();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
 
         // The same report feeds the row hold and the registry, so the shell's
         // beforeunload gate follows the form with no second dirt source.
         edit.reportFormDirty(true);
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         edit.reportFormDirty(false);
         await settle();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
 
         // A screen that goes away dirty cannot leave the guard armed behind
         // it; a remounted form registers afresh.
         edit.reportFormDirty(true);
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
         dispose();
         await settle();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 });
 

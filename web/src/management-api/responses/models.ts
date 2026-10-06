@@ -9,9 +9,9 @@ import type {
 import {
     expectArray,
     expectBoolean,
-    expectInteger,
     expectNullableInteger,
     expectRecord,
+    expectRowId,
     expectString,
     parseEnvelopeResponse,
     parseListResponse,
@@ -28,7 +28,7 @@ import {
  * array narrows each member to a string. Non-array, non-null input is a
  * contract violation.
  */
-function expectNullableStringArray(value: unknown, context: string): Array<string> | null {
+function parseNullableStringArray(value: unknown, context: string): Array<string> | null {
     if (value === null) {
         return null;
     }
@@ -44,8 +44,8 @@ function expectNullableStringArray(value: unknown, context: string): Array<strin
  * contract violation, since both gateway write paths store canonicalized
  * vocabulary sets only.
  */
-function expectNullableReasoningLevels(value: unknown, context: string): Array<string> | null {
-    const levels = expectNullableStringArray(value, context);
+function parseNullableReasoningLevels(value: unknown, context: string): Array<string> | null {
+    const levels = parseNullableStringArray(value, context);
 
     if (levels === null) {
         return null;
@@ -63,7 +63,7 @@ function expectNullableReasoningLevels(value: unknown, context: string): Array<s
  * support value is a contract violation, since both gateway write paths
  * store closed vocabulary members only.
  */
-function expectNullableCompactionFacts<TSupport extends MechanismSupport>(
+function parseNullableCompactionFacts<TSupport extends MechanismSupport>(
     value: unknown,
     context: string,
     supports: ReadonlyArray<TSupport>,
@@ -108,22 +108,22 @@ function expectNullableCompactionFacts<TSupport extends MechanismSupport>(
 }
 
 /** One model row's discovered compaction facts: known facts only, never `"unknown"`. */
-function expectDiscoveredCompactionFacts(
+function parseDiscoveredCompactionFacts(
     value: unknown,
     context: string,
 ): ModelResponse["compaction_support"] {
-    return expectNullableCompactionFacts(value, context, [
+    return parseNullableCompactionFacts(value, context, [
         "supported",
         "unsupported",
     ]);
 }
 
 /** One model row's compaction-facts override: the explicit `"unknown"` included. */
-function expectCompactionOverrideFacts(
+function parseCompactionOverrideFacts(
     value: unknown,
     context: string,
 ): ModelResponse["compaction_support_override"] {
-    return expectNullableCompactionFacts(value, context, [
+    return parseNullableCompactionFacts(value, context, [
         "supported",
         "unsupported",
         "unknown",
@@ -141,8 +141,8 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
     const record = expectRecord(value, context);
 
     return {
-        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
-        provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
+        id: expectRowId(Reflect.get(record, "id"), `${context}.id`),
+        provider_id: expectRowId(Reflect.get(record, "provider_id"), `${context}.provider_id`),
         provider: expectString(Reflect.get(record, "provider"), `${context}.provider`),
         upstream_id: expectString(Reflect.get(record, "upstream_id"), `${context}.upstream_id`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
@@ -150,7 +150,7 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
             Reflect.get(record, "discovery_state"),
             `${context}.discovery_state`,
         ),
-        thinking_levels: expectNullableReasoningLevels(
+        thinking_levels: parseNullableReasoningLevels(
             Reflect.get(record, "thinking_levels"),
             `${context}.thinking_levels`,
         ),
@@ -162,7 +162,7 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
             Reflect.get(record, "max_output_tokens"),
             `${context}.max_output_tokens`,
         ),
-        thinking_levels_override: expectNullableReasoningLevels(
+        thinking_levels_override: parseNullableReasoningLevels(
             Reflect.get(record, "thinking_levels_override"),
             `${context}.thinking_levels_override`,
         ),
@@ -174,11 +174,11 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
             Reflect.get(record, "max_output_tokens_override"),
             `${context}.max_output_tokens_override`,
         ),
-        compaction_support: expectDiscoveredCompactionFacts(
+        compaction_support: parseDiscoveredCompactionFacts(
             Reflect.get(record, "compaction_support"),
             `${context}.compaction_support`,
         ),
-        compaction_support_override: expectCompactionOverrideFacts(
+        compaction_support_override: parseCompactionOverrideFacts(
             Reflect.get(record, "compaction_support_override"),
             `${context}.compaction_support_override`,
         ),

@@ -5,23 +5,26 @@ import type {
     CountTokensOperation,
     MechanismDeclarations,
     MechanismSupport,
-    ParamRow,
+    OverlayDeclaration,
+    RideAlongDeclaration,
     StandaloneCompactDeclaration,
     StandaloneCompactOperation,
     TemplateNode,
-    TriggerDeclaration,
     UnsupportedClassifier,
     UpstreamFormat,
 } from "../generated/v0";
 import {
     expectArray,
     expectBoolean,
+    expectDeclaredKeys,
     expectInteger,
+    expectOneOf,
     expectRecord,
     expectString,
+    isPresentValue,
 } from "../validation-primitives";
+import type { CompactionMechanism } from "../vocabulary";
 import { expectParamRows, expectStringExpr, expectTemplateNode } from "./expressions";
-import { expectDeclaredKeys, expectOneOf, isPresentValue } from "./validation";
 
 /** The tagged compaction strategy a definition follows (README §5). */
 function expectCompactionStrategy(value: unknown, context: string): CompactionStrategy {
@@ -283,7 +286,6 @@ function requireCompactionFormat(
     format: UpstreamFormat,
     required: UpstreamFormat,
     subject: string,
-    _context: string,
 ): void {
     if (format !== required) {
         throw new ContractViolationError(
@@ -347,7 +349,7 @@ function expectStandaloneDeclaration(
  * automatic threshold compaction (README §5): the mechanism rides the
  * ordinary inference connection, so no operation data exists to require.
  */
-function expectTriggerLikeDeclaration(value: unknown, context: string): TriggerDeclaration {
+function expectTriggerLikeDeclaration(value: unknown, context: string): RideAlongDeclaration {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
         record,
@@ -358,7 +360,7 @@ function expectTriggerLikeDeclaration(value: unknown, context: string): TriggerD
         context,
     );
 
-    const declaration: TriggerDeclaration = {
+    const declaration: RideAlongDeclaration = {
         default: expectDefaultSupport(Reflect.get(record, "default"), `${context}.default`),
     };
 
@@ -377,19 +379,13 @@ function expectTriggerLikeDeclaration(value: unknown, context: string): TriggerD
 /**
  * The Messages declarations — the on-demand and the threshold compaction
  * (README §5): the beta overlay headers the operation requires, present and
- * non-empty whenever the declaration declares support. The shared shape is
- * stated structurally — both generated declarations carry it identically,
- * and an added member breaks the assignment into the declarations record.
+ * non-empty whenever the declaration declares support.
  */
 function expectOverlayDeclaration(
     value: unknown,
     context: string,
     mechanism: string,
-): {
-    default: MechanismSupport;
-    overlay_headers?: Array<ParamRow>;
-    unsupported?: UnsupportedClassifier;
-} {
+): OverlayDeclaration {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
         record,
@@ -401,11 +397,7 @@ function expectOverlayDeclaration(
         context,
     );
 
-    const declaration: {
-        default: MechanismSupport;
-        overlay_headers?: Array<ParamRow>;
-        unsupported?: UnsupportedClassifier;
-    } = {
+    const declaration: OverlayDeclaration = {
         default: expectDefaultSupport(Reflect.get(record, "default"), `${context}.default`),
     };
 
@@ -427,7 +419,7 @@ function expectOverlayDeclaration(
     if (declaration.default === "supported") {
         const headers = declaration.overlay_headers;
 
-        if (headers === undefined || headers.length === 0) {
+        if (headers === undefined || headers === null || headers.length === 0) {
             throw new ContractViolationError(
                 `the \`${mechanism}\` compaction declaration declares \`supported\` without ` +
                     "overlay headers; a definition cannot advertise native support without " +
@@ -439,6 +431,70 @@ function expectOverlayDeclaration(
     return declaration;
 }
 
+/**
+ * One mechanism's declaration walk, beside the one upstream format that can
+ * speak it (README §5), in the mechanisms record's declared-key order. Each
+ * walk parses the present declaration into the section's rebuilt record; the
+ * overlay walks restate the mechanism key their rejection message names.
+ */
+const MECHANISM_DECLARATIONS: ReadonlyArray<{
+    readonly key: CompactionMechanism;
+    readonly requiredFormat: UpstreamFormat;
+    readonly parse: (
+        value: unknown,
+        context: string,
+        declarations: MechanismDeclarations,
+        mechanism: string,
+    ) => void;
+}> = [
+    {
+        key: "responses_standalone_compact",
+        requiredFormat: "openai_response",
+        parse: (value, context, declarations) => {
+            declarations.responses_standalone_compact = expectStandaloneDeclaration(value, context);
+        },
+    },
+    {
+        key: "responses_explicit_trigger",
+        requiredFormat: "openai_response",
+        parse: (value, context, declarations) => {
+            declarations.responses_explicit_trigger = expectTriggerLikeDeclaration(value, context);
+        },
+    },
+    {
+        key: "responses_automatic_compaction",
+        requiredFormat: "openai_response",
+        parse: (value, context, declarations) => {
+            declarations.responses_automatic_compaction = expectTriggerLikeDeclaration(
+                value,
+                context,
+            );
+        },
+    },
+    {
+        key: "messages_on_demand_compaction",
+        requiredFormat: "anthropic_messages",
+        parse: (value, context, declarations, mechanism) => {
+            declarations.messages_on_demand_compaction = expectOverlayDeclaration(
+                value,
+                context,
+                mechanism,
+            );
+        },
+    },
+    {
+        key: "messages_threshold_compaction",
+        requiredFormat: "anthropic_messages",
+        parse: (value, context, declarations, mechanism) => {
+            declarations.messages_threshold_compaction = expectOverlayDeclaration(
+                value,
+                context,
+                mechanism,
+            );
+        },
+    },
+];
+
 /** The per-mechanism support declarations of one compaction section (README §5). */
 function expectMechanismDeclarations(
     value: unknown,
@@ -448,93 +504,19 @@ function expectMechanismDeclarations(
     const record = expectRecord(value, context);
     expectDeclaredKeys(
         record,
-        [
-            "responses_standalone_compact",
-            "responses_explicit_trigger",
-            "responses_automatic_compaction",
-            "messages_on_demand_compaction",
-            "messages_threshold_compaction",
-        ],
+        MECHANISM_DECLARATIONS.map((declaration) => declaration.key),
         context,
     );
 
     const declarations: MechanismDeclarations = {};
 
-    const standalone = Reflect.get(record, "responses_standalone_compact");
+    for (const { key, requiredFormat, parse } of MECHANISM_DECLARATIONS) {
+        const declaration = Reflect.get(record, key);
 
-    if (isPresentValue(standalone)) {
-        requireCompactionFormat(
-            format,
-            "openai_response",
-            "responses_standalone_compact",
-            `${context}.responses_standalone_compact`,
-        );
-        declarations.responses_standalone_compact = expectStandaloneDeclaration(
-            standalone,
-            `${context}.responses_standalone_compact`,
-        );
-    }
-
-    const trigger = Reflect.get(record, "responses_explicit_trigger");
-
-    if (isPresentValue(trigger)) {
-        requireCompactionFormat(
-            format,
-            "openai_response",
-            "responses_explicit_trigger",
-            `${context}.responses_explicit_trigger`,
-        );
-        declarations.responses_explicit_trigger = expectTriggerLikeDeclaration(
-            trigger,
-            `${context}.responses_explicit_trigger`,
-        );
-    }
-
-    const automatic = Reflect.get(record, "responses_automatic_compaction");
-
-    if (isPresentValue(automatic)) {
-        requireCompactionFormat(
-            format,
-            "openai_response",
-            "responses_automatic_compaction",
-            `${context}.responses_automatic_compaction`,
-        );
-        declarations.responses_automatic_compaction = expectTriggerLikeDeclaration(
-            automatic,
-            `${context}.responses_automatic_compaction`,
-        );
-    }
-
-    const onDemand = Reflect.get(record, "messages_on_demand_compaction");
-
-    if (isPresentValue(onDemand)) {
-        requireCompactionFormat(
-            format,
-            "anthropic_messages",
-            "messages_on_demand_compaction",
-            `${context}.messages_on_demand_compaction`,
-        );
-        declarations.messages_on_demand_compaction = expectOverlayDeclaration(
-            onDemand,
-            `${context}.messages_on_demand_compaction`,
-            "messages_on_demand_compaction",
-        );
-    }
-
-    const threshold = Reflect.get(record, "messages_threshold_compaction");
-
-    if (isPresentValue(threshold)) {
-        requireCompactionFormat(
-            format,
-            "anthropic_messages",
-            "messages_threshold_compaction",
-            `${context}.messages_threshold_compaction`,
-        );
-        declarations.messages_threshold_compaction = expectOverlayDeclaration(
-            threshold,
-            `${context}.messages_threshold_compaction`,
-            "messages_threshold_compaction",
-        );
+        if (isPresentValue(declaration)) {
+            requireCompactionFormat(format, requiredFormat, key);
+            parse(declaration, `${context}.${key}`, declarations, key);
+        }
     }
 
     return declarations;

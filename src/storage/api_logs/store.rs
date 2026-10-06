@@ -10,9 +10,14 @@ use crate::{
 };
 use log::warn;
 use std::{future::Future, num::NonZero, path::PathBuf, sync::Arc, time::Duration};
+use time::{Date, Month};
 
 /// Microseconds in one UTC day: the width of one api-log file's partition.
 pub(super) const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+/// The Julian Day Number of the Unix epoch, 1970-01-01: the fixed offset between [`Date`]'s
+/// Julian-day mapping and Unix epoch days.
+const UNIX_EPOCH_JULIAN_DAY: i32 = 2_440_588;
 
 /// How many api-log files the hot cache holds: today + yesterday + margin for stragglers
 /// finalized after midnight. A performance hint, never a correctness bound — a miss beyond it
@@ -69,14 +74,14 @@ impl ApiLogDay {
 
     /// Renders the api-log file's stem: `YYYY-MM-DD`, zero-padded, sortable.
     pub(super) fn file_stem(self) -> String {
-        let (year, month, day) = self.civil();
+        let (year, month, day) = self.date().to_calendar_date();
 
-        format!("{year:04}-{month:02}-{day:02}")
+        format!("{year:04}-{:02}-{day:02}", u8::from(month))
     }
 
     /// Parses an api-log file name back into its day: exactly `YYYY-MM-DD.db` naming a real
-    /// calendar day. Anything else — including an impossible date such as `2026-02-30` — is
-    /// unparseable, and the caller leaves such files alone.
+    /// calendar day. Anything else — a malformed stem or an impossible date such as
+    /// `2026-02-30` — is unparseable, and the caller leaves such files alone.
     fn parse_file_stem_of_file_name(file_name: &str) -> Option<Self> {
         let stem = file_name.strip_suffix(".db")?;
         let (year, rest) = stem.split_once('-')?;
@@ -85,6 +90,9 @@ impl ApiLogDay {
         let is_digits =
             |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
 
+        // The stem's shape is parsed by hand — the calendar library would accept the unpadded
+        // and over-long spellings the file-name contract rejects — while the calendar date
+        // itself is validated and mapped by the library, so no impossible date parses.
         if !is_digits(year)
             || year.len() > 6
             || !is_digits(month)
@@ -95,76 +103,42 @@ impl ApiLogDay {
             return None;
         }
 
-        let year: i64 = year.parse().ok()?;
-        let month: u32 = month.parse().ok()?;
-        let day: u32 = day.parse().ok()?;
-
-        if !(1..=12).contains(&month) || !(1..=Self::days_in_month(year, month)).contains(&day) {
-            return None;
-        }
-
-        Some(Self(Self::days_from_civil(year, month, day)))
-    }
-
-    /// The day's `(year, month, day)` in the proleptic Gregorian calendar.
-    fn civil(self) -> (i64, u32, u32) {
-        // Howard Hinnant's civil_from_days. The era division truncates toward zero like the
-        // original C++, hence the conditional adjustment for negative values; every quantity
-        // below it is non-negative.
-        let z = self.0 + 719_468;
-        let era = if z >= 0 {
-            z / 146_097
-        } else {
-            (z - 146_096) / 146_097
-        };
-        let day_of_era = z - era * 146_097;
-        let year_of_era =
-            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-        let year = year_of_era + era * 400;
-        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-        let month_pointer = (5 * day_of_year + 2) / 153;
-        let day = day_of_year - (153 * month_pointer + 2) / 5 + 1;
-        let month = if month_pointer < 10 {
-            month_pointer + 3
-        } else {
-            month_pointer - 9
-        };
-
-        (
-            year + i64::from(month <= 2),
-            u32::try_from(month).unwrap_or(1),
-            u32::try_from(day).unwrap_or(1),
+        let date = Date::from_calendar_date(
+            year.parse().ok()?,
+            Month::try_from(month.parse::<u8>().ok()?).ok()?,
+            day.parse().ok()?,
         )
+        .ok()?;
+
+        Some(Self::of_date(date))
     }
 
-    /// The day number of a proleptic Gregorian calendar date — the inverse of [`ApiLogDay::civil`].
-    fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-        // Howard Hinnant's days_from_civil, era division truncating toward zero as above.
-        let y = year - i64::from(month <= 2);
-        let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
-        let year_of_era = y - era * 400;
-        let month_pointer = i64::from(month) + if month > 2 { -3 } else { 9 };
-        let day_of_year = (153 * month_pointer + 2) / 5 + i64::from(day) - 1;
-        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    /// The day's calendar date in the proleptic Gregorian calendar.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the day does not name a supported calendar date. A day is derived only from
+    /// the dispatch clock's microsecond stamps and from parsed file stems, both far inside the
+    /// supported range, so an unrepresentable day is a bug rather than a tolerated input.
+    fn date(self) -> Date {
+        #[expect(
+            clippy::expect_used,
+            reason = "an api-log day derives only from the dispatch clock's stamps and from \
+                      parsed file stems, both far inside the supported calendar"
+        )]
+        let date = self
+            .0
+            .checked_add(i64::from(UNIX_EPOCH_JULIAN_DAY))
+            .and_then(|julian_day| i32::try_from(julian_day).ok())
+            .and_then(|julian_day| Date::from_julian_day(julian_day).ok())
+            .expect("an api-log day names a supported calendar date");
 
-        era * 146_097 + day_of_era - 719_468
+        date
     }
 
-    /// The number of days in the month, leap years included; an out-of-range month has none,
-    /// which the parser's day-range check rejects.
-    fn days_in_month(year: i64, month: u32) -> u32 {
-        match month {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 if Self::is_leap_year(year) => 29,
-            2 => 28,
-            _ => 0,
-        }
-    }
-
-    /// The Gregorian leap-year rule.
-    fn is_leap_year(year: i64) -> bool {
-        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    /// The day of a calendar date: the inverse of [`ApiLogDay::date`]'s mapping.
+    fn of_date(date: Date) -> Self {
+        Self(i64::from(date.to_julian_day()) - i64::from(UNIX_EPOCH_JULIAN_DAY))
     }
 }
 

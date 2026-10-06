@@ -168,6 +168,15 @@ pub(crate) fn parse_form(body: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The uppercase hexadecimal digit of one nibble (RFC 3986 renders percent escapes with the
+/// uppercase alphabet).
+fn hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => char::from(b'0' + nibble),
+        _ => char::from(b'A' + (nibble - 10)),
+    }
+}
+
 /// Percent-encodes one URL query component with the RFC 3986 unreserved set: every byte outside
 /// `A–Z a–z 0–9 - . _ ~` renders as `%XX`, so a space renders `%20` and a literal plus `%2B`.
 /// This strict encoding is the one vocabulary every descriptor-rendered query component uses —
@@ -186,7 +195,9 @@ pub(crate) fn percent_encode_component(component: &str) -> String {
             }
 
             other => {
-                encoded.push_str(&format!("%{other:02X}"));
+                encoded.push('%');
+                encoded.push(hex_digit(other >> 4));
+                encoded.push(hex_digit(other & 0x0f));
             }
         }
     }
@@ -338,7 +349,7 @@ pub(crate) async fn execute(
 /// # Errors
 ///
 /// Returns [`ControlFailure::Unavailable`] when the body does not decode.
-pub(crate) fn decode_body(
+fn decode_body(
     body: &str,
     encoding: ResponseEncoding,
     what: &str,
@@ -404,14 +415,14 @@ pub(crate) fn extract_field(
                     Json::String(text) => Ok(Some(Extracted::Text(text.clone()))),
                     Json::Number(number) => Ok(Some(Extracted::Text(number.to_string()))),
                     _ => Err(ControlFailure::Unavailable {
-                        detail: format!("{what} response value must be a string"),
+                        detail: format!("{what} response value at {:?} must be a string", path.0),
                     }),
                 },
 
                 ExtractionShape::Integer => match value.as_i64() {
                     Some(integer) => Ok(Some(Extracted::Integer(integer))),
                     None => Err(ControlFailure::Unavailable {
-                        detail: format!("{what} response value must be an integer"),
+                        detail: format!("{what} response value at {:?} must be an integer", path.0),
                     }),
                 },
 
@@ -424,8 +435,9 @@ pub(crate) fn extract_field(
                         Some(text) => Ok(Some(Extracted::Text(text.to_string()))),
                         None => Err(ControlFailure::Unavailable {
                             detail: format!(
-                                "{what} response value must be a string or carry a string \
-                                 `{field}` member"
+                                "{what} response value at {:?} must be a string or carry a \
+                                 string `{field}` member",
+                                path.0
                             ),
                         }),
                     }
@@ -436,7 +448,10 @@ pub(crate) fn extract_field(
         DecodedBody::Form(fields) => {
             let [member] = path.0.as_slice() else {
                 return Err(ControlFailure::Unavailable {
-                    detail: format!("{what} response path addresses a flat form field"),
+                    detail: format!(
+                        "{what} response path {:?} addresses a flat form field",
+                        path.0
+                    ),
                 });
             };
 
@@ -445,7 +460,10 @@ pub(crate) fn extract_field(
                     ExtractionShape::Integer => match text.parse::<i64>() {
                         Ok(integer) => Ok(Some(Extracted::Integer(integer))),
                         Err(_) => Err(ControlFailure::Unavailable {
-                            detail: format!("{what} response value must be an integer"),
+                            detail: format!(
+                                "{what} response value at {:?} must be an integer",
+                                path.0
+                            ),
                         }),
                     },
 
@@ -523,7 +541,8 @@ impl ResponseMapping for ProvisionExtraction {
 
 /// Folds one decoded response's declared field mappings into the caller's state through `apply`
 /// (README §5.1): every field is extracted through [`extract_field`], a missing required path
-/// fails the stage with the label, and a missing optional path leaves its target unchanged.
+/// fails the stage naming the offending path, and a missing optional path leaves its target
+/// unchanged.
 ///
 /// # Errors
 ///
@@ -546,7 +565,10 @@ where
         let Some(extracted) = extracted else {
             if field.is_required() {
                 return Err(E::from(ControlFailure::Unavailable {
-                    detail: format!("{what} response lacks a required field"),
+                    detail: format!(
+                        "{what} response lacks the required path {:?}",
+                        field.path().0
+                    ),
                 }));
             }
 
@@ -802,7 +824,10 @@ mod tests {
             panic!("a missing required path is an unavailable stage");
         };
 
-        assert_eq!(detail, "stage response lacks a required field");
+        assert_eq!(
+            detail,
+            r#"stage response lacks the required path ["absent"]"#
+        );
 
         // The text shape reads the integer the `count` member carries, rendered as its decimal
         // text (RFC 6749 §5.1 includes numerical values as JSON numbers).

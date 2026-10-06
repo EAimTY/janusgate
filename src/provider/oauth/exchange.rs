@@ -272,14 +272,14 @@ fn token_error_code(body: &str) -> Option<String> {
 }
 
 /// The fixed token-endpoint rejection envelope; unrelated fields are ignored.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct TokenErrorResponse {
     /// RFC string form or the provider object carrying its machine code.
     error: Option<TokenError>,
 }
 
 /// Supported token-endpoint error spellings; other forms establish no machine code.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum TokenError {
     /// RFC 6749 string error code.
@@ -308,13 +308,64 @@ fn error_code_of_json(json: &serde_json::Value) -> Option<String> {
         .map(TokenError::code)
 }
 
+/// Why one executed token exchange failed, split by what a retry can and cannot survive
+/// (README §3, §7.2): a fold failure after the upstream's decoded 2xx response is a
+/// deterministic response-shape violation a retry cannot fix — the single-use device code is
+/// consumed upstream whether or not the gateway could use the response — while every other
+/// failure happened before any fold and is one the poll schedule absorbs.
+#[derive(Debug)]
+pub(crate) enum ExchangeFailure {
+    /// A 2xx response decoded but folding its mapped fields failed: a mapped slot outside the
+    /// storage boundary, a non-integer `expires_in`, a missing required field, or a mapping
+    /// target the stage does not produce. Retrying cannot fix the response's shape.
+    Consumed(Error),
+
+    /// Transport, rejection, and decode failures: the request never produced a decoded 2xx
+    /// body, so the fold never ran.
+    Retryable(Error),
+}
+
+impl From<ExchangeFailure> for Error {
+    fn from(failure: ExchangeFailure) -> Self {
+        match failure {
+            ExchangeFailure::Consumed(error) | ExchangeFailure::Retryable(error) => error,
+        }
+    }
+}
+
 /// Executes one token exchange against the definition's exchange request and classifies the
-/// outcome (README §5.3).
+/// outcome (README §5.3). The synchronous surfaces read the failure as [`Error`] alone; the
+/// device poller consumes [`execute_classified_exchange`] to distinguish a consumed grant from
+/// a retryable attempt.
+///
+/// # Errors
+///
+/// Returns [`Error`] for transport failures, rejections, malformed response bodies, and failed
+/// response folds.
 pub(crate) async fn execute_exchange(
     http: &Client,
     exchange: &Exchange,
     env: &ValueEnv<'_>,
 ) -> Result<ExchangeProduct, Error> {
+    execute_classified_exchange(http, exchange, env)
+        .await
+        .map_err(Error::from)
+}
+
+/// Executes one token exchange and classifies both the outcome and the failure's retry safety
+/// (README §5.3, §7.2): the device poller's resume contract persists a terminal gateway-owned
+/// failure for [`ExchangeFailure::Consumed`] — the consumed grant a retry could only
+/// re-present — and keeps the retry schedule for [`ExchangeFailure::Retryable`].
+///
+/// # Errors
+///
+/// Returns [`ExchangeFailure`] for every failure class [`execute_exchange`] reports, typed by
+/// whether the fold already saw a decoded 2xx body.
+pub(super) async fn execute_classified_exchange(
+    http: &Client,
+    exchange: &Exchange,
+    env: &ValueEnv<'_>,
+) -> Result<ExchangeProduct, ExchangeFailure> {
     let outcome = control::execute(
         http,
         &exchange.request,
@@ -328,10 +379,11 @@ pub(crate) async fn execute_exchange(
         Ok(decoded) => decoded,
 
         Err(ControlFailure::Rejected { status, body }) => {
-            return classify_exchange_rejection(status, &body, &exchange.terminal_codes);
+            return classify_exchange_rejection(status, &body, &exchange.terminal_codes)
+                .map_err(ExchangeFailure::Retryable);
         }
 
-        Err(failure) => return Err(failure.into()),
+        Err(failure) => return Err(ExchangeFailure::Retryable(failure.into())),
     };
 
     // A 2xx body can still carry a failure name: GitHub's device token endpoint reports
@@ -342,6 +394,7 @@ pub(crate) async fn execute_exchange(
 
     map_exchange_fields(&decoded, &exchange.response.fields, "token exchange")
         .map(ExchangeProduct::Completed)
+        .map_err(ExchangeFailure::Consumed)
 }
 
 /// Classifies a non-2xx token-endpoint rejection: a configured terminal code fails the flow, the
@@ -380,6 +433,15 @@ fn decoded_error_code(decoded: &DecodedBody) -> Option<String> {
     }
 }
 
+/// Whether one upstream failure code is one of the definition's configured terminal codes,
+/// matched case-insensitively (README §5.1): a mis-cased configured code must still classify
+/// as its configured disposition.
+fn is_terminal_code(code: &str, terminal_codes: &[String]) -> bool {
+    terminal_codes
+        .iter()
+        .any(|terminal| terminal.eq_ignore_ascii_case(code))
+}
+
 /// Classifies one upstream failure code against the definition's terminal codes: the RFC 8628
 /// polling codes are engine-owned and match case-insensitively like the configured terminal
 /// codes (README §5.1) — a mis-cased `slow_down` must still apply the slow-down backoff — the
@@ -392,11 +454,7 @@ fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct
         _ => {}
     }
 
-    let is_terminal = terminal_codes
-        .iter()
-        .any(|terminal| terminal.eq_ignore_ascii_case(code));
-
-    if is_terminal {
+    if is_terminal_code(code, terminal_codes) {
         ExchangeProduct::Terminal(code.to_string())
     } else {
         ExchangeProduct::Other(code.to_string())
@@ -552,9 +610,7 @@ pub(super) async fn execute_refresh_grant(
 
         Err(ControlFailure::Rejected { status, body }) => {
             if let Some(code) = token_error_code(&body)
-                && terminal_codes
-                    .iter()
-                    .any(|terminal| terminal.eq_ignore_ascii_case(&code))
+                && is_terminal_code(&code, terminal_codes)
             {
                 return Err(Error::Unavailable {
                     detail: format!(

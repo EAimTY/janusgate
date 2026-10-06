@@ -359,7 +359,7 @@ export function statusError(input: string): string | null {
         return null;
     }
 
-    return "HTTP statuses must be plain integers, comma-separated — like 200, 429 — or blank for no status filter.";
+    return translation()(($) => $.helpers.usageFilter.invalidStatusList);
 }
 
 /** One outcome choice as the values the filter lists; nothing chosen lists nothing. */

@@ -2,12 +2,12 @@ import { translation } from "../i18n";
 import {
     authorizationCode,
     base,
+    bearerAuthorization,
     clientId,
     codeVerifier,
     literal,
     paramRow,
     redirectUri,
-    secret,
 } from "./expressions";
 import type { ProviderPreset } from "./types";
 
@@ -37,10 +37,7 @@ export const devinPreset: ProviderPreset = {
                 literal("/v1/messages"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
                 paramRow("anthropic-version", [
                     literal("2023-06-01"),
                 ]),

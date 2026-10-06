@@ -91,7 +91,6 @@ const spanish = {
     },
     rich: {
         connected: "Conectado a [[baseUrl]] — el token solo vive en este navegador.",
-        providerModel: "[[providerLink]] es propietario de [[modelId]].",
         setupToken:
             "Su token de administración: [[setting]] en el archivo de configuración de esa instancia.",
         setupCors:
@@ -152,6 +151,7 @@ const spanish = {
             enabled: "Activado",
             replacingTheSecretRevokesTheOldValueOnMessage:
                 "Reemplazar el secreto revoca el valor anterior al guardar.",
+            aKeyNeedsASecret: "Una clave necesita un secreto.",
             deleteThisKey: "Eliminar esta clave",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "Eliminar revoca la clave de inmediato. Los clientes que la tengan empezarán a recibir errores 401. Sus reglas de acceso a modelos se eliminan; la contabilidad histórica se conserva.",
@@ -160,6 +160,7 @@ const spanish = {
             createAPIKey: "Crear clave de API",
             oneSecretYourServingClientsShareMessage:
                 "Un único secreto que comparten tus clientes de servicio.",
+            apiKeysBackLabel: "Claves de API",
             key: "Clave",
             theSecretHoldsLettersNumbersAndSymbolsOnlyMessage:
                 "El secreto solo contiene letras, números y símbolos —sin espacios— y ninguna otra clave lo comparte.",
@@ -183,8 +184,11 @@ const spanish = {
             createAliases: "Crear alias",
             choosePhysicalModelsAndAuthorTheirPublicIDsMessage:
                 "Elige modelos físicos y define sus ID públicos. Cada selección crea una ruta directa activada; los conflictos de nombres se notifican sin renombrar ni sobrescribir.",
+            inventoryBackLabel: "Inventario",
             noPhysicalModelsToAlias: "No hay modelos físicos que asignar como alias",
             discoverOrAddInventoryFirstMessage: "Primero descubre o añade inventario.",
+            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
+                "Otra fila seleccionada usa este ID público. Elige nombres explícitos distintos.",
             openRoute: "Abrir ruta",
             createSelectedAliases: "Crear los alias seleccionados",
         },
@@ -216,6 +220,14 @@ const spanish = {
                 "Un proveedor es una cuenta upstream. Sus modelos aparecen cuando los descubres.",
             createYourFirstProvider: "Crea tu primer proveedor",
             connectedToTheGateway: "Conectado a la pasarela",
+            discoverModels: "Descubrir modelos",
+            createAPIKey: "Crear clave de API",
+            openAndDiscover: "Abrir y descubrir",
+            reviewModels: "Revisar modelos",
+            credentialNotFresh: "Credencial no vigente",
+            credentialExpired: "Credencial caducada",
+            reconnect: "Reconectar",
+            openProvider: "Abrir proveedor",
             createAProvider: "Crea un proveedor",
             discoverItsModelsFromUpstream: "Descubre sus modelos desde upstream",
             issueAnAPIKeyForServingClients: "Emite una clave de API para los clientes de servicio",
@@ -224,6 +236,8 @@ const spanish = {
         },
         modelDetailScreen: {
             model: "Modelo",
+            upstreamOnProvider: "{{upstreamId}} en {{provider}}.",
+            modelsBackLabel: "Modelos",
             capabilities: "Capacidades",
             whatTheModelListingsDeclareForThisModelMessage:
                 "Lo que los listados de modelos declaran para este modelo. Nada de aquí bloquea una solicitud: el upstream responde lo que responde.",
@@ -233,6 +247,7 @@ const spanish = {
             compaction: "Compactación",
             theRowsOwnCompactionFactsTheOverrideElseMessage:
                 "Los datos de compactación de la propia fila: la anulación o, si no, el último descubrimiento. La declaración de la definición decide todo lo que ambos dejen sin especificar.",
+            noLevels: "Sin niveles",
             addAlias: "Añadir alias",
             editModel: "Editar modelo",
             details: "Detalles",
@@ -261,6 +276,7 @@ const spanish = {
             createProvider: "Crear proveedor",
             aModelAddedByHandIsNeverRemovedMessage:
                 "Un modelo añadido a mano nunca se elimina automáticamente, y reclama lo que el descubrimiento perdió.",
+            models: "Modelos",
             identity: "Identidad",
             provider: "Proveedor",
             upstreamID: "ID upstream",
@@ -295,6 +311,9 @@ const spanish = {
             noModelsYet: "Aún no hay modelos",
             addAProviderFirstThenDiscoverItsModelsMessage:
                 "Añade primero un proveedor y luego descubre sus modelos, o añade uno a mano.",
+            thisProviderHoldsNoModels: "Este proveedor no tiene modelos.",
+            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
+                "Este proveedor ya no figura en la lista; elige otro en el filtro Proveedor.",
             createProvider: "Crear proveedor",
             searchModels: "Buscar modelos",
             searchByUpstreamIDOrProviderName: "Buscar por ID upstream o nombre de proveedor",
@@ -327,6 +346,8 @@ const spanish = {
             theVerificationURL: "la URL de verificación",
             approveTheCodeAtTheVerificationPageThisMessage:
                 "Aprueba el código en la página de verificación; esta página sigue preguntando a la pasarela por el resultado y continúa en cuanto el flujo termina.",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "Permanece en esta página hasta que el flujo termine; navegar dentro de la consola descarta el flujo.",
         },
         poolAvailabilityCard: {
             refreshQuota: "Actualizar cuota",
@@ -362,12 +383,15 @@ const spanish = {
             credentials: "Credenciales",
             oauthCredentialsExpireReconnectingReplacesThemMessage:
                 "Las credenciales OAuth caducan; reconectar las reemplaza.",
+            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
+                "La definición de este proveedor evalúa las solicitudes contra una URL base; restaura una, o usa Revertir.",
             deleteThisProvider: "Eliminar este proveedor",
         },
         providerNewScreen: {
             createProvider: "Crear proveedor",
             oneUpstreamAccountPickThePresetTheCredentialMessage:
                 "Una cuenta upstream. Elige el preajuste y la ruta de credenciales vendrá dada.",
+            providersBackLabel: "Proveedores",
             readAgain: "Leer de nuevo",
             preset: "Preajuste",
             switchPreset: "Cambiar de preajuste",
@@ -377,6 +401,8 @@ const spanish = {
             theKeyIsWriteonlyTheGatewayNeverReturnsMessage:
                 "La clave es de solo escritura: la pasarela nunca la devuelve.",
             connectTheAccount: "Conectar la cuenta",
+            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
+                "Bloqueado mientras la autorización está activa; el proveedor se crea a partir de lo que ya envió el inicio del flujo.",
             approveAccessWhereTheFlowPointsThenLetMessage:
                 "Aprueba el acceso donde indique el flujo y deja que se complete. Esta aplicación nunca almacena las credenciales.",
             upstreamBaseURL: "URL base upstream",
@@ -430,6 +456,8 @@ const spanish = {
             readingUpstreamQuota: "Leyendo la cuota del upstream…",
             showingThePreviousReadingMessage: "Se muestra la lectura anterior.",
             observed: "Observada",
+            resetTimeReachedRefreshToUpdate:
+                "Se alcanzó la hora de reinicio; actualiza para ver el estado al día",
             theUpstreamReturnedNoQuotaEntriesMessage: "El upstream no devolvió entradas de cuota.",
         },
         providersScreen: {
@@ -453,6 +481,7 @@ const spanish = {
             noPoolsYet: "Aún no hay grupos",
             createANamedPoolWithAModelPrefixMessage:
                 "Crea un grupo con nombre y un prefijo de modelo. Los modelos de sus miembros se exponen automáticamente.",
+            noModelPrefix: "ninguno",
             publicRoutes: "Rutas públicas",
             modelNamesClientsRequestStandaloneProvidersAndPoolsMessage:
                 "Nombres de modelo que solicitan los clientes. Los proveedores independientes y los grupos exponen nombres de modelo automáticamente. Los alias adicionales son opcionales.",
@@ -460,6 +489,7 @@ const spanish = {
             noPublicRoutesYet: "Aún no hay rutas públicas",
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "Publica un modelo físico directamente o apunta a un grupo y a un ID upstream exacto.",
+            automaticPrefix: "Automático · ",
         },
         screenFrame: {
             readAgain: "Leer de nuevo",
@@ -483,6 +513,10 @@ const spanish = {
             exclusiveInThisBrowsersZoneLike20260923T1000BlankMessage:
                 "Exclusivo, en la zona horaria de este navegador; por ejemplo, 2026-09-23T10:00. En blanco no fija límite.",
             clearFilters: "Borrar filtros",
+            usageBackLabel: "Uso",
+            theQueryDidNotRunAFilterValueIsInvalid:
+                "La consulta no se ejecutó: el valor de un filtro no es válido.",
+            total: "Total",
             nothingRecordedInThisWindowMessage: "No hay nada registrado en esta ventana.",
             noRowsInThisWindowMessage: "No hay filas en esta ventana.",
             bucket: "Intervalo",
@@ -511,6 +545,9 @@ const spanish = {
                 "Aparece una fila por cada solicitud de servicio despachada, en el momento en que la pasarela la envía al upstream. Si hay tráfico y no aparece nada, revisa la sección api_logs del archivo de configuración de la pasarela.",
             noRecordedRequestsMatchThisFilterMessage:
                 "Ninguna solicitud registrada coincide con este filtro.",
+            filtersStayBehind: " — la ventana y todos los demás filtros se quedan atrás.",
+            streamMark: " · Transmisión",
+            thisRowIsNoLongerListed: "Esta fila ya no figura en la lista.",
         },
         usageStats: {
             usage: "Uso",
@@ -533,7 +570,6 @@ const spanish = {
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage: "El upstream ya no informa de este modelo.",
-            itServesNothingMeanwhileMessage: "Mientras tanto, no sirve nada.",
         },
     },
     diagnosis: {
@@ -893,8 +929,6 @@ const spanish = {
     },
     operationNotices: {
         flowFailed: "El flujo falló.",
-        flowGone:
-            "Este flujo de autorización ya no se puede completar: su state caducó o ya se usó.",
         freshFlow: "Inicia un flujo nuevo y autorízalo sin demora.",
         flowExpired: "El flujo caducó.",
         flowExpiryPassed: "La caducidad del flujo pasó mientras esta página esperaba el resultado.",
@@ -904,9 +938,6 @@ const spanish = {
         invalidDefinition:
             "El JSON de la definición no es una definición que la pasarela pudiera almacenar.",
         fixDefinition: "Corrige el JSON y envía de nuevo; no se escribió nada.",
-        invalidFilter: "La consulta no se ejecutó: el valor de un filtro no es válido.",
-        previousQuery:
-            "La respuesta de abajo sigue siendo la de la consulta anterior; el campo que muestra un error en línea indica el problema.",
         fixFilter: "Corrige ese campo y ejecuta la consulta de nuevo.",
         discoveryPending: "Descubriendo modelos desde [[providerName]]…",
         discoveryQuery: "Preguntando al upstream qué informa ahora mismo.",
@@ -955,12 +986,6 @@ const spanish = {
             baseURLMustBeAnHttpOrHttpsAddressWithNoSpaces:
                 "La URL base debe ser una dirección http:// o https:// sin espacios.",
         },
-        presetQuotas: {
-            primaryWindow: "Ventana principal",
-            secondaryWindow: "Ventana secundaria",
-            allowance: "Asignación",
-            modelAllowance: "Asignación de modelos",
-        },
         presets: {
             anyEndpointSpeakingTheOpenAIResponsesProtocolWithAStaticKey:
                 "Cualquier punto de conexión que hable el protocolo OpenAI Responses con una clave estática.",
@@ -997,56 +1022,11 @@ const spanish = {
             zenOverTheGeminiGenerateContentProtocolWithAStaticKey:
                 "Zen sobre el protocolo Gemini GenerateContent con una clave estática.",
         },
-        apiKeyEditScreen: {
-            aKeyNeedsASecret: "Una clave necesita un secreto.",
-        },
-        bulkPublicationScreen: {
-            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
-                "Otra fila seleccionada usa este ID público. Elige nombres explícitos distintos.",
-        },
-        homeScreen: {
-            discoverModels: "Descubrir modelos",
-            createAPIKey: "Crear clave de API",
-            openAndDiscover: "Abrir y descubrir",
-            reviewModels: "Revisar modelos",
-            credentialNotFresh: "Credencial no vigente",
-            credentialExpired: "Credencial caducada",
-            reconnect: "Reconectar",
-            openProvider: "Abrir proveedor",
-        },
-        modelDetailScreen: {
-            noLevels: "Sin niveles",
-        },
-        modelNewScreen: {
-            models: "Modelos",
-            provider: "Proveedor",
-        },
-        modelsScreen: {
-            thisProviderHoldsNoModels: "Este proveedor no tiene modelos.",
-            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
-                "Este proveedor ya no figura en la lista; elige otro en el filtro Proveedor.",
-        },
-        oauthFlowView: {
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "Permanece en esta página hasta que el flujo termine; navegar dentro de la consola descarta el flujo.",
-        },
         oauthFlow: {
             thatPasteHoldsNeitherABareCodeNorAURLWithACodeCopy:
                 "Eso que has pegado no contiene ni un código suelto ni una URL con un código; copia la dirección completa en la que terminó el inicio de sesión, o solo su código, y pégala aquí.",
             theFlowStaysLiveThisPageKeepsAskingForTheOutcome:
                 "El flujo sigue activo; esta página sigue preguntando por el resultado.",
-        },
-        providerEditScreen: {
-            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
-                "La definición de este proveedor evalúa las solicitudes contra una URL base; restaura una, o usa Revertir.",
-        },
-        providerNewScreen: {
-            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
-                "Bloqueado mientras la autorización está activa; el proveedor se crea a partir de lo que ya envió el inicio del flujo.",
-        },
-        providerQuotaCard: {
-            resetTimeReachedRefreshToUpdate:
-                "Se alcanzó la hora de reinicio; actualiza para ver el estado al día",
         },
         rowNotFound: {
             theGatewayHoldsNoPoolHereItWasDeletedOrTheAddressWasTyped:
@@ -1063,14 +1043,6 @@ const spanish = {
         usageLabels: {
             streamed: "Con transmisión",
             nonstreamed: "Sin transmisión",
-        },
-        usageQueryScreen: {
-            theQueryDidNotRunAFilterValueIsInvalid:
-                "La consulta no se ejecutó: el valor de un filtro no es válido.",
-            total: "Total",
-        },
-        usageScreen: {
-            thisRowIsNoLongerListed: "Esta fila ya no figura en la lista.",
         },
         apiKeyAccess: {
             inherit: "Heredar",
@@ -1115,6 +1087,8 @@ const spanish = {
             last24Hours: "Últimas 24 horas",
             last7Days: "Últimos 7 días",
             last30Days: "Últimos 30 días",
+            invalidStatusList:
+                "Los estados HTTP deben ser enteros sencillos separados por comas, como 200, 429, o quedar en blanco para no filtrar por estado.",
         },
     },
     validation: {
@@ -1206,9 +1180,6 @@ const spanish = {
         enabledStored: "activados de {{total}} almacenados",
         readyListed: "listos de {{total}} en la lista",
         copyEndpoint: "Copiar la URL del punto de conexión de {{surface}}",
-        noModels: " aún no tiene modelos.",
-        noReadyModels:
-            " no tiene inventario listo: todos los modelos están desactivados o ya no se informan.",
         disabledCredential:
             "{{expiry}} El proveedor está desactivado; reconéctalo cuando lo vuelvas a activar.",
         noKeysDetail:

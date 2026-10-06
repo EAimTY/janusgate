@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { drainWrites, modelRow } from "/src/test-support/management-api";
 import {
     compactionOverrideSelection,
+    createCapabilityOverrideDraft,
     isSameCompactionOverride,
     isSameLevelSet,
     normalizedCompactionOverride,
@@ -213,5 +215,100 @@ describe("isSameCompactionOverride", () => {
                 },
             ),
         ).toBe(false);
+    });
+});
+
+describe("createCapabilityOverrideDraft", () => {
+    it("opens empty for a creation — every override off, every field clear", () => {
+        const draft = createCapabilityOverrideDraft(null);
+
+        expect(draft.hasLevelsOverride()).toBe(false);
+        expect(draft.selectedLevels()).toEqual([]);
+        expect(draft.hasMaxInputOverride()).toBe(false);
+        expect(draft.maxInputText()).toBe("");
+        expect(draft.hasMaxOutputOverride()).toBe(false);
+        expect(draft.maxOutputText()).toBe("");
+        expect(draft.hasCompactionOverride()).toBe(false);
+        expect(draft.selectedCompaction()).toEqual(compactionOverrideSelection(null));
+        expect(draft.normalizedLevels()).toBeNull();
+        expect(draft.normalizedMaxInput()).toBeNull();
+        expect(draft.normalizedMaxOutput()).toBeNull();
+        expect(draft.normalizedCompaction()).toBeNull();
+        expect(draft.maxInputError()).toBeNull();
+        expect(draft.maxOutputError()).toBeNull();
+    });
+
+    it("seeds from a row's stored overrides and derives the normalized values and errors from them", async () => {
+        const draft = createCapabilityOverrideDraft(
+            modelRow({
+                thinking_levels_override: [
+                    "high",
+                ],
+                max_input_tokens_override: 4096,
+                max_output_tokens_override: 16384,
+                compaction_support_override: {
+                    messages_on_demand_compaction: "supported",
+                },
+            }),
+        );
+
+        expect(draft.hasLevelsOverride()).toBe(true);
+        expect(draft.selectedLevels()).toEqual([
+            "high",
+        ]);
+        expect(draft.normalizedLevels()).toEqual([
+            "high",
+        ]);
+        expect(draft.maxInputText()).toBe("4096");
+        expect(draft.normalizedMaxInput()).toBe(4096);
+        expect(draft.normalizedMaxOutput()).toBe(16384);
+        expect(draft.selectedCompaction()).toEqual(
+            compactionOverrideSelection({
+                messages_on_demand_compaction: "supported",
+            }),
+        );
+        expect(draft.normalizedCompaction()).toEqual({
+            messages_on_demand_compaction: "supported",
+        });
+
+        // An invalid entry derives its inline error while the normalized
+        // value reads none — the error holds the save, not the normalization.
+        draft.setMaxInputText("nope");
+        await drainWrites();
+        expect(draft.maxInputError()).not.toBeNull();
+        expect(draft.normalizedMaxInput()).toBeNull();
+        draft.setMaxInputText("512");
+        await drainWrites();
+        expect(draft.maxInputError()).toBeNull();
+        expect(draft.normalizedMaxInput()).toBe(512);
+    });
+
+    it("re-seeds the whole bundle from a row on apply", async () => {
+        const draft = createCapabilityOverrideDraft(null);
+        draft.setHasLevelsOverride(true);
+        draft.setSelectedLevels([
+            "high",
+        ]);
+        draft.setHasMaxInputOverride(true);
+        draft.setMaxInputText("4096");
+        await drainWrites();
+        expect(draft.hasLevelsOverride()).toBe(true);
+        expect(draft.maxInputText()).toBe("4096");
+
+        draft.apply(
+            modelRow({
+                max_output_tokens_override: 2048,
+            }),
+        );
+        await drainWrites();
+
+        expect(draft.hasLevelsOverride()).toBe(false);
+        expect(draft.selectedLevels()).toEqual([]);
+        expect(draft.hasMaxInputOverride()).toBe(false);
+        expect(draft.maxInputText()).toBe("");
+        expect(draft.hasMaxOutputOverride()).toBe(true);
+        expect(draft.maxOutputText()).toBe("2048");
+        expect(draft.normalizedMaxOutput()).toBe(2048);
+        expect(draft.normalizedCompaction()).toBeNull();
     });
 });

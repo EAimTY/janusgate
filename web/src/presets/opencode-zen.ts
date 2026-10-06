@@ -1,5 +1,12 @@
 import { translation } from "../i18n";
-import { literal, model, paramRow, secret } from "./expressions";
+import {
+    bearerAuthorization,
+    literal,
+    model,
+    openAiModelsDiscovery,
+    paramRow,
+    secret,
+} from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for zen-openai-chat-completions. */
@@ -23,42 +30,16 @@ export const zenOpenaiChatCompletionsPreset: ProviderPreset = {
                 literal("/chat/completions"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
             ],
             upstream_streaming: "match_client",
         },
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    literal("https://opencode.ai/zen/v1/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery([
+            literal("https://opencode.ai/zen/v1/models"),
+        ]),
     },
 };
 
@@ -83,42 +64,16 @@ export const zenOpenaiResponsesPreset: ProviderPreset = {
                 literal("/responses"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
             ],
             upstream_streaming: "match_client",
         },
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    literal("https://opencode.ai/zen/v1/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery([
+            literal("https://opencode.ai/zen/v1/models"),
+        ]),
     },
 };
 
@@ -155,31 +110,16 @@ export const zenAnthropicMessagesPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    literal("https://opencode.ai/zen/v1/models"),
-                ],
-                headers: [
-                    paramRow("x-api-key", [
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery(
+            [
+                literal("https://opencode.ai/zen/v1/models"),
+            ],
+            [
+                paramRow("x-api-key", [
+                    secret(),
+                ]),
+            ],
+        ),
     },
 };
 
@@ -219,30 +159,15 @@ export const zenGeminiGenerateContentPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    literal("https://opencode.ai/zen/v1/models"),
-                ],
-                headers: [
-                    paramRow("x-goog-api-key", [
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery(
+            [
+                literal("https://opencode.ai/zen/v1/models"),
+            ],
+            [
+                paramRow("x-goog-api-key", [
+                    secret(),
+                ]),
+            ],
+        ),
     },
 };

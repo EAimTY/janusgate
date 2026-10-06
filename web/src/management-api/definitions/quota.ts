@@ -9,24 +9,26 @@ import type {
     QuotaNumberField,
     QuotaResetSource,
     QuotaRoutingSource,
-    QuotaScopeSource,
     QuotaSource,
     QuotaTextSource,
     QuotaWindowSource,
     StringExpr,
     TemplateNode,
 } from "../generated/v0";
-import { expectModelIdentifier, expectQuotaPath, window } from "../quota";
+import { expectModelIdentifier } from "../identifiers";
+import { expectQuotaPath, parseQuotaWindow } from "../quota";
 import {
     expectArray,
     expectBoolean,
+    expectDeclaredKeys,
     expectDeclaredRecord,
     expectNonEmptyString,
+    expectOneOf,
     expectRecord,
     expectString,
+    isPresentValue,
 } from "../validation-primitives";
 import { expectControlRequest } from "./control";
-import { expectDeclaredKeys, expectOneOf, isPresentValue } from "./validation";
 
 /** Authored omission defaults to monitoring; unresolved optional model fields are forbidden. */
 function routingSource(value: unknown, context: string, isMap: boolean): QuotaRoutingSource {
@@ -180,22 +182,20 @@ function textSource(
     }
 }
 
-/** Scope accepts unknown in addition to the shared text vocabulary. */
-function scopeSource(value: unknown, context: string, isMap: boolean): QuotaScopeSource {
-    const record = expectRecord(value, context);
-    const type = expectString(Reflect.get(record, "type"), `${context}.type`);
-    if (type === "unknown") {
-        expectDeclaredKeys(
-            record,
-            [
-                "type",
-            ],
-            context,
-        );
-        return {
-            type,
-        };
+/**
+ * The optional named scope shares the text-source vocabulary; an omitted
+ * scope is the unknown scope, exactly as the gateway's serde default parses
+ * it.
+ */
+function optionalScope(
+    value: unknown,
+    context: string,
+    isMap: boolean,
+): QuotaTextSource | undefined {
+    if (!isPresentValue(value)) {
+        return undefined;
     }
+
     return textSource(value, context, isMap);
 }
 
@@ -255,7 +255,7 @@ function windowSource(value: unknown, context: string): QuotaWindowSource {
             ),
         };
     }
-    return window(value, context);
+    return parseQuotaWindow(value, context);
 }
 
 /** The authored measurement mapping, whose optional facts stay unknown together. */
@@ -495,18 +495,31 @@ export function parseQuotaDescriptor(value: unknown, context: string): QuotaDesc
                       ],
                 contextPath,
             );
-            const common = {
+            const scope = optionalScope(
+                Reflect.get(record, "scope"),
+                `${contextPath}.scope`,
+                type === "map",
+            );
+            const common: Pick<
+                Extract<
+                    QuotaSource,
+                    {
+                        type: "object";
+                    }
+                >,
+                "key" | "at" | "is_required" | "scope" | "entries"
+            > = {
                 key: expectNonEmptyString(Reflect.get(record, "key"), `${contextPath}.key`),
                 at: expectQuotaPath(Reflect.get(record, "at"), `${contextPath}.at`),
                 is_required: expectBoolean(
                     Reflect.get(record, "is_required"),
                     `${contextPath}.is_required`,
                 ),
-                scope: scopeSource(
-                    Reflect.get(record, "scope"),
-                    `${contextPath}.scope`,
-                    type === "map",
-                ),
+                ...(scope === undefined
+                    ? {}
+                    : {
+                          scope,
+                      }),
                 entries: unique(
                     expectArray(Reflect.get(record, "entries"), `${contextPath}.entries`).map(
                         (value, index) =>

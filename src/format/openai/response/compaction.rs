@@ -10,9 +10,9 @@
 //! window.
 
 use super::{
-    client_render::SseRenderer,
+    client_render::{ResponseUsage, SseRenderer},
     request_parse::{ItemIn, OptionalReplayText, build_instructions, convert_input},
-    upstream_parse::{CompactedResponseNative, UpstreamUsage},
+    upstream_parse::CompactedResponseNative,
 };
 use crate::{
     format::{
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The closed object discriminator of a standalone compaction response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 enum CompactedResponseObject {
     /// Canonical client-held next window.
     #[serde(rename = "response.compaction")]
@@ -135,7 +135,7 @@ pub(crate) fn parse_compact_request(body: &[u8]) -> Result<ParsedRequest, Invali
         converted.instruction_items.insert(
             0,
             crate::format::ParsedInstructionItem {
-                role: crate::compaction::identity::InstructionRole::System,
+                role: crate::compaction_model::identity::InstructionRole::System,
                 text: instructions.clone(),
             },
         );
@@ -250,8 +250,9 @@ pub(super) fn reasoning_item_json(reasoning: &super::request_parse::ReasoningIte
 /// The standalone compact endpoint's success body: the `response.compaction`
 /// object. The output is the canonical next window — the complete ordered
 /// vendor-shaped item list — never reduced to its compaction item (README
-/// §4.1).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// §4.1). The body is render-only: the gateway constructs it, anchors it, and
+/// serializes it outward, never parsing it back.
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct CompactedResponseBody {
     /// Gateway-issued response identifier.
     id: String,
@@ -266,7 +267,7 @@ pub(crate) struct CompactedResponseBody {
     output: Vec<crate::format::compaction_wire::Checkpoint>,
 
     /// Token accounting of the calls that produced the window.
-    usage: CompactUsage,
+    usage: ResponseUsage,
 
     /// Sealer-proven identity retained only for this response's ephemeral registration.
     #[serde(skip)]
@@ -327,7 +328,7 @@ impl CompactedResponseBody {
             let Ok(artifact) = ReplayedArtifact::deserialize(item) else {
                 continue;
             };
-            if crate::compaction::sealing::is_gateway_marker(artifact.encrypted_content) {
+            if crate::compaction_model::sealing::is_gateway_marker(artifact.encrypted_content) {
                 // Native upstream output cannot supply the sealer-proven sidecar of our newly
                 // emitted carrier. Never invent gateway provenance from a reflected marker.
                 return None;
@@ -355,7 +356,7 @@ pub(super) fn native_artifact_anchor(
     projector: &crate::affinity::fingerprint::Projector,
 ) -> Option<crate::affinity::Anchor> {
     let artifact = ReplayedArtifact::deserialize(item).ok()?;
-    if crate::compaction::sealing::is_gateway_marker(artifact.encrypted_content) {
+    if crate::compaction_model::sealing::is_gateway_marker(artifact.encrypted_content) {
         return None;
     }
     Some(crate::affinity::Anchor::Artifact(
@@ -382,103 +383,6 @@ fn completed_window_anchors(
     anchors
 }
 
-/// Token accounting of a compacted response, in the official Responses usage
-/// shape.
-///
-/// The five official fields are required integers — the detail objects
-/// included (openai-python `ResponseUsage`) — so absent upstream breakdowns
-/// zero-fill; xAI's optional `dropped_message_count` rides beside them only
-/// when the upstream reported it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CompactUsage {
-    /// Tokens consumed by the input.
-    input_tokens: u64,
-
-    /// Input token breakdown.
-    input_tokens_details: CompactInputTokensDetails,
-
-    /// Tokens produced by the output.
-    output_tokens: u64,
-
-    /// Output token breakdown.
-    output_tokens_details: CompactOutputTokensDetails,
-
-    /// Sum of input and output tokens.
-    total_tokens: u64,
-
-    /// Messages the upstream dropped while compacting (xAI extension);
-    /// rendered only when reported.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dropped_message_count: Option<u64>,
-}
-
-/// The input token breakdown of a compacted response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CompactInputTokensDetails {
-    /// Input tokens served from the upstream prompt cache.
-    cached_tokens: u64,
-
-    /// Input tokens written to the upstream prompt cache.
-    cache_write_tokens: u64,
-}
-
-/// The output token breakdown of a compacted response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CompactOutputTokensDetails {
-    /// Output tokens spent on model reasoning.
-    reasoning_tokens: u64,
-}
-
-impl CompactUsage {
-    /// Renders one native upstream observation, zero-filling every absent
-    /// breakdown.
-    fn from_upstream(usage: UpstreamUsage) -> Self {
-        let input_details = usage.input_tokens_details;
-
-        Self {
-            input_tokens: usage.input_tokens,
-            input_tokens_details: CompactInputTokensDetails {
-                cached_tokens: input_details
-                    .as_ref()
-                    .and_then(|details| details.cached_tokens)
-                    .unwrap_or(0),
-                cache_write_tokens: input_details
-                    .as_ref()
-                    .and_then(|details| details.cache_write_tokens)
-                    .unwrap_or(0),
-            },
-            output_tokens: usage.output_tokens,
-            output_tokens_details: CompactOutputTokensDetails {
-                reasoning_tokens: usage
-                    .output_tokens_details
-                    .as_ref()
-                    .and_then(|details| details.reasoning_tokens)
-                    .unwrap_or(0),
-            },
-            total_tokens: usage.input_tokens + usage.output_tokens,
-            dropped_message_count: usage.dropped_message_count,
-        }
-    }
-
-    /// Renders one gateway observation from IR usage, zero-filling every
-    /// breakdown.
-    fn from_ir(usage: IrUsage) -> Self {
-        Self {
-            input_tokens: usage.input_tokens,
-            input_tokens_details: CompactInputTokensDetails {
-                cached_tokens: usage.cached_tokens.unwrap_or(0),
-                cache_write_tokens: usage.cache_write_tokens.unwrap_or(0),
-            },
-            output_tokens: usage.output_tokens,
-            output_tokens_details: CompactOutputTokensDetails {
-                reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
-            },
-            total_tokens: usage.input_tokens + usage.output_tokens,
-            dropped_message_count: None,
-        }
-    }
-}
-
 /// Renders a native compacted upstream result into the compact endpoint's
 /// success body: the upstream's identity, creation time, complete ordered
 /// output, and usage — with its `dropped_message_count` — carried through.
@@ -490,7 +394,7 @@ pub(crate) fn render_compacted_response(native: CompactedResponseNative) -> Comp
         object: CompactedResponseObject::Compaction,
         created_at: native.created_at.unwrap_or_else(unix_time::unix_now),
         output: native.output.into_iter().map(Into::into).collect(),
-        usage: CompactUsage::from_upstream(native.usage.unwrap_or_default()),
+        usage: ResponseUsage::render_upstream(native.usage.unwrap_or_default()),
         gateway_artifact_id: None,
     }
 }
@@ -508,7 +412,7 @@ pub(crate) fn render_gateway_compacted_response(
         object: CompactedResponseObject::Compaction,
         created_at: unix_time::unix_now(),
         output: vec![compaction_item(None, carrier, None)],
-        usage: CompactUsage::from_ir(usage),
+        usage: ResponseUsage::render(usage),
         gateway_artifact_id: Some(artifact_id),
     }
 }

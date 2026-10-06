@@ -9,7 +9,7 @@
 //! version prefixes themselves included — are answered with the same empty 404 the root router
 //! renders, while each version's router owns the error-shaped 404 for its own unmapped paths.
 
-use crate::{context::Context, server};
+use crate::{context::Context, router_fallback};
 use axum::Router;
 #[cfg(feature = "management-api-typescript-bindings")]
 use std::path::Path;
@@ -40,9 +40,9 @@ pub fn generate_typescript_bindings(output_target: &Path) {
 /// Constructs the management API router, mounting every version under its prefix and applying the
 /// cross-version CORS policy the `management_api.cors` configuration section configures.
 pub(crate) fn router() -> Router<Context> {
-    // The shared empty 404 fallback; see `server::fallback` for the axum 0.9 rationale.
+    // The shared empty 404 fallback; see `router_fallback::fallback` for the axum 0.9 rationale.
     Router::new()
         .nest(v0::PREFIX, v0::router())
-        .fallback(server::fallback)
+        .fallback(router_fallback::fallback)
         .layer(crate::CONFIG.management_api_cors_layer())
 }

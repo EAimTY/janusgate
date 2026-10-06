@@ -51,7 +51,7 @@ import { StatedNotice } from "/src/ui/read-notice";
 const flowLockNotice = (): string =>
     translation()(
         ($) =>
-            $.helpers.providerNewScreen
+            $.screens.providerNewScreen
                 .lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows,
     );
 
@@ -550,7 +550,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             .oneUpstreamAccountPickThePresetTheCredentialMessage,
                 )}
                 backHref={hrefs.providers()}
-                backLabel="Providers"
+                backLabel={translation()(($) => $.screens.providerNewScreen.providersBackLabel)}
             />
 
             <StatedNotice

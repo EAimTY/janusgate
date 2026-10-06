@@ -52,6 +52,13 @@ pub(crate) struct JsonResponse {
     usage: Option<OutUsage>,
 }
 
+impl JsonResponse {
+    /// The rendered steps, for the aggregated-body projection.
+    pub(super) fn steps(&self) -> &[RenderStep] {
+        &self.steps
+    }
+}
+
 /// Token accounting in the official Interactions usage shape: the inverse of the upstream usage
 /// mapping — the IR output total (which includes reasoning) splits back into the output and
 /// thought members, so a same-family round-trip restores the reported numbers.
@@ -78,14 +85,18 @@ struct OutUsage {
 
 impl OutUsage {
     /// Splits an IR usage report back into the Interactions members through the shared Gemini
-    /// split, the total rendered as the sum of the members the gateway emits.
+    /// split, the total rendered as the sum of the members the gateway emits, added with
+    /// `saturating_add` so a third-party total can never panic (debug) or wrap (release),
+    /// mirroring the fold in [`crate::format::gemini`].
     fn from_usage(usage: &IrUsage) -> Self {
         let (input, output, thought, cached) = split_gemini_usage(usage);
 
         Self {
             total_input_tokens: input,
             total_output_tokens: output,
-            total_tokens: input + output + thought.unwrap_or(0),
+            total_tokens: input
+                .saturating_add(output)
+                .saturating_add(thought.unwrap_or(0)),
             total_thought_tokens: thought,
             total_cached_tokens: cached,
         }
@@ -440,7 +451,7 @@ impl SseRenderer {
 
         self.open_output = Some(OpenOutputStep { index });
 
-        frames.push(start_frame(index, StartStep::ModelOutput {}));
+        self.emit_start(frames, index, StartStep::ModelOutput {});
 
         index
     }
@@ -453,7 +464,7 @@ impl SseRenderer {
 
         let index = self.next_index();
 
-        frames.push(start_frame(index, StartStep::Thought {}));
+        self.emit_start(frames, index, StartStep::Thought {});
 
         self.open_thought = Some(OpenThoughtStep { index });
 
@@ -463,7 +474,7 @@ impl SseRenderer {
     /// Closes the open output step, when one is open.
     fn close_output_step(&mut self, frames: &mut Vec<String>) {
         if let Some(open) = self.open_output.take() {
-            frames.push(stop_frame(open.index));
+            self.emit_stop(frames, open.index, None);
         }
     }
 
@@ -482,11 +493,11 @@ impl SseRenderer {
         if let Some(open) = self.open_thought.take() {
             // The deltas already delivered every summary byte; a terminal close emits only
             // the boundary, including upstreams that expose reasoning without a done event.
-            frames.push(stop_frame(open.index));
+            self.emit_stop(&mut frames, open.index, None);
         }
 
         for open in std::mem::take(&mut self.open_calls) {
-            frames.push(stop_frame(open.step_index));
+            self.emit_stop(&mut frames, open.step_index, None);
         }
 
         frames.push(sse::format_frame(
@@ -503,6 +514,51 @@ impl SseRenderer {
         ));
 
         frames
+    }
+
+    /// Renders a `step.start` frame; a pooled projection observes the opening at its typed
+    /// render point instead of re-parsing the rendered frame.
+    fn emit_start(&mut self, frames: &mut Vec<String>, index: u64, step: StartStep<'_>) {
+        if let Some(projection) = self.projection.as_mut() {
+            match &step {
+                StartStep::ModelOutput {} => projection.start_output(index),
+                StartStep::Thought {} => projection.start_thought(index),
+                StartStep::FunctionCall { id, name } => projection.start_call(index, id, name),
+            }
+        }
+
+        frames.push(start_frame(index, step));
+    }
+
+    /// Renders a `step.delta` frame; a pooled projection observes the same field bytes at the
+    /// typed render point.
+    fn emit_delta(&mut self, frames: &mut Vec<String>, index: u64, delta: OutDelta<'_>) {
+        if let Some(projection) = self.projection.as_mut() {
+            match &delta {
+                OutDelta::Text { text } => projection.text_delta(index, text),
+                OutDelta::ThoughtSummary {
+                    content: SummaryContent::Text { text },
+                } => projection.thought_summary_delta(index, text),
+                OutDelta::ThoughtSignature { signature } => {
+                    projection.thought_signature_delta(index, signature);
+                }
+                OutDelta::ArgumentsDelta { arguments } => {
+                    projection.arguments_delta(index, arguments);
+                }
+            }
+        }
+
+        frames.push(delta_frame(index, delta));
+    }
+
+    /// Renders a `step.stop` frame; a pooled projection closes the step, an invocation completing
+    /// under the done event's authoritative identity when the closing event carries one.
+    fn emit_stop(&mut self, frames: &mut Vec<String>, index: u64, done: Option<(&str, &str)>) {
+        frames.push(stop_frame(index));
+
+        if let Some(projection) = self.projection.as_mut() {
+            projection.stop(index, done);
+        }
     }
 }
 
@@ -542,9 +598,20 @@ fn stop_frame(index: u64) -> String {
     )
 }
 
-impl SseRenderer {
-    /// Renders one IR event into zero or more native SSE frames.
-    fn render_frames(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
+impl ClientSseRenderer for SseRenderer {
+    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
+        self.projection = Some(super::affinity::Output::new(projector));
+    }
+
+    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
+        self.projection
+            .take()
+            .and_then(super::affinity::Output::finish)
+    }
+
+    /// Renders one IR event into zero or more native SSE frames. The projection observes every
+    /// emitted frame's conversation fields at its typed render point, in emission order.
+    fn render(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
         use crate::ir::IrEvent;
 
         match event {
@@ -559,7 +626,7 @@ impl SseRenderer {
                 let mut frames = self.ensure_created();
                 let index = self.open_output_step(&mut frames);
 
-                frames.push(delta_frame(index, OutDelta::Text { text: delta }));
+                self.emit_delta(&mut frames, index, OutDelta::Text { text: delta });
 
                 frames
             }
@@ -568,12 +635,13 @@ impl SseRenderer {
                 let mut frames = self.ensure_created();
                 let index = self.open_thought_step(&mut frames);
 
-                frames.push(delta_frame(
+                self.emit_delta(
+                    &mut frames,
                     index,
                     OutDelta::ThoughtSummary {
                         content: SummaryContent::Text { text: delta },
                     },
-                ));
+                );
 
                 frames
             }
@@ -591,13 +659,14 @@ impl SseRenderer {
                 match self.open_thought.take() {
                     Some(open) => {
                         if let Some(signature) = signature {
-                            frames.push(delta_frame(
+                            self.emit_delta(
+                                &mut frames,
                                 open.index,
                                 OutDelta::ThoughtSignature { signature },
-                            ));
+                            );
                         }
 
-                        frames.push(stop_frame(open.index));
+                        self.emit_stop(&mut frames, open.index, None);
                     }
 
                     // A done carrying the full text with no prior deltas reopens the block, so the
@@ -608,22 +677,26 @@ impl SseRenderer {
                         let index = self.open_thought_step(&mut frames);
 
                         if !text.is_empty() {
-                            frames.push(delta_frame(
+                            self.emit_delta(
+                                &mut frames,
                                 index,
                                 OutDelta::ThoughtSummary {
                                     content: SummaryContent::Text { text },
                                 },
-                            ));
+                            );
                         }
 
                         if let Some(signature) = signature {
-                            frames
-                                .push(delta_frame(index, OutDelta::ThoughtSignature { signature }));
+                            self.emit_delta(
+                                &mut frames,
+                                index,
+                                OutDelta::ThoughtSignature { signature },
+                            );
                         }
 
                         self.open_thought = None;
 
-                        frames.push(stop_frame(index));
+                        self.emit_stop(&mut frames, index, None);
                     }
 
                     // An empty done with no open block closes nothing: no deltas delivered text
@@ -666,13 +739,14 @@ impl SseRenderer {
                     None => {
                         let step_index = self.next_index();
 
-                        frames.push(start_frame(
+                        self.emit_start(
+                            &mut frames,
                             step_index,
                             StartStep::FunctionCall {
                                 id: call_id.as_deref().unwrap_or(""),
                                 name: name.as_deref().unwrap_or(""),
                             },
-                        ));
+                        );
 
                         self.open_calls.push(OpenCallStep {
                             call_index: *index,
@@ -696,12 +770,13 @@ impl SseRenderer {
                         open.arguments.push_str(arguments_delta);
                     }
 
-                    frames.push(delta_frame(
+                    self.emit_delta(
+                        &mut frames,
                         step_index,
                         OutDelta::ArgumentsDelta {
                             arguments: arguments_delta,
                         },
-                    ));
+                    );
                 }
 
                 frames
@@ -729,12 +804,19 @@ impl SseRenderer {
                 if let Some(signature) = thought_signature {
                     let thought_index = self.next_index();
 
-                    frames.push(start_frame(thought_index, StartStep::Thought {}));
-                    frames.push(delta_frame(
+                    self.emit_start(&mut frames, thought_index, StartStep::Thought {});
+                    self.emit_delta(
+                        &mut frames,
                         thought_index,
-                        OutDelta::ThoughtSignature { signature },
-                    ));
-                    frames.push(stop_frame(thought_index));
+                        OutDelta::ThoughtSignature {
+                            signature: signature.as_str(),
+                        },
+                    );
+                    self.emit_stop(
+                        &mut frames,
+                        thought_index,
+                        Some((call_id.as_str(), name.as_str())),
+                    );
                 }
 
                 match self
@@ -750,37 +832,48 @@ impl SseRenderer {
                             let residual = &arguments[open.arguments.len()..];
 
                             if !residual.is_empty() {
-                                frames.push(delta_frame(
+                                self.emit_delta(
+                                    &mut frames,
                                     open.step_index,
                                     OutDelta::ArgumentsDelta {
                                         arguments: residual,
                                     },
-                                ));
+                                );
                             }
                         }
 
-                        frames.push(stop_frame(open.step_index));
+                        self.emit_stop(
+                            &mut frames,
+                            open.step_index,
+                            Some((call_id.as_str(), name.as_str())),
+                        );
                     }
 
                     None => {
                         let step_index = self.next_index();
 
-                        frames.push(start_frame(
+                        self.emit_start(
+                            &mut frames,
                             step_index,
                             StartStep::FunctionCall {
                                 id: call_id.as_str(),
                                 name: name.as_str(),
                             },
-                        ));
+                        );
 
                         if !arguments.is_empty() {
-                            frames.push(delta_frame(
+                            self.emit_delta(
+                                &mut frames,
                                 step_index,
                                 OutDelta::ArgumentsDelta { arguments },
-                            ));
+                            );
                         }
 
-                        frames.push(stop_frame(step_index));
+                        self.emit_stop(
+                            &mut frames,
+                            step_index,
+                            Some((call_id.as_str(), name.as_str())),
+                        );
                     }
                 }
 
@@ -812,44 +905,9 @@ impl SseRenderer {
 
     /// Renders a mid-stream error as a terminal data frame carrying the Gemini error envelope,
     /// classified once through the shared API error.
-    fn render_error_frame(&mut self, error: &crate::api::Error) -> String {
+    fn error_frame(&mut self, error: &crate::api::Error) -> String {
         error_data_frame(error)
     }
-}
-
-impl ClientSseRenderer for SseRenderer {
-    fn begin_projection(&mut self, projector: crate::affinity::fingerprint::Projector) {
-        self.projection = Some(super::affinity::Output::new(projector));
-    }
-
-    fn take_projection(&mut self) -> Option<crate::affinity::fingerprint::Projector> {
-        self.projection
-            .take()
-            .and_then(super::affinity::Output::finish)
-    }
-
-    fn render(&mut self, event: &crate::ir::IrEvent) -> Vec<String> {
-        let frames = self.render_frames(event);
-        if let Some(projection) = &mut self.projection {
-            projection.observe(event, &frames);
-        }
-        frames
-    }
-
-    fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        self.render_error_frame(error)
-    }
-}
-
-/// Projects emitted ordered steps through borrowed accepted-replay field views.
-pub(super) fn project_json_response(
-    response: &JsonResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    response
-        .steps
-        .iter()
-        .all(|step| super::json_affinity::project_step(step, projector))
 }
 
 #[cfg(test)]
@@ -1532,6 +1590,82 @@ mod tests {
             ],
         );
         assert!(signature_only.join("").contains(r#""signature":"sig-t""#));
+    }
+
+    /// A call whose streamed opening carried no identity — the supported id-less-delta shape of
+    /// a static-key upstream — completes under its done-stamped identity: the streaming
+    /// projection equals the JSON projection of the same response, whose aggregated resource
+    /// renders the done's id, so one response fingerprints one history whichever transport
+    /// served it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the streamed projection diverges from the replayed done-stamped identity or
+    /// loses its exact wire semantics.
+    #[test]
+    fn stamps_the_done_identity_onto_an_id_less_streamed_call() {
+        use crate::{
+            affinity::{Projection, fingerprint::Projector},
+            ir::IrEvent,
+        };
+
+        /// The complete retry identity of a finished projection.
+        fn retry(projector: &Projector) -> Option<(Projection, crate::affinity::Digest)> {
+            projector
+                .evidence()
+                .retry
+                .map(|retry| (retry.projection, retry.digest))
+        }
+
+        let mut renderer = SseRenderer::new("M".to_string());
+
+        renderer.begin_projection(Projector::new());
+
+        renderer.render(&IrEvent::ToolCallDelta {
+            index: 0,
+            call_id: None,
+            name: None,
+            arguments_delta: r#"{"q":"#.to_string(),
+        });
+
+        renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"q":1}"#.to_string(),
+            thought_signature: None,
+        });
+
+        renderer.render(&IrEvent::finish(IrFinishReason::ToolCall));
+        renderer.render(&IrEvent::Done);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed id-less call projects under its done-stamped identity"
+        )]
+        let projected = renderer.take_projection().expect("the call projects");
+
+        // The same response served as JSON renders the done's id into the function_call step,
+        // and replaying that step registers the identity the stream must match.
+        #[expect(
+            clippy::expect_used,
+            reason = "the replayed done-stamped step is constructed to parse"
+        )]
+        let replayed = parse(serde_json::json!({"model": "M", "input": [
+            {"type": "function_call", "id": "call_1", "name": "search",
+             "arguments": {"q": 1}},
+        ]}))
+        .expect("the replayed step parses");
+
+        assert!(
+            retry(&projected) == retry(&replayed.affinity.project(&replayed.ir.messages)),
+            "the streamed and JSON transports of one response fingerprint one history",
+        );
+        assert_eq!(
+            projected.evidence().retry.map(|retry| retry.projection),
+            Some(Projection::Exact),
+            "the done-stamped identity participates with exact wire semantics",
+        );
     }
 
     /// The mid-stream error frame carries the Gemini error envelope in a data-only frame.

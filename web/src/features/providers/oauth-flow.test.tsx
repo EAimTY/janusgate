@@ -1,7 +1,7 @@
 import { render } from "@solidjs/web";
 import { createRoot } from "solid-js";
 import { describe, expect, it } from "vitest";
-import { hasDirtyForms } from "/src/dirty-form-registry";
+import { hasGuardedSubjects } from "/src/leave-guard-registry";
 import type {
     CompleteProviderOauthResponse,
     ProviderResponse,
@@ -136,7 +136,7 @@ describe("OauthFlow leave-guard registration", () => {
         // No flow has stood, so the guard is disarmed.
         await settle();
         expect(flow.flow()).toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
 
         await flow.start();
         await settle();
@@ -144,13 +144,13 @@ describe("OauthFlow leave-guard registration", () => {
         // The live flow's loss to a tab close or a reload is now the guard's
         // to intercept, exactly as an unsaved edit form's is.
         expect(flow.flow()).not.toBeNull();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         flow.reset();
         await drainWrites();
 
         expect(flow.flow()).toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("unregisters when the completion succeeds and installs the provider", async () => {
@@ -169,7 +169,7 @@ describe("OauthFlow leave-guard registration", () => {
 
         await flow.start();
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         flow.setCode("the-code");
         await settle();
@@ -182,7 +182,7 @@ describe("OauthFlow leave-guard registration", () => {
             reauthorizedProvider,
         ]);
         expect(flow.flow()).toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("unregisters when the exchange fails and burns the flow", async () => {
@@ -207,7 +207,7 @@ describe("OauthFlow leave-guard registration", () => {
         // stand armed over a flow that can never complete.
         expect(flow.flow()).toBeNull();
         expect(flow.failure()).not.toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("unregisters when the authorization-code completion answers gone", async () => {
@@ -227,7 +227,7 @@ describe("OauthFlow leave-guard registration", () => {
         // with it.
         expect(flow.flow()).toBeNull();
         expect(flow.failure()).not.toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("unregisters when a device poll answers gone", async () => {
@@ -238,13 +238,13 @@ describe("OauthFlow leave-guard registration", () => {
 
         await flow.start();
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         expect(await flow.completeDevice()).toBe("done");
         await drainWrites();
 
         expect(flow.flow()).toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("unregisters when a device flow expires", async () => {
@@ -258,7 +258,7 @@ describe("OauthFlow leave-guard registration", () => {
 
         await flow.start();
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         // The expiry is past, so the first ask ends the flow without asking.
         expect(await flow.completeDevice()).toBe("done");
@@ -266,7 +266,7 @@ describe("OauthFlow leave-guard registration", () => {
 
         expect(flow.flow()).toBeNull();
         expect(flow.failure()).not.toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("keeps the seat through answers that leave the flow live", async () => {
@@ -288,14 +288,14 @@ describe("OauthFlow leave-guard registration", () => {
 
         await flow.start();
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         // The pending answer: the flow stays live on the gateway, the seat
         // holds.
         expect(await flow.completeDevice()).toBe("pending");
         await drainWrites();
         expect(flow.flow()).not.toBeNull();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         // The failed-but-not-gone answer: the flow still stands, so the seat
         // still holds — only an end-of-flow path may disarm.
@@ -303,7 +303,7 @@ describe("OauthFlow leave-guard registration", () => {
         expect(await flow.completeDevice()).toBe("pending");
         await drainWrites();
         expect(flow.flow()).not.toBeNull();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
     });
 
     it("gives the seat up when the screen goes away with the flow live", async () => {
@@ -317,7 +317,7 @@ describe("OauthFlow leave-guard registration", () => {
 
         await flow.start();
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         // The in-app navigation the leave guard cannot see: the screen goes
         // away with its flow live, and the seat's own cleanup is what keeps
@@ -325,7 +325,7 @@ describe("OauthFlow leave-guard registration", () => {
         dispose();
         await drainWrites();
 
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("re-arms nothing when a held completion answers after the screen went away", async () => {
@@ -347,7 +347,7 @@ describe("OauthFlow leave-guard registration", () => {
 
         await flow.start();
         await settle();
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
 
         // The poll is in flight when the screen goes away; its late answer
         // must act on nothing and arm nothing.
@@ -361,7 +361,7 @@ describe("OauthFlow leave-guard registration", () => {
         expect(await pendingAsk).toBe("done");
         await drainWrites();
 
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 
     it("arms nothing when the begin settles after the screen went away", async () => {
@@ -380,7 +380,7 @@ describe("OauthFlow leave-guard registration", () => {
         // The disposal guard stops the begin ahead of its success tail, so
         // no flow installs and no seat arms.
         expect(flow.flow()).toBeNull();
-        expect(hasDirtyForms()).toBe(false);
+        expect(hasGuardedSubjects()).toBe(false);
     });
 });
 

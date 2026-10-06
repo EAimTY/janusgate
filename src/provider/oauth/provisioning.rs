@@ -31,7 +31,7 @@ use crate::{
 };
 use log::debug;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -281,7 +281,7 @@ fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
 /// `null` payload reads as no failure.
 fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, Error> {
     /// Known display fields inside an otherwise arbitrary upstream failure fragment.
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct ErrorDescription {
         /// Machine status, used only when the upstream supplied text.
         #[serde(default, deserialize_with = "crate::serde_helpers::string_or_none")]

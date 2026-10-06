@@ -4,15 +4,11 @@ import { readProviderCatalog } from "/src/features/inventory/read";
 import { isSameModelRow, isSameProviderRow } from "/src/features/inventory/row-equality";
 import {
     CompactionSupportOverrideFields,
-    compactionOverrideSelection,
+    createCapabilityOverrideDraft,
     isSameCompactionOverride,
     isSameLevelSet,
-    normalizedCompactionOverride,
-    normalizedThinkingLevelsOverride,
-    normalizedTokenCapOverride,
     ThinkingLevelsOverrideFields,
     TokenCapOverrideFields,
-    tokenCapOverrideError,
 } from "/src/features/models/model-form";
 import { VanishedModelNotice } from "/src/features/models/vanished-model-notice";
 import { translation } from "/src/i18n";
@@ -153,71 +149,24 @@ function ModelSettingsForm(props: {
     // the setup reads stay out of the `current` signal's tracking contract.
     const [current, setCurrent] = createSignal(props.initialModel);
     const [isEnabled, setIsEnabled] = createSignal(props.initialModel.is_enabled);
-    const [hasLevelsOverride, setHasLevelsOverride] = createSignal(
-        props.initialModel.thinking_levels_override !== null,
-    );
-    const [selectedLevels, setSelectedLevels] = createSignal<ReadonlyArray<string>>(
-        props.initialModel.thinking_levels_override ?? [],
-    );
-    const [hasMaxInputOverride, setHasMaxInputOverride] = createSignal(
-        props.initialModel.max_input_tokens_override !== null,
-    );
-    const [maxInputText, setMaxInputText] = createSignal(
-        props.initialModel.max_input_tokens_override?.toString() ?? "",
-    );
-    const [hasMaxOutputOverride, setHasMaxOutputOverride] = createSignal(
-        props.initialModel.max_output_tokens_override !== null,
-    );
-    const [maxOutputText, setMaxOutputText] = createSignal(
-        props.initialModel.max_output_tokens_override?.toString() ?? "",
-    );
-    const [hasCompactionOverride, setHasCompactionOverride] = createSignal(
-        props.initialModel.compaction_support_override !== null,
-    );
-    const [selectedCompaction, setSelectedCompaction] = createSignal(
-        compactionOverrideSelection(props.initialModel.compaction_support_override),
-    );
-
-    /** Inline errors for the token-cap overrides, shown where each was typed. */
-    const maxInputError = (): string | null =>
-        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "maxInputOverride");
-
-    const maxOutputError = (): string | null =>
-        tokenCapOverrideError(hasMaxOutputOverride(), maxOutputText(), "maxOutputOverride");
-
-    const normalizedLevels = (): Array<string> | null =>
-        normalizedThinkingLevelsOverride(hasLevelsOverride(), selectedLevels());
-
-    const normalizedMaxInput = (): number | null =>
-        normalizedTokenCapOverride(hasMaxInputOverride(), maxInputText());
-
-    const normalizedMaxOutput = (): number | null =>
-        normalizedTokenCapOverride(hasMaxOutputOverride(), maxOutputText());
-
-    const normalizedCompaction = (): ModelResponse["compaction_support_override"] =>
-        normalizedCompactionOverride(hasCompactionOverride(), selectedCompaction());
+    const draft = createCapabilityOverrideDraft(props.initialModel);
 
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled ||
-        !isSameLevelSet(normalizedLevels(), current().thinking_levels_override) ||
-        normalizedMaxInput() !== current().max_input_tokens_override ||
-        normalizedMaxOutput() !== current().max_output_tokens_override ||
-        !isSameCompactionOverride(normalizedCompaction(), current().compaction_support_override);
+        !isSameLevelSet(draft.normalizedLevels(), current().thinking_levels_override) ||
+        draft.normalizedMaxInput() !== current().max_input_tokens_override ||
+        draft.normalizedMaxOutput() !== current().max_output_tokens_override ||
+        !isSameCompactionOverride(
+            draft.normalizedCompaction(),
+            current().compaction_support_override,
+        );
 
     const canSave = (): boolean =>
-        isDirty() && maxInputError() === null && maxOutputError() === null;
+        isDirty() && draft.maxInputError() === null && draft.maxOutputError() === null;
 
     const revert = (): void => {
         setIsEnabled(current().is_enabled);
-
-        setHasLevelsOverride(current().thinking_levels_override !== null);
-        setSelectedLevels(current().thinking_levels_override ?? []);
-        setHasMaxInputOverride(current().max_input_tokens_override !== null);
-        setMaxInputText(current().max_input_tokens_override?.toString() ?? "");
-        setHasMaxOutputOverride(current().max_output_tokens_override !== null);
-        setMaxOutputText(current().max_output_tokens_override?.toString() ?? "");
-        setHasCompactionOverride(current().compaction_support_override !== null);
-        setSelectedCompaction(compactionOverrideSelection(current().compaction_support_override));
+        draft.apply(current());
         // Reverting resolves a held row onto the gateway's current version.
         props.read.reload();
     };
@@ -231,26 +180,17 @@ function ModelSettingsForm(props: {
             props.api.updateModel(
                 toUpdateModelRequest(current(), {
                     is_enabled: isEnabled(),
-                    thinking_levels_override: normalizedLevels(),
-                    max_input_tokens_override: normalizedMaxInput(),
-                    max_output_tokens_override: normalizedMaxOutput(),
-                    compaction_support_override: normalizedCompaction(),
+                    thinking_levels_override: draft.normalizedLevels(),
+                    max_input_tokens_override: draft.normalizedMaxInput(),
+                    max_output_tokens_override: draft.normalizedMaxOutput(),
+                    compaction_support_override: draft.normalizedCompaction(),
                 }),
             ),
         onSucceeded: (envelope) => {
-            const saved = envelope.model;
             // The returned inventory row is the form's new baseline.
-            setCurrent(saved);
-            setIsEnabled(saved.is_enabled);
-
-            setHasLevelsOverride(saved.thinking_levels_override !== null);
-            setSelectedLevels(saved.thinking_levels_override ?? []);
-            setHasMaxInputOverride(saved.max_input_tokens_override !== null);
-            setMaxInputText(saved.max_input_tokens_override?.toString() ?? "");
-            setHasMaxOutputOverride(saved.max_output_tokens_override !== null);
-            setMaxOutputText(saved.max_output_tokens_override?.toString() ?? "");
-            setHasCompactionOverride(saved.compaction_support_override !== null);
-            setSelectedCompaction(compactionOverrideSelection(saved.compaction_support_override));
+            setCurrent(envelope.model);
+            setIsEnabled(envelope.model.is_enabled);
+            draft.apply(envelope.model);
 
             return {
                 tone: "ok",
@@ -280,10 +220,10 @@ function ModelSettingsForm(props: {
                 />
 
                 <ThinkingLevelsOverrideFields
-                    hasOverride={hasLevelsOverride()}
-                    onHasOverrideToggle={setHasLevelsOverride}
-                    selected={selectedLevels()}
-                    onSelectedChange={setSelectedLevels}
+                    hasOverride={draft.hasLevelsOverride()}
+                    onHasOverrideToggle={draft.setHasLevelsOverride}
+                    selected={draft.selectedLevels()}
+                    onSelectedChange={draft.setSelectedLevels}
                     discovered={current().thinking_levels}
                     isDisabled={form.isSaving()}
                 />
@@ -291,32 +231,32 @@ function ModelSettingsForm(props: {
                 <TokenCapOverrideFields
                     switchLabel={translation()(($) => $.remainingText.overrideMaxInputTokens)}
                     fieldLabel={translation()(($) => $.remainingText.maxInputTokensOverride)}
-                    hasOverride={hasMaxInputOverride()}
-                    onHasOverrideToggle={setHasMaxInputOverride}
-                    value={maxInputText()}
-                    onValueInput={setMaxInputText}
+                    hasOverride={draft.hasMaxInputOverride()}
+                    onHasOverrideToggle={draft.setHasMaxInputOverride}
+                    value={draft.maxInputText()}
+                    onValueInput={draft.setMaxInputText}
                     discovered={current().max_input_tokens}
-                    valueError={maxInputError()}
+                    valueError={draft.maxInputError()}
                     isDisabled={form.isSaving()}
                 />
 
                 <TokenCapOverrideFields
                     switchLabel={translation()(($) => $.remainingText.overrideMaxOutputTokens)}
                     fieldLabel={translation()(($) => $.remainingText.maxOutputTokensOverride)}
-                    hasOverride={hasMaxOutputOverride()}
-                    onHasOverrideToggle={setHasMaxOutputOverride}
-                    value={maxOutputText()}
-                    onValueInput={setMaxOutputText}
+                    hasOverride={draft.hasMaxOutputOverride()}
+                    onHasOverrideToggle={draft.setHasMaxOutputOverride}
+                    value={draft.maxOutputText()}
+                    onValueInput={draft.setMaxOutputText}
                     discovered={current().max_output_tokens}
-                    valueError={maxOutputError()}
+                    valueError={draft.maxOutputError()}
                     isDisabled={form.isSaving()}
                 />
 
                 <CompactionSupportOverrideFields
-                    hasOverride={hasCompactionOverride()}
-                    onHasOverrideToggle={setHasCompactionOverride}
-                    selected={selectedCompaction()}
-                    onSelectedChange={setSelectedCompaction}
+                    hasOverride={draft.hasCompactionOverride()}
+                    onHasOverrideToggle={draft.setHasCompactionOverride}
+                    selected={draft.selectedCompaction()}
+                    onSelectedChange={draft.setSelectedCompaction}
                     discovered={current().compaction_support}
                     isDisabled={form.isSaving()}
                 />

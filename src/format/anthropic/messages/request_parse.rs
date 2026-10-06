@@ -8,15 +8,17 @@
 
 use super::{TypedBlock, block_opaque};
 use crate::{
-    compaction::{identity::InstructionRole, sealing::CARRIER_NAMESPACE},
+    compaction_model::{identity::InstructionRole, sealing::CARRIER_NAMESPACE},
     format::{
         BoundaryPlacement, CompactionBoundary, CompactionControl, NativeArtifact, ParsedCompaction,
         ParsedInstructionItem, ParsedRequest, RoleRun, StringOrArray, compaction_control,
+        join_text_parts,
     },
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice, StateItem,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
+        IrToolChoice, StateItem,
     },
+    vocabulary::ReasoningLevel,
 };
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
@@ -917,18 +919,16 @@ pub(super) fn parse_inbound_request(
         }
     };
 
-    let instructions = match &request.system {
-        None => None,
-        Some(_) => {
-            let combined = instruction_items
-                .iter()
-                .map(|item| item.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-
-            Some(combined)
-        }
-    };
+    // The instructions string joins the parsed items: an absent `system` yields no items and no
+    // instructions, while a present one yields at least its single text item, whose verbatim
+    // content — blank included — is the instructions string.
+    let instructions = (!instruction_items.is_empty()).then(|| {
+        instruction_items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    });
 
     let mut messages: Vec<IrMessage> = Vec::new();
     let mut compaction_state = CollectedCompaction::default();
@@ -1004,10 +1004,15 @@ pub(super) fn parse_inbound_request(
                     }
                 }
 
-                messages.push(IrMessage {
-                    role: IrRole::Assistant,
-                    parts,
-                });
+                // A turn whose blocks all carry state — a compaction-block-only replay turn —
+                // or an empty content array yields no parts and no IR message, mirroring the
+                // user branch: an empty message is IR noise every consumer skips.
+                if !parts.is_empty() {
+                    messages.push(IrMessage {
+                        role: IrRole::Assistant,
+                        parts,
+                    });
+                }
             }
         }
     }
@@ -1102,7 +1107,7 @@ pub(super) fn parse_inbound_request(
         None => None,
 
         // The native off spelling parses into `none` (§6.4).
-        Some(InboundThinking::Disabled {}) => Some(IrReasoningLevel::None),
+        Some(InboundThinking::Disabled {}) => Some(ReasoningLevel::None),
 
         // Accepted and ignored: no replayable state, no IR slot.
         Some(InboundThinking::Enabled { .. } | InboundThinking::Adaptive { .. }) => None,
@@ -1112,7 +1117,7 @@ pub(super) fn parse_inbound_request(
         .output_config
         .as_ref()
         .and_then(|output_config| output_config.effort.as_deref())
-        .map(|effort| IrReasoningLevel::parse(effort, "output_config"))
+        .map(|effort| ReasoningLevel::parse(effort, "output_config"))
         .transpose()?;
 
     // The structured-outputs member parses into the IR response format; a shape outside the
@@ -1332,15 +1337,9 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
                         })
                         .collect::<Result<Vec<_>, _>>()?;
 
-                    // The separator only ever separates text the accumulator already holds, so
-                    // a leading run of empty parts carries none: skip it, then join the rest
-                    // with the blank-line separator.
-                    texts
-                        .iter()
-                        .skip_while(|text| text.is_empty())
-                        .copied()
-                        .collect::<Vec<&str>>()
-                        .join("\n\n")
+                    // The shared text-part flattening contract (README §6.6): a leading run of
+                    // empty parts carries no separator, and the rest joins on the blank line.
+                    join_text_parts(texts)
                 }
             };
 
@@ -1529,7 +1528,7 @@ mod tests {
         assert_eq!(parsed.ir.instructions.as_deref(), Some("be terse"));
         assert_eq!(parsed.ir.temperature, Some(0.7));
         assert_eq!(parsed.ir.top_p, Some(0.9));
-        assert_eq!(parsed.ir.reasoning_effort, Some(IrReasoningLevel::High),);
+        assert_eq!(parsed.ir.reasoning_effort, Some(ReasoningLevel::High),);
         assert_eq!(
             parsed.ir.tools,
             vec![IrTool {
@@ -1945,7 +1944,7 @@ mod tests {
                 json!({"effort": "high",
                        "format": {"type": "json_schema", "schema": schema.clone()}}),
                 expected_format(schema.clone()),
-                Some(IrReasoningLevel::High),
+                Some(ReasoningLevel::High),
             ),
             (
                 json!({"format": {"type": "json_schema", "schema": schema.clone()}}),
@@ -2142,7 +2141,7 @@ mod tests {
             (
                 Some(json!({"type": "disabled"})),
                 None,
-                Some(IrReasoningLevel::None),
+                Some(ReasoningLevel::None),
             ),
             (Some(json!({"type": "enabled"})), None, None),
             (Some(json!({"type": "adaptive"})), None, None),
@@ -2159,7 +2158,7 @@ mod tests {
             (
                 None,
                 Some(json!({"effort": "low"})),
-                Some(IrReasoningLevel::Low),
+                Some(ReasoningLevel::Low),
             ),
         ] {
             let mut body = base();
@@ -2810,6 +2809,10 @@ mod tests {
             .expect("the gateway block produces compaction facts");
 
         assert!(compaction.control.is_none());
+
+        // The compaction-block-only turn carries no IR part and emits no IR message, mirroring
+        // the user branch, while the boundary still reads the empty history.
+        assert!(parsed.ir.messages.is_empty());
 
         let boundary = only_boundary(&parsed);
 

@@ -1,7 +1,11 @@
 import { ContractViolationError } from "../errors";
 import type { JsonValue, ParamRow, StringExpr, TemplateNode, ValueExpr } from "../generated/v0";
-import { expectArray, expectRecord, expectString } from "../validation-primitives";
-import { expectDeclaredKeys } from "./validation";
+import {
+    expectArray,
+    expectDeclaredKeys,
+    expectRecord,
+    expectString,
+} from "../validation-primitives";
 
 /** One value expression part, rebuilt from its validated kind (README §5.1). */
 function expectExpressionPart(part: unknown, context: string): ValueExpr {

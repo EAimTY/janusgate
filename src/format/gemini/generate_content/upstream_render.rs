@@ -559,9 +559,9 @@ mod tests {
     /// Panics if a rendered slot diverges from the contract.
     #[test]
     fn renders_thinking_level_verbatim_and_never_a_budget() {
-        use crate::ir::IrReasoningLevel;
+        use crate::vocabulary::ReasoningLevel;
 
-        for (level, effort) in IrReasoningLevel::VOCABULARY {
+        for (level, effort) in ReasoningLevel::VOCABULARY {
             let ir = IrRequest {
                 state_items: Vec::new(),
                 model: "m".to_string(),

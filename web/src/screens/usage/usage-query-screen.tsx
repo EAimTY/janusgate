@@ -89,7 +89,7 @@ const HELD_QUERY_NOTICE: ScreenNotice = {
     tone: "warn",
     get title() {
         return translation()(
-            ($) => $.helpers.usageQueryScreen.theQueryDidNotRunAFilterValueIsInvalid,
+            ($) => $.screens.usageQueryScreen.theQueryDidNotRunAFilterValueIsInvalid,
         );
     },
     get detail() {
@@ -379,7 +379,7 @@ export function UsageQueryScreen(props: {
                             .oneBucketPerDimensionCombinationInsideTheFilterMessage,
                 )}
                 backHref={hrefs.usage()}
-                backLabel="Usage"
+                backLabel={translation()(($) => $.screens.usageQueryScreen.usageBackLabel)}
             >
                 <ButtonLink href={hrefs.usage(streamDraftOf(fields()))}>
                     {translation()(($) => $.screens.usageQueryScreen.viewRequests)}
@@ -677,7 +677,7 @@ function BucketKeyCell(props: {
 }): JSX.Element {
     const label = (): string =>
         props.dimensions.length === 0
-            ? translation()(($) => $.helpers.usageQueryScreen.total)
+            ? translation()(($) => $.screens.usageQueryScreen.total)
             : props.dimensions
                   .map((dimension) => usageDimensionLabel(dimension, props.bucket.key, props.index))
                   .join(" · ");

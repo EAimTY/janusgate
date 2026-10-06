@@ -15,10 +15,7 @@ use crate::ir::{IrMessage, IrPart, IrRequest};
 
 /// The protocol's default Messages threshold trigger: 150,000 input tokens,
 /// kept whenever a `compact_20260112` edit states no trigger of its own.
-#[must_use]
-pub(crate) const fn messages_default_threshold() -> u64 {
-    150_000
-}
+pub(crate) const MESSAGES_DEFAULT_THRESHOLD: u64 = 150_000;
 
 /// Resolves the gateway default threshold of an emulated Responses automatic
 /// compaction with no client-stated threshold: `floor(0.8 * capacity)` over the
@@ -65,6 +62,31 @@ pub(crate) fn estimate_context_tokens(ir: &IrRequest) -> Result<u64, CompactionE
     Ok(bytes.div_ceil(3))
 }
 
+/// Adds one model-visible part's counted bytes to the running estimate,
+/// failing the measurement on image content the estimate cannot represent.
+///
+/// # Errors
+///
+/// Returns [`CompactionError::UnsupportedMeasurement`] for image content.
+fn part_bytes(part: &IrPart) -> Result<usize, CompactionError> {
+    match part {
+        IrPart::Text { text } => Ok(text.len()),
+
+        IrPart::Image { .. } => Err(CompactionError::UnsupportedMeasurement),
+
+        IrPart::ToolCall {
+            call_id,
+            name,
+            arguments,
+            ..
+        } => Ok(call_id.len() + name.len() + arguments.len()),
+
+        IrPart::ToolOutput { content, .. } => Ok(content.len()),
+
+        IrPart::Reasoning { text, .. } => Ok(text.len()),
+    }
+}
+
 /// Estimates the token size of a run of messages — the shared unit estimator
 /// the retention selection measures interaction units with. The rules are the
 /// message rules of [`estimate_context_tokens`]: image content fails the
@@ -79,26 +101,7 @@ pub(crate) fn estimate_message_tokens(messages: &[IrMessage]) -> Result<u64, Com
 
     for message in messages {
         for part in &message.parts {
-            match part {
-                IrPart::Text { text } => bytes += text.len(),
-
-                IrPart::Image { .. } => return Err(CompactionError::UnsupportedMeasurement),
-
-                IrPart::ToolCall {
-                    call_id,
-                    name,
-                    arguments,
-                    ..
-                } => {
-                    bytes += call_id.len();
-                    bytes += name.len();
-                    bytes += arguments.len();
-                }
-
-                IrPart::ToolOutput { content, .. } => bytes += content.len(),
-
-                IrPart::Reasoning { text, .. } => bytes += text.len(),
-            }
+            bytes += part_bytes(part)?;
         }
     }
 
@@ -122,26 +125,7 @@ fn estimate_context_bytes(ir: &IrRequest) -> Result<u64, CompactionError> {
 
     for message in &ir.messages {
         for part in &message.parts {
-            match part {
-                IrPart::Text { text } => bytes += text.len(),
-
-                IrPart::Image { .. } => return Err(CompactionError::UnsupportedMeasurement),
-
-                IrPart::ToolCall {
-                    call_id,
-                    name,
-                    arguments,
-                    ..
-                } => {
-                    bytes += call_id.len();
-                    bytes += name.len();
-                    bytes += arguments.len();
-                }
-
-                IrPart::ToolOutput { content, .. } => bytes += content.len(),
-
-                IrPart::Reasoning { text, .. } => bytes += text.len(),
-            }
+            bytes += part_bytes(part)?;
         }
     }
 
@@ -162,7 +146,7 @@ fn estimate_context_bytes(ir: &IrRequest) -> Result<u64, CompactionError> {
 mod tests {
 
     use super::{
-        estimate_context_tokens, messages_default_threshold, responses_gateway_default_threshold,
+        MESSAGES_DEFAULT_THRESHOLD, estimate_context_tokens, responses_gateway_default_threshold,
     };
     use crate::{
         compaction::error::CompactionError,
@@ -319,7 +303,7 @@ mod tests {
     /// Panics if an assertion fails — the assertion is the failure report.
     #[test]
     fn default_thresholds_follow_the_documented_rules() {
-        assert_eq!(messages_default_threshold(), 150_000);
+        assert_eq!(MESSAGES_DEFAULT_THRESHOLD, 150_000);
 
         assert_eq!(
             responses_gateway_default_threshold("m", Some(1_000_000)).map_err(|_| ()),

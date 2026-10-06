@@ -30,7 +30,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::Method;
-use log::{debug, error};
+use log::{Level, debug, error, warn};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as DeError};
 
 /// Message a failed write's constraint violation renders: the engine's SQL detail stays in the log
@@ -406,6 +406,18 @@ pub(super) struct ErrorResponse {
     pub message: String,
 }
 
+/// Whether a body-extraction rejection is the version's body limit firing: the length-limit
+/// rejection is the one body rejection with its own category — the 413 — and its own fixed wire
+/// message, so the errno classification and the body rendering must agree on exactly this shape.
+fn is_length_limit(rejection: &JsonRejection) -> bool {
+    matches!(
+        rejection,
+        JsonRejection::BytesRejection(BytesRejection::FailedToBufferBody(
+            FailedToBufferBody::LengthLimitError(_)
+        ))
+    )
+}
+
 impl Error {
     /// The errno category the failure renders as: the one classification, so the log level, the
     /// response status, and the body's `errno` can never disagree. A cause's own category decides —
@@ -414,11 +426,10 @@ impl Error {
     /// every other one an unusable request.
     fn as_errno(&self) -> ErrorCode {
         match self {
+            Self::Json(rejection) if is_length_limit(rejection) => ErrorCode::PayloadTooLarge,
+
             Self::Json(rejection) => match rejection {
                 JsonRejection::MissingJsonContentType(_) => ErrorCode::UnsupportedMediaType,
-                JsonRejection::BytesRejection(BytesRejection::FailedToBufferBody(
-                    FailedToBufferBody::LengthLimitError(_),
-                )) => ErrorCode::PayloadTooLarge,
                 _ => ErrorCode::InvalidRequest,
             },
 
@@ -485,24 +496,42 @@ impl Error {
 
     /// Whether the failure is the calling client's own fault: every 4xx category belongs to the
     /// caller and every 5xx category to the gateway or an upstream. README §8's severity policy
-    /// records client-fault rejections at debug level and gateway or upstream failures at error
-    /// level.
+    /// records client-fault rejections at debug level — an unauthorized management request
+    /// excepted, see [`Error::log_level`] — and gateway or upstream failures at error level.
     fn is_client_fault(&self) -> bool {
         self.as_errno().as_status_code().is_client_error()
+    }
+
+    /// The severity the failure's one log record carries, per README §8's severity policy: an
+    /// unauthorized management request is anomalous-but-tolerated behavior — a probe of the
+    /// administrative surface — and is recorded at warn level; every other client fault is
+    /// per-request detail recorded at debug level, the rendered response already informing the
+    /// caller; a gateway or upstream failure is recorded at error level.
+    fn log_level(&self) -> Level {
+        match self {
+            Self::Unauthorized => Level::Warn,
+
+            _ if self.is_client_fault() => Level::Debug,
+
+            _ => Level::Error,
+        }
     }
 }
 
 /// Renders the failure into the errno-shaped response and logs it exactly once: this is the only
 /// boundary a failure crosses on its way to the caller, whether it left a handler, an extractor, or
-/// the router's own edges. A client fault is recorded at debug level — the rendered response
-/// already informs the caller — while a gateway or upstream failure is recorded at error level with
-/// the whole cause the response withholds.
+/// the router's own edges. The log record's severity is [`Error::log_level`]'s policy reading — an
+/// unauthorized management request at warn, every other client fault at debug, a gateway or
+/// upstream failure at error — and the error-level record carries the whole cause the response
+/// withholds.
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        if self.is_client_fault() {
-            debug!("management request rejected: {self}");
-        } else {
-            error!("management request failed: {self}");
+        match self.log_level() {
+            Level::Warn => warn!("unauthorized management request rejected: {self}"),
+
+            Level::Debug => debug!("management request rejected: {self}"),
+
+            _ => error!("management request failed: {self}"),
         }
 
         let body = ErrorResponse::from(self);
@@ -522,9 +551,9 @@ impl From<Error> for ErrorResponse {
         let errno = error.as_errno();
 
         let message = match &error {
-            Error::Json(JsonRejection::BytesRejection(BytesRejection::FailedToBufferBody(
-                FailedToBufferBody::LengthLimitError(_),
-            ))) => PAYLOAD_TOO_LARGE_MESSAGE.to_string(),
+            Error::Json(rejection) if is_length_limit(rejection) => {
+                PAYLOAD_TOO_LARGE_MESSAGE.to_string()
+            }
 
             Error::Json(JsonRejection::BytesRejection(_)) => UNREADABLE_BODY_MESSAGE.to_string(),
 
@@ -569,7 +598,7 @@ impl From<crate::provider::quota::Error> for Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONSTRAINT_MESSAGE, Error, ErrorCode, ErrorResponse, INTERNAL_MESSAGE};
+    use super::{CONSTRAINT_MESSAGE, Error, ErrorCode, ErrorResponse, INTERNAL_MESSAGE, Level};
     use crate::{
         database::Error as DatabaseError, provider::Error as ProviderError,
         storage::Error as StorageError,
@@ -866,11 +895,12 @@ mod tests {
         }
     }
 
-    /// Verifies that the client-fault classification partitions the taxonomy exactly as README §8's
-    /// severity policy prescribes: client-fault rejections — malformed bodies, failed
+    /// Verifies that the log-level classification partitions the taxonomy exactly as README §8's
+    /// severity policy prescribes: an unauthorized management request is anomalous-but-tolerated
+    /// behavior logged at warn level, every other client fault — malformed bodies, failed
     /// authentication, missing resources, conflicts, an over-limit body, an unmatched method, a
-    /// wrong body content type — are logged at debug level, while gateway and upstream failures are
-    /// logged at error level.
+    /// wrong body content type — is logged at debug level, and gateway, upstream, and internal
+    /// failures are logged at error level.
     ///
     /// # Panics
     ///
@@ -878,62 +908,74 @@ mod tests {
     #[test]
     fn classifies_client_faults() {
         let cases = [
-            (Error::EmptyIdentifier { param: "name" }, true),
+            (Error::EmptyIdentifier { param: "name" }, Level::Debug),
             (
                 Error::InvalidIdentifier {
                     param: "upstream_id",
                 },
-                true,
+                Level::Debug,
             ),
-            (Error::InvalidBaseUrl, true),
-            (Error::MalformedAuthorizationCode, true),
+            (Error::InvalidBaseUrl, Level::Debug),
+            (Error::MalformedAuthorizationCode, Level::Debug),
             (
                 Error::CredentialKindMismatch {
                     message: "kinds disagree".to_string(),
                 },
-                true,
+                Level::Debug,
             ),
-            (Error::Unauthorized, true),
-            (Error::ProviderNotFound { id: 7 }, true),
+            (Error::Unauthorized, Level::Warn),
+            (Error::ProviderNotFound { id: 7 }, Level::Debug),
             (
                 Error::ProviderNameTaken {
                     name: "acme".to_string(),
                 },
-                true,
+                Level::Debug,
             ),
-            (Error::ApiKeyNotFound { id: 7 }, true),
+            (Error::ApiKeyNotFound { id: 7 }, Level::Debug),
             (
                 Error::from(StorageError::Conflict {
                     message: crate::storage::api_keys::api_key_taken_message(),
                 }),
-                true,
+                Level::Debug,
             ),
             (
                 Error::MethodNotAllowed {
                     method: Method::PATCH,
                     path: "/providers:list".to_string(),
                 },
-                true,
+                Level::Debug,
             ),
             (
                 Error::from(JsonRejection::MissingJsonContentType(
                     MissingJsonContentType::default(),
                 )),
-                true,
+                Level::Debug,
             ),
-            (Error::UpstreamReportedNoModels, false),
+            (Error::UpstreamReportedNoModels, Level::Error),
             (
                 Error::UpstreamReportedInvalidModelId {
                     upstream_id: "gpt 4o".to_string(),
                 },
-                false,
+                Level::Error,
+            ),
+            (
+                Error::Internal {
+                    message: "drift".to_string(),
+                },
+                Level::Error,
+            ),
+            (
+                Error::from(StorageError::Busy {
+                    detail: "locked".to_string(),
+                }),
+                Level::Error,
             ),
         ];
 
-        for (error, is_client_fault) in cases {
+        for (error, level) in cases {
             assert_eq!(
-                error.is_client_fault(),
-                is_client_fault,
+                error.log_level(),
+                level,
                 "classification mismatch for {error}"
             );
         }

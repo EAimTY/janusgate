@@ -9,7 +9,7 @@
 //! `overloaded_error` — the closest semantic member as an explicit gateway extension, the same
 //! pattern the Gemini surface documents, because the official table has no 503 row.
 
-use crate::api::Error;
+use super::Error;
 use axum::http::StatusCode;
 use serde::Serialize;
 

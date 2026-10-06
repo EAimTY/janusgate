@@ -8,11 +8,12 @@
 //! gateway cannot accept renders as an upstream-unavailable failure (502), a
 //! missing sealing configuration renders as an internal failure (500), and a
 //! dispatched native operation's arbitrary failure passes through unchanged with
-//! its existing upstream semantics. Refusal and documented native no-summary
-//! outcomes are not errors at all — they are protocol outcomes the executor
-//! models separately.
+//! its existing upstream semantics. Boundary failures compose losslessly: the
+//! executor elevates a [`BoundaryError`] raised before account selection onto the
+//! matching variant. Refusal and documented native no-summary outcomes are not
+//! errors at all — they are protocol outcomes the executor models separately.
 
-use crate::gateway::Error as GatewayError;
+use crate::{compaction_model::boundary::BoundaryError, gateway::Error as GatewayError};
 use thiserror::Error;
 
 /// A remote-compaction failure.
@@ -140,19 +141,24 @@ impl CompactionError {
     }
 }
 
-impl From<super::sealing::UnsealError> for CompactionError {
-    fn from(error: super::sealing::UnsealError) -> Self {
-        match error {
-            super::sealing::UnsealError::ConfigurationMissing => Self::ConfigurationMissing {
-                message: String::from(
-                    "no compaction sealing keys are configured, so the gateway \
-                     carrier cannot be consumed",
-                ),
-            },
+impl From<crate::compaction_model::sealing::UnsealError> for CompactionError {
+    fn from(error: crate::compaction_model::sealing::UnsealError) -> Self {
+        // The unseal failure semantics are single-sourced in the boundary
+        // failure vocabulary.
+        Self::from(BoundaryError::from(error))
+    }
+}
 
-            // Every other unseal failure is carrier state the client presented:
-            // an unknown key, a malformed carrier, or failed authentication.
-            other => Self::invalid_gateway_state(other.to_string()),
+impl From<BoundaryError> for CompactionError {
+    fn from(error: BoundaryError) -> Self {
+        match error {
+            BoundaryError::ConfigurationMissing { message } => {
+                Self::ConfigurationMissing { message }
+            }
+            BoundaryError::InvalidGatewayState { message } => Self::InvalidGatewayState { message },
+            BoundaryError::InaccessibleNativeState { message } => {
+                Self::InaccessibleNativeState { message }
+            }
         }
     }
 }
@@ -165,15 +171,9 @@ impl From<CompactionError> for GatewayError {
             CompactionError::UnusableHistory { .. }
             | CompactionError::InaccessibleNativeState { .. }
             | CompactionError::InvalidGatewayState { .. }
-            | CompactionError::BudgetExceeded { .. } => {
-                Self::InvalidRequest(crate::ir::InvalidRequest::request(error.to_string()))
-            }
-
-            CompactionError::UnsupportedMeasurement => {
-                Self::InvalidRequest(crate::ir::InvalidRequest::request(error.to_string()))
-            }
-
-            CompactionError::UnknownCapacity { .. } => {
+            | CompactionError::BudgetExceeded { .. }
+            | CompactionError::UnsupportedMeasurement
+            | CompactionError::UnknownCapacity { .. } => {
                 Self::InvalidRequest(crate::ir::InvalidRequest::request(error.to_string()))
             }
 

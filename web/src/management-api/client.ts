@@ -11,53 +11,38 @@ import {
     type ManagementFailureCategory,
 } from "./errors";
 import {
-    type ApiKeyEnvelope,
     type CompleteProviderOauthRequest,
-    type CompleteProviderOauthResponse,
     type CreateApiKeyRequest,
     type CreateModelRequest,
     type CreateModelRouteRequest,
-    type CreateModelRouteResponse,
     type CreateProviderDefinitionRequest,
     type CreateProviderPoolRequest,
-    type CreateProviderPoolResponse,
     type CreateProviderRequest,
-    type DefinitionEnvelope,
     type DeleteApiKeyRequest,
     type DeleteModelRequest,
     type DeleteModelRouteRequest,
     type DeleteProviderPoolRequest,
     type DeleteProviderRequest,
     type DiscoverModelsRequest,
-    type DiscoverModelsResponse,
+    type EmptyResponse,
     ErrorCode,
     type GetProviderAvailabilityRequest,
-    type GetProviderAvailabilityResponse,
     type GetProviderQuotaRequest,
-    type GetProviderQuotaResponse,
     type ListApiKeysRequest,
-    type ListApiKeysResponse,
     type ListModelRoutesRequest,
-    type ListModelRoutesResponse,
     type ListModelsRequest,
-    type ListModelsResponse,
     type ListProviderDefinitionsRequest,
-    type ListProviderDefinitionsResponse,
     type ListProviderPoolsRequest,
-    type ListProviderPoolsResponse,
     type ListProvidersRequest,
-    type ListProvidersResponse,
     type ListUsageRequest,
-    type ListUsageResponse,
-    type ModelEnvelope,
+    type Method,
     type Path,
-    type ProviderEnvelope,
     type QueryUsageRequest,
-    type QueryUsageResponse,
     type ReauthorizeProviderRequest,
     type ResetProviderAvailabilityRequest,
+    type Request as RouteRequest,
+    type Response as RouteResponse,
     type StartProviderOauthRequest,
-    type StartProviderOauthResponse,
     type UpdateApiKeyRequest,
     type UpdateModelRequest,
     type UpdateModelRouteRequest,
@@ -107,130 +92,24 @@ type ManagementConnection = {
 const MANAGEMENT_API_PATH = "/management-api/v0";
 
 /**
- * The management API as the application addresses it: one method per route of
- * the generated route table, every method a `POST` to
- * `{baseUrl}/management-api/v0{path}` (README §3.2, §4.2). Each method rejects
- * with a `ManagementApiError` whose category and errno drive the caller's
- * reaction, and an `AbortSignal` cancels the call at the transport.
+ * One route's dispatch row: the client method name, how the call's request
+ * becomes the wire body, and how the wire response narrows back. The
+ * `satisfies` check below ties every row to the generated route table's own
+ * entry for its path, so a request builder or response parser that drifts
+ * from the bindings cannot compile. The rows parsed by `parseEmptyResponse`
+ * are exactly the writes whose generated answer is the empty record; their
+ * methods resolve as `void` below.
  */
-export type ManagementApi = {
-    readonly listProviderPools: (signal?: AbortSignal) => Promise<ListProviderPoolsResponse>;
-    readonly createProviderPool: (
-        request: CreateProviderPoolRequest,
-        signal?: AbortSignal,
-    ) => Promise<CreateProviderPoolResponse>;
-    readonly updateProviderPool: (
-        request: UpdateProviderPoolRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    readonly deleteProviderPool: (
-        request: DeleteProviderPoolRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    readonly listModelRoutes: (signal?: AbortSignal) => Promise<ListModelRoutesResponse>;
-    readonly createModelRoute: (
-        request: CreateModelRouteRequest,
-        signal?: AbortSignal,
-    ) => Promise<CreateModelRouteResponse>;
-    readonly updateModelRoute: (
-        request: UpdateModelRouteRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    readonly deleteModelRoute: (
-        request: DeleteModelRouteRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    readonly getProviderAvailability: (
-        request: GetProviderAvailabilityRequest,
-        signal?: AbortSignal,
-    ) => Promise<GetProviderAvailabilityResponse>;
-    readonly resetProviderAvailability: (
-        request: ResetProviderAvailabilityRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-
-    readonly listProviderDefinitions: (
-        signal?: AbortSignal,
-    ) => Promise<ListProviderDefinitionsResponse>;
-    readonly createProviderDefinition: (
-        request: CreateProviderDefinitionRequest,
-        signal?: AbortSignal,
-    ) => Promise<DefinitionEnvelope>;
-    readonly updateProviderDefinition: (
-        request: UpdateProviderDefinitionRequest,
-        signal?: AbortSignal,
-    ) => Promise<DefinitionEnvelope>;
-    readonly getProviderQuota: (
-        request: GetProviderQuotaRequest,
-        signal?: AbortSignal,
-    ) => Promise<GetProviderQuotaResponse>;
-    readonly listProviders: (signal?: AbortSignal) => Promise<ListProvidersResponse>;
-    readonly createProvider: (
-        request: CreateProviderRequest,
-        signal?: AbortSignal,
-    ) => Promise<ProviderEnvelope>;
-    readonly updateProvider: (
-        request: UpdateProviderRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    readonly deleteProvider: (
-        request: DeleteProviderRequest,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    readonly startProviderOauth: (
-        request: StartProviderOauthRequest,
-        signal?: AbortSignal,
-    ) => Promise<StartProviderOauthResponse>;
-    readonly completeProviderOauth: (
-        request: CompleteProviderOauthRequest,
-        signal?: AbortSignal,
-    ) => Promise<CompleteProviderOauthResponse>;
-    readonly reauthorizeProvider: (
-        request: ReauthorizeProviderRequest,
-        signal?: AbortSignal,
-    ) => Promise<StartProviderOauthResponse>;
-    readonly listModels: (
-        request: ListModelsRequest,
-        signal?: AbortSignal,
-    ) => Promise<ListModelsResponse>;
-    readonly discoverModels: (
-        request: DiscoverModelsRequest,
-        signal?: AbortSignal,
-    ) => Promise<DiscoverModelsResponse>;
-    readonly updateModel: (
-        request: UpdateModelRequest,
-        signal?: AbortSignal,
-    ) => Promise<ModelEnvelope>;
-    readonly createModel: (
-        request: CreateModelRequest,
-        signal?: AbortSignal,
-    ) => Promise<ModelEnvelope>;
-    readonly deleteModel: (request: DeleteModelRequest, signal?: AbortSignal) => Promise<void>;
-    readonly listUsage: (
-        request: ListUsageRequest,
-        signal?: AbortSignal,
-    ) => Promise<ListUsageResponse>;
-    readonly queryUsage: (
-        request: QueryUsageRequest,
-        signal?: AbortSignal,
-    ) => Promise<QueryUsageResponse>;
-    readonly listApiKeys: (signal?: AbortSignal) => Promise<ListApiKeysResponse>;
-    readonly createApiKey: (
-        request: CreateApiKeyRequest,
-        signal?: AbortSignal,
-    ) => Promise<ApiKeyEnvelope>;
-    readonly updateApiKey: (request: UpdateApiKeyRequest, signal?: AbortSignal) => Promise<void>;
-    readonly deleteApiKey: (request: DeleteApiKeyRequest, signal?: AbortSignal) => Promise<void>;
+type RouteRow<P extends Path> = {
+    readonly method: string;
+    readonly request: (request: RouteRequest<P, Method<P>>) => RouteRequest<P, Method<P>>;
+    readonly parse: (value: unknown) => RouteResponse<P, Method<P>>;
 };
 
-type ManagementApiOptions = {
-    /**
-     * Called when a call is answered with the version's `unauthorized` errno:
-     * the stored pair is proven dead (README §3.1), and the caller continues
-     * to see the failure as usual.
-     */
-    readonly onUnauthorized?: (notice: string) => void;
-};
+/** The request builder of the routes whose wire body is the caller's request verbatim. */
+function passthrough<TRequest>(request: TRequest): TRequest {
+    return request;
+}
 
 /** The providers listing's empty request body (README §4.2). */
 const emptyProvidersRequest: ListProvidersRequest = {};
@@ -242,6 +121,216 @@ const emptyApiKeysRequest: ListApiKeysRequest = {};
 const emptyDefinitionsRequest: ListProviderDefinitionsRequest = {};
 const emptyPoolsRequest: ListProviderPoolsRequest = {};
 const emptyRoutesRequest: ListModelRoutesRequest = {};
+
+/**
+ * The whole dispatch table: one row per route of the generated route table.
+ * The routes whose callers send no arguments build their fixed empty body
+ * here (README §4.2); every other route sends the caller's request verbatim;
+ * the writes whose generated answer is the empty record parse through
+ * `parseEmptyResponse` and resolve as `void` below.
+ */
+const routeTable = {
+    "/provider-pools:list": {
+        method: "listProviderPools",
+        request: () => emptyPoolsRequest,
+        parse: parseListProviderPoolsResponse,
+    },
+    "/provider-pools:create": {
+        method: "createProviderPool",
+        request: passthrough<CreateProviderPoolRequest>,
+        parse: parseCreateProviderPoolResponse,
+    },
+    "/provider-pools:update": {
+        method: "updateProviderPool",
+        request: passthrough<UpdateProviderPoolRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/provider-pools:delete": {
+        method: "deleteProviderPool",
+        request: passthrough<DeleteProviderPoolRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/model-routes:list": {
+        method: "listModelRoutes",
+        request: () => emptyRoutesRequest,
+        parse: parseListModelRoutesResponse,
+    },
+    "/model-routes:create": {
+        method: "createModelRoute",
+        request: passthrough<CreateModelRouteRequest>,
+        parse: parseCreateModelRouteResponse,
+    },
+    "/model-routes:update": {
+        method: "updateModelRoute",
+        request: passthrough<UpdateModelRouteRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/model-routes:delete": {
+        method: "deleteModelRoute",
+        request: passthrough<DeleteModelRouteRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/providers:availability": {
+        method: "getProviderAvailability",
+        request: passthrough<GetProviderAvailabilityRequest>,
+        parse: parseGetProviderAvailabilityResponse,
+    },
+    "/providers:reset-availability": {
+        method: "resetProviderAvailability",
+        request: passthrough<ResetProviderAvailabilityRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/provider-definitions:list": {
+        method: "listProviderDefinitions",
+        request: () => emptyDefinitionsRequest,
+        parse: parseListProviderDefinitionsResponse,
+    },
+    "/provider-definitions:create": {
+        method: "createProviderDefinition",
+        request: passthrough<CreateProviderDefinitionRequest>,
+        parse: parseDefinitionEnvelope,
+    },
+    "/provider-definitions:update": {
+        method: "updateProviderDefinition",
+        request: passthrough<UpdateProviderDefinitionRequest>,
+        parse: parseDefinitionEnvelope,
+    },
+    "/providers:quota": {
+        method: "getProviderQuota",
+        request: passthrough<GetProviderQuotaRequest>,
+        parse: parseGetProviderQuotaResponse,
+    },
+    "/providers:list": {
+        method: "listProviders",
+        request: () => emptyProvidersRequest,
+        parse: parseListProvidersResponse,
+    },
+    "/providers:create": {
+        method: "createProvider",
+        request: passthrough<CreateProviderRequest>,
+        parse: parseProviderEnvelope,
+    },
+    "/providers:update": {
+        method: "updateProvider",
+        request: passthrough<UpdateProviderRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/providers:delete": {
+        method: "deleteProvider",
+        request: passthrough<DeleteProviderRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/oauth:start": {
+        method: "startProviderOauth",
+        request: passthrough<StartProviderOauthRequest>,
+        parse: parseStartProviderOauthResponse,
+    },
+    "/oauth:complete": {
+        method: "completeProviderOauth",
+        request: passthrough<CompleteProviderOauthRequest>,
+        parse: parseCompleteProviderOauthResponse,
+    },
+    "/oauth:reauthorize": {
+        method: "reauthorizeProvider",
+        request: passthrough<ReauthorizeProviderRequest>,
+        parse: parseStartProviderOauthResponse,
+    },
+    "/models:list": {
+        method: "listModels",
+        request: passthrough<ListModelsRequest>,
+        parse: parseListModelsResponse,
+    },
+    "/models:discover": {
+        method: "discoverModels",
+        request: passthrough<DiscoverModelsRequest>,
+        parse: parseDiscoverModelsResponse,
+    },
+    "/models:update": {
+        method: "updateModel",
+        request: passthrough<UpdateModelRequest>,
+        parse: parseModelEnvelope,
+    },
+    "/models:create": {
+        method: "createModel",
+        request: passthrough<CreateModelRequest>,
+        parse: parseModelEnvelope,
+    },
+    "/models:delete": {
+        method: "deleteModel",
+        request: passthrough<DeleteModelRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/usage:list": {
+        method: "listUsage",
+        request: passthrough<ListUsageRequest>,
+        parse: parseListUsageResponse,
+    },
+    "/usage:query": {
+        method: "queryUsage",
+        request: passthrough<QueryUsageRequest>,
+        parse: parseQueryUsageResponse,
+    },
+    "/api-keys:list": {
+        method: "listApiKeys",
+        request: () => emptyApiKeysRequest,
+        parse: parseListApiKeysResponse,
+    },
+    "/api-keys:create": {
+        method: "createApiKey",
+        request: passthrough<CreateApiKeyRequest>,
+        parse: parseApiKeyEnvelope,
+    },
+    "/api-keys:update": {
+        method: "updateApiKey",
+        request: passthrough<UpdateApiKeyRequest>,
+        parse: parseEmptyResponse,
+    },
+    "/api-keys:delete": {
+        method: "deleteApiKey",
+        request: passthrough<DeleteApiKeyRequest>,
+        parse: parseEmptyResponse,
+    },
+} as const satisfies { [P in Path]: RouteRow<P> };
+
+type RouteTable = typeof routeTable;
+
+/**
+ * The promise one client method resolves: the route's own response, or `void`
+ * for the routes whose generated answer is the empty record — the writes
+ * whose answer carries no fact the row is not already refetched for
+ * (README §4.5).
+ */
+type MethodPromise<P extends Path> = Promise<
+    EmptyResponse extends RouteResponse<P, Method<P>> ? void : RouteResponse<P, Method<P>>
+>;
+
+/**
+ * The management API as the application addresses it: one method per route of
+ * the generated route table, derived from the dispatch table above — the
+ * method names, the request payloads, and the response types are the table's
+ * own, so nothing restates the bindings. Every method is a `POST` to
+ * `{baseUrl}/management-api/v0{path}` (README §3.2, §4.2), rejects with a
+ * `ManagementApiError` whose category and errno drive the caller's reaction,
+ * and takes an `AbortSignal` that cancels the call at the transport.
+ */
+export type ManagementApi = {
+    readonly [P in Path as RouteTable[P]["method"]]: Parameters<
+        RouteTable[P]["request"]
+    > extends readonly [
+        infer TRequest,
+    ]
+        ? (request: TRequest, signal?: AbortSignal) => MethodPromise<P>
+        : (signal?: AbortSignal) => MethodPromise<P>;
+};
+
+type ManagementApiOptions = {
+    /**
+     * Called when a call is answered with the version's `unauthorized` errno:
+     * the stored pair is proven dead (README §3.1), and the caller continues
+     * to see the failure as usual.
+     */
+    readonly onUnauthorized?: (notice: string) => void;
+};
 
 const isJsonBody = (
     bodyText: string,
@@ -388,134 +477,124 @@ export function createManagementApi(
         return body.payload;
     }
 
+    /**
+     * One route whose callers send no arguments: the row builds the fixed
+     * empty body, and the response narrows through the row's parser.
+     */
+    function fixedRequestMethod<TResponse>(
+        path: Path,
+        route: {
+            readonly request: () => unknown;
+            readonly parse: (value: unknown) => TResponse;
+        },
+    ): (signal?: AbortSignal) => Promise<TResponse> {
+        return async (signal) =>
+            decodeResponse(await post(path, route.request(), signal), route.parse);
+    }
+
+    /** One route whose caller supplies the wire body verbatim. */
+    function callerRequestMethod<TRequest, TResponse>(
+        path: Path,
+        route: {
+            readonly request: (request: TRequest) => unknown;
+            readonly parse: (value: unknown) => TResponse;
+        },
+    ): (request: TRequest, signal?: AbortSignal) => Promise<TResponse> {
+        return async (request, signal) =>
+            decodeResponse(await post(path, route.request(request), signal), route.parse);
+    }
+
+    /**
+     * One route whose validated answer carries no fact: the empty record is
+     * still parsed — a foreign body is a contract violation — then dropped,
+     * so the method resolves as `void` (README §4.5).
+     */
+    function voidResponseMethod<TRequest>(
+        path: Path,
+        route: {
+            readonly request: (request: TRequest) => unknown;
+            readonly parse: (value: unknown) => EmptyResponse;
+        },
+    ): (request: TRequest, signal?: AbortSignal) => Promise<void> {
+        return async (request, signal) => {
+            decodeResponse(await post(path, route.request(request), signal), route.parse);
+        };
+    }
+
     return {
-        listProviderPools: async (signal) =>
-            decodeResponse(
-                await post("/provider-pools:list", emptyPoolsRequest, signal),
-                parseListProviderPoolsResponse,
-            ),
-        createProviderPool: async (request, signal) =>
-            decodeResponse(
-                await post("/provider-pools:create", request, signal),
-                parseCreateProviderPoolResponse,
-            ),
-        updateProviderPool: async (request, signal) => {
-            decodeResponse(
-                await post("/provider-pools:update", request, signal),
-                parseEmptyResponse,
-            );
-        },
-        deleteProviderPool: async (request, signal) => {
-            decodeResponse(
-                await post("/provider-pools:delete", request, signal),
-                parseEmptyResponse,
-            );
-        },
-        listModelRoutes: async (signal) =>
-            decodeResponse(
-                await post("/model-routes:list", emptyRoutesRequest, signal),
-                parseListModelRoutesResponse,
-            ),
-        createModelRoute: async (request, signal) =>
-            decodeResponse(
-                await post("/model-routes:create", request, signal),
-                parseCreateModelRouteResponse,
-            ),
-        updateModelRoute: async (request, signal) => {
-            decodeResponse(await post("/model-routes:update", request, signal), parseEmptyResponse);
-        },
-        deleteModelRoute: async (request, signal) => {
-            decodeResponse(await post("/model-routes:delete", request, signal), parseEmptyResponse);
-        },
-        getProviderAvailability: async (request, signal) =>
-            decodeResponse(
-                await post("/providers:availability", request, signal),
-                parseGetProviderAvailabilityResponse,
-            ),
-        resetProviderAvailability: async (request, signal) => {
-            decodeResponse(
-                await post("/providers:reset-availability", request, signal),
-                parseEmptyResponse,
-            );
-        },
-        listProviderDefinitions: async (signal) =>
-            decodeResponse(
-                await post("/provider-definitions:list", emptyDefinitionsRequest, signal),
-                parseListProviderDefinitionsResponse,
-            ),
-        createProviderDefinition: async (request, signal) =>
-            decodeResponse(
-                await post("/provider-definitions:create", request, signal),
-                parseDefinitionEnvelope,
-            ),
-        updateProviderDefinition: async (request, signal) =>
-            decodeResponse(
-                await post("/provider-definitions:update", request, signal),
-                parseDefinitionEnvelope,
-            ),
-        getProviderQuota: async (request, signal) =>
-            decodeResponse(
-                await post("/providers:quota", request, signal),
-                parseGetProviderQuotaResponse,
-            ),
-        listProviders: async (signal) =>
-            decodeResponse(
-                await post("/providers:list", emptyProvidersRequest, signal),
-                parseListProvidersResponse,
-            ),
-        createProvider: async (request, signal) =>
-            decodeResponse(await post("/providers:create", request, signal), parseProviderEnvelope),
-        updateProvider: async (request, signal) => {
-            decodeResponse(await post("/providers:update", request, signal), parseEmptyResponse);
-        },
-        deleteProvider: async (request, signal) => {
-            decodeResponse(await post("/providers:delete", request, signal), parseEmptyResponse);
-        },
-        startProviderOauth: async (request, signal) =>
-            decodeResponse(
-                await post("/oauth:start", request, signal),
-                parseStartProviderOauthResponse,
-            ),
-        completeProviderOauth: async (request, signal) =>
-            decodeResponse(
-                await post("/oauth:complete", request, signal),
-                parseCompleteProviderOauthResponse,
-            ),
-        reauthorizeProvider: async (request, signal) =>
-            decodeResponse(
-                await post("/oauth:reauthorize", request, signal),
-                parseStartProviderOauthResponse,
-            ),
-        listModels: async (request, signal) =>
-            decodeResponse(await post("/models:list", request, signal), parseListModelsResponse),
-        discoverModels: async (request, signal) =>
-            decodeResponse(
-                await post("/models:discover", request, signal),
-                parseDiscoverModelsResponse,
-            ),
-        updateModel: async (request, signal) =>
-            decodeResponse(await post("/models:update", request, signal), parseModelEnvelope),
-        createModel: async (request, signal) =>
-            decodeResponse(await post("/models:create", request, signal), parseModelEnvelope),
-        deleteModel: async (request, signal) => {
-            decodeResponse(await post("/models:delete", request, signal), parseEmptyResponse);
-        },
-        listUsage: async (request, signal) =>
-            decodeResponse(await post("/usage:list", request, signal), parseListUsageResponse),
-        queryUsage: async (request, signal) =>
-            decodeResponse(await post("/usage:query", request, signal), parseQueryUsageResponse),
-        listApiKeys: async (signal) =>
-            decodeResponse(
-                await post("/api-keys:list", emptyApiKeysRequest, signal),
-                parseListApiKeysResponse,
-            ),
-        createApiKey: async (request, signal) =>
-            decodeResponse(await post("/api-keys:create", request, signal), parseApiKeyEnvelope),
-        updateApiKey: async (request, signal) => {
-            decodeResponse(await post("/api-keys:update", request, signal), parseEmptyResponse);
-        },
-        deleteApiKey: async (request, signal) => {
-            decodeResponse(await post("/api-keys:delete", request, signal), parseEmptyResponse);
-        },
+        listProviderPools: fixedRequestMethod(
+            "/provider-pools:list",
+            routeTable["/provider-pools:list"],
+        ),
+        createProviderPool: callerRequestMethod(
+            "/provider-pools:create",
+            routeTable["/provider-pools:create"],
+        ),
+        updateProviderPool: voidResponseMethod(
+            "/provider-pools:update",
+            routeTable["/provider-pools:update"],
+        ),
+        deleteProviderPool: voidResponseMethod(
+            "/provider-pools:delete",
+            routeTable["/provider-pools:delete"],
+        ),
+        listModelRoutes: fixedRequestMethod("/model-routes:list", routeTable["/model-routes:list"]),
+        createModelRoute: callerRequestMethod(
+            "/model-routes:create",
+            routeTable["/model-routes:create"],
+        ),
+        updateModelRoute: voidResponseMethod(
+            "/model-routes:update",
+            routeTable["/model-routes:update"],
+        ),
+        deleteModelRoute: voidResponseMethod(
+            "/model-routes:delete",
+            routeTable["/model-routes:delete"],
+        ),
+        getProviderAvailability: callerRequestMethod(
+            "/providers:availability",
+            routeTable["/providers:availability"],
+        ),
+        resetProviderAvailability: voidResponseMethod(
+            "/providers:reset-availability",
+            routeTable["/providers:reset-availability"],
+        ),
+        listProviderDefinitions: fixedRequestMethod(
+            "/provider-definitions:list",
+            routeTable["/provider-definitions:list"],
+        ),
+        createProviderDefinition: callerRequestMethod(
+            "/provider-definitions:create",
+            routeTable["/provider-definitions:create"],
+        ),
+        updateProviderDefinition: callerRequestMethod(
+            "/provider-definitions:update",
+            routeTable["/provider-definitions:update"],
+        ),
+        getProviderQuota: callerRequestMethod("/providers:quota", routeTable["/providers:quota"]),
+        listProviders: fixedRequestMethod("/providers:list", routeTable["/providers:list"]),
+        createProvider: callerRequestMethod("/providers:create", routeTable["/providers:create"]),
+        updateProvider: voidResponseMethod("/providers:update", routeTable["/providers:update"]),
+        deleteProvider: voidResponseMethod("/providers:delete", routeTable["/providers:delete"]),
+        startProviderOauth: callerRequestMethod("/oauth:start", routeTable["/oauth:start"]),
+        completeProviderOauth: callerRequestMethod(
+            "/oauth:complete",
+            routeTable["/oauth:complete"],
+        ),
+        reauthorizeProvider: callerRequestMethod(
+            "/oauth:reauthorize",
+            routeTable["/oauth:reauthorize"],
+        ),
+        listModels: callerRequestMethod("/models:list", routeTable["/models:list"]),
+        discoverModels: callerRequestMethod("/models:discover", routeTable["/models:discover"]),
+        updateModel: callerRequestMethod("/models:update", routeTable["/models:update"]),
+        createModel: callerRequestMethod("/models:create", routeTable["/models:create"]),
+        deleteModel: voidResponseMethod("/models:delete", routeTable["/models:delete"]),
+        listUsage: callerRequestMethod("/usage:list", routeTable["/usage:list"]),
+        queryUsage: callerRequestMethod("/usage:query", routeTable["/usage:query"]),
+        listApiKeys: fixedRequestMethod("/api-keys:list", routeTable["/api-keys:list"]),
+        createApiKey: callerRequestMethod("/api-keys:create", routeTable["/api-keys:create"]),
+        updateApiKey: voidResponseMethod("/api-keys:update", routeTable["/api-keys:update"]),
+        deleteApiKey: voidResponseMethod("/api-keys:delete", routeTable["/api-keys:delete"]),
     };
 }

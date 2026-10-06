@@ -11,9 +11,12 @@ import type {
 import {
     expectArray,
     expectBoolean,
+    expectDeclaredKeys,
     expectInteger,
+    expectOneOf,
     expectRecord,
     expectString,
+    isPresentValue,
 } from "../validation-primitives";
 import {
     expectControlRequest,
@@ -24,7 +27,6 @@ import {
     expectResponseTarget,
 } from "./control";
 import { expectParamRows, expectStringExpr } from "./expressions";
-import { expectDeclaredKeys, expectOneOf, isPresentValue } from "./validation";
 
 /** One provisioning extraction: the path, its target, the shape, and the flag. */
 function expectProvisionExtraction(value: unknown, context: string): ProvisionExtraction {

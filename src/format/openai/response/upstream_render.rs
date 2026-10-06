@@ -67,7 +67,7 @@ pub(crate) struct RequestBody<'a> {
     /// one dispatch carries them. The entries are third-party wire fragments
     /// whose shapes the upstream defines.
     #[serde(skip_serializing_if = "Option::is_none")]
-    context_management: Option<&'a [crate::format::compaction_wire::AutomaticEntry]>,
+    context_management: Option<&'a [crate::ir::compaction::AutomaticEntry]>,
 }
 
 /// One conversation item of the upstream request.
@@ -241,7 +241,7 @@ pub(crate) fn render_request_body_with_extensions<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
     render_options: &[RenderOption],
-    context_management: Option<&'a [crate::format::compaction_wire::AutomaticEntry]>,
+    context_management: Option<&'a [crate::ir::compaction::AutomaticEntry]>,
 ) -> Result<RequestBody<'a>, InvalidRequest> {
     let mut body = render_body(ir, is_streaming, context_management)?;
 
@@ -426,7 +426,7 @@ fn push_state_item<'a>(
 fn render_body<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
-    context_management: Option<&'a [crate::format::compaction_wire::AutomaticEntry]>,
+    context_management: Option<&'a [crate::ir::compaction::AutomaticEntry]>,
 ) -> Result<RequestBody<'a>, InvalidRequest> {
     let input = render_input_items(ir)?;
 
@@ -489,7 +489,8 @@ mod tests {
     };
     use crate::{
         format::RenderOption,
-        ir::{IrReasoningLevel, IrRequest, IrRole, IrToolChoice, StateItem},
+        ir::{IrRequest, IrRole, IrToolChoice, StateItem},
+        vocabulary::ReasoningLevel,
     };
     use serde_json::{Value, json};
 
@@ -499,7 +500,7 @@ mod tests {
     ///
     /// Panics if the rendered body fails to serialize or fails to render,
     /// neither of which can occur for the fixture.
-    fn render_body(reasoning_effort: Option<IrReasoningLevel>) -> Value {
+    fn render_body(reasoning_effort: Option<ReasoningLevel>) -> Value {
         let ir = IrRequest {
             state_items: Vec::new(),
             model: "m".to_string(),
@@ -524,7 +525,7 @@ mod tests {
     /// Panics if a rendered slot diverges from the contract.
     #[test]
     fn renders_the_effort_level_verbatim_or_not_at_all() {
-        for (level, effort) in IrReasoningLevel::VOCABULARY {
+        for (level, effort) in ReasoningLevel::VOCABULARY {
             let body = render_body(Some(level));
 
             assert_eq!(
@@ -779,7 +780,7 @@ mod tests {
                 false,
                 &[],
                 Some(
-                    &serde_json::from_value::<Vec<crate::format::compaction_wire::AutomaticEntry>>(
+                    &serde_json::from_value::<Vec<crate::ir::compaction::AutomaticEntry>>(
                         serde_json::json!(entries),
                     )
                     .expect("automatic controls parse"),

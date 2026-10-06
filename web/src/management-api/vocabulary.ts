@@ -197,6 +197,31 @@ export const MECHANISM_SUPPORT = defineVocabulary<MechanismSupport>(
     "a mechanism support state",
 );
 
+/**
+ * The compaction mechanisms each upstream wire format can declare, keyed by
+ * format: the Responses trio only on an `openai_response` definition, the
+ * Messages pair only on an `anthropic_messages` one — every other format
+ * carries no compaction declaration at all. The record's type is exhaustive,
+ * so a format added to the generated union fails to compile until its
+ * mechanism list is stated here.
+ */
+export const COMPACTION_MECHANISMS_BY_FORMAT: Readonly<
+    Record<UpstreamFormat, ReadonlyArray<CompactionMechanism>>
+> = {
+    openai_response: [
+        "responses_standalone_compact",
+        "responses_explicit_trigger",
+        "responses_automatic_compaction",
+    ],
+    openai_chat_completion: [],
+    gemini_generate_content: [],
+    gemini_interaction: [],
+    anthropic_messages: [
+        "messages_on_demand_compaction",
+        "messages_threshold_compaction",
+    ],
+};
+
 /** The OAuth member of the provider row union — the only kind carrying an expiry. */
 export type OauthProviderRow = Extract<
     ProviderResponse,

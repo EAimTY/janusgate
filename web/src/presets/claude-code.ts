@@ -1,14 +1,15 @@
 import { translation } from "../i18n";
 import {
+    anthropicModelsDiscovery,
     authorizationCode,
-    bearer,
+    bearerAuthorization,
     clientId,
     codeVerifier,
+    jsonRefreshGrantBody,
     literal,
     paramRow,
     redirectUri,
-    refreshToken,
-    secret,
+    tokenExchangeResponse,
 } from "./expressions";
 import { ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
@@ -34,9 +35,12 @@ export const claudeCodePreset: ProviderPreset = {
     payload: {
         quota: {
             request: {
-                ...bearer("https://api.anthropic.com/api/oauth/usage"),
+                method: "GET",
+                url: [
+                    literal("https://api.anthropic.com/api/oauth/usage"),
+                ],
                 headers: [
-                    ...(bearer("").headers ?? []),
+                    bearerAuthorization(),
                     paramRow("anthropic-beta", [
                         literal("oauth-2025-04-20"),
                     ]),
@@ -120,10 +124,7 @@ export const claudeCodePreset: ProviderPreset = {
                 literal("https://api.anthropic.com/v1/messages"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
                 paramRow("anthropic-beta", [
                     literal("oauth-2025-04-20"),
                 ]),
@@ -205,38 +206,7 @@ export const claudeCodePreset: ProviderPreset = {
                         },
                     },
                 },
-                response: {
-                    encoding: "json",
-                    fields: [
-                        {
-                            path: [
-                                "access_token",
-                            ],
-                            target: {
-                                type: "access_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "refresh_token",
-                            ],
-                            target: {
-                                type: "refresh_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "expires_in",
-                            ],
-                            target: {
-                                type: "expires_in_seconds",
-                            },
-                            required: false,
-                        },
-                    ],
-                },
+                response: tokenExchangeResponse(),
                 terminal_codes: [
                     "invalid_grant",
                     "expired_token",
@@ -256,32 +226,7 @@ export const claudeCodePreset: ProviderPreset = {
                             literal("claude-cli/1.0.0 (external, cli)"),
                         ]),
                     ],
-                    body: {
-                        kind: "json",
-                        node: {
-                            type: "object",
-                            fields: {
-                                grant_type: {
-                                    type: "string",
-                                    expr: [
-                                        literal("refresh_token"),
-                                    ],
-                                },
-                                client_id: {
-                                    type: "string",
-                                    expr: [
-                                        clientId(),
-                                    ],
-                                },
-                                refresh_token: {
-                                    type: "string",
-                                    expr: [
-                                        refreshToken(),
-                                    ],
-                                },
-                            },
-                        },
-                    },
+                    body: jsonRefreshGrantBody(),
                 },
                 terminal_codes: [
                     "invalid_grant",
@@ -289,46 +234,17 @@ export const claudeCodePreset: ProviderPreset = {
                 ],
             },
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    literal("https://api.anthropic.com/v1/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                    paramRow("anthropic-beta", [
-                        literal("oauth-2025-04-20"),
-                    ]),
-                    paramRow("anthropic-version", [
-                        literal("2023-06-01"),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "cursor",
-                has_more_path: [
-                    "has_more",
-                ],
-                last_id_path: [
-                    "last_id",
-                ],
-                request_param: "after_id",
-                max_pages: 10,
-            },
-        },
+        discovery: anthropicModelsDiscovery(
+            [
+                literal("https://api.anthropic.com/v1/models"),
+            ],
+            [
+                bearerAuthorization(),
+                paramRow("anthropic-beta", [
+                    literal("oauth-2025-04-20"),
+                ]),
+            ],
+        ),
         compaction: {
             strategy: "native_preferred",
             summary_budget: 4096,

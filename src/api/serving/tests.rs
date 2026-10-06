@@ -226,8 +226,7 @@ async fn finalizes_client_aborted_when_the_handler_departs_before_completion() {
     for render in [
         AggregationRender::Ordinary,
         AggregationRender::WithPrefix {
-            checkpoints: Vec::new(),
-            iterations: Vec::new(),
+            prefix: CheckpointPrefix::Responses(Vec::new()),
         },
     ] {
         let (store, _guard) = test_store();
@@ -296,8 +295,7 @@ async fn finalizes_completed_and_hands_the_rendered_response_to_the_handler() {
     for render in [
         AggregationRender::Ordinary,
         AggregationRender::WithPrefix {
-            checkpoints: Vec::new(),
-            iterations: Vec::new(),
+            prefix: CheckpointPrefix::Responses(Vec::new()),
         },
     ] {
         let (store, _guard) = test_store();
@@ -374,8 +372,7 @@ async fn finalizes_the_classified_upstream_failure_regardless_of_the_client() {
     for render in [
         AggregationRender::Ordinary,
         AggregationRender::WithPrefix {
-            checkpoints: Vec::new(),
-            iterations: Vec::new(),
+            prefix: CheckpointPrefix::Responses(Vec::new()),
         },
     ] {
         // The client stays: the failure is handed to the handler for rendering.
@@ -478,8 +475,7 @@ async fn finalizes_the_usage_a_failed_stream_delivered_before_its_failure() {
     for render in [
         AggregationRender::Ordinary,
         AggregationRender::WithPrefix {
-            checkpoints: Vec::new(),
-            iterations: Vec::new(),
+            prefix: CheckpointPrefix::Responses(Vec::new()),
         },
     ] {
         let (store, _guard) = test_store();
@@ -876,10 +872,12 @@ async fn compaction_failures_finalize_once_before_and_after_response_transfer() 
             preparation,
             gateway::CompactionSelection::direct(routing),
             stamped_draft(),
-            log_context(),
-            false,
-            true,
-            "test-model".into(),
+            RenderContext {
+                is_streaming: false,
+                should_include_usage: true,
+                public_id: "test-model".into(),
+                log_context: log_context(),
+            },
             OperationKind::Completion,
         )
         .await;
@@ -1433,9 +1431,10 @@ async fn streamed_history_registration_obeys_terminal_delivery()
                     reason = "the fixture contains its native boundary"
                 )]
                 let compaction = replay.compaction.as_ref().expect("native replay boundary");
-                let active =
-                    crate::compaction::history::BoundaryPreparation::authenticate(compaction)?
-                        .routing_preparation(&replay)?;
+                let active = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
+                    compaction,
+                )?
+                .routing_preparation(&replay)?;
                 // Probe only the completed state-plus-answer unit count. The independently
                 // released checkpoint remains usable after failure, but cannot establish an
                 // unfinished answer's full window.

@@ -5,20 +5,21 @@ import type {
     ListProviderDefinitionsResponse,
 } from "../generated/v0";
 import {
+    expectDeclaredKeys,
     expectInteger,
     expectRecord,
     expectString,
+    isPresentValue,
     parseEnvelopeResponse,
     parseListResponse,
 } from "../validation-primitives";
-import { parseUpstreamFormat } from "../vocabulary-validation";
+import { UPSTREAM_FORMAT } from "../vocabulary";
 import { expectCompactionSection } from "./compaction";
 import { expectCredential, expectProvisioning } from "./credentials";
 import { expectDiscovery } from "./discovery";
 import { expectInference } from "./inference";
 import { parseQuotaDescriptor, validateQuotaRequest } from "./quota";
 import type { DefinitionPayload, DefinitionPayloadResult } from "./types";
-import { expectDeclaredKeys, isPresentValue } from "./validation";
 
 /**
  * Validates one authored definition payload (README §5): the JSON a preset
@@ -31,7 +32,7 @@ import { expectDeclaredKeys, isPresentValue } from "./validation";
 export function validateDefinitionPayload(value: unknown): DefinitionPayloadResult {
     try {
         return {
-            payload: expectDefinitionPayload(value, "definition"),
+            payload: expectDefinitionPayload(expectRecord(value, "definition"), "definition"),
         };
     } catch (error) {
         if (error instanceof ContractViolationError) {
@@ -45,12 +46,12 @@ export function validateDefinitionPayload(value: unknown): DefinitionPayloadResu
 }
 
 /**
- * One authored definition payload, rebuilt field by field. The context is the
- * JSON path the messages name, `"definition"` at the top of an authored
- * payload and the response path inside a stored-definition parse.
+ * One authored definition payload: the record narrowed, its declared keys
+ * checked, then its sections rebuilt. The context is the JSON path the
+ * messages name, `"definition"` at the top of an authored payload and the
+ * response path inside a stored-definition parse.
  */
-function expectDefinitionPayload(value: unknown, context: string): DefinitionPayload {
-    const record = expectRecord(value, context);
+function expectDefinitionPayload(record: object, context: string): DefinitionPayload {
     expectDeclaredKeys(
         record,
         [
@@ -65,8 +66,17 @@ function expectDefinitionPayload(value: unknown, context: string): DefinitionPay
         context,
     );
 
+    return expectDefinitionSections(record, context);
+}
+
+/**
+ * One definition payload's sections, rebuilt field by field from a record
+ * whose declared keys the caller has already checked — the shared walk behind
+ * the authored-payload gate and the stored-definition response parse.
+ */
+function expectDefinitionSections(record: object, context: string): DefinitionPayload {
     const payload: DefinitionPayload = {
-        format: parseUpstreamFormat(Reflect.get(record, "format"), `${context}.format`),
+        format: UPSTREAM_FORMAT.parse(Reflect.get(record, "format"), `${context}.format`),
         inference: expectInference(Reflect.get(record, "inference"), `${context}.inference`),
         credential: expectCredential(Reflect.get(record, "credential"), `${context}.credential`),
     };
@@ -110,23 +120,30 @@ function expectDefinitionPayload(value: unknown, context: string): DefinitionPay
  * One stored definition version: the `(name, version)` identity and the
  * creation timestamp — the fields the app reads — built beside the payload
  * the shared walk above reconstructs, so the value is assembled from
- * validated fields and never asserted.
+ * validated fields and never asserted. The row's own keys are declared first,
+ * so an undeclared top-level member is named at its path instead of being
+ * dropped by a pre-projected payload the way every nested section rejects.
  */
 function parseDefinitionResponse(value: unknown, context: string): DefinitionResponse {
     const record = expectRecord(value, context);
-
-    const payload = expectDefinitionPayload(
-        {
-            format: Reflect.get(record, "format"),
-            inference: Reflect.get(record, "inference"),
-            credential: Reflect.get(record, "credential"),
-            provisioning: Reflect.get(record, "provisioning"),
-            discovery: Reflect.get(record, "discovery"),
-            compaction: Reflect.get(record, "compaction"),
-            quota: Reflect.get(record, "quota"),
-        },
+    expectDeclaredKeys(
+        record,
+        [
+            "name",
+            "version",
+            "created_at",
+            "format",
+            "inference",
+            "credential",
+            "provisioning",
+            "discovery",
+            "compaction",
+            "quota",
+        ],
         context,
     );
+
+    const payload = expectDefinitionSections(record, context);
 
     return {
         name: expectString(Reflect.get(record, "name"), `${context}.name`),

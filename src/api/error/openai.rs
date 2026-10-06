@@ -4,7 +4,7 @@
 //! The OpenAI render keeps the existing `type`/`code`/`param` rows verbatim; the new contract rows
 //! (method, body limit, fixed-message internal) extend the same table.
 
-use crate::api::Error;
+use super::Error;
 use axum::http::StatusCode;
 use serde::Serialize;
 

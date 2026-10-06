@@ -86,8 +86,6 @@ struct MemoryRecord {
     fence: QuotaFence,
     /// Content-free completed check category.
     last_refresh: LastRefresh,
-    /// Latest successful decoding time within this generation, retained through failed reads.
-    last_observed_at: Option<SafeTimestamp>,
     /// Monotonic completion time, also the reset grace origin.
     completed_at: Option<Instant>,
     /// Current restrictions with known resets, interpreted at the latest evidence update.
@@ -100,7 +98,6 @@ impl MemoryRecord {
         Self {
             fence,
             last_refresh: LastRefresh::NotObserved,
-            last_observed_at: None,
             completed_at: None,
             resets: Vec::new(),
         }
@@ -252,6 +249,17 @@ enum Action {
     Reload,
 }
 
+/// What one coordinated run produced.
+enum Run {
+    /// The committed evidence was still fresh: the state the run loaded and synchronized
+    /// carries the authoritative restrictions, and no caller below needs a second load.
+    Cached(AccountQuotaState),
+
+    /// A flight was awaited or started; its reconciliation may have changed the durable
+    /// blocks. The shared outcome rides its `Arc` until the one consuming caller unwraps it.
+    Flight(Arc<FlightResult>),
+}
+
 impl Coordinator {
     /// Takes the metadata lock; poisoning indicates a fatal first-party invariant failure.
     ///
@@ -326,6 +334,10 @@ impl Coordinator {
 
     /// Checks one account/model, throttling optional failures and reloading durable evidence.
     ///
+    /// The run's own synchronized state answers the fresh-cache path without a second load
+    /// transaction; only a completed or started flight — whose reconciliation may have changed
+    /// the blocks — reloads the durable state once.
+    ///
     /// # Errors
     ///
     /// Returns database failures; a deleted account returns `None`.
@@ -336,10 +348,23 @@ impl Coordinator {
         provider_id: i64,
         upstream_id: &str,
     ) -> Result<Option<AccountQuotaState>, storage::Error> {
-        let _ = self
+        match self
             .run(database, client, provider_id, Some(upstream_id), false)
-            .await;
-        storage::quota_blocks::load_state(database, provider_id).await
+            .await
+        {
+            // The committed evidence was still fresh: the state the run already loaded and
+            // synchronized answers without another load transaction.
+            Ok(Run::Cached(state)) => Ok(Some(state)),
+
+            // A flight was awaited or started: its reconciliation may have changed the blocks,
+            // so the authoritative durable state is loaded once here.
+            Ok(Run::Flight(_)) => storage::quota_blocks::load_state(database, provider_id).await,
+
+            // The account vanished mid-check: the deleted-account contract is `None`.
+            Err(storage::Error::NotFound { .. }) => Ok(None),
+
+            Err(error) => Err(error),
+        }
     }
 
     /// Forces a read, joining a current-generation occupied slot and bypassing completed cadence.
@@ -357,15 +382,24 @@ impl Coordinator {
         client: &Client,
         provider_id: i64,
     ) -> Result<Observation, Error> {
+        let reading = self
+            .run(database, client, provider_id, None, true)
+            .await
+            .map_err(|error| Error::Provider(error.into()))?;
+
         #[expect(
             clippy::expect_used,
             reason = "forced refresh never returns a completed-cache hit"
         )]
-        let reading = self
-            .run(database, client, provider_id, None, true)
-            .await?
-            .expect("forced refresh has a query outcome");
-        reading
+        let reading = match reading {
+            Run::Flight(reading) => Some(reading),
+            Run::Cached(_) => None,
+        }
+        .expect("forced refresh has a query outcome");
+
+        // The hand-off shares one `Arc`: this is the only consuming caller, so the common
+        // single-waiter case unwraps the allocation and only a contended flight deep-clones.
+        Arc::try_unwrap(reading).unwrap_or_else(|reading| (*reading).clone())
     }
 
     /// Clears durable evidence and installs grace without allowing an old callback to replace it.
@@ -429,6 +463,12 @@ impl Coordinator {
     }
 
     /// Runs or joins at most one current-generation check; old occupied slots are waited first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed database failure of the state load, or
+    /// [`storage::Error::NotFound`] when the account vanished before its state could
+    /// synchronize.
     async fn run(
         self: &Arc<Self>,
         database: &Database,
@@ -436,16 +476,15 @@ impl Coordinator {
         provider_id: i64,
         upstream_id: Option<&str>,
         is_forced: bool,
-    ) -> Result<Option<FlightResult>, Error> {
+    ) -> Result<Run, storage::Error> {
         loop {
             let state = storage::quota_blocks::load_state(database, provider_id)
-                .await
-                .map_err(ProviderError::from)?
-                .ok_or_else(|| ProviderError::NotFound {
+                .await?
+                .ok_or_else(|| storage::Error::NotFound {
                     message: storage::provider_not_found_message(provider_id),
                 })?;
             match self.action(provider_id, &state, upstream_id, is_forced) {
-                Action::Cached => return Ok(None),
+                Action::Cached => return Ok(Run::Cached(state)),
                 Action::Reload => continue,
                 Action::Wait {
                     receiver,
@@ -453,8 +492,10 @@ impl Coordinator {
                 } => {
                     let result = completed(receiver).await;
                     if is_current {
-                        return Ok(Some(result));
+                        return Ok(Run::Flight(result));
                     }
+                    // An old generation's flight cannot satisfy this caller's committed
+                    // snapshot: the shared `Arc` drops without copying and the loop reloads.
                 }
                 Action::Start { sender, receiver } => {
                     let coordinator = Arc::clone(self);
@@ -471,7 +512,7 @@ impl Coordinator {
                             )
                             .await;
                     });
-                    return Ok(Some(completed(receiver).await));
+                    return Ok(Run::Flight(completed(receiver).await));
                 }
             }
         }
@@ -552,9 +593,6 @@ impl Coordinator {
             .filter(|record| record.fence.generation == generation)
         {
             record.last_refresh = outcome(attempted_at, reading);
-            if let Ok(observation) = reading {
-                record.last_observed_at = Some(observation.observed_at);
-            }
             record.completed_at = Some(now);
             // A completed attempt ignores resets already past at completion. Otherwise a
             // retained exhausted reading with a past reset would poll on every request.
@@ -565,14 +603,16 @@ impl Coordinator {
 }
 
 /// Waits cancellation-safely for detached work; task failure is a fatal invariant violation.
+/// The completed outcome hands off through its `Arc` — every waiter clones the allocation,
+/// never the observation.
 ///
 /// # Panics
 ///
 /// Panics if the owning refresh task disappears before publishing its result.
-async fn completed(mut receiver: watch::Receiver<Option<Arc<FlightResult>>>) -> FlightResult {
+async fn completed(mut receiver: watch::Receiver<Option<Arc<FlightResult>>>) -> Arc<FlightResult> {
     loop {
         if let Some(result) = receiver.borrow().clone() {
-            return (*result).clone();
+            return result;
         }
         #[expect(
             clippy::expect_used,

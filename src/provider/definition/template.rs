@@ -83,63 +83,17 @@ pub enum ValueExpr {
     },
 }
 
-/// The value-expression kinds a descriptor stage may reference. The management write boundary
-/// rejects an expression referencing a kind its stage does not carry (README §5.1), so runtime
-/// evaluation of an absent value is stored drift and fails fast.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ValueKind {
-    /// A constant string.
-    Literal,
-
-    /// The current API key or OAuth access token.
-    Secret,
-
-    /// A named slot.
-    Slot,
-
-    /// The configured OAuth client ID.
-    ClientId,
-
-    /// The configured OAuth client secret.
-    ClientSecret,
-
-    /// The authorization code being exchanged.
-    AuthorizationCode,
-
-    /// The PKCE code verifier.
-    CodeVerifier,
-
-    /// The configured redirect URI.
-    RedirectUri,
-
-    /// The flow's state token.
-    OAuthState,
-
-    /// The device code of the flow.
-    DeviceCode,
-
-    /// The stored refresh token.
-    RefreshToken,
-
-    /// The per-dispatch UUID.
-    RequestUuid,
-
-    /// The routed model's upstream identifier.
-    Model,
-
-    /// The working or stored base URL.
-    Base,
-}
-
-impl ValueKind {
-    /// The human-readable name of this kind, the one display-name vocabulary shared by the
-    /// write-time validation rejections and the evaluator's missing-value errors.
+impl ValueExpr {
+    /// The human-readable name of this direct expression form, the one display-name vocabulary
+    /// shared by the write-time validation rejections and the evaluator's missing-value errors.
+    /// Literal text and coalesce arguments never reach the stage-vocabulary checks — the walk
+    /// handles those forms explicitly — so their names exist only to keep the method total.
     #[must_use]
-    pub(super) fn display_name(self) -> &'static str {
+    pub(crate) fn display_name(&self) -> &'static str {
         match self {
-            Self::Literal => "literal",
+            Self::Literal { .. } => "literal",
             Self::Secret => "secret",
-            Self::Slot => "slot",
+            Self::Slot { .. } => "slot",
             Self::ClientId => "client ID",
             Self::ClientSecret => "client secret",
             Self::AuthorizationCode => "authorization code",
@@ -151,33 +105,7 @@ impl ValueKind {
             Self::RequestUuid => "request UUID",
             Self::Model => "model",
             Self::Base => "base URL",
-        }
-    }
-}
-
-impl ValueExpr {
-    /// The kind of this expression part; a `Coalesce` is decomposed and its parts are walked by
-    /// the caller, so this reports the kinds of the direct expression forms only.
-    pub(crate) fn kind(&self) -> ValueKind {
-        match self {
-            Self::Literal { .. } => ValueKind::Literal,
-            Self::Secret => ValueKind::Secret,
-            Self::Slot { .. } => ValueKind::Slot,
-            Self::ClientId => ValueKind::ClientId,
-            Self::ClientSecret => ValueKind::ClientSecret,
-            Self::AuthorizationCode => ValueKind::AuthorizationCode,
-            Self::CodeVerifier => ValueKind::CodeVerifier,
-            Self::RedirectUri => ValueKind::RedirectUri,
-            Self::OAuthState => ValueKind::OAuthState,
-            Self::DeviceCode => ValueKind::DeviceCode,
-            Self::RefreshToken => ValueKind::RefreshToken,
-            Self::RequestUuid => ValueKind::RequestUuid,
-            Self::Model => ValueKind::Model,
-            Self::Base => ValueKind::Base,
-
-            // The walk decomposes a `Coalesce` before consulting kinds, so this arm is only a
-            // completeness pin.
-            Self::Coalesce { .. } => ValueKind::Literal,
+            Self::Coalesce { .. } => "coalesce",
         }
     }
 }

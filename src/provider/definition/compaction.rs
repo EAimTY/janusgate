@@ -10,7 +10,7 @@
 //! shape once, at the management boundary ([`super::validate`]).
 
 use super::template::{ParamRow, StringExpr, TemplateNode};
-use crate::compaction::mechanism::MechanismSupport;
+use crate::compaction_model::mechanism::{Mechanism, MechanismSupport};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
@@ -51,6 +51,20 @@ pub struct CompactionSection {
     /// text-only estimation serves every threshold decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count_tokens: Option<CountTokensOperation>,
+}
+
+impl CompactionSection {
+    /// The section's declared default support of one mechanism: the declaration's default when
+    /// the mechanism is declared, else the unknown state — an absent declaration is no
+    /// declaration at all (README §5).
+    pub(crate) fn declared_default(&self, mechanism: Mechanism) -> MechanismSupport {
+        self.mechanisms
+            .enumerated()
+            .into_iter()
+            .find(|(candidate, _)| *candidate == mechanism)
+            .and_then(|(_, declaration)| declaration)
+            .map_or(MechanismSupport::Unknown, Declaration::declared_default)
+    }
 }
 
 /// The default summary budget of [`CompactionSection::summary_budget`]: the shipped 4096-token
@@ -108,21 +122,106 @@ pub struct MechanismDeclarations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responses_standalone_compact: Option<StandaloneCompactDeclaration>,
 
-    /// The Responses explicit-trigger declaration.
+    /// The Responses explicit-trigger declaration: the definition's default support of the
+    /// mechanism — the trigger rides the ordinary inference connection, so no operation data
+    /// exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub responses_explicit_trigger: Option<TriggerDeclaration>,
+    pub responses_explicit_trigger: Option<RideAlongDeclaration>,
 
-    /// The Responses automatic threshold-compaction declaration.
+    /// The Responses automatic threshold-compaction declaration: the definition's default
+    /// support of the mechanism — the controls ride the ordinary inference request, so no
+    /// operation data exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub responses_automatic_compaction: Option<AutomaticDeclaration>,
+    pub responses_automatic_compaction: Option<RideAlongDeclaration>,
 
-    /// The Messages on-demand compaction declaration.
+    /// The Messages on-demand compaction declaration: the definition's default support plus
+    /// the beta header overlay the operation requires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages_on_demand_compaction: Option<OnDemandDeclaration>,
+    pub messages_on_demand_compaction: Option<OverlayDeclaration>,
 
-    /// The Messages threshold-compaction declaration.
+    /// The Messages threshold-compaction declaration: the definition's default support plus
+    /// the beta header overlay the operation requires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages_threshold_compaction: Option<ThresholdDeclaration>,
+    pub messages_threshold_compaction: Option<OverlayDeclaration>,
+}
+
+impl MechanismDeclarations {
+    /// The keyed enumeration of every declaration member in canonical [`Mechanism`] order: one
+    /// `(mechanism, declaration)` pair per member, `None` for the members the section leaves
+    /// absent (the unknown state). The destructure is exhaustive, so a member added to the
+    /// struct cannot compile without joining this walk — the single enumeration the write-time
+    /// gating and validation, the declared-default resolution, and the base-URL requirement
+    /// predicate share.
+    pub(crate) fn enumerated(&self) -> [(Mechanism, Option<Declaration<'_>>); 5] {
+        let Self {
+            responses_standalone_compact,
+            responses_explicit_trigger,
+            responses_automatic_compaction,
+            messages_on_demand_compaction,
+            messages_threshold_compaction,
+        } = self;
+
+        [
+            (
+                Mechanism::ResponsesStandaloneCompact,
+                responses_standalone_compact
+                    .as_ref()
+                    .map(Declaration::Standalone),
+            ),
+            (
+                Mechanism::ResponsesExplicitTrigger,
+                responses_explicit_trigger
+                    .as_ref()
+                    .map(Declaration::RideAlong),
+            ),
+            (
+                Mechanism::ResponsesAutomaticCompaction,
+                responses_automatic_compaction
+                    .as_ref()
+                    .map(Declaration::RideAlong),
+            ),
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                messages_on_demand_compaction
+                    .as_ref()
+                    .map(Declaration::Overlay),
+            ),
+            (
+                Mechanism::MessagesThresholdCompaction,
+                messages_threshold_compaction
+                    .as_ref()
+                    .map(Declaration::Overlay),
+            ),
+        ]
+    }
+}
+
+/// The declaration borrow of one declared mechanism, keyed by [`Mechanism`]: the wire shape the
+/// member parses into. Mechanism-keyed consumers match the variant carrying the operation data
+/// they need.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Declaration<'a> {
+    /// The standalone compact endpoint declaration with its operation data.
+    Standalone(&'a StandaloneCompactDeclaration),
+
+    /// A ride-along declaration (the explicit trigger or the automatic threshold compaction)
+    /// carrying no operation data.
+    RideAlong(&'a RideAlongDeclaration),
+
+    /// An overlay declaration (the Messages on-demand or threshold compaction) carrying overlay
+    /// headers.
+    Overlay(&'a OverlayDeclaration),
+}
+
+impl Declaration<'_> {
+    /// The declaration's default support of its mechanism.
+    pub(crate) fn declared_default(self) -> MechanismSupport {
+        match self {
+            Declaration::Standalone(declaration) => declaration.default,
+            Declaration::RideAlong(declaration) => declaration.default,
+            Declaration::Overlay(declaration) => declaration.default,
+        }
+    }
 }
 
 /// The Responses standalone-compact declaration: the definition's default support plus the
@@ -147,13 +246,15 @@ pub struct StandaloneCompactDeclaration {
     pub unsupported: Option<UnsupportedClassifier>,
 }
 
-/// The Responses explicit-trigger declaration (README §5): the definition's default support of
-/// the mechanism — the trigger rides the ordinary inference connection, so no operation data
-/// exists.
+/// The ride-along declaration shape shared by the Responses explicit-trigger and automatic
+/// threshold-compaction declarations (README §5): the definition's default support of the
+/// mechanism, and the unsupported classifier — the trigger and the automatic controls ride the
+/// ordinary inference request, so no operation data exists. The wire JSON is this shape for
+/// both mechanisms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct TriggerDeclaration {
+pub struct RideAlongDeclaration {
     /// The definition's default support of the mechanism.
     #[serde(default)]
     pub default: MechanismSupport,
@@ -163,51 +264,15 @@ pub struct TriggerDeclaration {
     pub unsupported: Option<UnsupportedClassifier>,
 }
 
-/// The Responses automatic threshold-compaction declaration (README §5): the definition's
-/// default support of the mechanism — the controls ride the ordinary inference request, so no
-/// operation data exists.
+/// The overlay declaration shape shared by the Messages on-demand and threshold-compaction
+/// declarations (README §5): the definition's default support, the beta header overlay the
+/// operation requires, and the unsupported classifier. The headers overlay the ordinary
+/// inference connection — the replay of a returned compaction block needs them too, wherever
+/// the block later travels. The wire JSON is this shape for both mechanisms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct AutomaticDeclaration {
-    /// The definition's default support of the mechanism.
-    #[serde(default)]
-    pub default: MechanismSupport,
-
-    /// The typed positive unsupported-response classifier of the mechanism.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unsupported: Option<UnsupportedClassifier>,
-}
-
-/// The Messages on-demand compaction declaration (README §5): the definition's default support,
-/// the beta header overlay the operation requires, and the unsupported classifier. The headers
-/// overlay the ordinary inference connection — the replay of a returned compaction block needs
-/// them too, wherever the block later travels.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct OnDemandDeclaration {
-    /// The definition's default support of the mechanism; supported requires non-empty overlay
-    /// headers (write-time enforced).
-    #[serde(default)]
-    pub default: MechanismSupport,
-
-    /// The header rows overlaid onto the ordinary inference connection while the mechanism's
-    /// beta applies.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overlay_headers: Option<Vec<ParamRow>>,
-
-    /// The typed positive unsupported-response classifier of the mechanism.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unsupported: Option<UnsupportedClassifier>,
-}
-
-/// The Messages threshold-compaction declaration (README §5): the definition's default support,
-/// the beta header overlay the operation requires, and the unsupported classifier.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ThresholdDeclaration {
+pub struct OverlayDeclaration {
     /// The definition's default support of the mechanism; supported requires non-empty overlay
     /// headers (write-time enforced).
     #[serde(default)]
@@ -312,7 +377,7 @@ mod tests {
     )]
 
     use super::{CompactionSection, CompactionStrategy, MechanismDeclarations};
-    use crate::compaction::mechanism::MechanismSupport;
+    use crate::compaction_model::mechanism::MechanismSupport;
     use serde_json::json;
 
     /// Parses one section document, panicking on a fixture that cannot parse.

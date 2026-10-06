@@ -3,13 +3,9 @@ import { createMemo, createSignal, Show } from "solid-js";
 import { readProviders } from "/src/features/inventory/read";
 import {
     CompactionSupportOverrideFields,
-    compactionOverrideSelection,
-    normalizedCompactionOverride,
-    normalizedThinkingLevelsOverride,
-    normalizedTokenCapOverride,
+    createCapabilityOverrideDraft,
     ThinkingLevelsOverrideFields,
     TokenCapOverrideFields,
-    tokenCapOverrideError,
 } from "/src/features/models/model-form";
 import { translation } from "/src/i18n";
 import { toCreateModelRequest } from "/src/management-api/adapters";
@@ -71,8 +67,8 @@ export function ModelNewScreen(props: {
     };
     const backLabel = (): string =>
         fixedProvider() === null
-            ? translation()(($) => $.helpers.modelNewScreen.models)
-            : translation()(($) => $.helpers.modelNewScreen.provider);
+            ? translation()(($) => $.screens.modelNewScreen.models)
+            : translation()(($) => $.screens.modelNewScreen.provider);
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -159,16 +155,7 @@ function ModelCreateForm(props: {
     const [providerId, setProviderId] = createSignal(initialSelection());
     const [upstreamId, setUpstreamId] = createSignal(props.initialUpstreamId ?? "");
     const [isEnabled, setIsEnabled] = createSignal(true);
-    const [hasLevelsOverride, setHasLevelsOverride] = createSignal(false);
-    const [selectedLevels, setSelectedLevels] = createSignal<ReadonlyArray<string>>([]);
-    const [hasMaxInputOverride, setHasMaxInputOverride] = createSignal(false);
-    const [maxInputText, setMaxInputText] = createSignal("");
-    const [hasMaxOutputOverride, setHasMaxOutputOverride] = createSignal(false);
-    const [maxOutputText, setMaxOutputText] = createSignal("");
-    const [hasCompactionOverride, setHasCompactionOverride] = createSignal(false);
-    const [selectedCompaction, setSelectedCompaction] = createSignal(
-        compactionOverrideSelection(null),
-    );
+    const draft = createCapabilityOverrideDraft(null);
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const selectedProvider = createMemo(
@@ -180,19 +167,13 @@ function ModelCreateForm(props: {
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "upstreamId");
 
-    const maxInputError = (): string | null =>
-        tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "maxInputOverride");
-
-    const maxOutputError = (): string | null =>
-        tokenCapOverrideError(hasMaxOutputOverride(), maxOutputText(), "maxOutputOverride");
-
     /** The creation's composition rules: an owned provider with a routable identity. */
     const canCompose = (): boolean =>
         selectedProvider() !== null &&
         trimmedUpstream() !== "" &&
         upstreamError() === null &&
-        maxInputError() === null &&
-        maxOutputError() === null;
+        draft.maxInputError() === null &&
+        draft.maxOutputError() === null;
 
     const create = createCreateAction({
         action: "create-model",
@@ -214,22 +195,10 @@ function ModelCreateForm(props: {
                     props.api.createModel(
                         toCreateModelRequest(provider.id, trimmedUpstream(), {
                             is_enabled: isEnabled(),
-                            thinking_levels_override: normalizedThinkingLevelsOverride(
-                                hasLevelsOverride(),
-                                selectedLevels(),
-                            ),
-                            max_input_tokens_override: normalizedTokenCapOverride(
-                                hasMaxInputOverride(),
-                                maxInputText(),
-                            ),
-                            max_output_tokens_override: normalizedTokenCapOverride(
-                                hasMaxOutputOverride(),
-                                maxOutputText(),
-                            ),
-                            compaction_support_override: normalizedCompactionOverride(
-                                hasCompactionOverride(),
-                                selectedCompaction(),
-                            ),
+                            thinking_levels_override: draft.normalizedLevels(),
+                            max_input_tokens_override: draft.normalizedMaxInput(),
+                            max_output_tokens_override: draft.normalizedMaxOutput(),
+                            compaction_support_override: draft.normalizedCompaction(),
                         }),
                     ),
                 ),
@@ -337,10 +306,10 @@ function ModelCreateForm(props: {
                         />
 
                         <ThinkingLevelsOverrideFields
-                            hasOverride={hasLevelsOverride()}
-                            onHasOverrideToggle={setHasLevelsOverride}
-                            selected={selectedLevels()}
-                            onSelectedChange={setSelectedLevels}
+                            hasOverride={draft.hasLevelsOverride()}
+                            onHasOverrideToggle={draft.setHasLevelsOverride}
+                            selected={draft.selectedLevels()}
+                            onSelectedChange={draft.setSelectedLevels}
                             discovered={null}
                             isDisabled={create.isCreating()}
                         />
@@ -352,12 +321,12 @@ function ModelCreateForm(props: {
                             fieldLabel={translation()(
                                 ($) => $.remainingText.maxInputTokensOverride,
                             )}
-                            hasOverride={hasMaxInputOverride()}
-                            onHasOverrideToggle={setHasMaxInputOverride}
-                            value={maxInputText()}
-                            onValueInput={setMaxInputText}
+                            hasOverride={draft.hasMaxInputOverride()}
+                            onHasOverrideToggle={draft.setHasMaxInputOverride}
+                            value={draft.maxInputText()}
+                            onValueInput={draft.setMaxInputText}
                             discovered={null}
-                            valueError={maxInputError()}
+                            valueError={draft.maxInputError()}
                             isDisabled={create.isCreating()}
                         />
 
@@ -368,20 +337,20 @@ function ModelCreateForm(props: {
                             fieldLabel={translation()(
                                 ($) => $.remainingText.maxOutputTokensOverride,
                             )}
-                            hasOverride={hasMaxOutputOverride()}
-                            onHasOverrideToggle={setHasMaxOutputOverride}
-                            value={maxOutputText()}
-                            onValueInput={setMaxOutputText}
+                            hasOverride={draft.hasMaxOutputOverride()}
+                            onHasOverrideToggle={draft.setHasMaxOutputOverride}
+                            value={draft.maxOutputText()}
+                            onValueInput={draft.setMaxOutputText}
                             discovered={null}
-                            valueError={maxOutputError()}
+                            valueError={draft.maxOutputError()}
                             isDisabled={create.isCreating()}
                         />
 
                         <CompactionSupportOverrideFields
-                            hasOverride={hasCompactionOverride()}
-                            onHasOverrideToggle={setHasCompactionOverride}
-                            selected={selectedCompaction()}
-                            onSelectedChange={setSelectedCompaction}
+                            hasOverride={draft.hasCompactionOverride()}
+                            onHasOverrideToggle={draft.setHasCompactionOverride}
+                            selected={draft.selectedCompaction()}
+                            onSelectedChange={draft.setSelectedCompaction}
                             discovered={null}
                             isDisabled={create.isCreating()}
                         />

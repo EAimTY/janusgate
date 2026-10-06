@@ -15,7 +15,6 @@ const arabic = {
         discoveredCount_other: "اكتُشف {{count}} نموذج.",
     },
     rich: {
-        providerModel: "النموذج [[modelId]] تابع للحساب [[providerLink]].",
         connected: "متصل بـ [[baseUrl]] — يُحفظ الرمز في هذا المتصفح فقط.",
     },
     preview: {

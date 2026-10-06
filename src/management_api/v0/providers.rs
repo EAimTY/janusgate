@@ -117,12 +117,20 @@ pub(super) struct UpdateProviderRequest {
     pub base_url: Option<String>,
 
     /// The definition name to rebind to; absent keeps the stored reference.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub provider_definition_name: Option<String>,
 
     /// The definition version to rebind to; absent keeps the stored reference.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub provider_definition_version: Option<i64>,
 
@@ -149,12 +157,13 @@ pub(super) struct DeleteProviderRequest {
 /// Handles `POST /providers:list`.
 pub(super) async fn list(
     State(context): State<Context>,
+    WithRejection(Json(_request), _): WithRejection<Json<ListProvidersRequest>, Error>,
 ) -> Result<Json<ListProvidersResponse>, Error> {
     let providers = storage::providers::list_providers(&context.database).await?;
 
     Ok(Json(ListProvidersResponse {
         providers: providers
-            .iter()
+            .into_iter()
             .map(ProviderResponse::from_provider)
             .collect(),
     }))
@@ -168,7 +177,7 @@ pub(super) async fn create(
     let provider = handle_create(&context.database, request).await?;
 
     Ok(Json(ProviderEnvelope {
-        provider: ProviderResponse::from_provider(&provider),
+        provider: ProviderResponse::from_provider(provider),
     }))
 }
 
@@ -259,16 +268,38 @@ pub(super) async fn update(
 }
 
 /// Handles `POST /providers:delete`.
+/// Deletion and the quota coordinator's slot invalidation share the version's detached mutation
+/// owner across caller cancellation: ids are never reused, so a committed write whose invalidation
+/// is lost to a cancelled caller would leave a stale slot forever.
+///
+/// # Errors
+///
+/// Returns [`Error`] for an unknown provider and storage failures.
+///
+/// # Panics
+///
+/// Panics if the mutation task fails to hand off its result, a fail-fast task invariant.
 pub(super) async fn delete(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<DeleteProviderRequest>, Error>,
 ) -> Result<Json<EmptyResponse>, Error> {
-    if !storage::providers::delete_provider(&context.database, request.provider_id).await? {
+    let database = context.database.clone();
+    let coordinator = context.quota_coordinator.clone();
+    let provider_id = request.provider_id;
+    let is_deleted = super::detach_mutation(async move {
+        let is_deleted = storage::providers::delete_provider(&database, provider_id).await?;
+        if is_deleted {
+            coordinator.forget(provider_id);
+        }
+        Ok(is_deleted)
+    })
+    .await?;
+
+    if !is_deleted {
         return Err(Error::ProviderNotFound {
             id: request.provider_id,
         });
     }
-    context.quota_coordinator.forget(request.provider_id);
 
     info!("deleted provider {}", request.provider_id);
 
@@ -298,12 +329,7 @@ async fn handle_update(
     }
 
     if request.provider_definition_name.is_some() != request.provider_definition_version.is_some() {
-        return Err(Error::InvalidDefinition(
-            crate::provider::definition::ValidationError::new(
-                "a definition rebind names both `provider_definition_name` and \
-                 `provider_definition_version`",
-            ),
-        ));
+        return Err(super::definition_rebind_invalid());
     }
 
     let rebind = match (
@@ -425,8 +451,8 @@ mod tests {
     use crate::{format::UpstreamFormat, provider::StoredCredentials, storage, test_support};
 
     /// Verifies the `providers:update` request's strictness: unknown fields are rejected, the
-    /// write-only `api_key` rejects an explicit `null` (absence keeps the stored key), and the
-    /// whole full-state shape parses back.
+    /// write-only `api_key` and the absent-keeps rebind fields reject an explicit `null`
+    /// (absence keeps the stored state), and the whole full-state shape parses back.
     ///
     /// # Panics
     ///
@@ -464,6 +490,20 @@ mod tests {
             )
             .is_err()
         );
+
+        // The absent-keeps rebind fields never accept `null` either: omission keeps the stored
+        // reference, an explicit `null` is malformed (rule 2).
+        for field in ["provider_definition_name", "provider_definition_version"] {
+            let payload = format!(
+                r#"{{"provider_id":7,"name":"acme","model_prefix":"","is_enabled":true,
+                    "base_url":null,"{field}":null}}"#
+            );
+
+            assert!(
+                serde_json::from_str::<UpdateProviderRequest>(&payload).is_err(),
+                "the rebind field `{field}` accepted an explicit null"
+            );
+        }
 
         // A partial rebind — one reference half only — parses here and is rejected by the
         // handler's validation, because the wire shape cannot express the pairing rule.

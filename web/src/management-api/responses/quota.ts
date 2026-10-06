@@ -1,11 +1,18 @@
 import { ContractViolationError } from "../errors";
 import type { GetProviderQuotaResponse, QuotaEntry } from "../generated/v0";
-import { expectQuotaPath, measurement, parseQuotaRouting, reset, scope, window } from "../quota";
+import {
+    expectQuotaPath,
+    parseQuotaMeasurement,
+    parseQuotaReset,
+    parseQuotaRouting,
+    parseQuotaScope,
+    parseQuotaWindow,
+} from "../quota";
 import {
     expectArray,
     expectDeclaredRecord,
-    expectInteger,
     expectNonEmptyString,
+    expectSafeInteger,
 } from "../validation-primitives";
 
 /** Validates the entire observation before any row reaches the UI. */
@@ -46,23 +53,19 @@ export function parseGetProviderQuotaResponse(value: unknown): GetProviderQuotaR
             return {
                 key,
                 label: expectNonEmptyString(Reflect.get(record, "label"), `${context}.label`),
-                scope: scope(Reflect.get(record, "scope"), `${context}.scope`),
+                scope: parseQuotaScope(Reflect.get(record, "scope"), `${context}.scope`),
                 routing: parseQuotaRouting(Reflect.get(record, "routing"), `${context}.routing`),
-                window: window(Reflect.get(record, "window"), `${context}.window`),
-                measurement: measurement(
+                window: parseQuotaWindow(Reflect.get(record, "window"), `${context}.window`),
+                measurement: parseQuotaMeasurement(
                     Reflect.get(record, "measurement"),
                     `${context}.measurement`,
                 ),
-                reset: reset(Reflect.get(record, "reset"), `${context}.reset`),
+                reset: parseQuotaReset(Reflect.get(record, "reset"), `${context}.reset`),
             };
         },
     );
-    const observed_at = expectInteger(Reflect.get(record, "observed_at"), "response.observed_at");
-    if (!Number.isSafeInteger(observed_at)) {
-        throw new ContractViolationError("response.observed_at must be a safe integer");
-    }
     return {
-        observed_at,
+        observed_at: expectSafeInteger(Reflect.get(record, "observed_at"), "response.observed_at"),
         quotas,
     };
 }

@@ -3,6 +3,7 @@ import type {
     QuotaField,
     QuotaNumberEncoding,
     QuotaNumberField,
+    QuotaRatioScale,
     QuotaWindowSource,
 } from "../management-api/generated/v0";
 
@@ -31,7 +32,10 @@ export function numberField(
     };
 }
 
-/** One optional reported ratio window; an absent entry supplies no observation. */
+/**
+ * One optional reported ratio window; an absent entry supplies no observation.
+ * The magnitude rides the percent scale unless the upstream reports a fraction.
+ */
 export function ratioEntry(
     key: string,
     label: string,
@@ -41,6 +45,7 @@ export function ratioEntry(
     resetPath: string[],
     resetEncoding: "unix_seconds" | "rfc3339",
     encoding: QuotaNumberEncoding = "number",
+    scale: QuotaRatioScale = "percent",
 ): QuotaEntryExtraction {
     return {
         key,
@@ -54,7 +59,7 @@ export function ratioEntry(
         measurement: {
             type: "ratio",
             value: numberField(valuePath, encoding),
-            scale: "percent",
+            scale,
             direction: "used",
         },
         reset: {

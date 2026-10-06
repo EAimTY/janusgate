@@ -18,27 +18,29 @@
 //! records its usage into the request's ledger.
 
 use super::{
-    accounting::{CompactionLedger, IterationKind},
-    envelope::{
-        EnvelopePayload, NativeReplayWindow, NativeWindowPayload, PrefixIdentity, ReplacementMode,
-        summary_message,
-    },
     error::CompactionError,
     history::{
-        self, GatewayCheckpointPlan, RestoredBoundary, seal_gateway_checkpoint, seal_native_window,
+        self, Budgets, CheckpointInstructions, GatewayCheckpointPlan, RestoredBoundary,
+        seal_gateway_checkpoint, seal_native_window,
     },
-    mechanism::{Mechanism, MechanismSupport},
     native, summary,
     threshold::{
-        estimate_context_tokens, messages_default_threshold, responses_gateway_default_threshold,
+        MESSAGES_DEFAULT_THRESHOLD, estimate_context_tokens, responses_gateway_default_threshold,
     },
 };
 use crate::{
     api::Error as ApiError,
+    compaction_model::{
+        accounting::CompactionLedger,
+        envelope::{
+            EnvelopePayload, NativeReplayWindow, NativeWindowPayload, PrefixIdentity,
+            ReplacementMode, summary_message,
+        },
+        mechanism::{Mechanism, MechanismSupport},
+    },
     context::Context,
     format::{
-        CompactionControl, NativeArtifact, ParsedCompaction, ParsedInstructionItem, ParsedRequest,
-        UpstreamFormat,
+        CompactionControl, NativeArtifact, ParsedRequest, UpstreamFormat,
         anthropic::messages::{GATEWAY_CARRIER_DESCRIPTION, gateway_carrier_block},
         compaction_control,
         openai::response::{
@@ -50,12 +52,13 @@ use crate::{
     provider::{
         ModelRouting,
         definition::{
-            compaction::{CompactionSection, CompactionStrategy},
+            compaction::{CompactionSection, CompactionStrategy, UnsupportedClassifier},
             template::ParamRow,
         },
     },
     storage::api_logs::ApiLogDraft,
 };
+use std::future::Future;
 
 /// The shipped default summary-output budget (README §5): applied when the
 /// definition carries no compaction section to state its own.
@@ -79,13 +82,6 @@ fn api_error(error: CompactionError) -> ApiError {
 /// threshold block under the threshold beta (the declaration's own contract —
 /// the replay of a returned compaction block needs the operation's headers
 /// wherever the block travels). Every other target and boundary carries no
-/// overlay.
-/// The header rows an ordinary replay or native passthrough dispatch carries
-/// upstream so a replayed Anthropic compaction block stays acceptable to its
-/// producer: a Claude on-demand block replays under the on-demand beta, a
-/// threshold block under the threshold beta — the declarations' own contract,
-/// that the replay of a returned compaction block needs the operation's headers
-/// wherever the block travels. Every other target and boundary carries no
 /// overlay.
 fn replay_overlay_headers(
     section: Option<&CompactionSection>,
@@ -169,16 +165,20 @@ fn effective_support(
         .map_or(MechanismSupport::Unknown, |(_mechanism, support)| support)
 }
 
-/// The gateway budgets of one routed request: the definition's stated budgets,
-/// or the shipped defaults when the definition carries no compaction section.
-fn budgets(section: Option<&CompactionSection>) -> (u64, u64) {
+/// The gateway budgets of one routed request (README §5, §6.8): the
+/// definition's stated budgets, or the shipped defaults when the definition
+/// carries no compaction section.
+fn budgets(section: Option<&CompactionSection>) -> Budgets {
     match section {
-        Some(section) => (section.summary_budget.get(), section.retention_budget.get()),
+        Some(section) => Budgets {
+            summary: section.summary_budget.get(),
+            retention: section.retention_budget.get(),
+        },
 
-        None => (
-            DEFAULT_SUMMARY_BUDGET_TOKENS,
-            DEFAULT_RETENTION_BUDGET_TOKENS,
-        ),
+        None => Budgets {
+            summary: DEFAULT_SUMMARY_BUDGET_TOKENS,
+            retention: DEFAULT_RETENTION_BUDGET_TOKENS,
+        },
     }
 }
 
@@ -186,17 +186,10 @@ fn budgets(section: Option<&CompactionSection>) -> (u64, u64) {
 /// of the configured summary budget and the caller's stated output limit.
 fn summary_output_limit(section: Option<&CompactionSection>, caller_cap: Option<u64>) -> u64 {
     match caller_cap {
-        Some(cap) => budgets(section).0.min(cap),
+        Some(cap) => budgets(section).summary.min(cap),
 
-        None => budgets(section).0,
+        None => budgets(section).summary,
     }
-}
-
-/// The native on-demand output budget: the effective output cap of the on-demand
-/// dispatch, the smaller of the configured summary budget and the caller's
-/// stated limit when one is present.
-fn on_demand_output_limit(section: Option<&CompactionSection>, caller_cap: Option<u64>) -> u64 {
-    summary_output_limit(section, caller_cap)
 }
 
 /// Builds the native window payload of one wrapped native result: the routed
@@ -221,21 +214,122 @@ fn native_window_payload(
 }
 
 /// Converts billed sampling observations to concrete Messages iteration reports.
-fn compaction_iterations(
-    ledger: &CompactionLedger,
-) -> Vec<crate::format::compaction_wire::UsageIteration> {
-    use crate::format::compaction_wire::{SamplingKind, UsageIteration};
+fn compaction_iterations(ledger: &CompactionLedger) -> Vec<crate::ir::compaction::UsageIteration> {
+    use crate::ir::compaction::{SamplingKind, UsageIteration};
     ledger
         .iterations()
         .iter()
-        .filter_map(|record| {
-            let kind = match record.kind {
-                IterationKind::Compaction => SamplingKind::Compaction,
-                IterationKind::Counter => return None,
-            };
-            Some(UsageIteration::gateway(kind, record.usage))
-        })
+        .map(|usage| UsageIteration::gateway(SamplingKind::Compaction, *usage))
         .collect()
+}
+
+/// Whether one mechanism enters the native decision order for this request:
+/// the strategy prefers native, the mechanism resolves to supported, and the
+/// definition speaks the wire format the mechanism dispatches on.
+fn is_native_eligible(
+    routing: &ModelRouting,
+    section: Option<&CompactionSection>,
+    mechanism: Mechanism,
+    format: UpstreamFormat,
+) -> bool {
+    section.is_none_or(|section| section.strategy == CompactionStrategy::NativePreferred)
+        && effective_support(routing, section, mechanism) == MechanismSupport::Supported
+        && routing.provider.definition.payload.format == format
+}
+
+/// One native stage of a decision order.
+enum NativeAttempt<T> {
+    /// The gate never opened: the mechanism is not eligible for this request,
+    /// and nothing was dispatched.
+    NotEligible,
+
+    /// The dispatch committed its artifact.
+    Committed(T),
+
+    /// The upstream positively classified the mechanism unsupported — the one
+    /// runtime evidence that permits the single summary fallback, and a
+    /// fall-through to the next mechanism of the decision order. The
+    /// classification reason is logged where it is observed.
+    Unsupported,
+
+    /// Any other failure: it keeps its existing upstream semantics, and
+    /// propagates unchanged.
+    Failed(GatewayError),
+}
+
+/// Runs one native stage of a decision order: owns the gate, the dispatch, and
+/// the outcome classification. A closed gate (`None`) dispatches nothing —
+/// the dispatch future is lazy, so no work is ever started for an ineligible
+/// mechanism. A positively classified unsupported boundary falls through to
+/// the next mechanism of the decision order; every other failure propagates
+/// unchanged.
+async fn try_native<T>(
+    dispatch: Option<impl Future<Output = Result<T, native::NativeAttemptFailure>>>,
+) -> NativeAttempt<T> {
+    let Some(dispatch) = dispatch else {
+        return NativeAttempt::NotEligible;
+    };
+
+    match dispatch.await {
+        Ok(artifact) => NativeAttempt::Committed(artifact),
+
+        Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
+            log::debug!(
+                "compaction: the native operation was classified unsupported ({reason}); \
+                 falling through the decision order"
+            );
+
+            NativeAttempt::Unsupported
+        }
+
+        Err(native::NativeAttemptFailure::Failed(error)) => NativeAttempt::Failed(error),
+    }
+}
+
+/// Dispatches the native explicit-trigger passthrough: the trigger rides the
+/// ordinary request upstream, and the mechanism's classifier decides between
+/// the fall-through evidence and the upstream failure.
+async fn dispatch_native_trigger(
+    context: &Context,
+    routing: &ModelRouting,
+    mut passthrough: IrRequest,
+    classifier: Option<&UnsupportedClassifier>,
+    ledger: &mut CompactionLedger,
+    log: &mut ApiLogDraft,
+    ownership: Option<&mut crate::affinity::Ownership>,
+) -> Result<IrAggregation, native::NativeAttemptFailure> {
+    passthrough.has_compaction_trigger = true;
+
+    match gateway::execute_internal(context, routing, passthrough, ledger, log, ownership).await {
+        Ok(aggregation) => Ok(aggregation),
+
+        Err(GatewayError::Upstream { status, detail }) => {
+            if let Some(reason) = native::classify_failure(classifier, status, &detail).await {
+                return Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason));
+            }
+
+            Err(native::NativeAttemptFailure::Failed(
+                GatewayError::Upstream { status, detail },
+            ))
+        }
+
+        Err(error) => Err(native::NativeAttemptFailure::Failed(error)),
+    }
+}
+
+/// Validates the native trigger lifecycle: exactly one completed compaction
+/// item under a normal finish, before any outer success is declared.
+fn validate_trigger_aggregation(
+    aggregation: IrAggregation,
+) -> Result<IrAggregation, CompactionError> {
+    if aggregation.compaction_states.len() != 1 || aggregation.finish != Some(IrFinishReason::Stop)
+    {
+        return Err(CompactionError::inaccessible_native_state(
+            "the native trigger response did not carry exactly one completed compaction item",
+        ));
+    }
+
+    Ok(aggregation)
 }
 
 /// One completed gateway checkpoint and the metadata already authenticated during sealing.
@@ -253,7 +347,7 @@ struct GatewaySummaryCheckpoint {
 /// Runs the gateway summary flow end to end: plans the checkpoint from the
 /// restored window, dispatches one internal summary inference, validates the
 /// summary, and seals the checkpoint envelope into its carrier. The summary
-/// call's usage rides the ledger under the compaction iteration kind.
+/// call's usage rides the ledger.
 ///
 /// Returns the plan (the continuation's building block), the summary text (the
 /// Messages carrier's visible content), the sealed carrier, and its authenticated artifact ID.
@@ -271,9 +365,9 @@ async fn run_gateway_summary(
     context: &Context,
     routing: &ModelRouting,
     restored: &IrRequest,
-    instruction_items: &[ParsedInstructionItem],
+    instructions: &CheckpointInstructions<'_>,
     is_mandatory_active_turn: bool,
-    instructions: Option<&str>,
+    compaction_instructions: Option<&str>,
     output_cap: Option<u64>,
     replacement: ReplacementMode,
     binds_visible_content: bool,
@@ -281,26 +375,20 @@ async fn run_gateway_summary(
     log: &mut ApiLogDraft,
     ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<GatewaySummaryCheckpoint, CompactionError> {
-    let plan = history::plan_gateway_checkpoint(
+    let mut plan = history::plan_gateway_checkpoint(
         restored,
-        instruction_items,
+        instructions,
         is_mandatory_active_turn,
         budgets(routing.provider.definition.payload.compaction.as_ref()),
     )?;
 
-    let summarizer = summary::plan_summary_request(restored, &plan, instructions, output_cap);
+    let summarizer =
+        summary::plan_summary_request(restored, &mut plan, compaction_instructions, output_cap);
 
-    let aggregation = gateway::execute_internal(
-        context,
-        routing,
-        summarizer,
-        ledger,
-        IterationKind::Compaction,
-        log,
-        ownership,
-    )
-    .await
-    .map_err(CompactionError::Upstream)?;
+    let aggregation =
+        gateway::execute_internal(context, routing, summarizer, ledger, log, ownership)
+            .await
+            .map_err(CompactionError::Upstream)?;
 
     let summary_text = summary::validate_summary(&aggregation)?;
 
@@ -345,7 +433,7 @@ async fn native_threshold_checkpoint(
     context: &Context,
     routing: &ModelRouting,
     ir: &IrRequest,
-    compaction: &ParsedCompaction,
+    plan_instructions: &CheckpointInstructions<'_>,
     instructions: Option<&str>,
     is_messages_surface: bool,
     ledger: &mut CompactionLedger,
@@ -362,140 +450,143 @@ async fn native_threshold_checkpoint(
         .and_then(|declaration| declaration.operation.as_ref());
     let on_demand =
         section.and_then(|section| section.mechanisms.messages_on_demand_compaction.as_ref());
-    let mechanism = if definition.format == UpstreamFormat::OpenAiResponse
-        && standalone.is_some()
-        && effective_support(routing, section, Mechanism::ResponsesStandaloneCompact)
-            == MechanismSupport::Supported
-    {
-        Mechanism::ResponsesStandaloneCompact
-    } else if definition.format == UpstreamFormat::OpenAiResponse
-        && effective_support(routing, section, Mechanism::ResponsesExplicitTrigger)
-            == MechanismSupport::Supported
-    {
-        Mechanism::ResponsesExplicitTrigger
-    } else if definition.format == UpstreamFormat::AnthropicMessages
-        && on_demand.is_some()
-        && effective_support(routing, section, Mechanism::MessagesOnDemandCompaction)
-            == MechanismSupport::Supported
-    {
-        Mechanism::MessagesOnDemandCompaction
-    } else {
+
+    // One eligible checkpoint adapter, in the decision order's adapter
+    // sequence: the standalone operation, the explicit trigger, the on-demand
+    // operation.
+    let mechanism = [
+        (
+            Mechanism::ResponsesStandaloneCompact,
+            standalone.is_some(),
+            UpstreamFormat::OpenAiResponse,
+        ),
+        (
+            Mechanism::ResponsesExplicitTrigger,
+            true,
+            UpstreamFormat::OpenAiResponse,
+        ),
+        (
+            Mechanism::MessagesOnDemandCompaction,
+            on_demand.is_some(),
+            UpstreamFormat::AnthropicMessages,
+        ),
+    ]
+    .into_iter()
+    .find(|(mechanism, has_declaration, format)| {
+        is_native_eligible(routing, section, *mechanism, *format) && *has_declaration
+    })
+    .map(|(mechanism, _has_declaration, _format)| mechanism);
+
+    let Some(mechanism) = mechanism else {
         return Ok(None);
     };
 
-    let plan =
-        history::plan_native_checkpoint(ir, &compaction.instruction_items, budgets(section))?;
+    let plan = history::plan_native_checkpoint(ir, plan_instructions, budgets(section))?;
     let mut prefix = ir.clone();
     prefix.messages = plan.summary_input_messages.clone();
     prefix
         .state_items
         .retain(|item| item.offset < prefix.messages.len());
     let mut overlay_headers = Vec::new();
-    let result = match mechanism {
-        Mechanism::ResponsesStandaloneCompact => {
-            #[expect(
-                clippy::expect_used,
-                reason = "selection requires the standalone operation"
-            )]
-            let operation = standalone.expect("selected standalone operation");
-            native::responses_standalone(
-                context,
-                routing,
-                operation,
-                &prefix,
-                ledger,
-                log,
-                ownership.as_deref_mut(),
-            )
-            .await
-            .map(|native| NativeReplayWindow::ResponsesWindow {
-                items: native.output,
-            })
-        }
-        Mechanism::ResponsesExplicitTrigger => {
-            prefix.has_compaction_trigger = true;
-            match gateway::execute_internal(
-                context,
-                routing,
-                prefix,
-                ledger,
-                IterationKind::Compaction,
-                log,
-                ownership.as_deref_mut(),
-            )
-            .await
-            {
-                Ok(aggregation)
-                    if aggregation.compaction_states.len() == 1
-                        && aggregation.finish == Some(IrFinishReason::Stop) =>
+    let attempt = try_native(Some(async {
+        match mechanism {
+            Mechanism::ResponsesStandaloneCompact => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "selection requires the standalone operation"
+                )]
+                let operation = standalone.expect("selected standalone operation");
+                native::responses_standalone(
+                    context,
+                    routing,
+                    operation,
+                    &prefix,
+                    ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await
+                .map(|native| NativeReplayWindow::ResponsesWindow {
+                    items: native.output,
+                })
+            }
+            Mechanism::ResponsesExplicitTrigger => {
+                let classifier = section
+                    .and_then(|section| section.mechanisms.responses_explicit_trigger.as_ref())
+                    .and_then(|declaration| declaration.unsupported.as_ref());
+                dispatch_native_trigger(
+                    context,
+                    routing,
+                    prefix,
+                    classifier,
+                    ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await
+                .and_then(|aggregation| {
+                    validate_trigger_aggregation(aggregation)
+                        .map_err(native::NativeAttemptFailure::from)
+                })
+                .map(|aggregation| NativeReplayWindow::ResponsesWindow {
+                    items: aggregation.compaction_states,
+                })
+            }
+            Mechanism::MessagesOnDemandCompaction => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "selection requires the on-demand declaration"
+                )]
+                let declaration = on_demand.expect("selected on-demand declaration");
+                overlay_headers = declaration.overlay_headers.clone().unwrap_or_default();
+                match native::messages_on_demand(
+                    context,
+                    routing,
+                    &overlay_headers,
+                    declaration.unsupported.as_ref(),
+                    &prefix,
+                    instructions,
+                    summary_output_limit(section, None),
+                    ledger,
+                    log,
+                    ownership,
+                )
+                .await
                 {
-                    Ok(NativeReplayWindow::ResponsesWindow {
-                        items: aggregation.compaction_states,
-                    })
-                }
-                Ok(_) => {
-                    return Err(CompactionError::inaccessible_native_state(
-                        "the native trigger did not produce one completed checkpoint",
-                    ));
-                }
-                Err(GatewayError::Upstream { status, detail }) => {
-                    let classifier = section
-                        .and_then(|section| section.mechanisms.responses_explicit_trigger.as_ref())
-                        .and_then(|declaration| declaration.unsupported.as_ref());
-                    if native::classify_failure(classifier, status, &detail)
-                        .await
-                        .is_some()
-                    {
-                        return Ok(None);
+                    Ok(native::OnDemandOutcome::Success { block, .. }) => {
+                        Ok(NativeReplayWindow::AnthropicOnDemandBlock { block })
                     }
-                    return Err(CompactionError::Upstream(GatewayError::Upstream {
-                        status,
-                        detail,
-                    }));
+                    // The threshold adapter cannot continue from a no-summary
+                    // outcome: it fails explicitly instead of rendering a
+                    // checkpoint without its required native window.
+                    Ok(native::OnDemandOutcome::NoSummary { .. }) => {
+                        Err(native::NativeAttemptFailure::from(
+                            CompactionError::inaccessible_native_state(
+                                "the threshold adapter returned no usable native checkpoint",
+                            ),
+                        ))
+                    }
+                    Err(failure) => Err(failure),
                 }
-                Err(error) => return Err(CompactionError::Upstream(error)),
             }
-        }
-        Mechanism::MessagesOnDemandCompaction => {
+            // The adapter selection above admits only the three checkpoint
+            // mechanisms; the passthrough mechanisms never dispatch here.
             #[expect(
-                clippy::expect_used,
-                reason = "selection requires the on-demand declaration"
+                clippy::unreachable,
+                reason = "the adapter selection admits only the three checkpoint mechanisms"
             )]
-            let declaration = on_demand.expect("selected on-demand declaration");
-            overlay_headers = declaration.overlay_headers.clone().unwrap_or_default();
-            match native::messages_on_demand(
-                context,
-                routing,
-                &overlay_headers,
-                declaration.unsupported.as_ref(),
-                &prefix,
-                instructions,
-                summary_output_limit(section, None),
-                ledger,
-                log,
-                ownership,
-            )
-            .await
-            {
-                Ok(native::OnDemandOutcome::Success { block, .. }) => {
-                    Ok(NativeReplayWindow::AnthropicOnDemandBlock { block })
-                }
-                Ok(native::OnDemandOutcome::NoSummary { .. }) => {
-                    return Err(CompactionError::inaccessible_native_state(
-                        "the threshold adapter returned no usable native checkpoint",
-                    ));
-                }
-                Err(error) => Err(error),
+            Mechanism::ResponsesAutomaticCompaction | Mechanism::MessagesThresholdCompaction => {
+                unreachable!("a passthrough mechanism is never selected for a checkpoint")
             }
         }
-        _ => return Ok(None),
-    };
-    let window = match result {
-        Ok(window) => window,
-        Err(native::NativeAttemptFailure::ClassifiedUnsupported(_)) => return Ok(None),
-        Err(native::NativeAttemptFailure::Failed(error)) => {
-            return Err(CompactionError::Upstream(error));
-        }
+    }))
+    .await;
+    let window = match attempt {
+        NativeAttempt::Committed(window) => window,
+        // Not eligible cannot occur — the gate opened to dispatch — and a
+        // classified unsupported boundary falls to the gateway summary.
+        NativeAttempt::Unsupported | NativeAttempt::NotEligible => return Ok(None),
+        NativeAttempt::Failed(error) => return Err(CompactionError::Upstream(error)),
     };
     let mut payload = native_window_payload(
         routing,
@@ -572,7 +663,7 @@ pub(crate) enum ResponsesOuterOutcome {
         ir: IrRequest,
 
         /// The automatic compaction controls, when passthrough carries them.
-        context_management: Option<Vec<crate::format::compaction_wire::AutomaticEntry>>,
+        context_management: Option<Vec<crate::ir::compaction::AutomaticEntry>>,
 
         /// The header rows the replayed native state's operation requires.
         overlay_headers: Vec<ParamRow>,
@@ -641,7 +732,7 @@ pub(crate) enum MessagesOuterOutcome {
         ir: IrRequest,
 
         /// The threshold edits, when passthrough carries them.
-        threshold_edits: Option<Vec<crate::format::compaction_wire::ThresholdEdit>>,
+        threshold_edits: Option<Vec<crate::ir::compaction::ThresholdEdit>>,
 
         /// The header rows the replayed native state's operation requires.
         overlay_headers: Vec<ParamRow>,
@@ -657,7 +748,7 @@ pub(crate) enum MessagesOuterOutcome {
         artifact_id: Option<String>,
 
         /// The vendor-shaped `usage.iterations` entries to render.
-        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+        iterations: Vec<crate::ir::compaction::UsageIteration>,
 
         /// The request's ledger.
         ledger: CompactionLedger,
@@ -692,7 +783,7 @@ pub(crate) enum MessagesOuterOutcome {
         overlay_headers: Vec<ParamRow>,
 
         /// The vendor-shaped `usage.iterations` entries to render.
-        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+        iterations: Vec<crate::ir::compaction::UsageIteration>,
 
         /// The request's ledger.
         ledger: CompactionLedger,
@@ -714,7 +805,7 @@ pub(crate) async fn execute_responses_compact(
     context: &Context,
     routing: &ModelRouting,
     parsed: &ParsedRequest,
-    preparation: &history::BoundaryPreparation,
+    preparation: &crate::compaction_model::boundary::BoundaryPreparation,
     log: &mut ApiLogDraft,
     mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<crate::format::openai::response::CompactedResponseBody, ApiError> {
@@ -724,11 +815,11 @@ pub(crate) async fn execute_responses_compact(
         })
     })?;
 
-    let format = routing.provider.definition.payload.format;
-
     let mut ir = parsed.ir.clone();
 
-    history::prepare_for_target(&mut ir, compaction, routing, preparation).map_err(api_error)?;
+    let (_restored, instructions) =
+        history::prepare_for_target(&mut ir, compaction, routing, preparation)
+            .map_err(api_error)?;
 
     let section = routing.provider.definition.payload.compaction.as_ref();
 
@@ -741,45 +832,48 @@ pub(crate) async fn execute_responses_compact(
         .and_then(|section| section.mechanisms.responses_standalone_compact.as_ref())
         .and_then(|declaration| declaration.operation.as_ref());
 
-    if section.is_none_or(|section| section.strategy == CompactionStrategy::NativePreferred)
-        && effective_support(routing, section, Mechanism::ResponsesStandaloneCompact)
-            == MechanismSupport::Supported
-        && let Some(operation) = operation
-        && format == UpstreamFormat::OpenAiResponse
-    {
-        match native::responses_standalone(
-            context,
-            routing,
-            operation,
-            &ir,
-            &mut ledger,
-            log,
-            ownership.as_deref_mut(),
-        )
-        .await
-        {
-            Ok(native) => {
-                log.stamp_billed_usage(ledger.reported_billed_totals());
+    let native_window = try_native(
+        operation
+            .filter(|_operation| {
+                is_native_eligible(
+                    routing,
+                    section,
+                    Mechanism::ResponsesStandaloneCompact,
+                    UpstreamFormat::OpenAiResponse,
+                )
+            })
+            .map(|operation| async {
+                native::responses_standalone(
+                    context,
+                    routing,
+                    operation,
+                    &ir,
+                    &mut ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await
+            }),
+    )
+    .await;
 
-                return Ok(render_compacted_response(native));
-            }
+    if let NativeAttempt::Committed(native) = native_window {
+        // This flow's rendered body carries no ledger, so the accounting row
+        // is stamped here; every ledger-carrying outcome is stamped by the
+        // serving layer from the returned ledger instead (README §6.8).
+        log.stamp_billed_usage(ledger.reported_billed_totals());
 
-            Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
-                log::debug!(
-                    "compaction: the native standalone operation was classified unsupported \
-                     ({reason}); falling back to gateway summary inference"
-                );
-            }
-
-            Err(native::NativeAttemptFailure::Failed(error)) => {
-                return Err(ApiError::from(error));
-            }
-        }
+        return Ok(render_compacted_response(native));
     }
 
-    // Gateway summary: the strategy's own choice, the unknown-support path, or
-    // the single classifier-positive fallback. Compact-only: a final user turn
-    // may be summarized, and the compact body carries no output cap.
+    if let NativeAttempt::Failed(error) = native_window {
+        return Err(ApiError::from(error));
+    }
+
+    // A classified unsupported boundary (or an ineligible gate) falls to the
+    // gateway summary — the strategy's own choice, the unknown-support path,
+    // or the single classifier-positive fallback. Compact-only: a final user
+    // turn may be summarized, and the compact body carries no output cap.
     let GatewaySummaryCheckpoint {
         carrier,
         artifact_id,
@@ -788,7 +882,7 @@ pub(crate) async fn execute_responses_compact(
         context,
         routing,
         &ir,
-        &compaction.instruction_items,
+        &instructions,
         false,
         None,
         None,
@@ -825,7 +919,7 @@ pub(crate) async fn execute_responses_request(
     context: &Context,
     routing: &ModelRouting,
     parsed: &ParsedRequest,
-    preparation: &history::BoundaryPreparation,
+    preparation: &crate::compaction_model::boundary::BoundaryPreparation,
     log: &mut ApiLogDraft,
     mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<ResponsesOuterOutcome, ApiError> {
@@ -841,8 +935,9 @@ pub(crate) async fn execute_responses_request(
 
     let mut ir = parsed.ir.clone();
 
-    let restored = history::prepare_for_target(&mut ir, compaction, routing, preparation)
-        .map_err(api_error)?;
+    let (restored, instructions) =
+        history::prepare_for_target(&mut ir, compaction, routing, preparation)
+            .map_err(api_error)?;
 
     let replay_overlay = replay_overlay_headers(
         routing.provider.definition.payload.compaction.as_ref(),
@@ -872,7 +967,7 @@ pub(crate) async fn execute_responses_request(
             context,
             routing,
             &ir,
-            compaction,
+            &instructions,
             &mut ledger,
             log,
             ownership.as_deref_mut(),
@@ -884,7 +979,7 @@ pub(crate) async fn execute_responses_request(
             context,
             routing,
             &ir,
-            compaction,
+            &instructions,
             &entries,
             replay_overlay,
             &mut ledger,
@@ -905,12 +1000,20 @@ pub(crate) async fn execute_responses_request(
 
 /// Resolves the Responses explicit-trigger decision order: the exact native
 /// trigger, then the standalone adapter, then the on-demand adapter, then
-/// gateway summary — every outcome a compact-only lifecycle.
+/// gateway summary — every outcome a compact-only lifecycle. A positively
+/// classified unsupported boundary at any native stage falls through to the
+/// next mechanism; every other failure propagates unchanged.
+///
+/// # Panics
+///
+/// Panics if a dispatched adapter lacks its selected declaration — an
+/// invariant the gates establish: a dispatch future exists only when its gate
+/// selected the declaration.
 async fn responses_trigger_flow(
     context: &Context,
     routing: &ModelRouting,
     ir: &IrRequest,
-    compaction: &ParsedCompaction,
+    instructions: &CheckpointInstructions<'_>,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
     mut ownership: Option<&mut crate::affinity::Ownership>,
@@ -919,67 +1022,45 @@ async fn responses_trigger_flow(
 
     let section = definition.compaction.as_ref();
 
-    let mut is_native_preferred =
-        section.is_none_or(|section| section.strategy == CompactionStrategy::NativePreferred);
-
     // The exact native mechanism: the trigger rides the ordinary request
     // upstream, and the lifecycle must carry exactly one completed compaction
     // item before any outer success.
-    if is_native_preferred
-        && effective_support(routing, section, Mechanism::ResponsesExplicitTrigger)
-            == MechanismSupport::Supported
-        && definition.format == UpstreamFormat::OpenAiResponse
-    {
-        let mut passthrough = ir.clone();
+    let classifier = section
+        .and_then(|section| section.mechanisms.responses_explicit_trigger.as_ref())
+        .and_then(|declaration| declaration.unsupported.as_ref());
 
-        passthrough.has_compaction_trigger = true;
-
-        let attempt = gateway::execute_internal(
-            context,
+    let trigger = try_native(
+        is_native_eligible(
             routing,
-            passthrough,
-            ledger,
-            IterationKind::Compaction,
-            log,
-            ownership.as_deref_mut(),
+            section,
+            Mechanism::ResponsesExplicitTrigger,
+            UpstreamFormat::OpenAiResponse,
         )
-        .await;
+        .then(|| {
+            dispatch_native_trigger(
+                context,
+                routing,
+                ir.clone(),
+                classifier,
+                ledger,
+                log,
+                ownership.as_deref_mut(),
+            )
+        }),
+    )
+    .await;
 
-        let aggregation = match attempt {
-            Ok(aggregation) => Some(aggregation),
-            Err(GatewayError::Upstream { status, detail })
-                if native::classify_failure(
-                    section
-                        .and_then(|section| section.mechanisms.responses_explicit_trigger.as_ref())
-                        .and_then(|declaration| declaration.unsupported.as_ref()),
-                    status,
-                    &detail,
-                )
-                .await
-                .is_some() =>
-            {
-                is_native_preferred = false;
-                None
-            }
-            Err(error) => return Err(CompactionError::Upstream(error)),
-        };
-        if let Some(aggregation) = aggregation {
-            if aggregation.compaction_states.len() != 1
-                || aggregation.finish != Some(IrFinishReason::Stop)
-            {
-                return Err(CompactionError::inaccessible_native_state(
-                    "the native trigger response did not carry exactly one \
-                     completed compaction item",
-                ));
-            }
+    if let NativeAttempt::Committed(aggregation) = trigger {
+        let aggregation = validate_trigger_aggregation(aggregation)?;
 
-            log.stamp_billed_usage(ledger.reported_billed_totals());
+        return Ok(ResponsesOuterOutcome::NativeLifecycle {
+            aggregation,
+            ledger: std::mem::take(ledger),
+        });
+    }
 
-            return Ok(ResponsesOuterOutcome::NativeLifecycle {
-                aggregation,
-                ledger: std::mem::take(ledger),
-            });
-        }
+    if let NativeAttempt::Failed(error) = trigger {
+        return Err(CompactionError::Upstream(error));
     }
 
     // The same-format adapter: the trigger compacts through the standalone
@@ -988,58 +1069,55 @@ async fn responses_trigger_flow(
         .and_then(|section| section.mechanisms.responses_standalone_compact.as_ref())
         .and_then(|declaration| declaration.operation.as_ref());
 
-    if is_native_preferred
-        && effective_support(routing, section, Mechanism::ResponsesStandaloneCompact)
-            == MechanismSupport::Supported
-        && let Some(operation) = operation
-        && definition.format == UpstreamFormat::OpenAiResponse
-    {
-        match native::responses_standalone(
-            context,
-            routing,
-            operation,
-            ir,
-            ledger,
-            log,
-            ownership.as_deref_mut(),
-        )
-        .await
-        {
-            Ok(native) => {
-                let (envelope, carrier) = seal_native_window(
-                    native_window_payload(
-                        routing,
-                        Mechanism::ResponsesStandaloneCompact,
-                        NativeReplayWindow::ResponsesWindow {
-                            items: native.output,
-                        },
-                        super::history::produced_prefix_identity(ir),
-                    ),
-                    ReplacementMode::CanonicalWindow,
-                    None,
-                )?;
+    let standalone = try_native(
+        operation
+            .filter(|_operation| {
+                is_native_eligible(
+                    routing,
+                    section,
+                    Mechanism::ResponsesStandaloneCompact,
+                    UpstreamFormat::OpenAiResponse,
+                )
+            })
+            .map(|operation| async {
+                native::responses_standalone(
+                    context,
+                    routing,
+                    operation,
+                    ir,
+                    ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await
+            }),
+    )
+    .await;
 
-                log.stamp_billed_usage(ledger.reported_billed_totals());
+    if let NativeAttempt::Committed(native) = standalone {
+        let (envelope, carrier) = seal_native_window(
+            native_window_payload(
+                routing,
+                Mechanism::ResponsesStandaloneCompact,
+                NativeReplayWindow::ResponsesWindow {
+                    items: native.output,
+                },
+                history::produced_prefix_identity(ir),
+            ),
+            ReplacementMode::CanonicalWindow,
+            None,
+        )?;
 
-                return Ok(ResponsesOuterOutcome::CompactionOnly {
-                    items: vec![compaction_item(None, carrier, None)],
-                    artifact_id: envelope.artifact_id,
-                    usage: ledger.billed_totals(),
-                    ledger: std::mem::take(ledger),
-                });
-            }
+        return Ok(ResponsesOuterOutcome::CompactionOnly {
+            items: vec![compaction_item(None, carrier, None)],
+            artifact_id: envelope.artifact_id,
+            usage: ledger.billed_totals(),
+            ledger: std::mem::take(ledger),
+        });
+    }
 
-            Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
-                log::debug!(
-                    "compaction: the trigger's standalone adapter was classified unsupported \
-                     ({reason}); falling back to gateway summary inference"
-                );
-            }
-
-            Err(native::NativeAttemptFailure::Failed(error)) => {
-                return Err(CompactionError::Upstream(error));
-            }
-        }
+    if let NativeAttempt::Failed(error) = standalone {
+        return Err(CompactionError::Upstream(error));
     }
 
     // The cross-format adapter: the trigger compacts through the Messages
@@ -1048,81 +1126,86 @@ async fn responses_trigger_flow(
     let on_demand =
         section.and_then(|section| section.mechanisms.messages_on_demand_compaction.as_ref());
 
-    if is_native_preferred
-        && effective_support(routing, section, Mechanism::MessagesOnDemandCompaction)
-            == MechanismSupport::Supported
-        && let Some(on_demand) = on_demand
-        && let Some(overlay_headers) = on_demand
-            .overlay_headers
-            .as_deref()
-            .filter(|rows| !rows.is_empty())
-        && definition.format == UpstreamFormat::AnthropicMessages
-    {
-        let max_tokens = on_demand_output_limit(section, ir.max_output_tokens);
+    let overlay = on_demand
+        .and_then(|declaration| declaration.overlay_headers.as_deref())
+        .filter(|rows| !rows.is_empty());
 
-        match native::messages_on_demand(
-            context,
-            routing,
-            overlay_headers,
-            on_demand.unsupported.as_ref(),
-            ir,
-            None,
-            max_tokens,
-            ledger,
-            log,
-            ownership.as_deref_mut(),
-        )
-        .await
-        {
-            Ok(native::OnDemandOutcome::Success { block, .. }) => {
-                let (envelope, carrier) = seal_native_window(
-                    native_window_payload(
-                        routing,
-                        Mechanism::MessagesOnDemandCompaction,
-                        NativeReplayWindow::AnthropicOnDemandBlock { block },
-                        super::history::produced_prefix_identity(ir),
-                    ),
-                    ReplacementMode::CanonicalWindow,
+    let on_demand_attempt = try_native(
+        overlay
+            .filter(|_rows| {
+                is_native_eligible(
+                    routing,
+                    section,
+                    Mechanism::MessagesOnDemandCompaction,
+                    UpstreamFormat::AnthropicMessages,
+                )
+            })
+            .map(|overlay_headers| async {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the gate dispatches only with the selected declaration"
+                )]
+                let declaration = on_demand.expect("the selected on-demand declaration");
+
+                // The adapter cannot satisfy the trigger's exactly-one-artifact
+                // contract with a no-summary outcome, so the outcome fails
+                // explicitly instead of rendering a successful lifecycle without
+                // its required artifact.
+                match native::messages_on_demand(
+                    context,
+                    routing,
+                    overlay_headers,
+                    declaration.unsupported.as_ref(),
+                    ir,
                     None,
-                )?;
+                    summary_output_limit(section, ir.max_output_tokens),
+                    ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await?
+                {
+                    native::OnDemandOutcome::Success { block, .. } => Ok(block),
 
-                log.stamp_billed_usage(ledger.reported_billed_totals());
+                    native::OnDemandOutcome::NoSummary { .. } => {
+                        Err(native::NativeAttemptFailure::from(
+                            CompactionError::inaccessible_native_state(
+                                "the native on-demand compaction returned no usable block, so the \
+                         trigger contract cannot be satisfied",
+                            ),
+                        ))
+                    }
+                }
+            }),
+    )
+    .await;
 
-                return Ok(ResponsesOuterOutcome::CompactionOnly {
-                    items: vec![compaction_item(None, carrier, None)],
-                    artifact_id: envelope.artifact_id,
-                    usage: ledger.billed_totals(),
-                    ledger: std::mem::take(ledger),
-                });
-            }
+    if let NativeAttempt::Committed(block) = on_demand_attempt {
+        let (envelope, carrier) = seal_native_window(
+            native_window_payload(
+                routing,
+                Mechanism::MessagesOnDemandCompaction,
+                NativeReplayWindow::AnthropicOnDemandBlock { block },
+                history::produced_prefix_identity(ir),
+            ),
+            ReplacementMode::CanonicalWindow,
+            None,
+        )?;
 
-            // The adapter cannot satisfy the trigger's exactly-one-artifact
-            // contract with a no-summary outcome, so the outcome fails
-            // explicitly instead of rendering a successful lifecycle without
-            // its required artifact.
-            Ok(native::OnDemandOutcome::NoSummary { .. }) => {
-                return Err(CompactionError::inaccessible_native_state(
-                    "the native on-demand compaction returned no usable block, so the trigger \
-                     contract cannot be satisfied",
-                ));
-            }
-
-            Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
-                log::debug!(
-                    "compaction: the trigger's on-demand adapter was classified unsupported \
-                     ({reason}); falling back to gateway summary inference"
-                );
-            }
-
-            Err(native::NativeAttemptFailure::Failed(error)) => {
-                return Err(CompactionError::Upstream(error));
-            }
-        }
+        return Ok(ResponsesOuterOutcome::CompactionOnly {
+            items: vec![compaction_item(None, carrier, None)],
+            artifact_id: envelope.artifact_id,
+            usage: ledger.billed_totals(),
+            ledger: std::mem::take(ledger),
+        });
     }
 
-    // Gateway summary: unknown support, the strategy's own choice, or the
-    // single classifier-positive fallback. The trigger is compact-only, so the
-    // caller's output limit caps the summary.
+    if let NativeAttempt::Failed(error) = on_demand_attempt {
+        return Err(CompactionError::Upstream(error));
+    }
+
+    // Gateway summary: the chain's final mechanism. The trigger is
+    // compact-only, so the caller's output limit caps the summary.
     let GatewaySummaryCheckpoint {
         carrier,
         artifact_id,
@@ -1131,7 +1214,7 @@ async fn responses_trigger_flow(
         context,
         routing,
         ir,
-        &compaction.instruction_items,
+        instructions,
         false,
         None,
         ir.max_output_tokens,
@@ -1142,8 +1225,6 @@ async fn responses_trigger_flow(
         ownership,
     )
     .await?;
-
-    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(ResponsesOuterOutcome::CompactionOnly {
         items: vec![compaction_item(None, carrier, None)],
@@ -1165,8 +1246,8 @@ async fn responses_automatic_flow(
     context: &Context,
     routing: &ModelRouting,
     ir: &IrRequest,
-    compaction: &ParsedCompaction,
-    entries: &[compaction_control::AutomaticEntry],
+    instructions: &CheckpointInstructions<'_>,
+    entries: &[crate::ir::compaction::AutomaticEntry],
     replay_overlay: Vec<ParamRow>,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
@@ -1185,7 +1266,7 @@ async fn responses_automatic_flow(
     {
         return Ok(ResponsesOuterOutcome::Ordinary {
             ir: ir.clone(),
-            context_management: Some(native::automatic_entries(entries)),
+            context_management: Some(entries.to_vec()),
             // The automatic passthrough rides the Responses wire; the replay
             // overlay is empty for it by construction.
             overlay_headers: replay_overlay,
@@ -1204,16 +1285,8 @@ async fn responses_automatic_flow(
         )?,
     };
 
-    let measured = measure_active_tokens(
-        context,
-        routing,
-        section,
-        ir,
-        ledger,
-        log,
-        ownership.as_deref_mut(),
-    )
-    .await?;
+    let measured =
+        measure_active_tokens(context, routing, section, ir, log, ownership.as_deref_mut()).await?;
 
     if measured < threshold {
         return Ok(ResponsesOuterOutcome::Ordinary {
@@ -1227,7 +1300,7 @@ async fn responses_automatic_flow(
         context,
         routing,
         ir,
-        compaction,
+        instructions,
         None,
         false,
         ledger,
@@ -1259,7 +1332,7 @@ async fn responses_automatic_flow(
         context,
         routing,
         ir,
-        &compaction.instruction_items,
+        instructions,
         true,
         None,
         None,
@@ -1270,8 +1343,6 @@ async fn responses_automatic_flow(
         ownership,
     )
     .await?;
-
-    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(ResponsesOuterOutcome::ContinueWithCheckpoint {
         prefix_items: vec![compaction_item(None, carrier, None)],
@@ -1285,9 +1356,9 @@ async fn responses_automatic_flow(
 /// Measures the active input tokens of the restored window for one gateway
 /// threshold evaluation: the definition's native counter when one is
 /// configured and its dispatch succeeds, else the documented text estimator
-/// (README §6.8). A counter dispatch is recorded as its own iteration kind
-/// and its failure falls back to the estimator — the counter refines the
-/// measurement, it never gates the request on its own.
+/// (README §6.8). The counter refines the measurement — its count is never
+/// billed usage and records no ledger iteration — and its failure falls back
+/// to the estimator, so it never gates the request on its own.
 ///
 /// # Errors
 ///
@@ -1301,7 +1372,6 @@ async fn measure_active_tokens(
     routing: &ModelRouting,
     section: Option<&CompactionSection>,
     ir: &IrRequest,
-    ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
     ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<u64, CompactionError> {
@@ -1313,7 +1383,7 @@ async fn measure_active_tokens(
 
     if let Some(operation) = counter {
         if let Ok(measured) =
-            native::count_tokens(context, routing, operation, ir, ledger, log, ownership).await
+            native::count_tokens(context, routing, operation, ir, log, ownership).await
         {
             return Ok(measured);
         }
@@ -1344,7 +1414,7 @@ pub(crate) async fn execute_messages_request(
     context: &Context,
     routing: &ModelRouting,
     parsed: &ParsedRequest,
-    preparation: &history::BoundaryPreparation,
+    preparation: &crate::compaction_model::boundary::BoundaryPreparation,
     log: &mut ApiLogDraft,
     mut ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<MessagesOuterOutcome, ApiError> {
@@ -1360,8 +1430,9 @@ pub(crate) async fn execute_messages_request(
 
     let mut ir = parsed.ir.clone();
 
-    let restored = history::prepare_for_target(&mut ir, compaction, routing, preparation)
-        .map_err(api_error)?;
+    let (restored, instructions) =
+        history::prepare_for_target(&mut ir, compaction, routing, preparation)
+            .map_err(api_error)?;
 
     let replay_overlay = replay_overlay_headers(
         routing.provider.definition.payload.compaction.as_ref(),
@@ -1380,12 +1451,14 @@ pub(crate) async fn execute_messages_request(
     let mut ledger = CompactionLedger::default();
 
     match control {
-        CompactionControl::MessagesOnDemand { instructions } => messages_on_demand_flow(
+        CompactionControl::MessagesOnDemand {
+            instructions: compaction_instructions,
+        } => messages_on_demand_flow(
             context,
             routing,
             &ir,
-            compaction,
-            instructions,
+            &instructions,
+            compaction_instructions,
             &mut ledger,
             log,
             ownership.as_deref_mut(),
@@ -1397,7 +1470,7 @@ pub(crate) async fn execute_messages_request(
             context,
             routing,
             &ir,
-            compaction,
+            &instructions,
             &edits,
             replay_overlay,
             &mut ledger,
@@ -1419,12 +1492,15 @@ pub(crate) async fn execute_messages_request(
 
 /// Resolves the Messages on-demand decision order: the native on-demand
 /// operation, then the standalone adapter wrapping its window in a Messages
-/// carrier, then gateway summary.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the adapter chain is one decision order; splitting it would scatter the order \
-              across helpers without reducing the whole"
-)]
+/// carrier, then gateway summary. A positively classified unsupported boundary
+/// at any native stage falls through to the next mechanism; every other
+/// failure propagates unchanged.
+///
+/// # Panics
+///
+/// Panics if a dispatched adapter lacks its selected declaration — an
+/// invariant the gates establish: a dispatch future exists only when its gate
+/// selected the declaration.
 #[expect(
     clippy::too_many_arguments,
     reason = "one same-account stage keeps its protocol controls, billing, and binding together"
@@ -1433,8 +1509,8 @@ async fn messages_on_demand_flow(
     context: &Context,
     routing: &ModelRouting,
     ir: &IrRequest,
-    compaction: &ParsedCompaction,
-    instructions: Option<String>,
+    instructions: &CheckpointInstructions<'_>,
+    compaction_instructions: Option<String>,
     ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
     mut ownership: Option<&mut crate::affinity::Ownership>,
@@ -1443,73 +1519,71 @@ async fn messages_on_demand_flow(
 
     let section = definition.compaction.as_ref();
 
-    let is_native_preferred =
-        section.is_none_or(|section| section.strategy == CompactionStrategy::NativePreferred);
-
     let on_demand =
         section.and_then(|section| section.mechanisms.messages_on_demand_compaction.as_ref());
 
     // The exact native mechanism.
-    if is_native_preferred
-        && effective_support(routing, section, Mechanism::MessagesOnDemandCompaction)
-            == MechanismSupport::Supported
-        && let Some(on_demand) = on_demand
-        && let Some(overlay_headers) = on_demand
-            .overlay_headers
-            .as_deref()
-            .filter(|rows| !rows.is_empty())
-        && definition.format == UpstreamFormat::AnthropicMessages
-    {
-        // Compact-only: the caller's output limit caps the on-demand budget.
-        let max_tokens = on_demand_output_limit(section, ir.max_output_tokens);
+    let overlay = on_demand
+        .and_then(|declaration| declaration.overlay_headers.as_deref())
+        .filter(|rows| !rows.is_empty());
 
-        match native::messages_on_demand(
-            context,
-            routing,
-            overlay_headers,
-            on_demand.unsupported.as_ref(),
-            ir,
-            instructions.as_deref(),
-            max_tokens,
-            ledger,
-            log,
-            ownership.as_deref_mut(),
-        )
-        .await
-        {
-            Ok(native::OnDemandOutcome::Success { block, iterations }) => {
-                log.stamp_billed_usage(ledger.reported_billed_totals());
+    let on_demand_attempt = try_native(
+        overlay
+            .filter(|_rows| {
+                is_native_eligible(
+                    routing,
+                    section,
+                    Mechanism::MessagesOnDemandCompaction,
+                    UpstreamFormat::AnthropicMessages,
+                )
+            })
+            .map(|overlay_headers| async {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the gate dispatches only with the selected declaration"
+                )]
+                let declaration = on_demand.expect("the selected on-demand declaration");
 
-                return Ok(MessagesOuterOutcome::CompactionOnly {
-                    block: block.into(),
-                    artifact_id: None,
-                    iterations,
-                    ledger: std::mem::take(ledger),
-                });
-            }
+                // Compact-only: the caller's output limit caps the on-demand budget.
+                native::messages_on_demand(
+                    context,
+                    routing,
+                    overlay_headers,
+                    declaration.unsupported.as_ref(),
+                    ir,
+                    compaction_instructions.as_deref(),
+                    summary_output_limit(section, ir.max_output_tokens),
+                    ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await
+            }),
+    )
+    .await;
 
-            // The documented native no-summary outcome: original history
-            // stands; the consumed response renders with its own semantics.
-            Ok(native::OnDemandOutcome::NoSummary { aggregation }) => {
-                log.stamp_billed_usage(ledger.reported_billed_totals());
-
-                return Ok(MessagesOuterOutcome::NativeNoSummary {
-                    aggregation,
-                    ledger: std::mem::take(ledger),
-                });
-            }
-
-            Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
-                log::debug!(
-                    "compaction: the native on-demand operation was classified unsupported \
-                     ({reason}); falling back"
-                );
-            }
-
-            Err(native::NativeAttemptFailure::Failed(error)) => {
-                return Err(CompactionError::Upstream(error));
-            }
+    match on_demand_attempt {
+        NativeAttempt::Committed(native::OnDemandOutcome::Success { block, iterations }) => {
+            return Ok(MessagesOuterOutcome::CompactionOnly {
+                block: block.into(),
+                artifact_id: None,
+                iterations,
+                ledger: std::mem::take(ledger),
+            });
         }
+
+        // The documented native no-summary outcome: original history stands;
+        // the consumed response renders with its own semantics.
+        NativeAttempt::Committed(native::OnDemandOutcome::NoSummary { aggregation }) => {
+            return Ok(MessagesOuterOutcome::NativeNoSummary {
+                aggregation,
+                ledger: std::mem::take(ledger),
+            });
+        }
+
+        NativeAttempt::Unsupported | NativeAttempt::NotEligible => {}
+
+        NativeAttempt::Failed(error) => return Err(CompactionError::Upstream(error)),
     }
 
     // The cross-format adapter: the standalone operation compacts, and its
@@ -1519,62 +1593,59 @@ async fn messages_on_demand_flow(
         .and_then(|section| section.mechanisms.responses_standalone_compact.as_ref())
         .and_then(|declaration| declaration.operation.as_ref());
 
-    if is_native_preferred
-        && effective_support(routing, section, Mechanism::ResponsesStandaloneCompact)
-            == MechanismSupport::Supported
-        && let Some(operation) = operation
-        && definition.format == UpstreamFormat::OpenAiResponse
-    {
-        match native::responses_standalone(
-            context,
-            routing,
-            operation,
-            ir,
-            ledger,
-            log,
-            ownership.as_deref_mut(),
-        )
-        .await
-        {
-            Ok(native) => {
-                let (envelope, carrier) = seal_native_window(
-                    native_window_payload(
-                        routing,
-                        Mechanism::ResponsesStandaloneCompact,
-                        NativeReplayWindow::ResponsesWindow {
-                            items: native.output,
-                        },
-                        super::history::produced_prefix_identity(ir),
-                    ),
-                    ReplacementMode::LeadingWindow,
-                    Some(GATEWAY_CARRIER_DESCRIPTION),
-                )?;
+    let standalone = try_native(
+        operation
+            .filter(|_operation| {
+                is_native_eligible(
+                    routing,
+                    section,
+                    Mechanism::ResponsesStandaloneCompact,
+                    UpstreamFormat::OpenAiResponse,
+                )
+            })
+            .map(|operation| async {
+                native::responses_standalone(
+                    context,
+                    routing,
+                    operation,
+                    ir,
+                    ledger,
+                    log,
+                    ownership.as_deref_mut(),
+                )
+                .await
+            }),
+    )
+    .await;
 
-                log.stamp_billed_usage(ledger.reported_billed_totals());
+    if let NativeAttempt::Committed(native) = standalone {
+        let (envelope, carrier) = seal_native_window(
+            native_window_payload(
+                routing,
+                Mechanism::ResponsesStandaloneCompact,
+                NativeReplayWindow::ResponsesWindow {
+                    items: native.output,
+                },
+                history::produced_prefix_identity(ir),
+            ),
+            ReplacementMode::LeadingWindow,
+            Some(GATEWAY_CARRIER_DESCRIPTION),
+        )?;
 
-                return Ok(MessagesOuterOutcome::CompactionOnly {
-                    block: gateway_carrier_block(None, &carrier),
-                    artifact_id: Some(envelope.artifact_id),
-                    iterations: compaction_iterations(ledger),
-                    ledger: std::mem::take(ledger),
-                });
-            }
-
-            Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason)) => {
-                log::debug!(
-                    "compaction: the on-demand request's standalone adapter was classified \
-                     unsupported ({reason}); falling back to gateway summary inference"
-                );
-            }
-
-            Err(native::NativeAttemptFailure::Failed(error)) => {
-                return Err(CompactionError::Upstream(error));
-            }
-        }
+        return Ok(MessagesOuterOutcome::CompactionOnly {
+            block: gateway_carrier_block(None, &carrier),
+            artifact_id: Some(envelope.artifact_id),
+            iterations: compaction_iterations(ledger),
+            ledger: std::mem::take(ledger),
+        });
     }
 
-    // Gateway summary. Compact-only: a final user turn may be summarized, and
-    // the caller's output limit caps the summary.
+    if let NativeAttempt::Failed(error) = standalone {
+        return Err(CompactionError::Upstream(error));
+    }
+
+    // Gateway summary, the chain's final mechanism. Compact-only: a final user
+    // turn may be summarized, and the caller's output limit caps the summary.
     let GatewaySummaryCheckpoint {
         summary_text,
         carrier,
@@ -1584,9 +1655,9 @@ async fn messages_on_demand_flow(
         context,
         routing,
         ir,
-        &compaction.instruction_items,
+        instructions,
         false,
-        instructions.as_deref(),
+        compaction_instructions.as_deref(),
         ir.max_output_tokens,
         ReplacementMode::LeadingWindow,
         true,
@@ -1595,8 +1666,6 @@ async fn messages_on_demand_flow(
         ownership,
     )
     .await?;
-
-    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     Ok(MessagesOuterOutcome::CompactionOnly {
         block: gateway_carrier_block(Some(&summary_text), &carrier),
@@ -1622,7 +1691,7 @@ async fn messages_threshold_flow(
     context: &Context,
     routing: &ModelRouting,
     ir: &IrRequest,
-    compaction: &ParsedCompaction,
+    instructions: &CheckpointInstructions<'_>,
     edits: &[compaction_control::ThresholdEdit],
     replay_overlay: Vec<ParamRow>,
     ledger: &mut CompactionLedger,
@@ -1660,18 +1729,10 @@ async fn messages_threshold_flow(
 
     let threshold = first_edit
         .and_then(|edit| edit.trigger)
-        .unwrap_or_else(messages_default_threshold);
+        .unwrap_or(MESSAGES_DEFAULT_THRESHOLD);
 
-    let measured = measure_active_tokens(
-        context,
-        routing,
-        section,
-        ir,
-        ledger,
-        log,
-        ownership.as_deref_mut(),
-    )
-    .await?;
+    let measured =
+        measure_active_tokens(context, routing, section, ir, log, ownership.as_deref_mut()).await?;
 
     if measured < threshold {
         return Ok(MessagesOuterOutcome::Ordinary {
@@ -1684,14 +1745,14 @@ async fn messages_threshold_flow(
     // At or above the threshold: one compaction. The pending turn's unit is
     // mandatory retained state; the summary rides the configured budget alone,
     // keeping the answer's own output budget separate.
-    let instructions = first_edit.and_then(|edit| edit.instructions.clone());
+    let edit_instructions = first_edit.and_then(|edit| edit.instructions.clone());
 
     if let Some(checkpoint) = native_threshold_checkpoint(
         context,
         routing,
         ir,
-        compaction,
-        instructions.as_deref(),
+        instructions,
+        edit_instructions.as_deref(),
         true,
         ledger,
         log,
@@ -1730,9 +1791,9 @@ async fn messages_threshold_flow(
         context,
         routing,
         ir,
-        &compaction.instruction_items,
+        instructions,
         true,
-        instructions.as_deref(),
+        edit_instructions.as_deref(),
         None,
         ReplacementMode::HistoricalCheckpoint,
         true,
@@ -1745,8 +1806,6 @@ async fn messages_threshold_flow(
     let block = gateway_carrier_block(Some(&summary_text), &carrier);
 
     let iterations = compaction_iterations(ledger);
-
-    log.stamp_billed_usage(ledger.reported_billed_totals());
 
     if first_edit.is_some_and(|edit| edit.pause_after_compaction) {
         return Ok(MessagesOuterOutcome::CompactionOnly {
@@ -1790,9 +1849,11 @@ mod tests {
         compaction::{
             error::CompactionError,
             history::{GatewayCheckpointPlan, seal_gateway_checkpoint},
+            summary::SUMMARY_CLOSING_INSTRUCTION,
+        },
+        compaction_model::{
             identity::{InstructionRole, ItemIdentity},
             mechanism::Mechanism,
-            summary::SUMMARY_CLOSING_INSTRUCTION,
         },
         format::ParsedInstructionItem,
         gateway::Error as GatewayError,
@@ -1802,7 +1863,7 @@ mod tests {
             definition::{
                 DefinitionPayload, ProviderDefinition,
                 compaction::{
-                    CompactionSection, MechanismDeclarations, OnDemandDeclaration,
+                    CompactionSection, MechanismDeclarations, OverlayDeclaration,
                     StandaloneCompactDeclaration,
                 },
                 credential::CredentialAcquisition,
@@ -1969,7 +2030,7 @@ mod tests {
             mechanisms: MechanismDeclarations {
                 responses_standalone_compact: Some(
                     crate::provider::definition::compaction::StandaloneCompactDeclaration {
-                        default: crate::compaction::mechanism::MechanismSupport::Supported,
+                        default: crate::compaction_model::mechanism::MechanismSupport::Supported,
                         operation: Some(
                             crate::provider::definition::compaction::StandaloneCompactOperation {
                                 url: StringExpr::literal(url),
@@ -2068,7 +2129,7 @@ mod tests {
 
         assert_eq!(
             effective_support(&routing, section, Mechanism::ResponsesAutomaticCompaction),
-            crate::compaction::mechanism::MechanismSupport::Unknown,
+            crate::compaction_model::mechanism::MechanismSupport::Unknown,
         );
 
         // A section declaring on-demand supported resolves through the model
@@ -2082,8 +2143,8 @@ mod tests {
             retention_budget: std::num::NonZeroU64::new(1).expect("positive"),
             can_export_native_summary: false,
             mechanisms: MechanismDeclarations {
-                messages_on_demand_compaction: Some(OnDemandDeclaration {
-                    default: crate::compaction::mechanism::MechanismSupport::Supported,
+                messages_on_demand_compaction: Some(OverlayDeclaration {
+                    default: crate::compaction_model::mechanism::MechanismSupport::Supported,
                     overlay_headers: None,
                     unsupported: None,
                 }),
@@ -2098,13 +2159,13 @@ mod tests {
                 Some(&declared),
                 Mechanism::MessagesOnDemandCompaction
             ),
-            crate::compaction::mechanism::MechanismSupport::Supported,
+            crate::compaction_model::mechanism::MechanismSupport::Supported,
         );
 
         let standalone_only = CompactionSection {
             mechanisms: MechanismDeclarations {
                 responses_standalone_compact: Some(StandaloneCompactDeclaration {
-                    default: crate::compaction::mechanism::MechanismSupport::Unsupported,
+                    default: crate::compaction_model::mechanism::MechanismSupport::Unsupported,
                     operation: None,
                     unsupported: None,
                 }),
@@ -2119,7 +2180,7 @@ mod tests {
                 Some(&standalone_only),
                 Mechanism::MessagesOnDemandCompaction
             ),
-            crate::compaction::mechanism::MechanismSupport::Unknown,
+            crate::compaction_model::mechanism::MechanismSupport::Unknown,
             "an undeclared mechanism stays unknown beside a declared one"
         );
     }
@@ -2205,7 +2266,7 @@ mod tests {
         };
 
         assert!(text.contains("the summary"));
-        assert!(text.starts_with(crate::compaction::envelope::SUMMARY_RESTORE_PREFIX));
+        assert!(text.starts_with(crate::compaction_model::envelope::SUMMARY_RESTORE_PREFIX));
         assert_eq!(
             continuation.messages[1].parts[0],
             IrPart::Text {
@@ -2266,7 +2327,7 @@ mod tests {
         match seal_gateway_checkpoint(
             &plan,
             String::from("summary"),
-            crate::compaction::envelope::ReplacementMode::CanonicalWindow,
+            crate::compaction_model::envelope::ReplacementMode::CanonicalWindow,
             None,
         ) {
             Ok((_envelope, carrier)) => {
@@ -2352,7 +2413,7 @@ mod tests {
 
         let parsed = compact_parsed();
 
-        let preparation = crate::compaction::history::BoundaryPreparation::authenticate(
+        let preparation = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             parsed.compaction.as_ref().expect("compact control"),
         )
         .expect("authenticated fixture state");
@@ -2403,10 +2464,10 @@ mod tests {
         // The sealed envelope carries the summary — the one-token retention
         // target retains nothing, so the whole history was summarized — under
         // the canonical-window replacement.
-        let envelope = crate::compaction::sealing::unseal_with_live_config(carrier, None)
+        let envelope = crate::compaction_model::sealing::unseal_with_live_config(carrier, None)
             .expect("the carrier unseals");
 
-        let crate::compaction::envelope::EnvelopePayload::GatewaySummary(payload) =
+        let crate::compaction_model::envelope::EnvelopePayload::GatewaySummary(payload) =
             &envelope.payload
         else {
             panic!("the summary envelope carries the summary payload");
@@ -2415,7 +2476,7 @@ mod tests {
         assert_eq!(payload.summary_text, "the older work, summarized");
         assert_eq!(
             envelope.replacement,
-            crate::compaction::envelope::ReplacementMode::CanonicalWindow
+            crate::compaction_model::envelope::ReplacementMode::CanonicalWindow
         );
         assert_eq!(payload.retained_units.len(), 0);
     }
@@ -2475,7 +2536,7 @@ mod tests {
 
         let parsed = compact_parsed();
 
-        let preparation = crate::compaction::history::BoundaryPreparation::authenticate(
+        let preparation = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             parsed.compaction.as_ref().expect("compact control"),
         )
         .expect("authenticated fixture state");
@@ -2587,7 +2648,7 @@ mod tests {
 
         let parsed = compact_parsed();
 
-        let preparation = crate::compaction::history::BoundaryPreparation::authenticate(
+        let preparation = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             parsed.compaction.as_ref().expect("compact control"),
         )
         .expect("authenticated fixture state");
@@ -2614,10 +2675,10 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("the carrier item");
 
-        let envelope = crate::compaction::sealing::unseal_with_live_config(carrier, None)
+        let envelope = crate::compaction_model::sealing::unseal_with_live_config(carrier, None)
             .expect("the carrier unseals");
 
-        let crate::compaction::envelope::EnvelopePayload::GatewaySummary(payload) =
+        let crate::compaction_model::envelope::EnvelopePayload::GatewaySummary(payload) =
             &envelope.payload
         else {
             panic!("the fallback seals a summary envelope");

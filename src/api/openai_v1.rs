@@ -8,14 +8,13 @@
 use crate::{
     accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
-    compaction::support_facts::CompactionSupportFacts,
+    compaction_model::support_facts::CompactionSupportFacts,
     context::Context,
     database::Database,
     format::{
         RouteContext,
         openai::{
-            chat_completion::Format as ChatCompletionFormat, error,
-            response::Format as ResponseFormat,
+            chat_completion::Format as ChatCompletionFormat, response::Format as ResponseFormat,
         },
     },
 };
@@ -36,7 +35,7 @@ struct Surface;
 
 impl serving::Surface for Surface {
     fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
-        error::render(error)
+        super::error::openai::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {
@@ -216,19 +215,19 @@ async fn models(
 mod tests {
     use super::{ModelList, model_object};
     use crate::{
-        compaction::{
+        compaction_model::{
             mechanism::{Mechanism, MechanismSupport},
             support_facts::CompactionSupportFacts,
         },
-        ir::IrReasoningLevel,
         storage::models::EnabledModel,
+        vocabulary::ReasoningLevel,
     };
 
     /// One listing-entry fixture: the public/provider identity with every effective capability
     /// declaration set by the caller.
     fn entry(
         public_id: &str,
-        thinking_levels: Option<Vec<IrReasoningLevel>>,
+        thinking_levels: Option<Vec<ReasoningLevel>>,
         max_input_tokens: Option<i64>,
         max_output_tokens: Option<i64>,
     ) -> EnabledModel {
@@ -281,7 +280,7 @@ mod tests {
             object: "list",
             data: vec![model_object(entry(
                 "m",
-                Some(vec![IrReasoningLevel::Low, IrReasoningLevel::XHigh]),
+                Some(vec![ReasoningLevel::Low, ReasoningLevel::XHigh]),
                 Some(200_000),
                 Some(32_768),
             ))],

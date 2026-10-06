@@ -73,7 +73,11 @@ pub(super) struct StartProviderOauthRequest {
     pub name: String,
 
     /// The instance's initial base URL; required when the definition addresses the base.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub base_url: Option<String>,
 }
@@ -89,13 +93,21 @@ pub(super) struct ReauthorizeProviderRequest {
 
     /// The definition name to reauthorize against; absent keeps the stored name. The target must
     /// be an OAuth definition.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub provider_definition_name: Option<String>,
 
     /// The exact target definition version; absent reauthorizes against the provider's current
     /// pair.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub provider_definition_version: Option<i64>,
 }
@@ -247,12 +259,6 @@ fn pasted_authorization_code(code: &str) -> Result<String, Error> {
     Ok(code.to_string())
 }
 
-/// The definition-reference rejection this surface renders for a malformed reference, wrapping
-/// the message in the version's invalid-request error.
-fn invalid_definition(message: impl Into<String>) -> Error {
-    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(message))
-}
-
 /// The credential-kind rejection both flow-begin paths render: a definition a flow would run
 /// against must carry OAuth credentials (README §7.1).
 fn credential_kind_mismatch(definition: &crate::provider::ProviderDefinition) -> Error {
@@ -381,10 +387,7 @@ async fn handle_reauthorize_start(
         }
 
         _ => {
-            return Err(invalid_definition(
-                "a definition rebind names both `provider_definition_name` and \
-                 `provider_definition_version`",
-            ));
+            return Err(super::definition_rebind_invalid());
         }
     };
 
@@ -540,7 +543,7 @@ async fn complete_authorization_code(
         complete_consumed_flow(database, control_plane, &definition, &flow, code).await?;
 
     Ok(CompleteProviderOauthResponse::Succeeded {
-        provider: ProviderResponse::from_provider(&provider),
+        provider: ProviderResponse::from_provider(provider),
     })
 }
 
@@ -690,7 +693,7 @@ async fn complete_device(
                 .ok_or(Error::UnknownOauthState)?;
 
             Ok(CompleteProviderOauthResponse::Succeeded {
-                provider: ProviderResponse::from_provider(&provider),
+                provider: ProviderResponse::from_provider(provider),
             })
         }
 
@@ -737,6 +740,56 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    /// The absent-keeps fields of the flow requests — `oauth:start`'s `base_url` and
+    /// `oauth:reauthorize`'s target reference — reject an explicit `null`: omission keeps the
+    /// stored state, `null` is malformed (rule 2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a payload parses or rejects outside its contract.
+    #[test]
+    fn rejects_explicit_nulls_on_absent_keeps_fields() {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented payload is constructed to parse"
+        )]
+        let start: StartProviderOauthRequest = serde_json::from_str(
+            r#"{"model_prefix":"","provider_definition_name":"d",
+                "provider_definition_version":1,"name":"created"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(start.base_url, None);
+
+        assert!(
+            serde_json::from_str::<StartProviderOauthRequest>(
+                r#"{"model_prefix":"","provider_definition_name":"d",
+                    "provider_definition_version":1,"name":"created","base_url":null}"#
+            )
+            .is_err(),
+            "`oauth:start`'s `base_url` never accepts an explicit null"
+        );
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented payload is constructed to parse"
+        )]
+        let reauthorize: ReauthorizeProviderRequest =
+            serde_json::from_str(r#"{"provider_id":7}"#).unwrap();
+
+        assert_eq!(reauthorize.provider_definition_name, None);
+        assert_eq!(reauthorize.provider_definition_version, None);
+
+        for field in ["provider_definition_name", "provider_definition_version"] {
+            let payload = format!(r#"{{"provider_id":7,"{field}":null}}"#);
+
+            assert!(
+                serde_json::from_str::<ReauthorizeProviderRequest>(&payload).is_err(),
+                "the reauthorize field `{field}` accepted an explicit null"
+            );
+        }
+    }
 
     /// A reauthorization without an explicit target is valid only against an OAuth provider
     /// (README §7.1): against a static-key provider it is the same client fault the explicit

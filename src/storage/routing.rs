@@ -349,8 +349,12 @@ async fn require_target(
     }
 }
 
-/// Encodes the concrete target union as the nullable SQL columns.
-fn target_columns(target: &ModelRouteTarget) -> (Option<i64>, Option<i64>, Option<&str>) {
+/// Encodes the concrete target union as the nullable SQL columns: the single spelling shared by
+/// the authored route writes and the automatic-route synchronize insert, the encode counterpart
+/// of [`route_from_row`]'s decode.
+pub(super) fn target_columns(
+    target: &ModelRouteTarget,
+) -> (Option<i64>, Option<i64>, Option<&str>) {
     match target {
         ModelRouteTarget::Direct { model_id } => (Some(*model_id), None, None),
         ModelRouteTarget::Pool {

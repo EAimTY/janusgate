@@ -290,7 +290,7 @@ export function UsageScreen(props: {
                             subject, so the sentence names what stayed
                             behind. */}
                         <span class="text-ink-faint">
-                            {" — the window and every other filter stay behind."}
+                            {translation()(($) => $.screens.usageScreen.filtersStayBehind)}
                         </span>
                     </Show>
                 </ButtonLink>
@@ -584,7 +584,9 @@ function UsageRow(props: {
                 />
                 <span class="text-[12.5px] text-ink-faint">
                     {API_LOG_ENDPOINT_TYPE.label(props.row.endpoint_type)}
-                    {props.row.is_stream ? " · Stream" : ""}
+                    {props.row.is_stream
+                        ? translation()(($) => $.screens.usageScreen.streamMark)
+                        : ""}
                 </span>
             </div>
             <p class="tnum mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13.5px]">
@@ -683,7 +685,7 @@ function optionalTokenTail(
 }
 
 const deletedEntityTitle = () =>
-    translation()(($) => $.helpers.usageScreen.thisRowIsNoLongerListed);
+    translation()(($) => $.screens.usageScreen.thisRowIsNoLongerListed);
 
 /**
  * One entity label on a usage row: a door to the entity's own page while the

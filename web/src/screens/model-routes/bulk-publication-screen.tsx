@@ -1,10 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
-import { registerDirtyForm } from "/src/dirty-form-registry";
+import { readModelRoutes, readModels } from "/src/features/inventory/read";
 import { isSameModelRow } from "/src/features/inventory/row-equality";
 import { translation } from "/src/i18n";
 import { formatNumber } from "/src/i18n/formatters";
 import { addAliasMessage, aliasCreatedMessage } from "/src/i18n/rich";
+import { registerLeaveGuardSubject } from "/src/leave-guard-registry";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ModelRouteResponse } from "/src/management-api/generated/v0";
 import { routingTokenError } from "/src/management-api/identifiers";
@@ -52,20 +53,15 @@ export function BulkPublicationScreen(props: {
         load: async (signal) => {
             const [inventory, published] = await readAll(
                 signal,
-                {
-                    run: (signal) =>
-                        props.api.listModels(
-                            props.providerFilter === null
-                                ? {}
-                                : {
-                                      provider_id: props.providerFilter,
-                                  },
-                            signal,
-                        ),
-                },
-                {
-                    run: (signal) => props.api.listModelRoutes(signal),
-                },
+                readModels(
+                    props.api,
+                    props.providerFilter === null
+                        ? {}
+                        : {
+                              provider_id: props.providerFilter,
+                          },
+                ),
+                readModelRoutes(props.api),
             );
             // Refresh keeps authored drafts and successful outcomes. Stable model identities
             // also keep focused inputs mounted when the same inventory answers again.
@@ -131,12 +127,12 @@ export function BulkPublicationScreen(props: {
         )
             ? translation()(
                   ($) =>
-                      $.helpers.bulkPublicationScreen
+                      $.screens.bulkPublicationScreen
                           .anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames,
               )
             : null;
     };
-    const registration = registerDirtyForm();
+    const seat = registerLeaveGuardSubject();
     createEffect(
         () =>
             models().some((model) => {
@@ -146,9 +142,9 @@ export function BulkPublicationScreen(props: {
                     (state.isSelected || state.publicId !== model.upstream_id)
                 );
             }),
-        (isDirty) => registration.reportDirty(isDirty),
+        (isDirty) => seat.reportGuarded(isDirty),
     );
-    onCleanup(() => registration.unregister());
+    onCleanup(() => seat.release());
     const selectedCount = (): number =>
         models().filter((model) => draft(model.id).isSelected).length;
     const canPublish = (): boolean =>
@@ -228,7 +224,7 @@ export function BulkPublicationScreen(props: {
                             .choosePhysicalModelsAndAuthorTheirPublicIDsMessage,
                 )}
                 backHref={hrefs.models(props.providerFilter)}
-                backLabel="Inventory"
+                backLabel={translation()(($) => $.screens.bulkPublicationScreen.inventoryBackLabel)}
             />
             <ReadNotice
                 read={read}

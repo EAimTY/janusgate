@@ -9,11 +9,11 @@
 //! — the one runtime evidence that permits the executor's single summary
 //! fallback. Every other failure keeps its existing upstream semantics and
 //! propagates unchanged. Pre-dispatch failures record no usage; a successful
-//! dispatch records the usage the upstream reported into the ledger under the
-//! compaction iteration kind.
+//! dispatch records the usage the upstream reported into the ledger.
 
-use super::{accounting::CompactionLedger, error::CompactionError};
+use super::error::CompactionError;
 use crate::{
+    compaction_model::accounting::CompactionLedger,
     context::Context,
     format::{
         anthropic::messages,
@@ -74,7 +74,7 @@ struct CompactionBlockView {
 /// Converts one native Responses usage observation into the IR usage the ledger
 /// records, mapping each reported breakdown and leaving unreported ones absent.
 #[must_use]
-pub(crate) fn usage_to_ir(usage: &UpstreamUsage) -> IrUsage {
+fn usage_to_ir(usage: &UpstreamUsage) -> IrUsage {
     IrUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
@@ -106,11 +106,11 @@ pub(crate) async fn classify_failure(
 
     let detail = format!("upstream rejected the compaction operation with status {status}");
 
-    if classifier.statuses.iter().any(|listed| {
-        reqwest::StatusCode::from_u16(*listed)
-            .map(|listed| listed == status)
-            .unwrap_or(false)
-    }) {
+    if classifier
+        .statuses
+        .iter()
+        .any(|listed| reqwest::StatusCode::from_u16(*listed).is_ok_and(|listed| listed == status))
+    {
         return Some(detail);
     }
 
@@ -224,25 +224,32 @@ pub(crate) async fn responses_standalone(
             let detail = body.lossy_text();
             let excerpt = crate::http_body::truncate_excerpt(&detail);
 
-            if let Some(classification) =
-                classify_failure(operation.unsupported.as_ref(), status, &detail)
-                    .await
-                    .or(classify_failure(
-                        routing
-                            .provider
-                            .definition
-                            .payload
-                            .compaction
-                            .as_ref()
-                            .and_then(|section| {
-                                section.mechanisms.responses_standalone_compact.as_ref()
-                            })
-                            .and_then(|declaration| declaration.unsupported.as_ref()),
-                        status,
-                        &detail,
-                    )
-                    .await)
-            {
+            // The operation's own classifier decides first; the compaction
+            // section's declaration classifier backs it up.
+            let classification =
+                match classify_failure(operation.unsupported.as_ref(), status, &detail).await {
+                    Some(classification) => Some(classification),
+
+                    None => {
+                        classify_failure(
+                            routing
+                                .provider
+                                .definition
+                                .payload
+                                .compaction
+                                .as_ref()
+                                .and_then(|section| {
+                                    section.mechanisms.responses_standalone_compact.as_ref()
+                                })
+                                .and_then(|declaration| declaration.unsupported.as_ref()),
+                            status,
+                            &detail,
+                        )
+                        .await
+                    }
+                };
+
+            if let Some(classification) = classification {
                 return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
             }
 
@@ -268,10 +275,7 @@ pub(crate) async fn responses_standalone(
         usage: Option<UpstreamUsage>,
     }
     if let Ok(report) = serde_json::from_slice::<UsageReport>(body) {
-        ledger.record(
-            super::accounting::IterationKind::Compaction,
-            report.usage.as_ref().map(usage_to_ir),
-        );
+        ledger.record(report.usage.as_ref().map(usage_to_ir));
         if report.usage.is_some() {
             log.stamp_billed_usage(ledger.reported_billed_totals());
         }
@@ -283,10 +287,9 @@ pub(crate) async fn responses_standalone(
 
 /// Dispatches the definition's `count_tokens` operation: the codec-rendered
 /// count body through the operation's own connection, always non-streaming,
-/// yielding the upstream-reported input-token measurement. The dispatch is
-/// recorded as a counter iteration — distinguished from inference, never
-/// billed as one (README §6.8) — and carries no usage: the count
-/// endpoint reports no billed tokens.
+/// yielding the upstream-reported input-token measurement. The count is a
+/// measurement, never billed usage: it records no ledger iteration and
+/// no token totals (README §6.8).
 ///
 /// # Errors
 ///
@@ -303,7 +306,6 @@ pub(crate) async fn count_tokens(
     routing: &ModelRouting,
     operation: &crate::provider::definition::compaction::CountTokensOperation,
     ir: &IrRequest,
-    ledger: &mut CompactionLedger,
     log: &mut ApiLogDraft,
     ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<u64, GatewayError> {
@@ -367,8 +369,6 @@ pub(crate) async fn count_tokens(
         detail: "the count response carries no input_tokens measurement".to_string(),
     })?;
 
-    ledger.record(super::accounting::IterationKind::Counter, None);
-
     Ok(measured)
 }
 
@@ -383,7 +383,7 @@ pub(crate) enum OnDemandOutcome {
         block: Value,
 
         /// The raw `usage.iterations` entries the upstream reported.
-        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+        iterations: Vec<crate::ir::compaction::UsageIteration>,
     },
 
     /// The documented native no-summary outcome: the upstream answered without
@@ -506,7 +506,6 @@ pub(crate) async fn messages_on_demand(
         is_streaming,
         inference.response_unwrap.clone(),
         ledger,
-        super::accounting::IterationKind::Compaction,
         log,
     )
     .await?;
@@ -554,19 +553,11 @@ pub(crate) async fn messages_on_demand(
     }
 }
 
-/// Converts parsed automatic controls to their concrete upstream wire representation.
-#[must_use]
-pub(crate) fn automatic_entries(
-    entries: &[crate::format::compaction_control::AutomaticEntry],
-) -> Vec<crate::format::compaction_wire::AutomaticEntry> {
-    entries.iter().map(Into::into).collect()
-}
-
 /// Converts parsed threshold edits to their concrete upstream wire representation.
 #[must_use]
 pub(crate) fn threshold_edits(
     edits: &[crate::format::compaction_control::ThresholdEdit],
-) -> Vec<crate::format::compaction_wire::ThresholdEdit> {
+) -> Vec<crate::ir::compaction::ThresholdEdit> {
     edits.iter().map(Into::into).collect()
 }
 
@@ -577,13 +568,10 @@ mod tests {
         reason = "test fixtures parse and render values constructed to succeed"
     )]
 
-    use super::{CompactionBlockView, automatic_entries, threshold_edits, usage_to_ir};
+    use super::{CompactionBlockView, threshold_edits, usage_to_ir};
     use crate::{
-        format::{
-            compaction_control::{AutomaticEntry, ThresholdEdit},
-            openai::response::UpstreamUsage,
-        },
-        ir::IrUsage,
+        format::{compaction_control::ThresholdEdit, openai::response::UpstreamUsage},
+        ir::{IrUsage, compaction::AutomaticEntry},
     };
     use serde_json::json;
 
@@ -634,14 +622,14 @@ mod tests {
     #[test]
     fn passthrough_values_render_the_vendor_shapes() {
         assert_eq!(
-            serde_json::json!(automatic_entries(&[
+            serde_json::json!(vec![
                 AutomaticEntry {
                     compact_threshold: Some(90_000),
                 },
                 AutomaticEntry {
                     compact_threshold: None,
                 },
-            ])),
+            ]),
             json!([
                 {"type": "compaction", "compact_threshold": 90_000},
                 {"type": "compaction"},

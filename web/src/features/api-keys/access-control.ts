@@ -4,11 +4,16 @@ import type {
     AccessDecision,
     ApiKeyAccessControl,
     ApiKeyOwnerDefault,
+    ApiKeyRouteOverride,
     ModelResponse,
     ModelRouteResponse,
     ProviderPoolResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
+import {
+    classifyStructuralAvailability,
+    type StructuralAvailability,
+} from "../inventory/availability";
 
 export type Owner = {
     readonly type: "provider" | "pool";
@@ -119,8 +124,53 @@ export function canonicalPolicy(policy: ApiKeyAccessControl): ApiKeyAccessContro
     };
 }
 
+/**
+ * Structural equality over the canonical order: the default decision and the
+ * two rule arrays compared element-wise by their identity segments and
+ * decision — never by serialization, since an object's key order is not
+ * data. Canonical sorting first makes it order-insensitive.
+ */
 export function isSamePolicy(left: ApiKeyAccessControl, right: ApiKeyAccessControl): boolean {
-    return JSON.stringify(canonicalPolicy(left)) === JSON.stringify(canonicalPolicy(right));
+    const leftCanonical = canonicalPolicy(left);
+    const rightCanonical = canonicalPolicy(right);
+    return (
+        leftCanonical.default_access === rightCanonical.default_access &&
+        isSameOrderedRules(
+            leftCanonical.owner_defaults,
+            rightCanonical.owner_defaults,
+            isSameOwnerRule,
+        ) &&
+        isSameOrderedRules(
+            leftCanonical.route_overrides,
+            rightCanonical.route_overrides,
+            isSameRouteRule,
+        )
+    );
+}
+
+/** Element-wise equality over two canonically ordered rule arrays. */
+function isSameOrderedRules<TRule>(
+    left: ReadonlyArray<TRule>,
+    right: ReadonlyArray<TRule>,
+    isSameRule: (leftRule: TRule, rightRule: TRule) => boolean,
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every((leftRule, index) => {
+            const rightRule = right[index];
+            return rightRule !== undefined && isSameRule(leftRule, rightRule);
+        })
+    );
+}
+
+/** One owner-default rule's identity tuple and decision. */
+function isSameOwnerRule(left: ApiKeyOwnerDefault, right: ApiKeyOwnerDefault): boolean {
+    return isSameOwner(ruleOwner(left), ruleOwner(right)) && left.access === right.access;
+}
+
+/** One route-override rule's identity tuple and decision. */
+function isSameRouteRule(left: ApiKeyRouteOverride, right: ApiKeyRouteOverride): boolean {
+    return left.model_route_id === right.model_route_id && left.access === right.access;
 }
 
 export function setOwnerChoice(
@@ -227,37 +277,79 @@ export function missingReferences(
     ];
 }
 
+/**
+ * The direct target's label per shared structural rung, resolved lazily so
+ * the catalog in force renders; the record type is exhaustive, so a rung
+ * added to `StructuralAvailability` fails to compile until it is labeled. A
+ * missing row is unavailable, a thrown switch disabled, a vanished row
+ * vanished, and only the ready rung serves.
+ */
+const DIRECT_TARGET_STATUS: Record<
+    StructuralAvailability,
+    {
+        readonly status: string;
+    }
+> = {
+    account_missing: {
+        get status() {
+            return translation()(($) => $.helpers.accessControl.targetUnavailable);
+        },
+    },
+    model_missing: {
+        get status() {
+            return translation()(($) => $.helpers.accessControl.targetUnavailable);
+        },
+    },
+    account_disabled: {
+        get status() {
+            return translation()(($) => $.helpers.accessControl.globallyDisabled);
+        },
+    },
+    model_disabled: {
+        get status() {
+            return translation()(($) => $.helpers.accessControl.globallyDisabled);
+        },
+    },
+    model_vanished: {
+        get status() {
+            return translation()(($) => $.helpers.accessControl.targetVanished);
+        },
+    },
+    ready: {
+        get status() {
+            return translation()(($) => $.helpers.accessControl.globallyAvailable);
+        },
+    },
+};
+
 export function structuralStatus(route: ModelRouteResponse, inventory: AccessInventory): string {
     if (!route.is_enabled) return translation()(($) => $.helpers.accessControl.globallyDisabled);
     const target = route.target;
     if (target.type === "direct") {
         const model = inventory.models.find((model) => model.id === target.model_id);
         const provider = inventory.providers.find((provider) => provider.id === model?.provider_id);
-        if (!model || !provider)
-            return translation()(($) => $.helpers.accessControl.targetUnavailable);
-        if (!provider.is_enabled || !model.is_enabled)
-            return translation()(($) => $.helpers.accessControl.globallyDisabled);
-        return model.discovery_state === "vanished"
-            ? translation()(($) => $.helpers.accessControl.targetVanished)
-            : translation()(($) => $.helpers.accessControl.globallyAvailable);
+        return DIRECT_TARGET_STATUS[classifyStructuralAvailability(provider, model)].status;
     }
     const pool = inventory.pools.find((pool) => pool.id === target.pool_id);
     if (!pool) return translation()(($) => $.helpers.accessControl.targetUnavailable);
     if (!pool.is_enabled) return translation()(($) => $.helpers.accessControl.globallyDisabled);
-    const hasCandidate = pool.members.some(
-        (member) =>
-            inventory.providers.some(
-                (provider) => provider.id === member.provider_id && provider.is_enabled,
-            ) &&
-            inventory.models.some(
-                (model) =>
-                    model.provider_id === member.provider_id &&
-                    model.upstream_id === target.upstream_id &&
-                    model.is_enabled &&
-                    model.discovery_state !== "vanished",
-            ),
-    );
-    return hasCandidate
+    // One ready member candidate is the pool's serving verdict: the shared
+    // ladder's ready rung per member, over the pool's exact upstream ID.
+    const hasReadyMember = pool.members.some((member) => {
+        const provider = inventory.providers.find(
+            (provider) => provider.id === member.provider_id && provider.is_enabled,
+        );
+        const model =
+            provider === undefined
+                ? undefined
+                : inventory.models.find(
+                      (model) =>
+                          model.provider_id === provider.id &&
+                          model.upstream_id === target.upstream_id,
+                  );
+        return classifyStructuralAvailability(provider, model) === "ready";
+    });
+    return hasReadyMember
         ? translation()(($) => $.helpers.accessControl.globallyAvailable)
         : translation()(($) => $.helpers.accessControl.noAvailablePoolMembers);
 }

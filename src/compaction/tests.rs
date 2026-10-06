@@ -19,16 +19,15 @@
 )]
 
 use crate::{
-    compaction::{
+    compaction::{history, summary::DEFAULT_SUMMARY_PROMPT},
+    compaction_model::{
         envelope::{
             EnvelopePayload, GatewaySummaryPayload, NativeReplayWindow, NativeWindowPayload,
             ReplacementMode,
         },
-        history,
         identity::{InstructionRole, ItemIdentity},
         mechanism::{Mechanism, MechanismSupport},
         sealing,
-        summary::DEFAULT_SUMMARY_PROMPT,
     },
     context::Context,
     format::UpstreamFormat,
@@ -94,7 +93,7 @@ struct Scenario {
 async fn scenario(
     format: UpstreamFormat,
     compaction: Option<Value>,
-    facts: Option<&crate::compaction::support_facts::CompactionSupportFacts>,
+    facts: Option<&crate::compaction_model::support_facts::CompactionSupportFacts>,
     max_input_tokens: Option<i64>,
     always_streaming: bool,
     actions: Vec<MockAction>,
@@ -120,7 +119,7 @@ async fn scenario(
 async fn scenario_with_quota_policy(
     format: UpstreamFormat,
     compaction: Option<Value>,
-    facts: Option<&crate::compaction::support_facts::CompactionSupportFacts>,
+    facts: Option<&crate::compaction_model::support_facts::CompactionSupportFacts>,
     max_input_tokens: Option<i64>,
     always_streaming: bool,
     actions: Vec<MockAction>,
@@ -348,9 +347,11 @@ fn automatic_section(support: &str) -> Value {
 /// prevent.
 fn facts(
     pairs: &[(Mechanism, MechanismSupport)],
-) -> crate::compaction::support_facts::CompactionSupportFacts {
-    crate::compaction::support_facts::CompactionSupportFacts::from_pairs(pairs.iter().copied())
-        .expect("the fixture pairs are non-empty")
+) -> crate::compaction_model::support_facts::CompactionSupportFacts {
+    crate::compaction_model::support_facts::CompactionSupportFacts::from_pairs(
+        pairs.iter().copied(),
+    )
+    .expect("the fixture pairs are non-empty")
 }
 
 /// The `Authorization`/`Content-Type` header set of an OpenAI-surface request.
@@ -754,23 +755,24 @@ fn seal_summary(
         })
         .collect();
 
-    let mut overlap: Vec<ItemIdentity> = instruction_items
-        .iter()
-        .enumerate()
-        .map(|(occurrence, item)| {
-            ItemIdentity::for_instruction(item.role, occurrence, &item.text, None)
-        })
-        .collect();
+    let instruction_overlap: Vec<ItemIdentity> = ItemIdentity::for_instruction_window(
+        instruction_items
+            .iter()
+            .map(|item| (item.role, item.text.as_str())),
+    );
 
     let retained_units = retained
         .map(|message| {
-            let identity = ItemIdentity::for_message(IrRole::User, 0, &message, None);
+            let identity = ItemIdentity::for_message(0, &message, None);
 
+            let mut overlap = instruction_overlap.clone();
             overlap.push(identity.clone());
 
-            vec![(identity, vec![message])]
+            (vec![(identity, vec![message])], overlap)
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| (Vec::new(), instruction_overlap));
+
+    let (retained_units, overlap_identities) = retained_units;
 
     let plan = history::GatewayCheckpointPlan {
         summary_input_messages: Vec::new(),
@@ -778,16 +780,10 @@ fn seal_summary(
         retained_state_items: Vec::new(),
         preserved_instructions: instruction_items
             .iter()
-            .enumerate()
-            .map(|(occurrence, item)| {
-                (
-                    ItemIdentity::for_instruction(item.role, occurrence, &item.text, None),
-                    item.role,
-                    item.text.clone(),
-                )
-            })
+            .zip(overlap_identities.iter())
+            .map(|(item, identity)| (identity.clone(), item.role, item.text.clone()))
             .collect(),
-        overlap_identities: overlap,
+        overlap_identities,
         summary_budget: 4096,
         retention_budget: 8192,
     };
@@ -817,7 +813,7 @@ fn seal_window(
     test_support::install_global_configuration();
 
     history::seal_envelope(
-        crate::compaction::envelope::EnvelopePayload::NativeWindow(NativeWindowPayload {
+        crate::compaction_model::envelope::EnvelopePayload::NativeWindow(NativeWindowPayload {
             retained_messages: Vec::new(),
             retained_state_items: Vec::new(),
             producer_instance_id: String::from("provider:1"),
@@ -2899,7 +2895,7 @@ async fn continuation_failure_leaves_the_checkpoint_replayable() {
 /// Panics when the pipeline diverges from the scenario's contract.
 #[tokio::test]
 async fn keys_rotate_and_summaries_replay_across_formats() {
-    use crate::compaction::sealing::{UnsealError, unseal};
+    use crate::compaction_model::sealing::{UnsealError, unseal};
 
     // Seal under the live configuration's first key.
     let (_guard, carrier) = {
@@ -2931,8 +2927,7 @@ async fn keys_rotate_and_summaries_replay_across_formats() {
     }))
     .expect("the fixture key configuration parses");
 
-    let keys =
-        crate::compaction::sealing::SealingKeys::resolve(&both).expect("the fixture keys resolve");
+    let keys = crate::compaction_model::sealing::SealingKeys::build(&both);
 
     assert!(unseal(&keys, &carrier, None).is_ok());
     assert!(sealing::unseal_with_live_config(&carrier, None).is_ok());
@@ -2944,8 +2939,7 @@ async fn keys_rotate_and_summaries_replay_across_formats() {
     }))
     .expect("the fixture key configuration parses");
 
-    let keys = crate::compaction::sealing::SealingKeys::resolve(&spare_only)
-        .expect("the fixture keys resolve");
+    let keys = crate::compaction_model::sealing::SealingKeys::build(&spare_only);
 
     assert!(matches!(
         unseal(&keys, &carrier, None),
@@ -3512,6 +3506,226 @@ Connection: close\r\n\
     assert_dispatches(&scenario, 2);
 }
 
+/// Scenario — a classified-unsupported exact trigger keeps the adapter chain
+/// eligible: the standalone adapter compacts after the trigger boundary falls
+/// through, exactly as the decision order table reads.
+///
+/// # Panics
+///
+/// Panics when the pipeline diverges from the scenario's contract.
+#[tokio::test]
+async fn classified_unsupported_trigger_keeps_the_standalone_adapter_eligible() {
+    let section = json!({
+        "strategy": "native_preferred",
+        "summary_budget": 4096,
+        "retention_budget": 1,
+        "mechanisms": {
+            "responses_explicit_trigger": {
+                "default": "supported",
+                "unsupported": {"statuses": [400]},
+            },
+            "responses_standalone_compact": {
+                "default": "supported",
+                "operation": {
+                    "url": [{"type": "base"}, {"type": "literal", "value": "/responses/compact"}],
+                },
+            },
+        },
+    });
+
+    let rejected = raw_json_response(
+        "400 Bad Request",
+        json!({"error": {"code": "compaction_unsupported"}}),
+    );
+
+    let scenario = scenario(
+        UpstreamFormat::OpenAiResponse,
+        Some(section),
+        None,
+        None,
+        false,
+        vec![rejected, compact_response(window_output(), 120, 30)],
+    )
+    .await;
+
+    let (status, body) = post_openai(
+        &scenario,
+        "/api/openai-v1/responses",
+        json!({
+            "model": MODEL,
+            "input": [user_item("old question"), {"type": "compaction_trigger"}],
+            "store": false,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Two dispatches in order: the classified trigger attempt, then the
+    // standalone adapter — never the gateway summary.
+    let requests = assert_count(&scenario, 2);
+    assert_eq!(requests[0].line(), "POST /responses");
+    assert_eq!(requests[1].line(), "POST /responses/compact");
+
+    // The adapter's canonical window seals into the one compact-only carrier
+    // item, with the compact's usage as the billed totals.
+    assert_eq!(body["status"], "completed", "{body}");
+
+    let item = body["output"][0].clone();
+    assert_eq!(item["type"], "compaction");
+
+    let carrier = item["encrypted_content"].as_str().expect("the carrier");
+    assert!(carrier.starts_with(sealing::CARRIER_NAMESPACE));
+
+    assert_eq!(body["usage"]["input_tokens"], 120);
+    assert_eq!(body["usage"]["output_tokens"], 30);
+
+    drop(scenario);
+}
+
+/// Scenario — re-compaction preserves instruction identity continuity: a
+/// client that drops one covered instruction and re-compacts receives a new
+/// checkpoint whose coverage identities still match the surviving instruction,
+/// so the next replay never duplicates the instruction context.
+///
+/// # Panics
+///
+/// Panics when the pipeline diverges from the scenario's contract.
+#[tokio::test]
+async fn recompaction_preserves_instruction_identity_continuity() {
+    let summary = |text: &str| responses_completed(json!([responses_message_item(text)]), 10, 5);
+
+    let scenario = scenario(
+        UpstreamFormat::OpenAiResponse,
+        Some(summarize_only_section()),
+        None,
+        None,
+        false,
+        vec![summary("first"), summary("second"), summary("third")],
+    )
+    .await;
+
+    // Compact: two covered instructions (a top-level instruction and a system
+    // input item) beside the covered history.
+    let (status, first) = post_openai(
+        &scenario,
+        "/api/openai-v1/responses/compact",
+        json!({
+            "model": MODEL,
+            "instructions": "directive A",
+            "input": [
+                {"type": "message", "role": "system", "content": "system B"},
+                user_item("old question"),
+            ],
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    let first_carrier = first["output"][0]["encrypted_content"]
+        .as_str()
+        .expect("the first carrier");
+
+    let payload = crate::compaction_model::sealing::unseal_with_live_config(first_carrier, None)
+        .expect("the first carrier unseals");
+
+    let crate::compaction_model::envelope::EnvelopePayload::GatewaySummary(first_payload) =
+        &payload.payload
+    else {
+        panic!("the first carrier seals a summary envelope");
+    };
+
+    assert_eq!(
+        first_payload
+            .preserved_instructions
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["directive A", "system B"],
+    );
+
+    // Re-compact with one covered instruction dropped: the restored window's
+    // instruction context rides the sealed per-item identities, not one joined
+    // identity.
+    let (status, second) = post_openai(
+        &scenario,
+        "/api/openai-v1/responses/compact",
+        json!({
+            "model": MODEL,
+            "instructions": "directive A",
+            "input": [compaction_item(first_carrier), user_item("pending turn")],
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{second}");
+
+    let second_carrier = second["output"][0]["encrypted_content"]
+        .as_str()
+        .expect("the second carrier");
+
+    let payload = crate::compaction_model::sealing::unseal_with_live_config(second_carrier, None)
+        .expect("the second carrier unseals");
+
+    let crate::compaction_model::envelope::EnvelopePayload::GatewaySummary(second_payload) =
+        &payload.payload
+    else {
+        panic!("the second carrier seals a summary envelope");
+    };
+
+    assert_eq!(
+        second_payload
+            .preserved_instructions
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["directive A", "system B"],
+        "the re-compact plan reuses the payload's per-item identities"
+    );
+
+    // Replay the second checkpoint with the client still carrying only the
+    // surviving instruction: the covered instruction set is superseded by
+    // identity overlap, and the instruction context restores exactly once.
+    let (status, third) = post_openai(
+        &scenario,
+        "/api/openai-v1/responses/compact",
+        json!({
+            "model": MODEL,
+            "instructions": "directive A",
+            "input": [compaction_item(second_carrier), user_item("another turn")],
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{third}");
+
+    let third_carrier = third["output"][0]["encrypted_content"]
+        .as_str()
+        .expect("the third carrier");
+
+    let payload = crate::compaction_model::sealing::unseal_with_live_config(third_carrier, None)
+        .expect("the third carrier unseals");
+
+    let crate::compaction_model::envelope::EnvelopePayload::GatewaySummary(third_payload) =
+        &payload.payload
+    else {
+        panic!("the third carrier seals a summary envelope");
+    };
+
+    assert_eq!(
+        third_payload
+            .preserved_instructions
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["directive A", "system B"],
+        "the replayed checkpoint never duplicates the instruction context"
+    );
+
+    drop(scenario);
+}
+
 /// Review regression: native threshold pause preserves the stop reason and iteration usage.
 ///
 /// # Panics
@@ -3694,7 +3908,16 @@ async fn review_retained_native_state_survives_sealing() {
         }],
         ..Default::default()
     };
-    let plan = history::plan_gateway_checkpoint(&request, &[], false, (4096, 1)).expect("plan");
+    let plan = history::plan_gateway_checkpoint(
+        &request,
+        &history::CheckpointInstructions::Parsed(&[]),
+        false,
+        history::Budgets {
+            summary: 4096,
+            retention: 1,
+        },
+    )
+    .expect("plan");
     assert_eq!(plan.retained_state_items.len(), 1);
     let (_, carrier) = history::seal_gateway_checkpoint(
         &plan,
@@ -3836,8 +4059,16 @@ fn review_retention_preserves_parallel_tool_exchange() {
         ..Default::default()
     };
     for (budget, expected_count) in [(4, 0), (100, 4)] {
-        let plan =
-            history::plan_gateway_checkpoint(&request, &[], false, (4096, budget)).expect("plan");
+        let plan = history::plan_gateway_checkpoint(
+            &request,
+            &history::CheckpointInstructions::Parsed(&[]),
+            false,
+            history::Budgets {
+                summary: 4096,
+                retention: budget,
+            },
+        )
+        .expect("plan");
         let kept: Vec<_> = plan
             .retained_units
             .iter()
@@ -5002,11 +5233,12 @@ async fn active_native_window_selects_its_pool_producer() {
             &crate::format::RouteContext::default(),
         )
         .expect("replay parse");
-    let preparation =
-        history::BoundaryPreparation::authenticate(parsed.compaction.as_ref().expect("state"))
-            .expect("authenticate")
-            .routing_preparation(&parsed)
-            .expect("active projection");
+    let preparation = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
+        parsed.compaction.as_ref().expect("state"),
+    )
+    .expect("authenticate")
+    .routing_preparation(&parsed)
+    .expect("active projection");
     let namespace = crate::affinity::Namespace {
         api_key_id: scenario.api_key_id,
         pool_id,
@@ -5130,11 +5362,12 @@ async fn active_native_window_selects_its_pool_producer() {
             &crate::format::RouteContext::default(),
         )
         .expect("portable replay parse");
-    let preparation =
-        history::BoundaryPreparation::authenticate(parsed.compaction.as_ref().expect("state"))
-            .expect("authenticate")
-            .routing_preparation(&parsed)
-            .expect("active portable projection");
+    let preparation = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
+        parsed.compaction.as_ref().expect("state"),
+    )
+    .expect("authenticate")
+    .routing_preparation(&parsed)
+    .expect("active portable projection");
     let lease = match scenario.affinity_cache.acquire(
         namespace,
         &crate::affinity::Evidence {
@@ -5191,7 +5424,7 @@ fn routing_preparation_uses_latest_visible_artifact_and_uncovered_window() {
             &RouteContext::default(),
         )
         .expect("parsed client history");
-        let boundary = history::BoundaryPreparation::authenticate(
+        let boundary = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             parsed.compaction.as_ref().expect("state facts"),
         )
         .expect("authenticated boundary");
@@ -5215,7 +5448,7 @@ fn routing_preparation_uses_latest_visible_artifact_and_uncovered_window() {
         vec![json!({"type":"compaction","id":"outer-two","encrypted_content":carrier})];
     omitted.extend(suffix.clone());
     let omitted = prepare(omitted);
-    let retry = |preparation: &history::RoutingPreparation| {
+    let retry = |preparation: &crate::compaction_model::boundary::RoutingPreparation| {
         preparation
             .projector
             .evidence()
@@ -5254,9 +5487,10 @@ fn routing_preparation_uses_latest_visible_artifact_and_uncovered_window() {
         &RouteContext::default().with_anthropic_betas(vec!["compact-2026-09-04".into()]),
     )
     .expect("native null block parses");
-    let boundary =
-        history::BoundaryPreparation::authenticate(no_op.compaction.as_ref().expect("no-op facts"))
-            .expect("native null boundary");
+    let boundary = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
+        no_op.compaction.as_ref().expect("no-op facts"),
+    )
+    .expect("native null boundary");
     let no_op_projection = boundary
         .routing_preparation(&no_op)
         .expect("no-op preparation");
@@ -5595,7 +5829,7 @@ async fn completed_compaction_artifacts_and_windows_bind_without_covered_history
             );
             histories.push(("complete", projector.evidence().history));
         }
-        let active = history::BoundaryPreparation::authenticate(
+        let active = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             replay.compaction.as_ref().expect("returned boundary"),
         )
         .expect("authenticate returned boundary")
@@ -5755,7 +5989,7 @@ async fn messages_compact_only_blocks_bind_without_covered_history() {
                 RouteContext::default().with_anthropic_betas(vec!["compact-2026-09-04".into()]);
             let parsed = Format::parse_request(request.to_string().as_bytes(), &route)
                 .expect("block replay");
-            let active = history::BoundaryPreparation::authenticate(
+            let active = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
                 parsed.compaction.as_ref().expect("boundary"),
             )
             .expect("authenticate")
@@ -5970,7 +6204,7 @@ async fn checkpoint_continuations_bind_actual_returned_windows() {
                     )
                 }
                 .expect("actual output replay");
-                let active = history::BoundaryPreparation::authenticate(
+                let active = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
                     parsed.compaction.as_ref().expect("checkpoint"),
                 )
                 .expect("authenticate")
@@ -6152,9 +6386,15 @@ async fn messages_native_no_summary_binds_only_actual_answer_history() {
             let preparation = parsed
                 .compaction
                 .as_ref()
-                .map_or_else(history::BoundaryPreparation::default, |compaction| {
-                    history::BoundaryPreparation::authenticate(compaction).expect("no-op")
-                })
+                .map_or_else(
+                    crate::compaction_model::boundary::BoundaryPreparation::default,
+                    |compaction| {
+                        crate::compaction_model::boundary::BoundaryPreparation::authenticate(
+                            compaction,
+                        )
+                        .expect("no-op")
+                    },
+                )
                 .routing_preparation(&parsed)
                 .expect("original active history");
             assert!(preparation.artifact.is_none(), "a no-op is not an artifact");
@@ -6492,7 +6732,7 @@ async fn messages_native_threshold_registration_follows_completed_blocks() {
         let route = RouteContext::default().with_anthropic_betas(vec!["compact-2026-09-04".into()]);
         let parsed = Format::parse_request(replay.to_string().as_bytes(), &route)
             .expect("actual native replay");
-        let active = history::BoundaryPreparation::authenticate(
+        let active = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             parsed.compaction.as_ref().expect("native boundary"),
         )
         .expect("native preparation")
@@ -6778,7 +7018,7 @@ async fn responses_native_automatic_registration_follows_actual_output() {
         let replay = json!({"model":MODEL,"input":replay});
         let parsed = Format::parse_request(replay.to_string().as_bytes(), &RouteContext::default())
             .expect("actual output replay");
-        let active = history::BoundaryPreparation::authenticate(
+        let active = crate::compaction_model::boundary::BoundaryPreparation::authenticate(
             parsed.compaction.as_ref().expect("native state"),
         )
         .expect("native preparation")

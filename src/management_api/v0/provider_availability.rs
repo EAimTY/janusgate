@@ -1,6 +1,6 @@
 //! Read-only availability administration and explicit account evidence reset.
 
-use super::{Error, route};
+use super::{EmptyResponse, Error, route};
 use crate::{
     context::Context, provider::quota::coordinator::LastRefresh, storage::quota_blocks::QuotaBlock,
 };
@@ -22,7 +22,7 @@ route! {
         path: "/providers:reset-availability",
         method: http::Method::POST,
         request: ResetProviderAvailabilityRequest,
-        response: ResetProviderAvailabilityResponse,
+        response: EmptyResponse,
     }
 }
 
@@ -55,12 +55,6 @@ pub(super) struct ResetProviderAvailabilityRequest {
     pub provider_id: i64,
 }
 
-/// Empty completion of the generation-advancing availability reset.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub(super) struct ResetProviderAvailabilityResponse {}
-
 /// Reads availability without renewal, quota I/O, or derived-state writes.
 pub(super) async fn get(
     State(context): State<Context>,
@@ -83,11 +77,11 @@ pub(super) async fn get(
 pub(super) async fn reset(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<ResetProviderAvailabilityRequest>, Error>,
-) -> Result<Json<ResetProviderAvailabilityResponse>, Error> {
+) -> Result<Json<EmptyResponse>, Error> {
     context
         .quota_coordinator
         .reset(&context.database, request.provider_id)
         .await?;
     log::info!("provider {} availability reset", request.provider_id);
-    Ok(Json(ResetProviderAvailabilityResponse {}))
+    Ok(Json(EmptyResponse {}))
 }

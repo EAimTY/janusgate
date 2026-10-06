@@ -11,6 +11,7 @@ import {
     ApiKeySecretField,
     apiKeyNameError,
 } from "/src/features/api-keys/api-key-form";
+import { apiKeySavedNotice } from "/src/features/api-keys/notices";
 import { isSameApiKeyRow } from "/src/features/api-keys/row-equality";
 import { readApiKeys, readPublishedInventory } from "/src/features/inventory/read";
 import { translation } from "/src/i18n";
@@ -23,7 +24,6 @@ import { hrefs, navigate } from "/src/router";
 import { createDeleteAction, createEditForm } from "/src/screen-state/edit-form";
 import { createScreenRead, readAll, type ScreenRead } from "/src/screen-state/read";
 import { createEditRow } from "/src/screen-state/row-state";
-import { apiKeySavedNotice } from "/src/screen-state/success-notices";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
@@ -208,7 +208,7 @@ function SettingsCard(props: {
      * named here: the save gate cannot pass without it. */
     const secretError = (): string | null =>
         secret() === ""
-            ? translation()(($) => $.helpers.apiKeyEditScreen.aKeyNeedsASecret)
+            ? translation()(($) => $.screens.apiKeyEditScreen.aKeyNeedsASecret)
             : bearerSecretError(secret(), "key");
 
     const canSave = (): boolean => {
@@ -364,7 +364,7 @@ function DangerCard(props: {
             question={
                 props.isLastEnabled
                     ? deleteLastKeyMessage(props.apiKey.name)
-                    : deleteKeyMessage(translation(), props.apiKey.name)
+                    : deleteKeyMessage(props.apiKey.name)
             }
             onConfirm={confirmDelete}
         />

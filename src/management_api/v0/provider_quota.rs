@@ -1,7 +1,7 @@
 //! Forced upstream quota observation and fenced account availability reconciliation.
 
 use super::{Error, route};
-use crate::{context::Context, provider::quota, storage};
+use crate::{context::Context, provider::quota};
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
 use serde::{Deserialize, Serialize};
@@ -40,11 +40,6 @@ pub(super) async fn get(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<GetProviderQuotaRequest>, Error>,
 ) -> Result<Json<GetProviderQuotaResponse>, Error> {
-    storage::providers::find_provider_by_id(&context.database, request.provider_id)
-        .await?
-        .ok_or(Error::ProviderNotFound {
-            id: request.provider_id,
-        })?;
     let observation = context
         .quota_coordinator
         .refresh(
@@ -71,6 +66,7 @@ mod tests {
         format::UpstreamFormat,
         management_api::Route as _,
         provider::{StoredCredentials, definition::DefinitionPayload},
+        storage,
         test_support::{
             self, MockAction, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture,
             OAuthRefreshFixture, OAuthResponseField, OAuthTarget,
@@ -98,7 +94,6 @@ mod tests {
                     {"type":"secret"}]}]},
 
             "sources":[{"type":"object","key":"account","at":[],"is_required":true,
-                "scope":{"type":"unknown"},
                     "entries":[{"key":"primary",
                     "label":"Primary",
                     "at":[],
@@ -223,11 +218,11 @@ mod tests {
     #[tokio::test]
     async fn researched_recipes_execute_through_the_management_endpoint() {
         for document in [
-            include_str!("../../../web/src/quota-fixtures/codex.json"),
-            include_str!("../../../web/src/quota-fixtures/claude-code.json"),
-            include_str!("../../../web/src/quota-fixtures/kimi-code.json"),
-            include_str!("../../../web/src/quota-fixtures/github-copilot.json"),
-            include_str!("../../../web/src/quota-fixtures/antigravity.json"),
+            include_str!("../../../fixtures/quota/codex.json"),
+            include_str!("../../../fixtures/quota/claude-code.json"),
+            include_str!("../../../fixtures/quota/kimi-code.json"),
+            include_str!("../../../fixtures/quota/github-copilot.json"),
+            include_str!("../../../fixtures/quota/antigravity.json"),
         ] {
             let mut fixture: PresetFixture = serde_json::from_str(document).unwrap();
             let (mock, seen) =
@@ -386,9 +381,13 @@ mod tests {
         .await;
         let (database, _guard) = test_support::create_test_database().await;
         let state = context(database.clone());
+        // The absent-account 404 flows through the coordinator's refresh: the rendered body is
+        // pinned here because the route no longer pre-reads the provider row itself.
+        let (status, body) = request(&state, json!({"provider_id":999}), true).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
-            request(&state, json!({"provider_id":999}), true).await.0,
-            StatusCode::NOT_FOUND
+            body,
+            json!({"errno":3,"message":"Provider 999 does not exist"})
         );
         assert_eq!(
             request(

@@ -1,108 +1,16 @@
-//! Incremental actual Interactions SSE projection, ordered by outward step indexes.
+//! Incremental actual Interactions render-point projection, ordered by outward step indexes.
 
 use crate::affinity::fingerprint::{
     Identity, PreparedCall, PreparedReasoning, PreparedText, Projector, Role,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-/// Conversation-bearing fields of the renderer's own concrete SSE frames.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "event_type")]
-enum Frame {
-    /// Opens a step at its actual outward position.
-    #[serde(rename = "step.start")]
-    Start {
-        /// Actual outward position, independent of IR call indexes.
-        index: u64,
-        /// Actual emitted opening fields.
-        step: Step,
-    },
-    /// Extends an existing outward step.
-    #[serde(rename = "step.delta")]
-    Delta {
-        /// Outward position being extended.
-        index: u64,
-        /// Actual emitted field bytes.
-        delta: Delta,
-    },
-    /// Completes the step's emitted fields.
-    #[serde(rename = "step.stop")]
-    Stop {
-        /// Outward position being finalized.
-        index: u64,
-    },
-    /// Content-free creation, usage, or terminal resource metadata.
-    #[serde(other)]
-    Other,
-}
-
-/// Starting steps supported by ordinary conversation projection.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Step {
-    /// A plain assistant text output, initially empty.
-    ModelOutput,
-    /// Native reasoning, initially without summary or signature fields.
-    Thought,
-    /// A function invocation with its actual emitted identity.
-    FunctionCall {
-        /// Actual starting wire ID; later upstream-only changes are excluded.
-        id: String,
-        /// Actual starting function name.
-        name: String,
-    },
-    /// Native thought projection awaits canonical opaque assembly.
-    #[serde(other)]
-    Other,
-}
-
-/// Actual streamed field extensions.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Delta {
-    /// Plain assistant UTF-8 bytes.
-    Text {
-        /// Actual emitted text chunk.
-        text: String,
-    },
-    /// Foreign invocation argument fragments.
-    #[serde(rename = "arguments_delta")]
-    Arguments {
-        /// Actual emitted JSON bytes, including only proven residuals.
-        arguments: String,
-    },
-    /// Actual native signature of an otherwise empty thought.
-    ThoughtSignature {
-        /// Actual emitted signature bytes.
-        signature: String,
-    },
-    /// Text extending the thought's single streamed summary block.
-    ThoughtSummary {
-        /// Actual emitted summary content.
-        content: Summary,
-    },
-    /// Native thought fields awaiting their canonical projection.
-    #[serde(other)]
-    Other,
-}
-
-/// Concrete summary content emitted by this renderer.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Summary {
-    /// Actual UTF-8 summary bytes.
-    Text {
-        /// Emitted chunk, never retained after hashing.
-        text: String,
-    },
-}
 
 /// Pending invocation fields, released when its outward step stops.
 struct Call {
-    /// Actual wire ID from the starting frame.
+    /// Actual wire ID from the starting frame, or the done-stamped ID when the opening
+    /// carried none.
     id: String,
-    /// Actual emitted function name.
+    /// Actual emitted function name, or the done-stamped name when the opening carried none.
     name: String,
     /// Temporary argument JSON assembly, never completed cached content.
     arguments: String,
@@ -156,146 +64,115 @@ impl Output {
         self.slots.insert(index, Slot::Text(text));
     }
 
-    /// Observes actual emitted frames, excluding invisible changes to upstream done metadata.
+    /// Opens an output step at its actual outward position.
+    pub(super) fn start_output(&mut self, index: u64) {
+        self.start_text(index);
+    }
+
+    /// Opens a reasoning block retaining its closing signature and streamed summary bytes.
+    pub(super) fn start_thought(&mut self, index: u64) {
+        self.slots.insert(
+            index,
+            Slot::Thought {
+                signature: None,
+                text: None,
+            },
+        );
+    }
+
+    /// Opens an invocation with its actual emitted identity, either member possibly still empty.
+    pub(super) fn start_call(&mut self, index: u64, id: &str, name: &str) {
+        self.slots.insert(
+            index,
+            Slot::Call(Call {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments: String::new(),
+            }),
+        );
+    }
+
+    /// Extends an open output step's actual text bytes.
     ///
     /// # Panics
     ///
-    /// Panics if the own renderer emits malformed frames or a delta inconsistent with its
-    /// preceding opening step.
-    pub(super) fn observe(&mut self, _event: &crate::ir::IrEvent, frames: &[String]) {
-        for frame in frames {
-            #[expect(
-                clippy::expect_used,
-                reason = "every own SSE frame carries a data line"
-            )]
-            let data = frame
-                .lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .expect("rendered Interactions frame has data");
-            #[expect(
-                clippy::expect_used,
-                reason = "own concrete SSE payloads serialize valid JSON"
-            )]
-            let frame: Frame = serde_json::from_str(data).expect("rendered Interactions JSON");
-            match frame {
-                Frame::Start {
-                    index,
-                    step: Step::ModelOutput,
-                } => self.start_text(index),
-                Frame::Start {
-                    index,
-                    step: Step::Thought,
-                } => {
-                    self.slots.insert(
-                        index,
-                        Slot::Thought {
-                            signature: None,
-                            text: None,
-                        },
-                    );
-                }
-                Frame::Start {
-                    index,
-                    step: Step::FunctionCall { id, name },
-                } => {
-                    self.slots.insert(
-                        index,
-                        Slot::Call(Call {
-                            id,
-                            name,
-                            arguments: String::new(),
-                        }),
-                    );
-                }
-                Frame::Delta {
-                    index,
-                    delta: Delta::Text { text },
-                } =>
-                {
-                    #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
-                    match self.slots.get_mut(&index).expect("opened output step") {
-                        Slot::Text(field) => field.update(text.as_bytes()),
-                        #[expect(
-                            clippy::unreachable,
-                            reason = "own text deltas belong to output steps"
-                        )]
-                        _ => unreachable!("text delta follows an output step"),
-                    }
-                }
-                Frame::Delta {
-                    index,
-                    delta: Delta::Arguments { arguments },
-                } =>
-                {
-                    #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
-                    match self.slots.get_mut(&index).expect("opened invocation step") {
-                        Slot::Call(call) => call.arguments.push_str(&arguments),
-                        #[expect(
-                            clippy::unreachable,
-                            reason = "own argument deltas belong to calls"
-                        )]
-                        _ => unreachable!("argument delta follows an invocation step"),
-                    }
-                }
-                Frame::Delta {
-                    index,
-                    delta: Delta::ThoughtSignature { signature },
-                } =>
-                {
-                    #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
-                    match self.slots.get_mut(&index).expect("opened thought step") {
-                        Slot::Thought {
-                            signature: field, ..
-                        } => *field = Some(signature),
-                        Slot::Unreplayable => {}
-                        #[expect(
-                            clippy::unreachable,
-                            reason = "own signature deltas belong to thought steps"
-                        )]
-                        _ => unreachable!("signature delta follows a thought step"),
-                    }
-                }
-                Frame::Delta {
-                    index,
-                    delta:
-                        Delta::ThoughtSummary {
-                            content: Summary::Text { text },
-                        },
-                } =>
-                {
-                    #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
-                    match self.slots.get_mut(&index).expect("opened thought step") {
-                        Slot::Thought { text: field, .. } => {
-                            field
-                                .get_or_insert_with(|| {
-                                    self.projector.prepare_text(Role::Assistant, false)
-                                })
-                                .update(text.as_bytes());
-                        }
-                        #[expect(
-                            clippy::unreachable,
-                            reason = "own summary deltas belong to thought steps"
-                        )]
-                        _ => unreachable!("summary delta follows a thought step"),
-                    }
-                }
-                Frame::Stop { index } => {
-                    self.complete_call(index);
-                    self.complete_thought(index);
-                }
-                Frame::Start {
-                    index,
-                    step: Step::Other,
-                }
-                | Frame::Delta {
-                    index,
-                    delta: Delta::Other,
-                } => {
-                    self.slots.insert(index, Slot::Unreplayable);
-                }
-                Frame::Other => {}
-            }
+    /// Panics if the renderer emits a text delta inconsistent with its preceding opening step.
+    pub(super) fn text_delta(&mut self, index: u64, text: &str) {
+        #[expect(
+            clippy::expect_used,
+            reason = "own text deltas follow their opening step"
+        )]
+        match self.slots.get_mut(&index).expect("opened output step") {
+            Slot::Text(field) => field.update(text.as_bytes()),
+            #[expect(clippy::unreachable, reason = "own text deltas belong to output steps")]
+            _ => unreachable!("text delta follows an output step"),
         }
+    }
+
+    /// Extends an open invocation's actual argument bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the renderer emits an argument delta inconsistent with its opening step.
+    pub(super) fn arguments_delta(&mut self, index: u64, arguments: &str) {
+        #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
+        match self.slots.get_mut(&index).expect("opened invocation step") {
+            Slot::Call(call) => call.arguments.push_str(arguments),
+            #[expect(clippy::unreachable, reason = "own argument deltas belong to calls")]
+            _ => unreachable!("argument delta follows an invocation step"),
+        }
+    }
+
+    /// Stamps an open thought's actual closing signature.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the renderer emits a signature delta inconsistent with its opening step.
+    pub(super) fn thought_signature_delta(&mut self, index: u64, signature: &str) {
+        #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
+        match self.slots.get_mut(&index).expect("opened thought step") {
+            Slot::Thought {
+                signature: field, ..
+            } => *field = Some(signature.to_string()),
+            Slot::Unreplayable => {}
+            #[expect(
+                clippy::unreachable,
+                reason = "own signature deltas belong to thoughts"
+            )]
+            _ => unreachable!("signature delta follows a thought step"),
+        }
+    }
+
+    /// Extends an open thought's streamed summary text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the renderer emits a summary delta inconsistent with its opening step.
+    pub(super) fn thought_summary_delta(&mut self, index: u64, text: &str) {
+        #[expect(clippy::expect_used, reason = "own deltas follow their opening step")]
+        match self.slots.get_mut(&index).expect("opened thought step") {
+            Slot::Thought { text: field, .. } => {
+                field
+                    .get_or_insert_with(|| self.projector.prepare_text(Role::Assistant, false))
+                    .update(text.as_bytes());
+            }
+            #[expect(clippy::unreachable, reason = "own summary deltas belong to thoughts")]
+            _ => unreachable!("summary delta follows a thought step"),
+        }
+    }
+
+    /// Closes the step at its outward position: an invocation releases its raw fields into final
+    /// digests, and a thought releases its emitted summary bytes and signature.
+    ///
+    /// The closing done event's identity is authoritative where the streamed opening left the
+    /// member empty: a call whose opening carried no ID or name — a supported upstream shape
+    /// whose deltas stream arguments before identity — completes under the done-stamped identity
+    /// the JSON projection of the same response registers, so both transports of one response
+    /// fingerprint one history. A non-empty emitted identity stands, so upstream-only done
+    /// changes stay excluded.
+    pub(super) fn stop(&mut self, index: u64, done: Option<(&str, &str)>) {
+        self.complete_call(index, done);
+        self.complete_thought(index);
     }
 
     /// Completes actual emitted text and signature independently of upstream done carriers.
@@ -318,10 +195,22 @@ impl Output {
     }
 
     /// Releases raw invocation fields into final digests, preserving only replayable arguments.
-    fn complete_call(&mut self, index: u64) {
+    /// The done-stamped identity applies only where the streamed opening left the member empty.
+    fn complete_call(&mut self, index: u64, done: Option<(&str, &str)>) {
         let Some(Slot::Call(call)) = self.slots.get_mut(&index) else {
             return;
         };
+
+        if let Some((call_id, name)) = done {
+            if call.id.is_empty() {
+                call.id = call_id.to_string();
+            }
+
+            if call.name.is_empty() {
+                call.name = name.to_string();
+            }
+        }
+
         let Ok(arguments) =
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&call.arguments)
         else {

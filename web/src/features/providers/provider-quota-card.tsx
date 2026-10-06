@@ -1,9 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, For, Show } from "solid-js";
 import { formatTimestamp, nowMicros } from "/src/format";
 import { translation } from "/src/i18n";
 import { formatNumber, formatRelative } from "/src/i18n/formatters";
-import { quotaFactMessage } from "/src/i18n/rich";
+import { quotaFactMessage, renderRichText } from "/src/i18n/rich";
 import type {
     QuotaEntry,
     QuotaMeasurement,
@@ -94,14 +94,24 @@ function measurementText(measurement: QuotaMeasurement): JSX.Element {
 function measurementAccessibleText(measurement: QuotaMeasurement): string {
     switch (measurement.type) {
         case "counter":
-            return translation()(($) => $.quotaMessages.counter)
-                .replace("[[used]]", formatNumber(measurement.used, "quantity"))
-                .replace("[[limit]]", formatNumber(measurement.limit, "quantity"))
-                .replace("[[unit]]", measurement.unit);
+            return renderRichText(
+                "quotaMessages.counter",
+                translation()(($) => $.quotaMessages.counter),
+                {
+                    used: formatNumber(measurement.used, "quantity"),
+                    limit: formatNumber(measurement.limit, "quantity"),
+                    unit: measurement.unit,
+                },
+            );
         case "remaining":
-            return translation()(($) => $.quotaMessages.remaining)
-                .replace("[[remaining]]", formatNumber(measurement.remaining, "quantity"))
-                .replace("[[unit]]", measurement.unit);
+            return renderRichText(
+                "quotaMessages.remaining",
+                translation()(($) => $.quotaMessages.remaining),
+                {
+                    remaining: formatNumber(measurement.remaining, "quantity"),
+                    unit: measurement.unit,
+                },
+            );
         case "ratio":
             return translation()(($) => $.quotaMessages.used, {
                 percentage: formatNumber(measurement.used_fraction, "percentage"),
@@ -132,7 +142,7 @@ function resetText(reset: QuotaReset, now: number): JSX.Element {
                 distance:
                     reset.at <= now
                         ? translation()(
-                              ($) => $.helpers.providerQuotaCard.resetTimeReachedRefreshToUpdate,
+                              ($) => $.screens.providerQuotaCard.resetTimeReachedRefreshToUpdate,
                           )
                         : translation()(($) => $.quotaMessages.future, {
                               duration: duration(Math.ceil((reset.at - now) / 1_000_000)),
@@ -194,13 +204,26 @@ function QuotaRow(props: { readonly entry: QuotaEntry; readonly now: number }): 
 
 /** Upstream allowance is an independent read, separate from gateway request accounting. */
 export function ProviderQuotaCard(props: { readonly view: ProviderQuotaView }): JSX.Element {
-    const [now, setNow] = createSignal(nowMicros());
-    const timer = setInterval(() => setNow(nowMicros()), 1000);
-    onCleanup(() => clearInterval(timer));
     const ready = () => {
         const current = props.view.state();
         return current.type === "ready" ? current : null;
     };
+    const [now, setNow] = createSignal(nowMicros());
+    // `now` ages the observation stamp and the reset countdowns, which only
+    // the ready state renders: the tick exists exactly while a reading
+    // stands and stops the moment it does — a card parked on any other
+    // state owns no timer. The interval's disposer rides the effect, so a
+    // state flip and the mount's disposal both stop it.
+    createEffect(
+        () => ready() !== null,
+        (isReady) => {
+            if (!isReady) {
+                return undefined;
+            }
+            const timer = setInterval(() => setNow(nowMicros()), 1000);
+            return () => clearInterval(timer);
+        },
+    );
     const notice = () => {
         const current = props.view.state();
         return current.type === "failed"

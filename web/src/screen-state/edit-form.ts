@@ -6,7 +6,7 @@ import type { ScreenNotice } from "./notices";
 import type { ScreenRead } from "./read";
 
 /**
- * The save-and-dirt wiring of one settings form, shared by the three edit
+ * The save-and-dirt wiring of one settings form, shared by the five edit
  * screens (README §6.3): a submit runs the caller's write through the save
  * gate, reports its outcome through the screen's notice — a failed or aborted
  * save stops there, leaving the success tail unrun — and a succeeded save

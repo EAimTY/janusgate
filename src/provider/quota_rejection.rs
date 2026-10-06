@@ -172,11 +172,24 @@ mod tests {
             "code":{"at":["error","code"],"value":"quota_exhausted"},
             "restriction_key":[{"type":"literal","value":"account"}],
             "applies_to":{"type":"all_models"}}]});
+        // The rules list and each rule's restriction recipe are `Vec1`-typed: an empty one is
+        // unrepresentable and rejected at parse, before validation.
+        for path in ["/rules", "/rules/0/restriction_key"] {
+            let mut invalid = valid.clone();
+            #[expect(
+                clippy::expect_used,
+                reason = "all mutation paths exist in the deliberate policy fixture"
+            )]
+            let target = invalid.pointer_mut(path).expect("fixture path exists");
+            *target = json!([]);
+            assert!(
+                serde_json::from_value::<QuotaExhaustion>(invalid).is_err(),
+                "`{path}` must reject an empty list at parse"
+            );
+        }
         for (path, value) in [
-            ("/rules", json!([])),
             ("/rules/0/statuses", json!([])),
             ("/rules/0/code/at", json!([])),
-            ("/rules/0/restriction_key", json!([])),
             ("/rules/0/name", json!("")),
             ("/rules/0/code/at", json!([""])),
             (

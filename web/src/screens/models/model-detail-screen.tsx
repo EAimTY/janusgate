@@ -16,6 +16,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import {
     automaticModelNames,
+    type CapabilitySource,
     type CompactionFact,
     capabilitySource,
     effectiveCompactionFacts,
@@ -25,6 +26,7 @@ import {
 } from "/src/management-api/serving";
 import {
     COMPACTION_MECHANISM,
+    COMPACTION_MECHANISMS_BY_FORMAT,
     type CompactionMechanism,
     DISCOVERY_STATE,
     MECHANISM_SUPPORT,
@@ -39,6 +41,35 @@ import { Badge, type BadgeMark } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { RowNotFound } from "/src/ui/row-not-found";
 import { ScreenFrame } from "/src/ui/screen-frame";
+
+/**
+ * One capability fact's provenance line: the words every effective
+ * declaration states beside its value, naming the layer the fact came
+ * from — the administrator's override, the latest discovery knowledge, or
+ * unknown. The unknown wording is each fact family's own: a row-column
+ * declaration unknown here was omitted from the listings, while a compaction
+ * mechanism without a row fact defers to the definition's declaration, so
+ * `unknownWording` rewords that one case.
+ */
+function provenanceLabel(source: CapabilitySource, unknownWording?: string): string {
+    switch (source) {
+        case "override":
+            return translation()(
+                ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
+            );
+        case "discovered":
+            return translation()(
+                ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
+            );
+        case "unknown":
+            return (
+                unknownWording ??
+                translation()(
+                    ($) => $.additional.modelDetailScreen.unknownOmittedFromModelListingsMessage,
+                )
+            );
+    }
+}
 
 /**
  * One model's page: what it is, where it stands, and what serving clients
@@ -141,60 +172,22 @@ function CapabilityFacts(props: {
     const compaction = (): Readonly<Record<CompactionMechanism, CompactionFact>> =>
         effectiveCompactionFacts(props.model);
 
-    const levelsSource = (): string => {
-        switch (
-            capabilitySource(props.model.thinking_levels_override, props.model.thinking_levels)
-        ) {
-            case "override":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
-                );
-            case "discovered":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
-                );
-            case "unknown":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.unknownOmittedFromModelListingsMessage,
-                );
-        }
-    };
+    const levelsSource = (): string =>
+        provenanceLabel(
+            capabilitySource(props.model.thinking_levels_override, props.model.thinking_levels),
+        );
 
-    const tokenSource = (override: number | null, base: number | null): string => {
-        switch (capabilitySource(override, base)) {
-            case "override":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
-                );
-            case "discovered":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
-                );
-            case "unknown":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.unknownOmittedFromModelListingsMessage,
-                );
-        }
-    };
+    const tokenSource = (override: number | null, base: number | null): string =>
+        provenanceLabel(capabilitySource(override, base));
 
-    const compactionSource = (fact: CompactionFact): string => {
-        switch (fact.source) {
-            case "override":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.overriddenByAdministratorMessage,
-                );
-            case "discovered":
-                return translation()(
-                    ($) => $.additional.modelDetailScreen.fromTheLatestDiscoveryMessage,
-                );
-            case "unknown":
-                return translation()(
-                    ($) =>
-                        $.additional.modelDetailScreen
-                            .noFactOnThisRowTheDefinitionsDeclarationMessage,
-                );
-        }
-    };
+    const compactionSource = (fact: CompactionFact): string =>
+        provenanceLabel(
+            fact.source,
+            translation()(
+                ($) =>
+                    $.additional.modelDetailScreen.noFactOnThisRowTheDefinitionsDeclarationMessage,
+            ),
+        );
 
     const levelsDisplay = (): string => {
         const effective = levels();
@@ -204,35 +197,16 @@ function CapabilityFacts(props: {
         }
 
         return effective.length === 0
-            ? translation()(($) => $.helpers.modelDetailScreen.noLevels)
+            ? translation()(($) => $.screens.modelDetailScreen.noLevels)
             : effective.join(", ");
     };
 
-    // The mechanisms the owning provider's format can speak: the Responses
-    // pair-and-trio only on an `openai_response` definition, the Messages
-    // pair only on an `anthropic_messages` one — every other format can
-    // carry no compaction declaration at all. Without the provider row at
-    // hand the section stays unstated rather than guessing the format.
-    const compactionMechanisms = (): ReadonlyArray<CompactionMechanism> => {
-        const format = props.provider?.format;
-
-        if (format === "openai_response") {
-            return [
-                "responses_standalone_compact",
-                "responses_explicit_trigger",
-                "responses_automatic_compaction",
-            ];
-        }
-
-        if (format === "anthropic_messages") {
-            return [
-                "messages_on_demand_compaction",
-                "messages_threshold_compaction",
-            ];
-        }
-
-        return [];
-    };
+    // The mechanisms the owning provider's format can speak, from the
+    // vocabulary's per-format table beside the mechanism vocabulary itself.
+    // Without the provider row at hand the section stays unstated rather than
+    // guessing the format.
+    const compactionMechanisms = (): ReadonlyArray<CompactionMechanism> =>
+        props.provider === null ? [] : COMPACTION_MECHANISMS_BY_FORMAT[props.provider.format];
 
     return (
         <Card>
@@ -339,9 +313,12 @@ function ModelFacts(props: {
         <>
             <PageHeader
                 title={props.model.upstream_id}
-                description={`${props.model.upstream_id} on ${props.model.provider}.`}
+                description={translation()(($) => $.screens.modelDetailScreen.upstreamOnProvider, {
+                    upstreamId: props.model.upstream_id,
+                    provider: props.model.provider,
+                })}
                 backHref={hrefs.models(props.model.provider_id)}
-                backLabel="Models"
+                backLabel={translation()(($) => $.screens.modelDetailScreen.modelsBackLabel)}
             >
                 <Badge
                     tone={serving().tone}

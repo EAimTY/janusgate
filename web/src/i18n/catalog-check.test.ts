@@ -173,7 +173,7 @@ describe("production catalog contracts", () => {
             ).toBeGreaterThan(0);
         }
     });
-    it("validates ordinal categories and explicit zero contracts in every catalog", () => {
+    it("validates ordinal categories against each locale's plural contract", () => {
         const ordinal = [
             {
                 path: "rank",
@@ -197,35 +197,6 @@ describe("production catalog contracts", () => {
                 [],
             ),
         ).toEqual([]);
-        const zero = [
-            {
-                path: "items",
-                kind: "cardinal" as const,
-                hasExplicitZero: true,
-            },
-        ];
-        const reference = {
-            items_zero: "No items for {{owner}}",
-            items_one: "{{count}} item for {{owner}}",
-            items_other: "{{count}} items for {{owner}}",
-        };
-        const translated = {
-            items_zero: "{{owner}} 没有条目",
-            items_other: "{{owner}} 有 {{count}} 个条目",
-        };
-        expect(checkCatalog(reference, translated, "zh-CN", zero, [])).toEqual([]);
-        expect(
-            checkCatalog(
-                reference,
-                {
-                    ...translated,
-                    items_zero: "没有条目",
-                },
-                "zh-CN",
-                zero,
-                [],
-            ).length,
-        ).toBeGreaterThan(0);
     });
     it("rejects declared plural paths that are absent from the semantic inventory", () => {
         expect(

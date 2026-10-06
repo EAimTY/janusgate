@@ -111,10 +111,7 @@ export function checkCatalog(
         const contract = plurals.find((entry) => entry.path === path);
         for (const branch of branches) {
             const actual = parameters(translated.get(branch) ?? "", branch, errors);
-            const allowed = new Set(expected);
-            if (contract?.hasExplicitZero && branch === `${path}_zero` && !actual.has("count"))
-                allowed.delete("count");
-            if (!sameSet(allowed, actual))
+            if (!sameSet(new Set(expected), actual))
                 errors.push(`${branch}: interpolation parameters differ`);
         }
         if (contract) {
@@ -125,7 +122,6 @@ export function checkCatalog(
             );
             categories.add("other");
             const prefix = `${path}_${contract.kind === "ordinal" ? "ordinal_" : ""}`;
-            if (contract.hasExplicitZero) categories.add("zero");
             for (const category of categories)
                 if (!translated.has(`${prefix}${category}`))
                     errors.push(`${path}: missing plural ${category}`);
@@ -134,18 +130,14 @@ export function checkCatalog(
                     errors.push(`${branch}: extra plural category`);
         }
     }
-    // English branches share the same contract, except an explicitly authored zero sentence.
-    for (const [path, branches] of source) {
+    // English branches carry the same interpolation parameters, branch for branch.
+    for (const branches of source.values()) {
         const first = branches.find((key) => key.endsWith("_other")) ?? branches[0];
         if (first === undefined) continue;
         const expected = parameters(canonical.get(first) ?? "", first, errors);
-        const contract = plurals.find((entry) => entry.path === path);
         for (const branch of branches) {
             const actual = parameters(canonical.get(branch) ?? "", branch, errors);
-            const allowed = new Set(expected);
-            if (contract?.hasExplicitZero && branch === `${path}_zero` && !actual.has("count"))
-                allowed.delete("count");
-            if (!sameSet(allowed, actual))
+            if (!sameSet(new Set(expected), actual))
                 errors.push(`${branch}: inconsistent English parameters`);
         }
     }

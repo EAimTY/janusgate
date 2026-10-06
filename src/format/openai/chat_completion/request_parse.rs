@@ -4,9 +4,10 @@
 use crate::{
     format::{self, ParsedRequest, StringOrArray},
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
+        IrToolChoice,
     },
+    vocabulary::ReasoningLevel,
 };
 use serde::{Deserialize, de::IgnoredAny};
 use serde_json::Value;
@@ -466,12 +467,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
                 if let Some(tool_calls) = tool_calls {
                     for tool_call in tool_calls {
-                        if tool_call.tool_type != "function" {
-                            return Err(InvalidRequest::field(
-                                "type",
-                                format!("Unsupported tool call type `{}`", tool_call.tool_type),
-                            ));
-                        }
+                        format::reject_non_function_type(&tool_call.tool_type, "tool")?;
 
                         // Symmetric with the Responses endpoint: replayed
                         // arguments must encode a JSON object, so malformed
@@ -611,7 +607,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             reasoning_effort: request
                 .reasoning_effort
                 .as_deref()
-                .map(|effort| IrReasoningLevel::parse(effort, "reasoning_effort"))
+                .map(|effort| ReasoningLevel::parse(effort, "reasoning_effort"))
                 .transpose()?,
         },
         is_streaming: request.stream.unwrap_or(false),
@@ -645,14 +641,7 @@ fn flatten_text_content(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // The separator only ever separates text the accumulator already holds, so a leading run
-    // of empty parts carries none: skip it, then join the rest with the blank-line separator.
-    let combined = texts
-        .iter()
-        .skip_while(|text| text.is_empty())
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n\n");
+    let combined = format::join_text_parts(texts);
 
     Ok(combined)
 }
@@ -1153,9 +1142,9 @@ mod tests {
     /// Panics if the parsed request or rejection diverges from the contract.
     #[test]
     fn reasoning_effort_parses_the_closed_vocabulary() {
-        use crate::ir::IrReasoningLevel;
+        use crate::vocabulary::ReasoningLevel;
 
-        for (level, effort) in IrReasoningLevel::VOCABULARY {
+        for (level, effort) in ReasoningLevel::VOCABULARY {
             #[expect(
                 clippy::expect_used,
                 reason = "a vocabulary string is constructed to parse"

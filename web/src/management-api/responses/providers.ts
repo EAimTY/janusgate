@@ -6,12 +6,12 @@ import {
     expectNullableInteger,
     expectNullableString,
     expectRecord,
+    expectRowId,
     expectString,
     parseEnvelopeResponse,
     parseListResponse,
 } from "../validation-primitives";
-import { CREDENTIAL_KIND } from "../vocabulary";
-import { parseUpstreamFormat } from "../vocabulary-validation";
+import { CREDENTIAL_KIND, UPSTREAM_FORMAT } from "../vocabulary";
 
 /**
  * The definition pair, the derived format, and the nullable base URL: the
@@ -31,7 +31,7 @@ function parseSharedProviderFields(
     readonly base_url: string | null;
 } {
     return {
-        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
+        id: expectRowId(Reflect.get(record, "id"), `${context}.id`),
         name: expectString(Reflect.get(record, "name"), `${context}.name`),
         model_prefix: expectString(Reflect.get(record, "model_prefix"), `${context}.model_prefix`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
@@ -43,7 +43,7 @@ function parseSharedProviderFields(
             Reflect.get(record, "provider_definition_version"),
             `${context}.provider_definition_version`,
         ),
-        format: parseUpstreamFormat(Reflect.get(record, "format"), `${context}.format`),
+        format: UPSTREAM_FORMAT.parse(Reflect.get(record, "format"), `${context}.format`),
         base_url: expectNullableString(Reflect.get(record, "base_url"), `${context}.base_url`),
     };
 }

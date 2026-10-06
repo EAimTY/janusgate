@@ -12,14 +12,22 @@ import { Card, CardHeader } from "/src/ui/layout";
 import english from "../catalogs/en";
 import chinese from "../catalogs/zh-CN";
 import { createLocalizationController } from "../controller";
-import {
-    connectedMessage,
-    deleteKeyMessage,
-    networkTitleMessage,
-    requestChartPointMessage,
-} from "../rich";
 import arabic from "./ar";
 import "/src/tailwind.css";
+
+/** Renders the fixture's flat [[slot]] markers — the same grammar rich.tsx renders. */
+function previewRich(template: string, slots: Readonly<Record<string, JSX.Element>>): JSX.Element {
+    return template
+        .split(/(\[\[[A-Za-z][A-Za-z0-9]*\]\])/g)
+        .map((part) => (part.startsWith("[[") ? slots[part.slice(2, -2)] : part));
+}
+
+function previewRichText(template: string, slots: Readonly<Record<string, string>>): string {
+    return template
+        .split(/(\[\[[A-Za-z][A-Za-z0-9]*\]\])/g)
+        .map((part) => (part.startsWith("[[") ? (slots[part.slice(2, -2)] ?? "") : part))
+        .join("");
+}
 
 const arabicPreview = {
     ...arabic,
@@ -144,6 +152,7 @@ const model = "gpt-5/العربية-01";
 const url = "https://gateway.example.com:8443";
 function Preview(): JSX.Element {
     const copy = () => previewCopy[controller.activeLocale()];
+    const t = controller.translation();
     const number = (value: number): string =>
         new Intl.NumberFormat(controller.activeLocale()).format(value);
     const [isEnabled, setIsEnabled] = createSignal(true);
@@ -212,7 +221,19 @@ function Preview(): JSX.Element {
                             type="password"
                         />
                         <p class="text-[13px] text-ink-dim">
-                            {connectedMessage(controller.translation(), url)}
+                            {previewRich(
+                                t(($) => $.rich.connected),
+                                {
+                                    baseUrl: (
+                                        <bdi
+                                            dir="ltr"
+                                            class="tnum break-all"
+                                        >
+                                            {url}
+                                        </bdi>
+                                    ),
+                                },
+                            )}
                         </p>
                         <CopyButton
                             translator={controller.translation()}
@@ -249,7 +270,12 @@ function Preview(): JSX.Element {
                         </div>
                         <Notice
                             tone="bad"
-                            title={networkTitleMessage(controller.translation(), "no-answer", url)}
+                            title={previewRich(
+                                t(($) => $.diagnosis.noAnswerFromBaseUrl),
+                                {
+                                    baseUrl: <bdi dir="ltr">{url}</bdi>,
+                                },
+                            )}
                             detail={copy().expired}
                             rawDetail="Failed to fetch <script> [[baseUrl]]"
                             fix={copy().reconnect}
@@ -260,7 +286,12 @@ function Preview(): JSX.Element {
                     <CardHeader title={copy().delete} />
                     <div class="mt-4 flex flex-col gap-3">
                         <InlineConfirmQuestion
-                            question={deleteKeyMessage(controller.translation(), name)}
+                            question={previewRich(
+                                t(($) => $.entityMessages.deleteKey),
+                                {
+                                    name: <bdi dir="auto">{name}</bdi>,
+                                },
+                            )}
                             focusArmed={() => {}}
                         />
                         <div class="flex flex-wrap gap-2">
@@ -280,14 +311,28 @@ function Preview(): JSX.Element {
                                 label: `2026-10-0${index + 1}`,
                                 value,
                             }))}
-                            describePoint={(point) =>
-                                requestChartPointMessage(
-                                    controller.translation(),
-                                    point.label,
-                                    point.value,
-                                    number(point.value),
-                                )
-                            }
+                            describePoint={(point) => {
+                                const template = t(($) => $.linkedMessages.chartPoint, {
+                                    count: point.value,
+                                });
+                                return {
+                                    accessibleName: previewRichText(template, {
+                                        day: point.label,
+                                        quantity: number(point.value),
+                                    }),
+                                    content: previewRich(template, {
+                                        day: (
+                                            <bdi
+                                                dir="ltr"
+                                                class="whitespace-nowrap"
+                                            >
+                                                {point.label}
+                                            </bdi>
+                                        ),
+                                        quantity: <bdi dir="ltr">{number(point.value)}</bdi>,
+                                    }),
+                                };
+                            }}
                             summary={copy().requests}
                         />
                     </div>

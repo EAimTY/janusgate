@@ -31,7 +31,7 @@ use axum::{
     routing::{self, MethodFilter},
 };
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroI64;
+use std::{future::Future, num::NonZeroI64};
 
 mod api_keys;
 mod error;
@@ -233,6 +233,32 @@ async fn fallback(method: Method, OriginalUri(uri): OriginalUri) -> Error {
     }
 }
 
+/// Runs one mutation and its post-commit derived-state invalidation on a detached task and awaits
+/// the task's result: the storage write and the invalidation land as one unit even if the calling
+/// request is cancelled in between. An inline `write().await?; invalidate().await` pair leaves the
+/// invalidation lost forever to a cancellation — every managed id is never reused, so the drifted
+/// derived state (a stale quota-coordinator slot, a stale affinity handle) would outlive the row.
+///
+/// The mutation future must own everything it touches — the database handle, the caches, the
+/// addressed ids — so the detached task never borrows from the request.
+///
+/// # Panics
+///
+/// Panics if the mutation task fails to hand off its result, a fail-fast task invariant.
+async fn detach_mutation<T, F>(mutation: F) -> Result<T, Error>
+where
+    F: Future<Output = Result<T, Error>> + Send + 'static,
+    T: Send + 'static,
+{
+    #[expect(
+        clippy::expect_used,
+        reason = "the mutation task always hands its result to the handler"
+    )]
+    tokio::spawn(mutation)
+        .await
+        .expect("the mutation task completes")
+}
+
 /// Validates a management request identifier. Identifier content — its characters, case, and length
 /// — is the caller's choice; the backend enforces only structural non-emptiness (README §7).
 ///
@@ -329,6 +355,17 @@ fn definition_version_invalid(param: &'static str) -> Error {
     )))
 }
 
+/// Builds the rejection for a definition rebind that names only one half of the
+/// `(provider_definition_name, provider_definition_version)` reference pair — the one spelling
+/// `providers:update`'s rebind fields and `oauth:reauthorize`'s explicit target share, because the
+/// wire shape cannot express the pairing rule.
+fn definition_rebind_invalid() -> Error {
+    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(
+        "a definition rebind names both `provider_definition_name` and \
+         `provider_definition_version`",
+    ))
+}
+
 /// Resolves one definition reference (README §7.1): the version must be a positive number and
 /// the exact `(name, version)` pair must exist — the latest version is never substituted. A
 /// non-positive version renders [`definition_version_invalid`], an unknown pair
@@ -421,18 +458,18 @@ enum ProviderResponse {
 }
 
 impl ProviderResponse {
-    /// Renders one provider row; credentials are never read.
+    /// Renders one provider row, consuming it; credentials are never read.
     #[must_use]
-    fn from_provider(provider: &crate::provider::Provider) -> Self {
+    fn from_provider(provider: crate::provider::Provider) -> Self {
         let shared = SharedProviderFields {
             id: provider.id,
-            name: provider.name.clone(),
-            model_prefix: provider.model_prefix.clone(),
+            name: provider.name,
+            model_prefix: provider.model_prefix,
             is_enabled: provider.is_enabled,
-            provider_definition_name: provider.definition.name.clone(),
+            provider_definition_name: provider.definition.name,
             provider_definition_version: provider.definition.version.get(),
             format: provider.definition.payload.format,
-            base_url: provider.base_url.clone(),
+            base_url: provider.base_url,
         };
 
         match provider.credentials {
@@ -474,8 +511,8 @@ struct SharedProviderFields {
     base_url: Option<String>,
 }
 
-/// The `providers:create` and `oauth:complete` success body (README §7.1); the response states the
-/// server-assigned row identity and the exchange's expiry — the facts the caller cannot know.
+/// The `providers:create` success body (README §7.1); the response states the server-assigned row
+/// identity — the fact the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct ProviderEnvelope {
@@ -555,7 +592,7 @@ mod tests {
 
         #[expect(clippy::expect_used, reason = "the provider body always serializes")]
         let rendered = serde_json::to_string(&ProviderEnvelope {
-            provider: ProviderResponse::from_provider(&static_provider),
+            provider: ProviderResponse::from_provider(static_provider),
         })
         .expect("the provider body serializes");
 
@@ -595,7 +632,7 @@ mod tests {
 
         #[expect(clippy::expect_used, reason = "the provider body always serializes")]
         let rendered = serde_json::to_string(&ProviderEnvelope {
-            provider: ProviderResponse::from_provider(&oauth_provider),
+            provider: ProviderResponse::from_provider(oauth_provider),
         })
         .expect("the provider body serializes");
 

@@ -3,15 +3,16 @@
 
 use super::compaction;
 use crate::{
-    compaction::{identity::InstructionRole, sealing},
+    compaction_model::{identity::InstructionRole, sealing},
     format::{
         self, CompactionBoundary, CompactionControl, NativeArtifact, ParsedCompaction,
-        ParsedInstructionItem, ParsedRequest, StringOrArray, compaction_control::AutomaticEntry,
+        ParsedInstructionItem, ParsedRequest, StringOrArray,
     },
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice, StateItem,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
+        IrToolChoice, StateItem, compaction::AutomaticEntry,
     },
+    vocabulary::ReasoningLevel,
 };
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
@@ -800,7 +801,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         converted.instruction_items.insert(
             0,
             crate::format::ParsedInstructionItem {
-                role: crate::compaction::identity::InstructionRole::System,
+                role: crate::compaction_model::identity::InstructionRole::System,
                 text: instructions.clone(),
             },
         );
@@ -889,7 +890,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     let reasoning_effort = request
         .reasoning
         .and_then(|reasoning| reasoning.effort)
-        .map(|effort| IrReasoningLevel::parse(&effort, "reasoning"))
+        .map(|effort| ReasoningLevel::parse(&effort, "reasoning"))
         .transpose()?;
 
     Ok(ParsedRequest {
@@ -961,15 +962,7 @@ fn message_content_text(content: &StringOrArray<PartIn>) -> Result<String, Inval
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // The separator only ever separates text the accumulator already holds, so a
-            // leading run of empty parts carries none: skip it, then join the rest with the
-            // blank-line separator.
-            let combined = texts
-                .iter()
-                .skip_while(|text| text.is_empty())
-                .copied()
-                .collect::<Vec<&str>>()
-                .join("\n\n");
+            let combined = format::join_text_parts(texts);
 
             Ok(combined)
         }
@@ -1040,14 +1033,7 @@ fn tool_output_text(output: &StringOrArray<OutputPartIn>) -> Result<String, Inva
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // The separator only ever separates text the accumulator already holds, so a leading run
-    // of empty parts carries none: skip it, then join the rest with the blank-line separator.
-    let combined = texts
-        .iter()
-        .skip_while(|text| text.is_empty())
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n\n");
+    let combined = format::join_text_parts(texts);
 
     Ok(combined)
 }
@@ -1307,7 +1293,7 @@ mod tests {
 
         assert_eq!(
             parsed.ir.reasoning_effort,
-            Some(crate::ir::IrReasoningLevel::High)
+            Some(crate::vocabulary::ReasoningLevel::High)
         );
 
         assert_eq!(parsed.ir.response_format, Some(IrResponseFormat::Text));
@@ -1506,9 +1492,9 @@ mod tests {
     /// Panics if the parsed effort or rejection diverges from the contract.
     #[test]
     fn reasoning_effort_parses_the_closed_vocabulary() {
-        use crate::ir::IrReasoningLevel;
+        use crate::vocabulary::ReasoningLevel;
 
-        for (level, effort) in IrReasoningLevel::VOCABULARY {
+        for (level, effort) in ReasoningLevel::VOCABULARY {
             #[expect(
                 clippy::expect_used,
                 reason = "a vocabulary string is constructed to parse"

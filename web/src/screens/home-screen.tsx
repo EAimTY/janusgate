@@ -1,6 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { OUTWARD_SURFACES } from "../features/overview/outward-surfaces";
+import {
+    credentialAttention,
+    inventoryGapAttention,
+    type ProviderAttention,
+    type ProviderInventoryAttention,
+} from "/src/features/overview/attention";
+import { OUTWARD_SURFACES } from "/src/features/overview/outward-surfaces";
 import {
     buildOverviewDailySeries,
     type OverviewDailySeries,
@@ -8,72 +14,39 @@ import {
     overviewDailyWindow,
     overviewRecentFrom,
     overviewRecentTotals,
-} from "../features/overview/overview-stats";
-import { noStoredExpirySentence } from "../features/providers/credential-presentation";
-import { EMPTY_USAGE_FILTER_DRAFT } from "../features/usage/filter";
-import { EMPTY_USAGE_ENTITIES, readUsageBuckets, readUsageEntities } from "../features/usage/read";
-import { credentialExpiryLine, nowMicros } from "../format";
-import { translation } from "../i18n";
-import { formatNumber } from "../i18n/formatters";
+} from "/src/features/overview/overview-stats";
+import { EMPTY_USAGE_FILTER_DRAFT } from "/src/features/usage/filter";
+import {
+    EMPTY_USAGE_ENTITIES,
+    readUsageBuckets,
+    readUsageEntities,
+} from "/src/features/usage/read";
+import { nowMicros } from "/src/format";
+import { translation } from "/src/i18n";
+import { formatNumber } from "/src/i18n/formatters";
 import {
     inventoryAttentionMessage,
     requestChartPointMessage,
     requestSummaryMessage,
     servingKeyMessage,
-} from "../i18n/rich";
-import type { ManagementApi } from "../management-api/client";
-import type { ModelResponse, ProviderResponse } from "../management-api/generated/v0";
-import {
-    lapsedCredentialStanding,
-    readyInventoryCountsByProvider,
-} from "../management-api/serving";
-import {
-    CREDENTIAL_KIND,
-    isOAuthProviderRow,
-    type OauthProviderRow,
-} from "../management-api/vocabulary";
-import { hrefs } from "../router";
-import { indexRowsById } from "../row-index";
-import { createScreenRead, readAll } from "../screen-state/read";
-import { BarChart } from "../ui/bar-chart";
-import { CopyButton } from "../ui/clipboard";
-import { ButtonLink } from "../ui/controls";
-import { Badge, EmptyState, Notice, Skeleton, StatLink } from "../ui/feedback";
-import { Glyph } from "../ui/glyph";
-import { Card, CardHeader, PageHeader } from "../ui/layout";
-import { ReadNotice } from "../ui/read-notice";
+} from "/src/i18n/rich";
+import type { ManagementApi } from "/src/management-api/client";
+import { readyInventoryCountsByProvider } from "/src/management-api/serving";
+import { CREDENTIAL_KIND } from "/src/management-api/vocabulary";
+import { hrefs } from "/src/router";
+import { indexRowsById } from "/src/row-index";
+import { createScreenRead, readAll } from "/src/screen-state/read";
+import { BarChart } from "/src/ui/bar-chart";
+import { CopyButton } from "/src/ui/clipboard";
+import { ButtonLink } from "/src/ui/controls";
+import { Badge, EmptyState, Notice, Skeleton, StatLink } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
+import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { ReadNotice } from "/src/ui/read-notice";
 
 /** What the overview's reads answered: the rolling figures plus the daily series. */
 type OverviewTraffic = OverviewRecentTotals & {
     readonly series: OverviewDailySeries;
-};
-
-/** One listed attention line: its provider, the human reason it needs one, and the action that answers it. */
-type ProviderAttention = {
-    readonly provider: ProviderResponse;
-    readonly attention: {
-        readonly label: string;
-        readonly detail: string;
-        readonly action: {
-            readonly href: string;
-            readonly label: string;
-        };
-    };
-};
-
-/**
- * One enabled provider with no ready inventory, together with the
- * attention its cause calls for.
- */
-type ProviderInventoryAttention = {
-    readonly provider: ProviderResponse;
-    readonly attention: {
-        readonly reason: "no-models" | "no-ready-models";
-        readonly action: {
-            readonly href: string;
-            readonly label: string;
-        };
-    };
 };
 
 /**
@@ -328,7 +301,6 @@ export function HomeScreen(props: {
                                 }))}
                                 describePoint={(point) =>
                                     requestChartPointMessage(
-                                        translation(),
                                         point.label,
                                         point.value,
                                         formatNumber(point.value),
@@ -373,7 +345,7 @@ export function HomeScreen(props: {
                                             href: hrefs.models(null),
                                             get label() {
                                                 return translation()(
-                                                    ($) => $.helpers.homeScreen.discoverModels,
+                                                    ($) => $.screens.homeScreen.discoverModels,
                                                 );
                                             },
                                         }}
@@ -399,7 +371,7 @@ export function HomeScreen(props: {
                                             href: hrefs.apiKeyNew(),
                                             get label() {
                                                 return translation()(
-                                                    ($) => $.helpers.homeScreen.createAPIKey,
+                                                    ($) => $.screens.homeScreen.createAPIKey,
                                                 );
                                             },
                                         }}
@@ -482,7 +454,7 @@ function trafficSummary(series: OverviewDailySeries): JSX.Element {
         return translation()(($) => $.additional.homeScreen.noRequestsRecordedMessage);
     }
 
-    return requestSummaryMessage(translation(), series.total, series.peak);
+    return requestSummaryMessage(series.total, series.peak);
 }
 /**
  * Where a client points: the instance's own address plus one path per outward
@@ -540,140 +512,6 @@ function EndpointsCard(props: { readonly baseUrl: string }): JSX.Element {
             <p class="mt-3 text-[12.5px] text-ink-faint">{servingKeyMessage(hrefs.apiKeys())}</p>
         </Card>
     );
-}
-
-/**
- * The attention an enabled provider with no ready inventory carries,
- * chosen by the cause its rows name: a provider holding no model rows at all
- * is missing its discovery — the provider's page runs it — while a provider
- * whose rows exist but none serve holds only switched-off or vanished rows,
- * which discovery cannot repair; its models page states each row's own cause.
- */
-function inventoryGapAttention(
-    models: ReadonlyArray<ModelResponse>,
-    providerId: number,
-): {
-    readonly reason: "no-models" | "no-ready-models";
-    readonly action: {
-        readonly href: string;
-        readonly label: string;
-    };
-} {
-    const hasNoModels = !models.some((model) => model.provider_id === providerId);
-
-    return hasNoModels
-        ? {
-              reason: "no-models",
-              action: {
-                  get label() {
-                      return translation()(($) => $.helpers.homeScreen.openAndDiscover);
-                  },
-                  href: hrefs.providerDetail(providerId),
-              },
-          }
-        : {
-              reason: "no-ready-models",
-              action: {
-                  get label() {
-                      return translation()(($) => $.helpers.homeScreen.reviewModels);
-                  },
-                  href: hrefs.models(providerId),
-              },
-          };
-}
-
-/**
- * The lapsed-credential wording itself: expired, or never fresh — `null`
- * while the credential still holds. Takes the OAuth member of the row union,
- * since the expiry is an OAuth row's column alone.
- */
-function lapsedCredentialAttention(provider: OauthProviderRow): {
-    readonly label: string;
-    readonly detail: string;
-} | null {
-    // The gate is `serving.ts`'s one lapsed composition over the row. The
-    // missing-expiry column below is the never-fresh standing's own
-    // definition in `credentialStanding`, so past the gate the branch is
-    // already fixed and the non-null column feeds the expired line's
-    // absolute instant.
-    if (lapsedCredentialStanding(provider) === null) {
-        return null;
-    }
-
-    if (provider.expires_at === null) {
-        return {
-            get label() {
-                return translation()(($) => $.helpers.homeScreen.credentialNotFresh);
-            },
-            get detail() {
-                return noStoredExpirySentence();
-            },
-        };
-    }
-
-    return {
-        get label() {
-            return translation()(($) => $.helpers.homeScreen.credentialExpired);
-        },
-        get detail() {
-            return credentialExpiryLine(provider.expires_at!, nowMicros());
-        },
-    };
-}
-
-/**
- * Why an OAuth provider needs a human: expired, or never fresh. The row's
- * action follows the provider's parked state: reauthorization lives on the
- * edit page's Credentials card, but a disabled provider is the operator's
- * own choice, so its row names the parked state and opens the provider's
- * detail page — read-only itself, its *Edit provider* door reaching the
- * edit page's Settings card where the Enabled switch lives — instead of
- * ordering a reconnect the operator deliberately deferred. The credential
- * counts either way: a parked provider re-enabled with lapsed credentials
- * fails every request.
- */
-function credentialAttention(provider: ProviderResponse): ProviderAttention["attention"] | null {
-    if (!isOAuthProviderRow(provider)) {
-        return null;
-    }
-
-    const lapsed = lapsedCredentialAttention(provider);
-
-    if (lapsed === null) {
-        return null;
-    }
-
-    return provider.is_enabled
-        ? {
-              get label() {
-                  return lapsed.label;
-              },
-              get detail() {
-                  return lapsed.detail;
-              },
-              action: {
-                  href: hrefs.providerEdit(provider.id),
-                  get label() {
-                      return translation()(($) => $.helpers.homeScreen.reconnect);
-                  },
-              },
-          }
-        : {
-              get label() {
-                  return lapsed.label;
-              },
-              get detail() {
-                  return translation()(($) => $.dynamicMessages.disabledCredential, {
-                      expiry: lapsed.detail,
-                  });
-              },
-              action: {
-                  href: hrefs.providerDetail(provider.id),
-                  get label() {
-                      return translation()(($) => $.helpers.homeScreen.openProvider);
-                  },
-              },
-          };
 }
 
 /**

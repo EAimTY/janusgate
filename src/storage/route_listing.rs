@@ -3,7 +3,7 @@
 use super::{Error, models::EnabledModel};
 use crate::{
     access_control::{AccessDecision, RouteOwner},
-    compaction::{
+    compaction_model::{
         mechanism::{Mechanism, MechanismSupport},
         support_facts::CompactionSupportFacts,
     },

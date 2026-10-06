@@ -81,10 +81,43 @@ impl ItemIdentity {
         }
     }
 
-    /// Computes the identity of one conversation message: its role, its
-    /// occurrence index among messages of the same role within the compared
-    /// window, its typed semantic content, and its client source identifier
-    /// when available.
+    /// Computes the identities of a window of instruction items in order:
+    /// each item's occurrence index counts only the items of its own role
+    /// within the window, so an unchanged same-role prefix yields identical
+    /// digests on both sides of a replay comparison.
+    #[must_use]
+    pub(crate) fn for_instruction_window<'a>(
+        items: impl IntoIterator<Item = (InstructionRole, &'a str)>,
+    ) -> Vec<Self> {
+        // Per-role occurrence counters over the compared window.
+        let mut occurrences: Vec<(InstructionRole, usize)> = Vec::new();
+
+        items
+            .into_iter()
+            .map(|(role, text)| {
+                let occurrence = occurrences
+                    .iter()
+                    .find(|(counted, _)| *counted == role)
+                    .map(|(_, count)| *count)
+                    .unwrap_or(0);
+
+                if let Some((_, count)) =
+                    occurrences.iter_mut().find(|(counted, _)| *counted == role)
+                {
+                    *count += 1;
+                } else {
+                    occurrences.push((role, 1));
+                }
+
+                Self::for_instruction(role, occurrence, text, None)
+            })
+            .collect()
+    }
+
+    /// Computes the identity of one conversation message: its occurrence index
+    /// among messages of the message's own role within the compared window,
+    /// its typed semantic content, and its client source identifier when
+    /// available.
     ///
     /// # Panics
     ///
@@ -92,7 +125,6 @@ impl ItemIdentity {
     /// impossible for IR parts over concrete serde types.
     #[must_use]
     pub(crate) fn for_message(
-        role: IrRole,
         occurrence: usize,
         message: &IrMessage,
         source_id: Option<String>,
@@ -113,7 +145,7 @@ impl ItemIdentity {
         let mut hasher = Sha256::new();
 
         hasher.update(b"message\x00");
-        hasher.update(role_spelling(role).as_bytes());
+        hasher.update(role_spelling(message.role).as_bytes());
         hasher.update(b"\x00");
         hasher.update(occurrence.to_string().as_bytes());
         hasher.update(b"\x00");
@@ -158,9 +190,18 @@ const fn role_spelling(role: IrRole) -> &'static str {
     }
 }
 
-/// Renders a SHA-256 digest as lowercase hex.
-fn hex_digest(bytes: &[u8]) -> String {
-    let mut rendered = String::with_capacity(64);
+/// Renders the SHA-256 of `bytes` as lowercase hex — the binding and identity
+/// digest form every carrier comparison uses (README §6.8).
+#[must_use]
+pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
+    hex_digest(&Sha256::digest(bytes))
+}
+
+/// Renders a SHA-256 digest as lowercase hex — the digest form every
+/// identity, visible-content binding, and prefix requirement carries.
+#[must_use]
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+    let mut rendered = String::with_capacity(bytes.len() * 2);
 
     for byte in bytes {
         rendered.push_str(&format!("{byte:02x}"));
@@ -171,6 +212,11 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "fixtures index values they constructed themselves"
+    )]
+
     use super::{InstructionRole, ItemIdentity};
     use crate::ir::{IrMessage, IrPart, IrRole};
 
@@ -246,16 +292,48 @@ mod tests {
             }],
         };
 
-        let left = ItemIdentity::for_message(IrRole::User, 0, &user, None);
-        let right = ItemIdentity::for_message(IrRole::User, 0, &user, None);
+        let left = ItemIdentity::for_message(0, &user, None);
+        let right = ItemIdentity::for_message(0, &user, None);
 
         assert!(left.matches(&right));
-        assert!(!left.matches(&ItemIdentity::for_message(
-            IrRole::Assistant,
+        assert!(!left.matches(&ItemIdentity::for_message(0, &assistant, None)));
+        assert!(!left.matches(&ItemIdentity::for_message(1, &user, None)));
+    }
+
+    /// The window identities count occurrences per role, so interleaved roles
+    /// each index from zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails — the assertion is the failure report.
+    #[test]
+    fn window_identities_count_occurrences_per_role() {
+        let system = InstructionRole::System;
+        let developer = InstructionRole::Developer;
+
+        let identities = ItemIdentity::for_instruction_window([
+            (system, "first system"),
+            (developer, "first developer"),
+            (system, "second system"),
+        ]);
+
+        assert!(identities[0].matches(&ItemIdentity::for_instruction(
+            system,
             0,
-            &assistant,
+            "first system",
             None
         )));
-        assert!(!left.matches(&ItemIdentity::for_message(IrRole::User, 1, &user, None)));
+        assert!(identities[1].matches(&ItemIdentity::for_instruction(
+            developer,
+            0,
+            "first developer",
+            None
+        )));
+        assert!(identities[2].matches(&ItemIdentity::for_instruction(
+            system,
+            1,
+            "second system",
+            None
+        )));
     }
 }

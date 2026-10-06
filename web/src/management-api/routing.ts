@@ -1,4 +1,3 @@
-import { expectOneOf } from "./definitions/validation";
 import { ContractViolationError } from "./errors";
 import type {
     CreateModelRouteResponse,
@@ -12,35 +11,23 @@ import type {
     ProviderPoolResponse,
     QuotaBlock,
 } from "./generated/v0";
-import { expectModelIdentifier, parseQuotaRouting } from "./quota";
+import { expectModelIdentifier } from "./identifiers";
+import { parseQuotaRouting } from "./quota";
 import {
     expectArray,
     expectBoolean,
     expectDeclaredRecord,
-    expectInteger,
     expectNonEmptyString,
+    expectOneOf,
     expectRecord,
+    expectRowId,
+    expectSafeInteger,
     expectString,
     parseListResponse,
 } from "./validation-primitives";
 
-/** SQL row identifiers and priorities must survive JavaScript representation exactly. */
-function integer(value: unknown, context: string, minimum?: number): number {
-    const result = expectInteger(value, context);
-
-    if (!Number.isSafeInteger(result) || (minimum !== undefined && result < minimum)) {
-        throw new ContractViolationError(
-            minimum === undefined
-                ? `${context} must be a safe integer`
-                : `${context} must be a safe integer of at least ${minimum}`,
-        );
-    }
-
-    return result;
-}
-
 /** One physical target, or one pool with its exact upstream identifier. */
-function target(value: unknown, context: string): ModelRouteTarget {
+function parseTarget(value: unknown, context: string): ModelRouteTarget {
     const record = expectRecord(value, context);
     const type = expectOneOf(
         Reflect.get(record, "type"),
@@ -62,7 +49,7 @@ function target(value: unknown, context: string): ModelRouteTarget {
         );
         return {
             type,
-            model_id: integer(Reflect.get(record, "model_id"), `${context}.model_id`, 1),
+            model_id: expectRowId(Reflect.get(record, "model_id"), `${context}.model_id`),
         };
     }
     expectDeclaredRecord(
@@ -76,7 +63,7 @@ function target(value: unknown, context: string): ModelRouteTarget {
     );
     return {
         type,
-        pool_id: integer(Reflect.get(record, "pool_id"), `${context}.pool_id`, 1),
+        pool_id: expectRowId(Reflect.get(record, "pool_id"), `${context}.pool_id`),
         upstream_id: expectModelIdentifier(
             Reflect.get(record, "upstream_id"),
             `${context}.upstream_id`,
@@ -85,7 +72,7 @@ function target(value: unknown, context: string): ModelRouteTarget {
 }
 
 /** Complete authored membership retains missing or disabled accounts by identity. */
-function pool(value: unknown, context: string): ProviderPoolResponse {
+function parsePool(value: unknown, context: string): ProviderPoolResponse {
     const record = expectRecord(value, context);
     const providers = new Set<number>();
     const priorities = new Set<number>();
@@ -93,12 +80,11 @@ function pool(value: unknown, context: string): ProviderPoolResponse {
         (value, index) => {
             const memberContext = `${context}.members[${index}]`;
             const member = expectRecord(value, memberContext);
-            const provider_id = integer(
+            const provider_id = expectRowId(
                 Reflect.get(member, "provider_id"),
                 `${memberContext}.provider_id`,
-                1,
             );
-            const priority = integer(
+            const priority = expectSafeInteger(
                 Reflect.get(member, "priority"),
                 `${memberContext}.priority`,
                 0,
@@ -117,7 +103,7 @@ function pool(value: unknown, context: string): ProviderPoolResponse {
         },
     );
     return {
-        id: integer(Reflect.get(record, "id"), `${context}.id`, 1),
+        id: expectRowId(Reflect.get(record, "id"), `${context}.id`),
         name: expectString(Reflect.get(record, "name"), `${context}.name`),
         model_prefix: expectString(Reflect.get(record, "model_prefix"), `${context}.model_prefix`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
@@ -126,35 +112,34 @@ function pool(value: unknown, context: string): ProviderPoolResponse {
 }
 
 /** Public route rows carry no synthesized physical provider or capability override. */
-function route(value: unknown, context: string): ModelRouteResponse {
+function parseRoute(value: unknown, context: string): ModelRouteResponse {
     const record = expectRecord(value, context);
     return {
-        id: integer(Reflect.get(record, "id"), `${context}.id`, 1),
+        id: expectRowId(Reflect.get(record, "id"), `${context}.id`),
         public_id: expectModelIdentifier(Reflect.get(record, "public_id"), `${context}.public_id`),
         is_automatic: expectBoolean(Reflect.get(record, "is_automatic"), `${context}.is_automatic`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
-        target: target(Reflect.get(record, "target"), `${context}.target`),
+        target: parseTarget(Reflect.get(record, "target"), `${context}.target`),
     };
 }
 
 /** Pools are a complete authored listing, with no upstream query. */
 export function parseListProviderPoolsResponse(value: unknown): ListProviderPoolsResponse {
-    return parseListResponse(value, "provider_pools", pool);
+    return parseListResponse(value, "provider_pools", parsePool);
 }
 
 /** Public routes are decoded independently of upstream inventory. */
 export function parseListModelRoutesResponse(value: unknown): ListModelRoutesResponse {
-    return parseListResponse(value, "model_routes", route);
+    return parseListResponse(value, "model_routes", parseRoute);
 }
 
 /** A created pool exposes only its permanent row identity. */
 export function parseCreateProviderPoolResponse(value: unknown): CreateProviderPoolResponse {
     const record = expectRecord(value, "response");
     return {
-        provider_pool_id: integer(
+        provider_pool_id: expectRowId(
             Reflect.get(record, "provider_pool_id"),
             "response.provider_pool_id",
-            1,
         ),
     };
 }
@@ -163,16 +148,15 @@ export function parseCreateProviderPoolResponse(value: unknown): CreateProviderP
 export function parseCreateModelRouteResponse(value: unknown): CreateModelRouteResponse {
     const record = expectRecord(value, "response");
     return {
-        model_route_id: integer(
+        model_route_id: expectRowId(
             Reflect.get(record, "model_route_id"),
             "response.model_route_id",
-            1,
         ),
     };
 }
 
 /** Refresh metadata contains safe categories, never a foreign observation or error body. */
-function refresh(value: unknown, context: string): LastRefresh {
+function parseRefresh(value: unknown, context: string): LastRefresh {
     const record = expectRecord(value, context);
     const type = expectOneOf(
         Reflect.get(record, "type"),
@@ -198,7 +182,10 @@ function refresh(value: unknown, context: string): LastRefresh {
             type,
         };
     }
-    const attempted_at = integer(Reflect.get(record, "attempted_at"), `${context}.attempted_at`);
+    const attempted_at = expectSafeInteger(
+        Reflect.get(record, "attempted_at"),
+        `${context}.attempted_at`,
+    );
     if (type === "unsupported" || type === "reset") {
         expectDeclaredRecord(
             value,
@@ -226,7 +213,10 @@ function refresh(value: unknown, context: string): LastRefresh {
         return {
             type,
             attempted_at,
-            observed_at: integer(Reflect.get(record, "observed_at"), `${context}.observed_at`),
+            observed_at: expectSafeInteger(
+                Reflect.get(record, "observed_at"),
+                `${context}.observed_at`,
+            ),
         };
     }
     expectDeclaredRecord(
@@ -285,13 +275,13 @@ export function parseGetProviderAvailabilityResponse(
                     `${context}.applies_to must not be monitoring_only`,
                 );
             }
-            const observed_at = integer(
+            const observed_at = expectSafeInteger(
                 Reflect.get(record, "observed_at"),
                 `${context}.observed_at`,
             );
             const rawReset = Reflect.get(record, "blocked_until");
             const blocked_until =
-                rawReset === null ? null : integer(rawReset, `${context}.blocked_until`);
+                rawReset === null ? null : expectSafeInteger(rawReset, `${context}.blocked_until`);
             if (blocked_until !== null && blocked_until <= observed_at) {
                 throw new ContractViolationError(
                     `${context}.blocked_until must be after observed_at`,
@@ -307,6 +297,6 @@ export function parseGetProviderAvailabilityResponse(
     );
     return {
         blocks,
-        last_refresh: refresh(Reflect.get(record, "last_refresh"), "response.last_refresh"),
+        last_refresh: parseRefresh(Reflect.get(record, "last_refresh"), "response.last_refresh"),
     };
 }

@@ -18,6 +18,11 @@ use std::num::NonZeroI64;
 pub(crate) const DEFINITION_COLUMNS: &str = "name, version, format, inference, credential, \
      provisioning, discovery, compaction, quota, created_at";
 
+/// The insert column list of a definition version and the `RETURNING` projection the insert
+/// reads the stored row back through: one spelling for both the creation and the successor
+/// insert, identical to [`DEFINITION_COLUMNS`].
+const INSERT_COLUMNS: &str = DEFINITION_COLUMNS;
+
 /// A new definition version about to be inserted.
 pub(crate) struct NewDefinition<'a> {
     /// The definition name; version 1 when created, `base_version + 1` when updated.
@@ -67,8 +72,7 @@ where
 /// stale-snapshot retry: a concurrent version insert that invalidates the snapshot between the
 /// latest-version read and the write re-runs the read-then-write against the newer rows — the
 /// conditional insert then rejects or appends on the fresh state — instead of surfacing the
-/// refusal. The post-commit read-back is outside the retried transaction; it only observes the
-/// committed row for the return value.
+/// refusal.
 ///
 /// # Errors
 ///
@@ -96,19 +100,7 @@ pub(crate) async fn insert_definition(
                     base_version,
                 )
                 .await
-            })?;
-
-            #[expect(
-                clippy::unwrap_used,
-                reason = "NonZeroI64 addition by one of a positive version cannot be zero"
-            )]
-            let next = NonZeroI64::new(base_version.get() + 1).unwrap();
-
-            find_definition(database, definition.name, next)
-                .await?
-                .ok_or_else(|| Error::Drift {
-                    message: format!("definition `{}` vanished after insert", definition.name),
-                })
+            })
         }
     }
 }
@@ -124,11 +116,11 @@ async fn insert_first(
 ) -> Result<ProviderDefinition, Error> {
     database
         .query(
-            "INSERT INTO provider_definitions (name, version, format, inference, credential, \
-             provisioning, discovery, compaction, quota, created_at) \
-             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-             RETURNING name, version, format, inference, credential, provisioning, discovery, \
-             compaction, quota, created_at",
+            format!(
+                "INSERT INTO provider_definitions ({INSERT_COLUMNS}) \
+                 VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 RETURNING {INSERT_COLUMNS}"
+            ),
             params![
                 definition.name,
                 definition.payload.format.as_str(),
@@ -152,7 +144,7 @@ async fn insert_first(
 }
 
 /// Inserts the successor of `base_version` inside the caller's transaction, rejecting a stale
-/// base version with a conflict before anything is written.
+/// base version with a conflict before anything is written, and returning the stored row.
 ///
 /// # Errors
 ///
@@ -162,7 +154,7 @@ pub(crate) async fn insert_next_in_transaction(
     transaction: &mut Transaction,
     definition: NewDefinition<'_>,
     base_version: NonZeroI64,
-) -> Result<(), Error> {
+) -> Result<ProviderDefinition, Error> {
     let latest = latest_version_in_transaction(transaction, definition.name)
         .await?
         .ok_or_else(|| Error::NotFound {
@@ -180,10 +172,12 @@ pub(crate) async fn insert_next_in_transaction(
     }
 
     transaction
-        .execute(
-            "INSERT INTO provider_definitions (name, version, format, inference, credential, \
-             provisioning, discovery, compaction, quota, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        .query(
+            format!(
+                "INSERT INTO provider_definitions ({INSERT_COLUMNS}) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+                 RETURNING {INSERT_COLUMNS}"
+            ),
             params![
                 definition.name,
                 base_version.get() + 1,
@@ -197,9 +191,14 @@ pub(crate) async fn insert_next_in_transaction(
                 definition.created_at,
             ],
         )
-        .await?;
-
-    Ok(())
+        .await?
+        .first()
+        .map(|row| definition_from_row_offset(row, 0))
+        .unwrap_or_else(|| {
+            Err(Error::Drift {
+                message: "definition insert returned no row".to_string(),
+            })
+        })
 }
 
 /// The `(name, version)` definition read generic over the pooled or transactional executor, so
@@ -272,7 +271,9 @@ pub(crate) async fn list_definitions(
 }
 
 /// The stored latest version of one definition name inside a transaction, or `None` when the
-/// name is unknown.
+/// name is unknown. `MAX(version)` over an absent name aggregates to SQL `NULL`, which the
+/// optional read turns into `None` — the unknown name carries no version, and a successor
+/// insert maps that to the unknown-reference `NotFound` (README §7.1).
 ///
 /// # Errors
 ///
@@ -288,7 +289,11 @@ pub(crate) async fn latest_version_in_transaction(
         )
         .await?;
 
-    Ok(rows.first().map(|row| row.get(0)).transpose()?)
+    Ok(rows
+        .first()
+        .map(|row| row.get::<Option<i64>>(0))
+        .transpose()?
+        .flatten())
 }
 
 /// Parses a definition payload JSON column, wrapped exactly once as internal storage drift: the
@@ -362,7 +367,7 @@ mod tests {
     )]
 
     use crate::{
-        compaction::mechanism::MechanismSupport,
+        compaction_model::mechanism::MechanismSupport,
         format::UpstreamFormat,
         provider::{
             CredentialKind, StoredCredentials,
@@ -486,6 +491,55 @@ mod tests {
         Ok(())
     }
 
+    /// An unknown definition name carries no latest version: the aggregate read resolves the
+    /// `NULL` row to `None`, and a successor insert over the unknown name is the `NotFound`
+    /// error the management boundary maps to the version's unknown-reference 404.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations fail or the unknown-name contract diverges.
+    #[tokio::test]
+    async fn latest_version_is_none_for_an_unknown_name() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let mut transaction = database.transaction().await?;
+
+        let latest = storage_cr::provider_definitions::latest_version_in_transaction(
+            &mut transaction,
+            "absent",
+        )
+        .await?;
+
+        transaction.commit().await?;
+
+        assert_eq!(latest, None);
+
+        let payload = test_support::static_key_definition_payload(UpstreamFormat::OpenAiResponse);
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        let error = storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: "absent",
+                base_version: std::num::NonZeroI64::new(1),
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(error, storage_cr::Error::NotFound { .. }),
+            "a successor insert over an unknown name is the NotFound error: {error}"
+        );
+
+        Ok(())
+    }
+
     /// Pins the refresh-mode vocabulary: a fixture carrying a refresh grant parses and a
     /// `reprovision` mode without steps is rejected by the write-time validation, so the
     /// definition rows can never disagree with the engine's dispatch.
@@ -592,7 +646,7 @@ mod tests {
 
         payload.compaction = Some(compaction_section());
         let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../../web/src/quota-fixtures/kimi-code.json"))?;
+            serde_json::from_str(include_str!("../../fixtures/quota/kimi-code.json"))?;
         #[expect(
             clippy::indexing_slicing,
             reason = "the checked-in fixture has a descriptor"

@@ -387,7 +387,10 @@ pub(crate) fn render_request_body(
 #[cfg(test)]
 mod tests {
     use super::render_request_body;
-    use crate::ir::{IrReasoningLevel, IrRequest, IrToolChoice};
+    use crate::{
+        ir::{IrRequest, IrToolChoice},
+        vocabulary::ReasoningLevel,
+    };
     use serde_json::{Value, json};
 
     /// Renders one upstream body for the given effort level.
@@ -395,7 +398,7 @@ mod tests {
     /// # Panics
     ///
     /// Panics if the rendered body fails to serialize.
-    fn render_body(reasoning_effort: Option<IrReasoningLevel>) -> Value {
+    fn render_body(reasoning_effort: Option<ReasoningLevel>) -> Value {
         let ir = IrRequest {
             state_items: Vec::new(),
             model: "m".to_string(),
@@ -419,7 +422,7 @@ mod tests {
     /// Panics if a rendered slot diverges from the contract.
     #[test]
     fn renders_the_effort_level_verbatim_or_not_at_all() {
-        for (level, effort) in IrReasoningLevel::VOCABULARY {
+        for (level, effort) in ReasoningLevel::VOCABULARY {
             let body = render_body(Some(level));
 
             assert_eq!(

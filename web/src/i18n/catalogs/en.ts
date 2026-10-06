@@ -90,7 +90,6 @@ const english = {
     },
     rich: {
         connected: "Connected to [[baseUrl]] — the token lives only in this browser.",
-        providerModel: "[[providerLink]] owns [[modelId]].",
         setupToken: "Its management token: [[setting]] in that instance’s configuration file.",
         setupCors:
             "Allow this app’s origin in that instance’s [[setting]] — unless this app is served from the gateway itself.",
@@ -150,6 +149,7 @@ const english = {
             enabled: "Enabled",
             replacingTheSecretRevokesTheOldValueOnMessage:
                 "Replacing the secret revokes the old value on save.",
+            aKeyNeedsASecret: "A key needs a secret.",
             deleteThisKey: "Delete this key",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "Deleting revokes the key at once. Clients holding it start getting 401s. Its model access rules are removed; historical accounting remains.",
@@ -157,6 +157,7 @@ const english = {
         apiKeyNewScreen: {
             createAPIKey: "Create API key",
             oneSecretYourServingClientsShareMessage: "One secret your serving clients share.",
+            apiKeysBackLabel: "API keys",
             key: "Key",
             theSecretHoldsLettersNumbersAndSymbolsOnlyMessage:
                 "The secret holds letters, numbers, and symbols only — no spaces — and is held by no other key.",
@@ -180,8 +181,11 @@ const english = {
             createAliases: "Create aliases",
             choosePhysicalModelsAndAuthorTheirPublicIDsMessage:
                 "Choose physical models and author their public IDs. Each selection creates one enabled direct route; name conflicts are reported without renaming or overwriting.",
+            inventoryBackLabel: "Inventory",
             noPhysicalModelsToAlias: "No physical models to alias",
             discoverOrAddInventoryFirstMessage: "Discover or add inventory first.",
+            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
+                "Another selected row uses this public ID. Choose distinct explicit names.",
             openRoute: "Open route",
             createSelectedAliases: "Create selected aliases",
         },
@@ -213,6 +217,14 @@ const english = {
                 "A provider is one upstream account. Its models arrive when you discover them.",
             createYourFirstProvider: "Create your first provider",
             connectedToTheGateway: "Connected to the gateway",
+            discoverModels: "Discover models",
+            createAPIKey: "Create API key",
+            openAndDiscover: "Open and discover",
+            reviewModels: "Review models",
+            credentialNotFresh: "Credential not fresh",
+            credentialExpired: "Credential expired",
+            reconnect: "Reconnect",
+            openProvider: "Open provider",
             createAProvider: "Create a provider",
             discoverItsModelsFromUpstream: "Discover its models from upstream",
             issueAnAPIKeyForServingClients: "Issue an API key for serving clients",
@@ -220,6 +232,8 @@ const english = {
         },
         modelDetailScreen: {
             model: "Model",
+            upstreamOnProvider: "{{upstreamId}} on {{provider}}.",
+            modelsBackLabel: "Models",
             capabilities: "Capabilities",
             whatTheModelListingsDeclareForThisModelMessage:
                 "What the model listings declare for this model. Nothing here gates a request — the upstream answers what it answers.",
@@ -229,6 +243,7 @@ const english = {
             compaction: "Compaction",
             theRowsOwnCompactionFactsTheOverrideElseMessage:
                 "The row's own compaction facts — the override, else the latest discovery. The definition's declaration decides whatever both leave unstated.",
+            noLevels: "No levels",
             addAlias: "Add alias",
             editModel: "Edit model",
             details: "Details",
@@ -257,6 +272,7 @@ const english = {
             createProvider: "Create provider",
             aModelAddedByHandIsNeverRemovedMessage:
                 "A model added by hand is never removed automatically — and it claims back what discovery lost.",
+            models: "Models",
             identity: "Identity",
             provider: "Provider",
             upstreamID: "Upstream ID",
@@ -291,6 +307,9 @@ const english = {
             noModelsYet: "No models yet",
             addAProviderFirstThenDiscoverItsModelsMessage:
                 "Add a provider first, then discover its models — or add one by hand.",
+            thisProviderHoldsNoModels: "This provider holds no models.",
+            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
+                "This provider is no longer listed — pick another in the Provider filter.",
             createProvider: "Create provider",
             searchModels: "Search models",
             searchByUpstreamIDOrProviderName: "Search by upstream ID or provider name",
@@ -323,6 +342,8 @@ const english = {
             theVerificationURL: "the verification URL",
             approveTheCodeAtTheVerificationPageThisMessage:
                 "Approve the code at the verification page; this page keeps asking the gateway for the outcome and moves on as soon as the flow completes.",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "Stay on this page until the flow completes — navigating within the console discards the flow.",
         },
         poolAvailabilityCard: {
             refreshQuota: "Refresh quota",
@@ -358,12 +379,15 @@ const english = {
             credentials: "Credentials",
             oauthCredentialsExpireReconnectingReplacesThemMessage:
                 "OAuth credentials expire — reconnecting replaces them.",
+            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
+                "This provider's definition evaluates requests against a base URL — restore one, or Revert.",
             deleteThisProvider: "Delete this provider",
         },
         providerNewScreen: {
             createProvider: "Create provider",
             oneUpstreamAccountPickThePresetTheCredentialMessage:
                 "One upstream account. Pick the preset — the credential path follows.",
+            providersBackLabel: "Providers",
             readAgain: "Read again",
             preset: "Preset",
             switchPreset: "Switch preset",
@@ -373,6 +397,8 @@ const english = {
             theKeyIsWriteonlyTheGatewayNeverReturnsMessage:
                 "The key is write-only — the gateway never returns it.",
             connectTheAccount: "Connect the account",
+            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
+                "Locked while the authorization is live — the provider is created from what the flow's start already sent.",
             approveAccessWhereTheFlowPointsThenLetMessage:
                 "Approve access where the flow points, then let it complete. This app never stores the credentials.",
             upstreamBaseURL: "Upstream base URL",
@@ -426,6 +452,7 @@ const english = {
             readingUpstreamQuota: "Reading upstream quota…",
             showingThePreviousReadingMessage: "Showing the previous reading.",
             observed: "Observed",
+            resetTimeReachedRefreshToUpdate: "Reset time reached; refresh to update",
             theUpstreamReturnedNoQuotaEntriesMessage: "The upstream returned no quota entries.",
         },
         providersScreen: {
@@ -449,6 +476,7 @@ const english = {
             noPoolsYet: "No pools yet",
             createANamedPoolWithAModelPrefixMessage:
                 "Create a named pool with a model prefix. Member models are exposed automatically.",
+            noModelPrefix: "none",
             publicRoutes: "Public routes",
             modelNamesClientsRequestStandaloneProvidersAndPoolsMessage:
                 "Model names clients request. Standalone providers and pools expose model names automatically. Additional aliases are optional.",
@@ -456,6 +484,7 @@ const english = {
             noPublicRoutesYet: "No public routes yet",
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "Publish a physical model directly or target a pool and exact upstream ID.",
+            automaticPrefix: "Automatic · ",
         },
         screenFrame: {
             readAgain: "Read again",
@@ -479,6 +508,10 @@ const english = {
             exclusiveInThisBrowsersZoneLike20260923T1000BlankMessage:
                 "Exclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound.",
             clearFilters: "Clear filters",
+            usageBackLabel: "Usage",
+            theQueryDidNotRunAFilterValueIsInvalid:
+                "The query did not run — a filter value is invalid.",
+            total: "Total",
             nothingRecordedInThisWindowMessage: "Nothing recorded in this window.",
             noRowsInThisWindowMessage: "No rows in this window.",
             bucket: "Bucket",
@@ -506,6 +539,9 @@ const english = {
             oneRowAppearsPerDispatchedServingRequestTheMessage:
                 "One row appears per dispatched serving request — the moment the gateway sends upstream. If traffic flows and nothing appears, check the api_logs section in the gateway's configuration file.",
             noRecordedRequestsMatchThisFilterMessage: "No recorded requests match this filter.",
+            filtersStayBehind: " — the window and every other filter stay behind.",
+            streamMark: " · Stream",
+            thisRowIsNoLongerListed: "This row is no longer listed.",
         },
         usageStats: {
             usage: "Usage",
@@ -529,7 +565,6 @@ const english = {
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage:
                 "The upstream no longer reports this model.",
-            itServesNothingMeanwhileMessage: "It serves nothing meanwhile.",
         },
     },
     diagnosis: {
@@ -878,8 +913,6 @@ const english = {
     },
     operationNotices: {
         flowFailed: "The flow failed.",
-        flowGone:
-            "This authorization flow is no longer completable — its state expired or was already used.",
         freshFlow: "Start a fresh flow and authorize it promptly.",
         flowExpired: "The flow expired.",
         flowExpiryPassed: "The flow's expiry passed while this page waited for the outcome.",
@@ -887,9 +920,6 @@ const english = {
         pollFailed: "The last outcome poll failed.",
         invalidDefinition: "The definition JSON is not a definition the gateway could store.",
         fixDefinition: "Fix the JSON and submit again; nothing was written.",
-        invalidFilter: "The query did not run — a filter value is invalid.",
-        previousQuery:
-            "The answer below is still the previous query's — the field showing an inline error names the problem.",
         fixFilter: "Fix that field, then run the query again.",
         discoveryPending: "Discovering models from [[providerName]]…",
         discoveryQuery: "Asking the upstream what it reports right now.",
@@ -929,12 +959,6 @@ const english = {
             baseURLMustBeAnHttpOrHttpsAddressWithNoSpaces:
                 "Base URL must be an http:// or https:// address with no spaces.",
         },
-        presetQuotas: {
-            primaryWindow: "Primary window",
-            secondaryWindow: "Secondary window",
-            allowance: "Allowance",
-            modelAllowance: "Model allowance",
-        },
         presets: {
             anyEndpointSpeakingTheOpenAIResponsesProtocolWithAStaticKey:
                 "Any endpoint speaking the OpenAI Responses protocol with a static key.",
@@ -971,55 +995,11 @@ const english = {
             zenOverTheGeminiGenerateContentProtocolWithAStaticKey:
                 "Zen over the Gemini GenerateContent protocol with a static key.",
         },
-        apiKeyEditScreen: {
-            aKeyNeedsASecret: "A key needs a secret.",
-        },
-        bulkPublicationScreen: {
-            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
-                "Another selected row uses this public ID. Choose distinct explicit names.",
-        },
-        homeScreen: {
-            discoverModels: "Discover models",
-            createAPIKey: "Create API key",
-            openAndDiscover: "Open and discover",
-            reviewModels: "Review models",
-            credentialNotFresh: "Credential not fresh",
-            credentialExpired: "Credential expired",
-            reconnect: "Reconnect",
-            openProvider: "Open provider",
-        },
-        modelDetailScreen: {
-            noLevels: "No levels",
-        },
-        modelNewScreen: {
-            models: "Models",
-            provider: "Provider",
-        },
-        modelsScreen: {
-            thisProviderHoldsNoModels: "This provider holds no models.",
-            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
-                "This provider is no longer listed — pick another in the Provider filter.",
-        },
-        oauthFlowView: {
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "Stay on this page until the flow completes — navigating within the console discards the flow.",
-        },
         oauthFlow: {
             thatPasteHoldsNeitherABareCodeNorAURLWithACodeCopy:
                 "That paste holds neither a bare code nor a URL with a code — copy the whole address the login landed on, or just its code, and paste it here.",
             theFlowStaysLiveThisPageKeepsAskingForTheOutcome:
                 "The flow stays live; this page keeps asking for the outcome.",
-        },
-        providerEditScreen: {
-            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
-                "This provider's definition evaluates requests against a base URL — restore one, or Revert.",
-        },
-        providerNewScreen: {
-            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
-                "Locked while the authorization is live — the provider is created from what the flow's start already sent.",
-        },
-        providerQuotaCard: {
-            resetTimeReachedRefreshToUpdate: "Reset time reached; refresh to update",
         },
         rowNotFound: {
             theGatewayHoldsNoPoolHereItWasDeletedOrTheAddressWasTyped:
@@ -1036,14 +1016,6 @@ const english = {
         usageLabels: {
             streamed: "Streamed",
             nonstreamed: "Non-streamed",
-        },
-        usageQueryScreen: {
-            theQueryDidNotRunAFilterValueIsInvalid:
-                "The query did not run — a filter value is invalid.",
-            total: "Total",
-        },
-        usageScreen: {
-            thisRowIsNoLongerListed: "This row is no longer listed.",
         },
         apiKeyAccess: {
             inherit: "Inherit",
@@ -1088,6 +1060,8 @@ const english = {
             last24Hours: "Last 24 hours",
             last7Days: "Last 7 days",
             last30Days: "Last 30 days",
+            invalidStatusList:
+                "HTTP statuses must be plain integers, comma-separated — like 200, 429 — or blank for no status filter.",
         },
     },
     validation: {
@@ -1172,8 +1146,6 @@ const english = {
         enabledStored: "enabled of {{total}} stored",
         readyListed: "ready of {{total}} listed",
         copyEndpoint: "Copy the {{surface}} endpoint URL",
-        noModels: " has no models yet.",
-        noReadyModels: " has no ready inventory — every model is switched off or vanished.",
         disabledCredential:
             "{{expiry}} The provider is disabled — reconnect when you re-enable it.",
         noKeysDetail:

@@ -167,7 +167,7 @@ fn map_pools_and_root_metadata_are_atomic() {
 fn absence_and_shape_are_distinct() {
     let mut descriptor = descriptor();
     if let crate::provider::definition::quota::QuotaSource::Map { is_required, .. } =
-        descriptor.sources.first_mut().unwrap()
+        descriptor.sources.first_mut()
     {
         *is_required = false;
     }
@@ -191,7 +191,7 @@ fn absence_and_shape_are_distinct() {
         assert!(extract(&body, &descriptor).is_err(), "{body}");
     }
     if let crate::provider::definition::quota::QuotaSource::Map { at, .. } =
-        descriptor.sources.first_mut().unwrap()
+        descriptor.sources.first_mut()
     {
         at.0 = vec!["nested".into(), "pools".into()];
     }
@@ -254,7 +254,7 @@ fn customized(measurement: Value, reset: Value, window: Value) -> QuotaDescripto
     serde_json::from_value(json!({
         "request":{"method":"GET","url":[{"type":"literal","value":"https://example.test"}]},
         "sources":[{"type":"object","key":"account","at":[],"is_required":true,
-            "scope":{"type":"unknown"},"entries":[entry]}]
+            "entries":[entry]}]
     }))
     .unwrap()
 }
@@ -559,8 +559,14 @@ fn definition_validation_covers_contexts_and_all_request_leaves() {
         assert!(payload.validate().is_err());
     }
     // Array identity must be stable item data; neither constants nor other contexts suffice.
+    let identity_document = |identity: Value| {
+        json!({
+            "request":{"method":"GET","url":[{"type":"literal","value":"https://example.test"}]},
+            "sources":[{"type":"array","key":"array","at":[],"is_required":true,
+                "identity":identity,"entries":[entry()]}]
+        })
+    };
     for identity in [
-        json!([]),
         json!([{"type":"literal","value":"constant"}]),
         json!([{"type":"map_key"}]),
         json!([{"type":"field","field":{"base":"root","path":["id"],"is_required":true},
@@ -570,33 +576,26 @@ fn definition_validation_covers_contexts_and_all_request_leaves() {
         json!([{"type":"field","field":{"base":"entry","path":["id"],"is_required":true},
                 "encoding":"string"}]),
     ] {
-        payload.quota = Some(serde_json::from_value(json!({
-            "request":{"method":"GET","url":[{"type":"literal","value":"https://example.test"}]},
-            "sources":[{"type":"array","key":"array","at":[],"is_required":true,
-                "identity":identity,"scope":{"type":"unknown"},"entries":[entry()]}]
-        })).unwrap());
+        payload.quota = Some(serde_json::from_value(identity_document(identity)).unwrap());
         assert!(payload.validate().is_err());
     }
+    // An empty identity list is unrepresentable: the carrying Vec1 rejects it at parse.
+    assert!(serde_json::from_value::<QuotaDescriptor>(identity_document(json!([]))).is_err());
     let mut duplicate = descriptor();
-    duplicate
-        .sources
-        .push(duplicate.sources.first().unwrap().clone());
+    duplicate.sources.push(duplicate.sources.first().clone());
     payload.quota = Some(duplicate);
     assert!(payload.validate().is_err());
     let mut duplicate = descriptor();
     if let crate::provider::definition::quota::QuotaSource::Map { entries, .. } =
-        duplicate.sources.first_mut().unwrap()
+        duplicate.sources.first_mut()
     {
-        entries.push(entries.first().unwrap().clone());
+        entries.push(entries.first().clone());
     }
     payload.quota = Some(duplicate);
     assert!(payload.validate().is_err());
     let original = serde_json::to_value(descriptor()).unwrap();
-    for path in [
-        vec!["sources"],
-        vec!["sources", "0", "entries"],
-        vec!["sources", "0", "key"],
-    ] {
+    // Empty collections are unrepresentable: the carrying Vec1 types reject them at parse.
+    for path in [vec!["sources"], vec!["sources", "0", "entries"]] {
         // Walk fixture objects/arrays explicitly; production uses only concrete descriptor types.
         let mut value = original.clone();
         let mut current = &mut value;
@@ -607,15 +606,24 @@ fn definition_validation_covers_contexts_and_all_request_leaves() {
                 current.get_mut(*part).unwrap()
             };
         }
-        let leaf = path.last().unwrap();
-        let replacement = if *leaf == "key" { json!("") } else { json!([]) };
         current
             .as_object_mut()
             .unwrap()
-            .insert((*leaf).into(), replacement);
-        payload.quota = Some(serde_json::from_value(value).unwrap());
-        assert!(payload.validate().is_err());
+            .insert(path.last().unwrap().to_string(), json!([]));
+        assert!(serde_json::from_value::<QuotaDescriptor>(value).is_err());
     }
+    // The empty key text stays the write boundary's rejection.
+    let mut value = original.clone();
+    let source = value
+        .get_mut("sources")
+        .unwrap()
+        .get_mut(0)
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    source.insert("key".into(), json!(""));
+    payload.quota = Some(serde_json::from_value(value).unwrap());
+    assert!(payload.validate().is_err());
     let mut value = original.clone();
     value
         .as_object_mut()
@@ -661,25 +669,22 @@ struct PresetFixture {
 #[test]
 fn researched_preset_shapes_normalize_without_product_branches() {
     for (name, fixture) in [
-        (
-            "codex",
-            include_str!("../../../web/src/quota-fixtures/codex.json"),
-        ),
+        ("codex", include_str!("../../../fixtures/quota/codex.json")),
         (
             "claude-code",
-            include_str!("../../../web/src/quota-fixtures/claude-code.json"),
+            include_str!("../../../fixtures/quota/claude-code.json"),
         ),
         (
             "kimi-code",
-            include_str!("../../../web/src/quota-fixtures/kimi-code.json"),
+            include_str!("../../../fixtures/quota/kimi-code.json"),
         ),
         (
             "github-copilot",
-            include_str!("../../../web/src/quota-fixtures/github-copilot.json"),
+            include_str!("../../../fixtures/quota/github-copilot.json"),
         ),
         (
             "antigravity",
-            include_str!("../../../web/src/quota-fixtures/antigravity.json"),
+            include_str!("../../../fixtures/quota/antigravity.json"),
         ),
     ] {
         let fixture: PresetFixture = serde_json::from_str(fixture).unwrap();
@@ -770,12 +775,7 @@ fn routing_selector_validation_rejects_unresolved_authored_contracts() {
     let payload = crate::test_support::static_key_definition_payload(
         crate::format::UpstreamFormat::OpenAiResponse,
     );
-    for selectors in [
-        json!([]),
-        json!([{"type":"literal","value":"M/N"}]),
-        json!([{"type":"field","field":{"base":"entry","path":["id"],"is_required":false},
-                "encoding":"string"}]),
-    ] {
+    let routing_document = |selectors: Value| {
         let mut descriptor = serde_json::to_value(descriptor()).unwrap();
         descriptor
             .pointer_mut("/sources/0/entries/0")
@@ -786,13 +786,27 @@ fn routing_selector_validation_rejects_unresolved_authored_contracts() {
                 "routing".into(),
                 json!({"type":"models","upstream_ids":selectors}),
             );
+        descriptor
+    };
+    for selectors in [
+        json!([{"type":"literal","value":"M/N"}]),
+        json!([{"type":"field","field":{"base":"entry","path":["id"],"is_required":false},
+                "encoding":"string"}]),
+    ] {
         let mut payload = payload.clone();
-        payload.quota = Some(serde_json::from_value(descriptor).unwrap());
+        payload.quota = Some(serde_json::from_value(routing_document(selectors)).unwrap());
         assert!(payload.validate().is_err());
     }
+    // An empty selector set is unrepresentable: the carrying Vec1 rejects it at parse.
+    assert!(serde_json::from_value::<QuotaDescriptor>(routing_document(json!([]))).is_err());
     let mut descriptor = serde_json::to_value(descriptor()).unwrap();
     *descriptor.pointer_mut("/sources/0/type").unwrap() = json!("object");
-    *descriptor.pointer_mut("/sources/0/scope").unwrap() = json!({"type":"unknown"});
+    descriptor
+        .pointer_mut("/sources/0")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("scope");
     descriptor
         .pointer_mut("/sources/0/entries/0")
         .unwrap()

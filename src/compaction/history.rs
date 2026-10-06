@@ -1,9 +1,9 @@
-//! History materialization (README §6.8): the preparation pass that
-//! verifies gateway carriers and reconstructs the active window before every
-//! normal inference and re-compaction, the gateway checkpoint planner, and the
-//! sealing of gateway envelopes into carriers.
+//! History materialization (README §6.8): the restoration of the authenticated
+//! active window before every normal inference and re-compaction, the gateway
+//! checkpoint planner, and the sealing of gateway envelopes into carriers.
 //!
-//! Preparation applies boundary semantics before role normalization: the
+//! The boundary semantics are authenticated before account selection in
+//! [`crate::compaction_model::boundary`]; this module materializes them: the
 //! latest authenticated usable checkpoint supersedes the covered history —
 //! conversational entries wholesale, instruction entries by proven identity
 //! overlap — while an unmatched current instruction survives. A null/no-op
@@ -11,23 +11,24 @@
 //! is decoded and verified or fails the request explicitly; a damaged marker is
 //! never forwarded upstream as native state and never summarized.
 
-use super::{
-    envelope::{
-        EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, NativeReplayWindow,
-        NativeWindowPayload, PrefixIdentity, ReplacementMode, summary_message,
-    },
-    error::CompactionError,
-    identity::{InstructionRole, ItemIdentity},
-    sealing,
-};
+use super::error::CompactionError;
 use crate::{
-    format::{CompactionBoundary, NativeArtifact, ParsedCompaction, UpstreamFormat},
+    compaction_model::{
+        boundary::{ActiveBoundary, BoundaryPreparation},
+        envelope::{
+            EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, NativeReplayWindow,
+            NativeWindowPayload, PrefixIdentity, PreservedInstruction, ReplacementMode,
+            RetainedUnit, summary_message,
+        },
+        identity::{InstructionRole, ItemIdentity, hex_sha256},
+        sealing,
+    },
+    format::{NativeArtifact, ParsedCompaction, UpstreamFormat},
     ids,
     ir::{IrMessage, IrRequest, IrRole, StateItem},
 };
 use serde::Deserialize as _;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 /// The restored active boundary of a prepared request: the checkpoint the
 /// window was reconstructed from, when one stands.
@@ -48,312 +49,88 @@ pub(crate) enum RestoredBoundary {
     Native(NativeArtifact),
 }
 
-/// Renders a SHA-256 digest as lowercase hex — the binding and identity digest
-/// form every carrier comparison uses.
-#[must_use]
-pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
-    let mut rendered = String::with_capacity(64);
+/// The gateway budgets of one routed request (README §5, §6.8): the
+/// definition's stated budgets, or the shipped defaults when the definition
+/// carries no compaction section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Budgets {
+    /// The summary output budget in tokens.
+    pub(crate) summary: u64,
 
-    for byte in Sha256::digest(bytes) {
-        rendered.push_str(&format!("{byte:02x}"));
-    }
-
-    rendered
+    /// The retained-input soft target in tokens.
+    pub(crate) retention: u64,
 }
 
-/// Whether a history boundary is the native null/no-op block: it retains its
-/// documented no-op meaning and does not establish a new boundary.
-const fn is_null_no_op(boundary: &CompactionBoundary) -> bool {
-    matches!(
-        boundary,
-        CompactionBoundary::Native {
-            artifact: NativeArtifact::MessagesCompactionBlock {
-                is_null_no_op: true,
-                ..
-            },
-            ..
-        }
-    )
-}
+/// The instruction items a checkpoint plan covers (README §6.8).
+pub(crate) enum CheckpointInstructions<'a> {
+    /// The request's parsed instruction items. The client codecs join exactly
+    /// these items into the request's instructions string, so the fresh
+    /// occurrence-indexed identities computed over them are the identities a
+    /// later replay computes over its own prefix.
+    Parsed(&'a [crate::format::ParsedInstructionItem]),
 
-/// Target-independent authentication and latest usable boundary selection for one request.
-/// It performs no account lookup, upstream I/O, or history materialization.
-#[derive(Default)]
-pub(crate) struct BoundaryPreparation {
-    /// Latest authenticated non-no-op boundary; superseded decoded content is discarded.
-    active: Option<PreparedBoundary>,
-    /// Original boundary position, distinguishing multiple artifacts at one message offset.
-    active_index: Option<usize>,
-}
-
-/// Content-free client-visible routing evidence prepared before account selection.
-pub(crate) struct RoutingPreparation {
-    /// Accepted active history, retaining its open tail for actual outward rendering.
-    pub(crate) projector: crate::affinity::fingerprint::Projector,
-    /// Latest authenticated carrier identity or exact canonical raw artifact identity.
-    pub(crate) artifact: Option<crate::affinity::Digest>,
-}
-
-/// State discriminator used only to pair parsed boundary facts with their original state slots.
-#[derive(serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum StateDiscriminator {
-    /// Gateway or native compaction artifact.
-    Compaction,
-    /// Other opaque state, such as replayable encrypted reasoning.
-    #[serde(other)]
-    Other,
-}
-
-/// One validated active boundary, retaining only what subsequent restoration needs.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "one transient boundary is held per request; boxing adds a carrier allocation"
-)]
-enum PreparedBoundary {
-    /// Authenticated gateway checkpoint at its original conversation offset.
-    Gateway {
-        /// Number of accepted conversation messages before this carrier.
-        offset: usize,
-        /// Already authenticated envelope, never unsealed again during this request.
-        envelope: EnvelopeV1,
-    },
-    /// Raw producer-native state whose compatibility remains target-dependent.
-    Native {
-        /// Original conversation offset.
-        offset: usize,
-        /// Parsed native placement and no-op facts.
-        artifact: NativeArtifact,
-    },
-}
-
-impl BoundaryPreparation {
-    /// Projects the validated client-visible active replay window without restoring hidden text.
-    /// The latest carrier supersedes covered messages/state; no-op blocks establish no history
-    /// unit or artifact hint. Original source records remain aligned with uncovered tool parts.
-    ///
-    /// # Errors
-    ///
-    /// Returns invalid gateway state if an active boundary sits beyond the accepted history.
-    ///
-    /// # Panics
-    ///
-    /// Panics if parser state slots disagree with their recorded boundary facts.
-    pub(crate) fn routing_preparation(
-        &self,
-        parsed: &crate::format::ParsedRequest,
-    ) -> Result<RoutingPreparation, CompactionError> {
-        let mut projector = crate::affinity::fingerprint::Projector::new();
-        let compaction = parsed.compaction.as_ref();
-        let slots: Vec<_> = parsed
-            .ir
-            .state_items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, state)| {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "accepted codec state has a typed discriminator"
-                )]
-                let discriminator: StateDiscriminator =
-                    StateDiscriminator::deserialize(&state.item)
-                        .expect("accepted state has a type");
-                matches!(discriminator, StateDiscriminator::Compaction).then_some(index)
-            })
-            .collect();
-        let first_message = match self.active.as_ref() {
-            Some(
-                PreparedBoundary::Gateway { offset, .. } | PreparedBoundary::Native { offset, .. },
-            ) => *offset,
-            None => 0,
-        };
-        if first_message > parsed.ir.messages.len() {
-            return Err(CompactionError::invalid_gateway_state(
-                "the active checkpoint's boundary sits beyond the request's history",
-            ));
-        }
-        let active_slot = self.active_index.map(|index| {
-            #[expect(
-                clippy::expect_used,
-                reason = "the parser records each compaction state slot"
-            )]
-            *slots
-                .get(index)
-                .expect("the active boundary has a state slot")
-        });
-        let artifact = match self.active.as_ref() {
-            Some(PreparedBoundary::Gateway { envelope, .. }) => {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "an active gateway boundary was authenticated from this request"
-                )]
-                let boundary = compaction
-                    .and_then(|parsed| {
-                        self.active_index
-                            .and_then(|index| parsed.boundaries.get(index))
-                    })
-                    .expect("the authenticated gateway boundary exists");
-                #[expect(
-                    clippy::unreachable,
-                    reason = "the retained preparation matches its original boundary"
-                )]
-                let CompactionBoundary::Gateway { carrier, .. } = boundary else {
-                    unreachable!("the active gateway preparation has a gateway carrier");
-                };
-                let family = match parsed.affinity.client_format() {
-                    UpstreamFormat::AnthropicMessages => {
-                        crate::affinity::fingerprint::StateFamily::Messages
-                    }
-                    UpstreamFormat::OpenAiResponse => {
-                        crate::affinity::fingerprint::StateFamily::Responses
-                    }
-                    #[expect(
-                        clippy::unreachable,
-                        reason = "only Responses and Messages parse gateway carriers"
-                    )]
-                    _ => unreachable!("gateway carriers belong to a state-bearing client codec"),
-                };
-                projector.gateway_state(family, carrier);
-                Some(projector.gateway_artifact(&envelope.artifact_id))
-            }
-            Some(PreparedBoundary::Native { .. }) => {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "the active native boundary has a recorded state slot"
-                )]
-                let state = active_slot
-                    .and_then(|index| parsed.ir.state_items.get(index))
-                    .expect("native state exists");
-                Some(projector.native_artifact(&state.item))
-            }
-            None => None,
-        };
-        let states = parsed
-            .ir
-            .state_items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, state)| {
-                if active_slot.is_some_and(|active| index < active) || state.is_gateway {
-                    return None;
-                }
-                if let Ok(boundary_index) = slots.binary_search(&index)
-                    && compaction
-                        .and_then(|parsed| parsed.boundaries.get(boundary_index))
-                        .is_some_and(is_null_no_op)
-                {
-                    return None;
-                }
-                Some(state)
-            });
-        parsed
-            .affinity
-            .append_window(&parsed.ir.messages, states, first_message, &mut projector);
-        Ok(RoutingPreparation {
-            projector,
-            artifact,
-        })
-    }
-
-    /// Returns the authenticated producer requirement of the latest active native window.
-    /// Portable summaries and unverified raw native artifacts impose no authenticated account.
-    pub(crate) fn native_requirement(&self) -> Option<&NativeWindowPayload> {
-        match self.active.as_ref()? {
-            PreparedBoundary::Gateway { envelope, .. } => match &envelope.payload {
-                EnvelopePayload::NativeWindow(payload) => Some(payload),
-                EnvelopePayload::GatewaySummary(_) => None,
-            },
-            PreparedBoundary::Native { .. } => None,
-        }
-    }
-
-    /// Authenticates every recognizable carrier in history order before choosing a target.
-    /// A later usable checkpoint supersedes older state; native null blocks create no boundary.
-    /// Messages visible content must exactly match its authenticated envelope binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns a carrier authentication, unknown-key, or visible-content binding failure even
-    /// when a later checkpoint would supersede the damaged carrier.
-    pub(crate) fn authenticate(parsed: &ParsedCompaction) -> Result<Self, CompactionError> {
-        let mut preparation = Self::default();
-        for (index, boundary) in parsed.boundaries.iter().enumerate() {
-            match boundary {
-                CompactionBoundary::Gateway {
-                    offset,
-                    carrier,
-                    visible_content,
-                } => {
-                    let binding = visible_content
-                        .as_deref()
-                        .map(|content| hex_sha256(content.as_bytes()));
-                    let envelope = sealing::unseal_with_live_config(
-                        carrier,
-                        binding.as_deref().map(str::as_bytes),
-                    )?;
-                    match (&envelope.visible_content_digest, &binding) {
-                        (Some(envelope_digest), Some(carrier_digest))
-                            if envelope_digest == carrier_digest => {}
-                        (None, None) => {}
-                        _ => {
-                            return Err(CompactionError::invalid_gateway_state(
-                                "the gateway carrier's visible content does not match its binding",
-                            ));
-                        }
-                    }
-                    preparation.active_index = Some(index);
-                    preparation.active = Some(PreparedBoundary::Gateway {
-                        offset: *offset,
-                        envelope,
-                    });
-                }
-                CompactionBoundary::Native { offset, artifact } if !is_null_no_op(boundary) => {
-                    preparation.active_index = Some(index);
-                    preparation.active = Some(PreparedBoundary::Native {
-                        offset: *offset,
-                        artifact: *artifact,
-                    });
-                }
-                CompactionBoundary::Native { .. } => {}
-            }
-        }
-        Ok(preparation)
-    }
+    /// Per-item continuity handed forward by a restored gateway summary: the
+    /// payload's preserved items under their sealed identities, then the
+    /// unmatched current items under their replay identities. A re-compaction
+    /// over such a window plans with these, so the new checkpoint's coverage
+    /// identities stay matchable by later replays; planning from the request's
+    /// parsed items instead would seal one joined identity that can never
+    /// overlap-match and would duplicate the instruction context.
+    Restored(Vec<(ItemIdentity, InstructionRole, String)>),
 }
 
 /// Materializes the already authenticated active boundary using the existing replacement rules.
 /// Superseded gateway carriers are removed without exporting their hidden content.
 ///
+/// Returns the restored boundary and the instruction items a checkpoint plan
+/// covers: a restored gateway summary hands forward its per-item continuity,
+/// every other shape keeps the request's parsed items authoritative.
+///
 /// # Errors
 ///
 /// Returns an invalid replacement boundary or target-incompatible native-window failure.
-fn restore(
+fn restore<'a>(
     ir: &mut IrRequest,
-    parsed: &ParsedCompaction,
+    parsed: &'a ParsedCompaction,
     preparation: &BoundaryPreparation,
     target_format: UpstreamFormat,
-) -> Result<Option<RestoredBoundary>, CompactionError> {
-    let Some(active) = &preparation.active else {
+) -> Result<(Option<RestoredBoundary>, CheckpointInstructions<'a>), CompactionError> {
+    let Some(active) = preparation.active() else {
         remove_gateway_state_items(ir);
-        return Ok(None);
+        return Ok((
+            None,
+            CheckpointInstructions::Parsed(&parsed.instruction_items),
+        ));
     };
     match active {
-        PreparedBoundary::Gateway { offset, envelope } => {
+        ActiveBoundary::Gateway { offset, envelope } => {
             match &envelope.payload {
                 EnvelopePayload::GatewaySummary(payload) => {
-                    restore_gateway_summary(ir, parsed, *offset, payload)?;
+                    let instructions = restore_gateway_summary(ir, parsed, offset, payload)?;
+                    return Ok((
+                        Some(RestoredBoundary::Gateway {
+                            envelope: envelope.clone(),
+                        }),
+                        CheckpointInstructions::Restored(instructions),
+                    ));
                 }
                 EnvelopePayload::NativeWindow(payload) => {
-                    restore_native_window(ir, *offset, payload, target_format)?;
+                    restore_native_window(ir, offset, payload, target_format)?;
                 }
             }
-            Ok(Some(RestoredBoundary::Gateway {
-                envelope: envelope.clone(),
-            }))
+            Ok((
+                Some(RestoredBoundary::Gateway {
+                    envelope: envelope.clone(),
+                }),
+                CheckpointInstructions::Parsed(&parsed.instruction_items),
+            ))
         }
-        PreparedBoundary::Native { artifact, .. } => {
+        ActiveBoundary::Native { artifact, .. } => {
             remove_gateway_state_items(ir);
-            Ok(Some(RestoredBoundary::Native(*artifact)))
+            Ok((
+                Some(RestoredBoundary::Native(artifact)),
+                CheckpointInstructions::Parsed(&parsed.instruction_items),
+            ))
         }
     }
 }
@@ -364,11 +141,11 @@ fn restore(
 ///
 /// Returns a carrier, boundary, or native-format compatibility failure.
 #[cfg(test)]
-pub(crate) fn prepare(
+pub(crate) fn prepare<'a>(
     ir: &mut IrRequest,
-    parsed: &ParsedCompaction,
+    parsed: &'a ParsedCompaction,
     target_format: UpstreamFormat,
-) -> Result<Option<RestoredBoundary>, CompactionError> {
+) -> Result<(Option<RestoredBoundary>, CheckpointInstructions<'a>), CompactionError> {
     let preparation = BoundaryPreparation::authenticate(parsed)?;
     restore(ir, parsed, &preparation, target_format)
 }
@@ -376,15 +153,18 @@ pub(crate) fn prepare(
 /// Prepares authenticated state against the selected producer, permitting only explicit
 /// readable-summary export. `preparation` must belong to this same parsed request.
 ///
+/// Returns the restored boundary and the instruction items a checkpoint plan
+/// covers, as [`restore`] documents.
+///
 /// # Errors
 ///
 /// Returns a producer, model, format, retained-state, or replacement-boundary incompatibility.
-pub(crate) fn prepare_for_target(
+pub(crate) fn prepare_for_target<'a>(
     ir: &mut IrRequest,
-    parsed: &ParsedCompaction,
+    parsed: &'a ParsedCompaction,
     routing: &crate::provider::ModelRouting,
     preparation: &BoundaryPreparation,
-) -> Result<Option<RestoredBoundary>, CompactionError> {
+) -> Result<(Option<RestoredBoundary>, CheckpointInstructions<'a>), CompactionError> {
     let target_format = routing.provider.definition.payload.format;
     let can_export = routing
         .provider
@@ -394,10 +174,10 @@ pub(crate) fn prepare_for_target(
         .as_ref()
         .is_some_and(|section| section.can_export_native_summary);
     let mut exported_retained = Vec::new();
-    if let Some(active) = &preparation.active {
+    if let Some(active) = preparation.active() {
         let mut exported = None;
         match active {
-            PreparedBoundary::Gateway { envelope, .. } => {
+            ActiveBoundary::Gateway { envelope, .. } => {
                 if let EnvelopePayload::NativeWindow(payload) = &envelope.payload {
                     let is_compatible = payload.producer_instance_id
                         == format!("provider:{}", routing.provider.id)
@@ -420,22 +200,23 @@ pub(crate) fn prepare_for_target(
                     }
                 }
             }
-            PreparedBoundary::Native {
+            ActiveBoundary::Native {
                 offset,
                 artifact: NativeArtifact::MessagesCompactionBlock { .. },
             } if target_format != UpstreamFormat::AnthropicMessages && can_export => {
                 exported = ir
                     .state_items
                     .iter()
-                    .find(|item| item.offset == *offset && !item.is_gateway)
+                    .find(|item| item.offset == offset && !item.is_gateway)
                     .and_then(|item| readable_native_summary(&item.item));
             }
             _ => {}
         }
         if let Some(summary) = exported {
             let offset = match active {
-                PreparedBoundary::Gateway { offset, .. }
-                | PreparedBoundary::Native { offset, .. } => *offset,
+                ActiveBoundary::Gateway { offset, .. } | ActiveBoundary::Native { offset, .. } => {
+                    offset
+                }
             };
             if ir.messages.iter().skip(offset).any(|message| {
                 message
@@ -471,7 +252,10 @@ pub(crate) fn prepare_for_target(
             ir.messages.extend(exported_retained);
             ir.messages.extend(fresh);
             ir.state_items.clear();
-            return Ok(None);
+            return Ok((
+                None,
+                CheckpointInstructions::Parsed(&parsed.instruction_items),
+            ));
         }
     }
     restore(ir, parsed, preparation, target_format)
@@ -506,12 +290,18 @@ fn remove_gateway_state_items(ir: &mut IrRequest) {
 /// prefix, drops the covered instruction items by proven identity overlap,
 /// rebuilds the instruction context, and restores the summary and the retained
 /// units once ahead of the fresh suffix.
+///
+/// Returns the restored window's instruction items with their identities — the
+/// payload's preserved items under their sealed identities, then the unmatched
+/// current items under their replay identities — so a re-compaction plan over
+/// this window keeps identity continuity instead of collapsing the
+/// instructions into one joined identity no replay could match.
 fn restore_gateway_summary(
     ir: &mut IrRequest,
     parsed: &ParsedCompaction,
     offset: usize,
     payload: &GatewaySummaryPayload,
-) -> Result<(), CompactionError> {
+) -> Result<Vec<(ItemIdentity, InstructionRole, String)>, CompactionError> {
     if offset > ir.messages.len() {
         return Err(CompactionError::invalid_gateway_state(
             "the gateway checkpoint's boundary sits beyond the request's history",
@@ -523,33 +313,44 @@ fn restore_gateway_summary(
     // The identity pass: a current instruction item proven to overlap the
     // checkpoint's covered identities is superseded; an unmatched one — a new
     // developer instruction, for instance — is preserved.
-    let mut preserved_current: Vec<&crate::format::ParsedInstructionItem> = Vec::new();
-
-    let mut occurrences: Vec<(InstructionRole, usize)> = Vec::new();
-
-    for item in &parsed.instruction_items {
-        let occurrence = occurrences
+    let identities = ItemIdentity::for_instruction_window(
+        parsed
+            .instruction_items
             .iter()
-            .find(|(role, _)| *role == item.role)
-            .map(|(_, count)| *count)
-            .unwrap_or(0);
+            .map(|item| (item.role, item.text.as_str())),
+    );
 
-        if let Some((_, count)) = occurrences.iter_mut().find(|(role, _)| *role == item.role) {
-            *count += 1;
-        } else {
-            occurrences.push((item.role, 1));
-        }
+    let preserved_current: Vec<(&crate::format::ParsedInstructionItem, ItemIdentity)> = parsed
+        .instruction_items
+        .iter()
+        .zip(identities)
+        .filter(|(_item, identity)| {
+            !payload
+                .overlap_identities
+                .iter()
+                .any(|covered| covered.matches(identity))
+        })
+        .collect();
 
-        let identity = ItemIdentity::for_instruction(item.role, occurrence, &item.text, None);
+    // The restored window's instruction items: the payload's preserved items
+    // ride their sealed identities first, then the preserved current items.
+    let mut restored_instructions: Vec<(ItemIdentity, InstructionRole, String)> = payload
+        .preserved_instructions
+        .iter()
+        .map(|instruction| {
+            (
+                instruction.identity.clone(),
+                instruction.role,
+                instruction.text.clone(),
+            )
+        })
+        .collect();
 
-        if !payload
-            .overlap_identities
+    restored_instructions.extend(
+        preserved_current
             .iter()
-            .any(|covered| covered.matches(&identity))
-        {
-            preserved_current.push(item);
-        }
-    }
+            .map(|(item, identity)| (identity.clone(), item.role, item.text.clone())),
+    );
 
     // Rebuild the instruction context: the checkpoint's preserved instructions
     // first, then the current instructions that survived the overlap pass.
@@ -559,7 +360,7 @@ fn restore_gateway_summary(
         .map(|instruction| instruction.text.clone())
         .collect();
 
-    instruction_parts.extend(preserved_current.iter().map(|item| item.text.clone()));
+    instruction_parts.extend(preserved_current.iter().map(|(item, _)| item.text.clone()));
 
     ir.instructions = (!instruction_parts.is_empty()).then(|| instruction_parts.join("\n\n"));
 
@@ -595,12 +396,9 @@ fn restore_gateway_summary(
     ir.state_items = payload.retained_state_items.clone();
     ir.state_items.extend(fresh_state_items);
 
-    Ok(())
+    Ok(restored_instructions)
 }
 
-/// Restores a wrapped native window: drops the covered prefix and places the
-/// exact native artifact at the boundary — a whole Responses window replayed
-/// as state items, or an Anthropic on-demand block at the leading placement
 /// Computes the prefix identity of one request: digests of its system
 /// instructions and tool definitions — the signed-state-binding surface a
 /// producer verifies. Recorded on the wrap side and compared on replay
@@ -615,7 +413,7 @@ pub(crate) fn produced_prefix_identity(ir: &IrRequest) -> PrefixIdentity {
     let instructions_digest = ir
         .instructions
         .as_deref()
-        .map(|instructions| hex_digest(instructions.as_bytes()));
+        .map(|instructions| hex_sha256(instructions.as_bytes()));
 
     let tools_digest = if ir.tools.is_empty() {
         None
@@ -626,7 +424,7 @@ pub(crate) fn produced_prefix_identity(ir: &IrRequest) -> PrefixIdentity {
         )]
         let canonical = serde_json::to_vec(&ir.tools).expect("the tool definitions serialize");
 
-        Some(hex_digest(&canonical))
+        Some(hex_sha256(&canonical))
     };
 
     PrefixIdentity {
@@ -635,22 +433,9 @@ pub(crate) fn produced_prefix_identity(ir: &IrRequest) -> PrefixIdentity {
     }
 }
 
-/// Renders a SHA-256 digest as lowercase hex.
-fn hex_digest(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-
-    hasher.update(bytes);
-
-    hasher
-        .finalize()
-        .iter()
-        .fold(String::with_capacity(64), |mut rendered, byte| {
-            rendered.push_str(&format!("{byte:02x}"));
-
-            rendered
-        })
-}
-
+/// Restores a wrapped native window: drops the covered prefix and places the
+/// exact native artifact at the boundary — a whole Responses window replayed
+/// as state items, or an Anthropic on-demand block at the leading placement
 /// its replay contract demands (cross-protocol continuation never applies the
 /// source protocol's historical placement to the target payload).
 fn restore_native_window(
@@ -751,13 +536,15 @@ pub(crate) fn native_continuation(
     Ok(continuation)
 }
 
-/// The gateway checkpoint plan (design §16.3): the eligible older prefix the
+/// The gateway checkpoint plan (README §6.8): the eligible older prefix the
 /// summary will cover, the retained interaction units and the native state
 /// riding them, and the preserved instruction context with its coverage
 /// identities.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GatewayCheckpointPlan {
     /// The eligible older prefix the summary covers, as input history.
+    /// Consumed by [`crate::compaction::summary::plan_summary_request`]; no
+    /// later consumer of the plan reads it.
     pub(crate) summary_input_messages: Vec<IrMessage>,
 
     /// The retained interaction units with their identities, in conversation
@@ -796,7 +583,7 @@ struct InteractionUnit {
     start: usize,
 }
 
-/// Plans a gateway checkpoint from the restored window (design §16.3): groups
+/// Plans a gateway checkpoint from the restored window (README §6.8): groups
 /// the history into indivisible interaction units, retains recent complete
 /// units backward under the retention budget — the mandatory active turn never
 /// partially truncated — and leaves the older prefix for the summary.
@@ -815,28 +602,28 @@ struct InteractionUnit {
 /// summarize.
 pub(crate) fn plan_gateway_checkpoint(
     ir: &IrRequest,
-    instruction_items: &[crate::format::ParsedInstructionItem],
+    instructions: &CheckpointInstructions<'_>,
     mandatory_active_turn: bool,
-    budgets: (u64, u64),
+    budgets: Budgets,
 ) -> Result<GatewayCheckpointPlan, CompactionError> {
-    plan_checkpoint(ir, instruction_items, mandatory_active_turn, budgets, false)
+    plan_checkpoint(ir, instructions, mandatory_active_turn, budgets, false)
 }
 
 /// Plans a native checkpoint without rejecting opaque state the native producer can consume.
 pub(crate) fn plan_native_checkpoint(
     ir: &IrRequest,
-    instruction_items: &[crate::format::ParsedInstructionItem],
-    budgets: (u64, u64),
+    instructions: &CheckpointInstructions<'_>,
+    budgets: Budgets,
 ) -> Result<GatewayCheckpointPlan, CompactionError> {
-    plan_checkpoint(ir, instruction_items, true, budgets, true)
+    plan_checkpoint(ir, instructions, true, budgets, true)
 }
 
 /// Selects whole interaction units for a contiguous retained suffix.
 fn plan_checkpoint(
     ir: &IrRequest,
-    instruction_items: &[crate::format::ParsedInstructionItem],
+    instructions: &CheckpointInstructions<'_>,
     mandatory_active_turn: bool,
-    budgets: (u64, u64),
+    budgets: Budgets,
     can_compact_native_state: bool,
 ) -> Result<GatewayCheckpointPlan, CompactionError> {
     let units = interaction_units(&ir.messages)?;
@@ -865,16 +652,22 @@ fn plan_checkpoint(
         units.len()
     };
 
-    // Images have no text estimate. Retain the entire suffix starting at the earliest
-    // image rather than discarding modality data or assigning it a fabricated size.
-    if let Some(index) = units.iter().position(|unit| {
-        unit.messages.iter().any(|message| {
-            message
-                .parts
-                .iter()
-                .any(|part| matches!(part, crate::ir::IrPart::Image { .. }))
+    // Images have no text estimate: the contiguous suffix from the earliest
+    // image-carrying unit is retained rather than discarding modality data or
+    // assigning it a fabricated size.
+    let is_unit_multimodal: Vec<bool> = units
+        .iter()
+        .map(|unit| {
+            unit.messages.iter().any(|message| {
+                message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, crate::ir::IrPart::Image { .. }))
+            })
         })
-    }) {
+        .collect();
+
+    if let Some(index) = is_unit_multimodal.iter().position(|is_image| *is_image) {
         mandatory_start_index = mandatory_start_index.min(index);
     }
 
@@ -884,22 +677,18 @@ fn plan_checkpoint(
 
     let mut cumulative_tokens = 0u64;
 
-    for (unit_index, unit) in units.iter().enumerate().rev() {
-        let is_multimodal = unit.messages.iter().any(|message| {
-            message
-                .parts
-                .iter()
-                .any(|part| matches!(part, crate::ir::IrPart::Image { .. }))
-        });
-        let unit_tokens = if is_multimodal {
+    for (unit_index, (unit, is_multimodal)) in
+        units.iter().zip(&is_unit_multimodal).enumerate().rev()
+    {
+        let unit_tokens = if *is_multimodal {
             0
         } else {
             super::threshold::estimate_message_tokens(&unit.messages)?
         };
 
-        let is_mandatory = unit_index >= mandatory_start_index || is_multimodal;
+        let is_mandatory = unit_index >= mandatory_start_index || *is_multimodal;
 
-        if is_mandatory || cumulative_tokens + unit_tokens <= budgets.1 {
+        if is_mandatory || cumulative_tokens + unit_tokens <= budgets.retention {
             cumulative_tokens += unit_tokens;
             retained.push(unit);
         } else {
@@ -957,53 +746,26 @@ fn plan_checkpoint(
         })
         .collect();
 
-    // The current instruction items with their identities.
-    let materialized_instructions;
-    let instruction_items = if ir.instructions.as_deref()
-        != Some(
-            instruction_items
+    // The current instruction items with their identities: a restored
+    // checkpoint's continuity rides its sealed identities, and parsed items
+    // compute fresh occurrence-indexed identities — the codecs join exactly
+    // the parsed items into the request's instructions string, so no other
+    // divergence between the two exists to reconcile.
+    let preserved_instructions: Vec<(ItemIdentity, InstructionRole, String)> = match instructions {
+        CheckpointInstructions::Restored(items) => items.clone(),
+
+        CheckpointInstructions::Parsed(items) => {
+            let identities = ItemIdentity::for_instruction_window(
+                items.iter().map(|item| (item.role, item.text.as_str())),
+            );
+
+            items
                 .iter()
-                .map(|item| item.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n")
-                .as_str(),
-        )
-        && ir.instructions.is_some()
-    {
-        materialized_instructions = vec![crate::format::ParsedInstructionItem {
-            role: InstructionRole::System,
-            text: ir.instructions.clone().unwrap_or_default(),
-        }];
-        materialized_instructions.as_slice()
-    } else {
-        instruction_items
-    };
-    let mut role_occurrences: Vec<(InstructionRole, usize)> = Vec::new();
-
-    let mut preserved_instructions = Vec::with_capacity(instruction_items.len());
-
-    for item in instruction_items {
-        let occurrence = role_occurrences
-            .iter()
-            .find(|(role, _)| *role == item.role)
-            .map(|(_, count)| *count)
-            .unwrap_or(0);
-
-        if let Some((_, count)) = role_occurrences
-            .iter_mut()
-            .find(|(role, _)| *role == item.role)
-        {
-            *count += 1;
-        } else {
-            role_occurrences.push((item.role, 1));
+                .zip(identities)
+                .map(|(item, identity)| (identity, item.role, item.text.clone()))
+                .collect()
         }
-
-        preserved_instructions.push((
-            ItemIdentity::for_instruction(item.role, occurrence, &item.text, None),
-            item.role,
-            item.text.clone(),
-        ));
-    }
+    };
 
     let retained_units: Vec<(ItemIdentity, Vec<IrMessage>)> = retained
         .iter()
@@ -1026,8 +788,8 @@ fn plan_checkpoint(
         retained_state_items,
         preserved_instructions,
         overlap_identities,
-        summary_budget: budgets.0,
-        retention_budget: budgets.1,
+        summary_budget: budgets.summary,
+        retention_budget: budgets.retention,
     })
 }
 
@@ -1079,7 +841,7 @@ fn interaction_units(messages: &[IrMessage]) -> Result<Vec<InteractionUnit>, Com
 
         if opens_unit {
             units.push(InteractionUnit {
-                identity: ItemIdentity::for_message(message.role, index, message, None),
+                identity: ItemIdentity::for_message(index, message, None),
                 messages: vec![message.clone()],
                 start: index,
             });
@@ -1132,7 +894,7 @@ pub(crate) fn seal_envelope(
     Ok((envelope, carrier))
 }
 
-/// Builds and seals the gateway summary checkpoint of one plan (design §16.3).
+/// Builds and seals the gateway summary checkpoint of one plan (README §6.8).
 ///
 /// # Errors
 ///
@@ -1148,18 +910,16 @@ pub(crate) fn seal_gateway_checkpoint(
         preserved_instructions: plan
             .preserved_instructions
             .iter()
-            .map(
-                |(identity, role, text)| super::envelope::PreservedInstruction {
-                    identity: identity.clone(),
-                    role: *role,
-                    text: text.clone(),
-                },
-            )
+            .map(|(identity, role, text)| PreservedInstruction {
+                identity: identity.clone(),
+                role: *role,
+                text: text.clone(),
+            })
             .collect(),
         retained_units: plan
             .retained_units
             .iter()
-            .map(|(identity, messages)| super::envelope::RetainedUnit {
+            .map(|(identity, messages)| RetainedUnit {
                 identity: identity.clone(),
                 messages: messages.clone(),
             })
@@ -1171,7 +931,7 @@ pub(crate) fn seal_gateway_checkpoint(
     seal_envelope(payload, replacement, visible_content)
 }
 
-/// Builds and seals a wrapped native window checkpoint (design §6.3): the exact
+/// Builds and seals a wrapped native window checkpoint (README §6.8): the exact
 /// native artifact beside the provenance needed to replay it against its
 /// producer.
 ///
@@ -1202,14 +962,14 @@ mod tests {
     )]
 
     use super::{
-        GatewayCheckpointPlan, RestoredBoundary, hex_sha256, interaction_units,
-        plan_gateway_checkpoint, prepare, seal_gateway_checkpoint,
+        Budgets, CheckpointInstructions, GatewayCheckpointPlan, RestoredBoundary,
+        interaction_units, plan_gateway_checkpoint, prepare, seal_gateway_checkpoint,
     };
     use crate::{
-        compaction::{
+        compaction::error::CompactionError,
+        compaction_model::{
             envelope::{EnvelopePayload, ReplacementMode},
-            error::CompactionError,
-            identity::InstructionRole,
+            identity::{InstructionRole, hex_sha256},
         },
         format::{CompactionControl, NativeArtifact, ParsedCompaction, UpstreamFormat},
         ir::{IrMessage, IrPart, IrRequest, IrRole, StateItem},
@@ -1293,11 +1053,16 @@ mod tests {
         };
 
         let instruction_items = Vec::new();
+        let instructions = CheckpointInstructions::Parsed(&instruction_items);
+        let budgets = |retention: u64| Budgets {
+            summary: 4096,
+            retention,
+        };
 
         // Each fixture message is one unit; the mandatory active turn (the
         // pending user message's unit) is always retained, and a budget of one
         // token retains nothing beyond it.
-        let plan = plan_gateway_checkpoint(&ir, &instruction_items, true, (4096, 1))
+        let plan = plan_gateway_checkpoint(&ir, &instructions, true, budgets(1))
             .expect("the plan retains the mandatory turn");
 
         assert_eq!(plan.summary_input_messages.len(), 4);
@@ -1306,14 +1071,14 @@ mod tests {
         // Compact-only: a zero retention budget retains nothing, so the whole
         // history is the summarized prefix — a legitimate compaction, since a
         // final user turn may be summarized.
-        let plan = plan_gateway_checkpoint(&ir, &instruction_items, false, (4096, 0))
+        let plan = plan_gateway_checkpoint(&ir, &instructions, false, budgets(0))
             .expect("a compact-only zero budget summarizes the whole history");
 
         assert_eq!(plan.summary_input_messages.len(), 5);
         assert_eq!(plan.retained_units.len(), 0);
 
         // A generous budget retains everything, leaving no older prefix.
-        let plan = plan_gateway_checkpoint(&ir, &instruction_items, false, (4096, 100_000))
+        let plan = plan_gateway_checkpoint(&ir, &instructions, false, budgets(100_000))
             .expect_err("retaining everything leaves nothing to summarize");
 
         assert!(matches!(plan, CompactionError::BudgetExceeded { .. }));
@@ -1335,7 +1100,7 @@ mod tests {
             state_items: Vec::new(),
         };
 
-        let plan = plan_gateway_checkpoint(&single_turn, &instruction_items, true, (4096, 8192));
+        let plan = plan_gateway_checkpoint(&single_turn, &instructions, true, budgets(8192));
 
         assert!(matches!(plan, Err(CompactionError::BudgetExceeded { .. })));
     }
@@ -1375,13 +1140,22 @@ mod tests {
             role: InstructionRole::System,
             text: String::from("be terse"),
         }];
+        let instructions = CheckpointInstructions::Parsed(&instruction_items);
 
         // Compact-and-continue: the mandatory active turn is the pending user
         // message's unit alone, and the state item at its head rides it at the
         // recomputed restored-window offset (one summary message + zero
         // retained messages before it).
-        let plan = plan_gateway_checkpoint(&ir, &instruction_items, true, (4096, 0))
-            .expect("the plan retains the mandatory turn");
+        let plan = plan_gateway_checkpoint(
+            &ir,
+            &instructions,
+            true,
+            Budgets {
+                summary: 4096,
+                retention: 0,
+            },
+        )
+        .expect("the plan retains the mandatory turn");
 
         assert_eq!(plan.summary_input_messages.len(), 2);
         assert_eq!(plan.retained_units.len(), 1);
@@ -1398,7 +1172,15 @@ mod tests {
 
         // A compact-only budget of zero summarizes the whole history, whose
         // native state cannot be summarized: an explicit failure.
-        let plan = plan_gateway_checkpoint(&ir, &instruction_items, false, (4096, 0));
+        let plan = plan_gateway_checkpoint(
+            &ir,
+            &instructions,
+            false,
+            Budgets {
+                summary: 4096,
+                retention: 0,
+            },
+        );
 
         assert!(matches!(
             plan,
@@ -1443,7 +1225,7 @@ mod tests {
         let plan = GatewayCheckpointPlan {
             summary_input_messages: Vec::new(),
             retained_units: vec![(
-                super::ItemIdentity::for_message(IrRole::User, 0, &checkpoint_messages[1], None),
+                super::ItemIdentity::for_message(0, &checkpoint_messages[1], None),
                 vec![checkpoint_messages[1].clone()],
             )],
             retained_state_items: Vec::new(),
@@ -1506,7 +1288,7 @@ mod tests {
             }],
         };
 
-        let boundary = prepare(&mut ir, &parsed, UpstreamFormat::OpenAiResponse)
+        let (boundary, _instructions) = prepare(&mut ir, &parsed, UpstreamFormat::OpenAiResponse)
             .expect("the checkpoint restores");
 
         assert!(matches!(boundary, Some(RestoredBoundary::Gateway { .. })));
@@ -1549,7 +1331,8 @@ mod tests {
                 retained_state_items: Vec::new(),
                 producer_instance_id: String::from("provider:1"),
                 upstream_model_id: String::from("m"),
-                mechanism: crate::compaction::mechanism::Mechanism::MessagesOnDemandCompaction,
+                mechanism:
+                    crate::compaction_model::mechanism::Mechanism::MessagesOnDemandCompaction,
                 native_format: UpstreamFormat::AnthropicMessages,
                 required_prefix_identity: None,
                 window,
@@ -1575,8 +1358,9 @@ mod tests {
         };
 
         // The same format: the window restores.
-        let boundary = prepare(&mut ir, &parsed, UpstreamFormat::AnthropicMessages)
-            .expect("the wrapped window restores");
+        let (boundary, _instructions) =
+            prepare(&mut ir, &parsed, UpstreamFormat::AnthropicMessages)
+                .expect("the wrapped window restores");
 
         assert!(matches!(boundary, Some(RestoredBoundary::Gateway { .. })));
         assert_eq!(ir.messages, vec![text(IrRole::User, "fresh")]);
@@ -1602,7 +1386,8 @@ mod tests {
                             producer_instance_id: String::from("provider:1"),
                             upstream_model_id: String::from("m"),
                             mechanism:
-                                crate::compaction::mechanism::Mechanism::MessagesOnDemandCompaction,
+                                crate::compaction_model::mechanism::Mechanism::
+                                    MessagesOnDemandCompaction,
                             native_format: UpstreamFormat::AnthropicMessages,
                             required_prefix_identity: None,
                             window: super::NativeReplayWindow::ResponsesWindow {
@@ -1660,7 +1445,8 @@ mod tests {
                 retained_state_items: Vec::new(),
                 producer_instance_id: String::from("provider:1"),
                 upstream_model_id: String::from("m"),
-                mechanism: crate::compaction::mechanism::Mechanism::MessagesOnDemandCompaction,
+                mechanism:
+                    crate::compaction_model::mechanism::Mechanism::MessagesOnDemandCompaction,
                 native_format: UpstreamFormat::AnthropicMessages,
                 required_prefix_identity: Some(prefix),
                 window: super::NativeReplayWindow::AnthropicOnDemandBlock {
@@ -1697,7 +1483,8 @@ mod tests {
         };
 
         let boundary = prepare(&mut same, &parsed, UpstreamFormat::AnthropicMessages)
-            .expect("the matching prefix restores");
+            .expect("the matching prefix restores")
+            .0;
 
         assert!(matches!(boundary, Some(RestoredBoundary::Gateway { .. })));
 
@@ -1803,8 +1590,9 @@ mod tests {
         // The null block establishes no boundary, and no earlier boundary
         // exists: no boundary stands, the history stands, and the native state
         // is untouched.
-        let boundary = prepare(&mut ir, &parsed, UpstreamFormat::AnthropicMessages)
-            .expect("the null block establishes no boundary");
+        let (boundary, _instructions) =
+            prepare(&mut ir, &parsed, UpstreamFormat::AnthropicMessages)
+                .expect("the null block establishes no boundary");
 
         assert_eq!(boundary, None);
         assert_eq!(ir.messages, vec![text(IrRole::User, "kept")]);

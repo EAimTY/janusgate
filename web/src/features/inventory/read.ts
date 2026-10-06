@@ -1,9 +1,11 @@
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ListApiKeysResponse,
+    ListModelRoutesResponse,
     ListModelsRequest,
     ListModelsResponse,
     ListProviderDefinitionsResponse,
+    ListProviderPoolsResponse,
     ListProvidersResponse,
     ModelResponse,
     ModelRouteResponse,
@@ -54,6 +56,24 @@ export function readApiKeys(
 ): ReadCall<ListApiKeysResponse> {
     return {
         run: (cycle) => api.listApiKeys(cycle),
+    };
+}
+
+/** The public routes listing, as one read call run under the cycle's signal. */
+export function readModelRoutes(
+    api: Pick<ManagementApi, "listModelRoutes">,
+): ReadCall<ListModelRoutesResponse> {
+    return {
+        run: (cycle) => api.listModelRoutes(cycle),
+    };
+}
+
+/** The provider pools listing, as one read call run under the cycle's signal. */
+export function readProviderPools(
+    api: Pick<ManagementApi, "listProviderPools">,
+): ReadCall<ListProviderPoolsResponse> {
+    return {
+        run: (cycle) => api.listProviderPools(cycle),
     };
 }
 
@@ -116,12 +136,8 @@ export function readPublishedInventory(
             const [inventory, routes, pools] = await readAll(
                 signal,
                 readProviderCatalog(api, providerId),
-                {
-                    run: (signal) => api.listModelRoutes(signal),
-                },
-                {
-                    run: (signal) => api.listProviderPools(signal),
-                },
+                readModelRoutes(api),
+                readProviderPools(api),
             );
             return {
                 ...inventory,

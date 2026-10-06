@@ -12,11 +12,10 @@
 
 use super::{Error, Provider, control, oauth};
 use crate::{
-    compaction::{
+    compaction_model::{
         mechanism::{Mechanism, MechanismSupport},
         support_facts::CompactionSupportFacts,
     },
-    ir::IrReasoningLevel,
     provider::{
         DiscoveredModel,
         definition::{
@@ -29,6 +28,7 @@ use crate::{
             template::{ControlRequest, ResponseEncoding, ResponsePath},
         },
     },
+    vocabulary::ReasoningLevel,
 };
 use reqwest::Client;
 use serde_json::Value as Json;
@@ -423,12 +423,12 @@ fn extract_capabilities(
 
                     // A foreign level is silently skipped: the declaration covers the closed
                     // vocabulary alone (README §5.5).
-                    if let Some(level) = IrReasoningLevel::from_vocabulary_str(level) {
+                    if let Some(level) = ReasoningLevel::from_vocabulary_str(level) {
                         levels.push(level);
                     }
                 }
 
-                Some(IrReasoningLevel::canonicalize_levels(levels))
+                Some(ReasoningLevel::canonicalize_levels(levels))
             }
         },
 
@@ -479,13 +479,12 @@ fn extract_capabilities(
                         }
                     };
 
-                    if is_supported && let Some(level) = IrReasoningLevel::from_vocabulary_str(name)
-                    {
+                    if is_supported && let Some(level) = ReasoningLevel::from_vocabulary_str(name) {
                         levels.push(level);
                     }
                 }
 
-                Some(IrReasoningLevel::canonicalize_levels(levels))
+                Some(ReasoningLevel::canonicalize_levels(levels))
             }
         },
 
@@ -510,7 +509,7 @@ fn extract_capabilities(
 /// off the entry.
 struct EntryCapabilities {
     /// Extracted thinking levels; `None` when unknown.
-    thinking_levels: Option<Vec<IrReasoningLevel>>,
+    thinking_levels: Option<Vec<ReasoningLevel>>,
 
     /// Extracted maximum input tokens; `None` when unknown.
     max_input_tokens: Option<i64>,
@@ -653,13 +652,13 @@ mod tests {
 
     use super::{Error, run_discovery};
     use crate::{
-        compaction::{
+        compaction_model::{
             mechanism::{Mechanism, MechanismSupport},
             support_facts::CompactionSupportFacts,
         },
-        ir::IrReasoningLevel,
         provider::definition::{discovery::Discovery, eval::ValueEnv},
         test_support::MockUpstream,
+        vocabulary::ReasoningLevel,
     };
     use serde_json::{Value as Json, json};
     use std::collections::BTreeMap;
@@ -1017,7 +1016,7 @@ mod tests {
         assert_eq!(first.upstream_id, "gpt-5.1");
         assert_eq!(
             first.thinking_levels,
-            Some(vec![IrReasoningLevel::Medium, IrReasoningLevel::High])
+            Some(vec![ReasoningLevel::Medium, ReasoningLevel::High])
         );
         assert_eq!(first.max_input_tokens, Some(272_000));
         assert_eq!(first.max_output_tokens, None);
@@ -1094,9 +1093,9 @@ mod tests {
         assert_eq!(
             first.thinking_levels,
             Some(vec![
-                IrReasoningLevel::Low,
-                IrReasoningLevel::High,
-                IrReasoningLevel::Max
+                ReasoningLevel::Low,
+                ReasoningLevel::High,
+                ReasoningLevel::Max
             ])
         );
 

@@ -97,7 +97,7 @@ pub(crate) fn completed_projection(
         if block.content.is_none()
             || block
                 .signature
-                .is_some_and(crate::compaction::sealing::is_gateway_marker)
+                .is_some_and(crate::compaction_model::sealing::is_gateway_marker)
         {
             return None;
         }
@@ -116,6 +116,6 @@ pub(super) fn is_native_no_op(value: &Value) -> bool {
         block.content.is_none()
             && !block
                 .signature
-                .is_some_and(crate::compaction::sealing::is_gateway_marker)
+                .is_some_and(crate::compaction_model::sealing::is_gateway_marker)
     })
 }

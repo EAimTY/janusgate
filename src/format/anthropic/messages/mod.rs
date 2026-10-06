@@ -85,7 +85,7 @@ impl ClientFormat for Format {
         public_id: &str,
         aggregation: &IrAggregation,
         prefix: &[crate::format::compaction_wire::Checkpoint],
-        iterations: &[crate::format::compaction_wire::UsageIteration],
+        iterations: &[crate::ir::compaction::UsageIteration],
     ) -> Self::JsonResponse {
         client_render::render_json_response_with_prefix_blocks(
             public_id,

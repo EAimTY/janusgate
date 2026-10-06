@@ -73,15 +73,15 @@ pub(super) struct ApiKeyResponse {
 }
 
 impl ApiKeyResponse {
-    /// Renders one stored key.
-    fn from_api_key(api_key: &ApiKey) -> Self {
+    /// Renders one stored key, consuming it.
+    fn from_api_key(api_key: ApiKey) -> Self {
         Self {
             id: api_key.id,
-            name: api_key.name.clone(),
-            key: api_key.key.clone(),
+            name: api_key.name,
+            key: api_key.key,
             is_enabled: api_key.is_enabled,
             created_at: api_key.created_at,
-            access_control: api_key.access_control.clone(),
+            access_control: api_key.access_control,
         }
     }
 }
@@ -171,7 +171,10 @@ pub(super) async fn list(
     let api_keys = api_keys::list_api_keys(&context.database).await?;
 
     Ok(Json(ListApiKeysResponse {
-        api_keys: api_keys.iter().map(ApiKeyResponse::from_api_key).collect(),
+        api_keys: api_keys
+            .into_iter()
+            .map(ApiKeyResponse::from_api_key)
+            .collect(),
     }))
 }
 
@@ -197,7 +200,7 @@ pub(super) async fn create(
     info!("created API key {} (`{}`)", api_key.id, request.name);
 
     Ok(Json(ApiKeyEnvelope {
-        api_key: ApiKeyResponse::from_api_key(&api_key),
+        api_key: ApiKeyResponse::from_api_key(api_key),
     }))
 }
 
@@ -227,7 +230,9 @@ pub(super) async fn update(
 }
 
 /// Handles `POST /api-keys:delete`.
-/// The detached mutation invalidates affinity handles after committing even if its caller leaves.
+/// Deletion and the affinity handle invalidation share the version's detached mutation owner across
+/// caller cancellation: ids are never reused, so a committed write whose invalidation is lost to a
+/// cancelled caller would leave a stale handle forever.
 ///
 /// # Panics
 ///
@@ -239,18 +244,15 @@ pub(super) async fn delete(
     let database = context.database.clone();
     let cache = context.affinity_cache.clone();
     let api_key_id = request.api_key_id;
-    let deletion = tokio::spawn(async move {
+    let is_deleted = super::detach_mutation(async move {
         let is_deleted = api_keys::delete_api_key(&database, api_key_id).await?;
         if is_deleted {
             cache.remove_api_key(api_key_id);
         }
-        Ok::<_, crate::storage::Error>(is_deleted)
-    });
-    #[expect(
-        clippy::expect_used,
-        reason = "the mutation task always hands its result to the handler"
-    )]
-    let is_deleted = deletion.await.expect("API-key deletion task completes")?;
+        Ok(is_deleted)
+    })
+    .await?;
+
     if !is_deleted {
         return Err(Error::ApiKeyNotFound {
             id: request.api_key_id,

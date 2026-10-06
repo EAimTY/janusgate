@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { For, Show } from "solid-js";
+import { type Accessor, createSignal, For, Show } from "solid-js";
 import { translation } from "/src/i18n";
 import { formatNumber } from "/src/i18n/formatters";
 import type { MechanismSupport, ModelResponse } from "/src/management-api/generated/v0";
@@ -85,6 +85,113 @@ export function tokenCapOverrideError(
     return normalizedTokenCapOverride(true, text) === null
         ? translation()(($) => $.validation.positive[field])
         : null;
+}
+
+/**
+ * The capability-override draft the model forms edit: the three override
+ * groups' signals — thinking levels, the two token caps, and the compaction
+ * facts — with the inline errors and the normalized wire values derived from
+ * them, and `apply` re-seeding the whole bundle from a row (a save's
+ * returned row, or the baseline a revert picks up). A `null` initial seeds
+ * the creation shape: every override off, every field clear.
+ */
+export type CapabilityOverrideDraft = {
+    readonly hasLevelsOverride: Accessor<boolean>;
+    readonly setHasLevelsOverride: (hasOverride: boolean) => void;
+    readonly selectedLevels: Accessor<ReadonlyArray<string>>;
+    readonly setSelectedLevels: (selected: ReadonlyArray<string>) => void;
+    readonly hasMaxInputOverride: Accessor<boolean>;
+    readonly setHasMaxInputOverride: (hasOverride: boolean) => void;
+    readonly maxInputText: Accessor<string>;
+    readonly setMaxInputText: (text: string) => void;
+    readonly hasMaxOutputOverride: Accessor<boolean>;
+    readonly setHasMaxOutputOverride: (hasOverride: boolean) => void;
+    readonly maxOutputText: Accessor<string>;
+    readonly setMaxOutputText: (text: string) => void;
+    readonly hasCompactionOverride: Accessor<boolean>;
+    readonly setHasCompactionOverride: (hasOverride: boolean) => void;
+    readonly selectedCompaction: Accessor<CompactionOverrideSelection>;
+    readonly setSelectedCompaction: (selected: CompactionOverrideSelection) => void;
+    /** The inline error beside each token-cap field, `null` while its entry is valid. */
+    readonly maxInputError: Accessor<string | null>;
+    readonly maxOutputError: Accessor<string | null>;
+    /** The override each group's write carries — `null` where the switch is off. */
+    readonly normalizedLevels: Accessor<Array<string> | null>;
+    readonly normalizedMaxInput: Accessor<number | null>;
+    readonly normalizedMaxOutput: Accessor<number | null>;
+    readonly normalizedCompaction: Accessor<ModelResponse["compaction_support_override"]>;
+    /** Re-seeds every field from one row's stored overrides. */
+    readonly apply: (model: ModelResponse) => void;
+};
+
+/** The capability-override draft over one model's fields: `null` seeds a creation's empty shape. */
+export function createCapabilityOverrideDraft(
+    initial: ModelResponse | null,
+): CapabilityOverrideDraft {
+    const [hasLevelsOverride, setHasLevelsOverride] = createSignal(
+        initial !== null && initial.thinking_levels_override !== null,
+    );
+    const [selectedLevels, setSelectedLevels] = createSignal<ReadonlyArray<string>>(
+        initial?.thinking_levels_override ?? [],
+    );
+    const [hasMaxInputOverride, setHasMaxInputOverride] = createSignal(
+        initial !== null && initial.max_input_tokens_override !== null,
+    );
+    const [maxInputText, setMaxInputText] = createSignal(
+        initial?.max_input_tokens_override?.toString() ?? "",
+    );
+    const [hasMaxOutputOverride, setHasMaxOutputOverride] = createSignal(
+        initial !== null && initial.max_output_tokens_override !== null,
+    );
+    const [maxOutputText, setMaxOutputText] = createSignal(
+        initial?.max_output_tokens_override?.toString() ?? "",
+    );
+    const [hasCompactionOverride, setHasCompactionOverride] = createSignal(
+        initial !== null && initial.compaction_support_override !== null,
+    );
+    const [selectedCompaction, setSelectedCompaction] = createSignal(
+        compactionOverrideSelection(initial?.compaction_support_override ?? null),
+    );
+
+    return {
+        hasLevelsOverride,
+        setHasLevelsOverride,
+        selectedLevels,
+        setSelectedLevels,
+        hasMaxInputOverride,
+        setHasMaxInputOverride,
+        maxInputText,
+        setMaxInputText,
+        hasMaxOutputOverride,
+        setHasMaxOutputOverride,
+        maxOutputText,
+        setMaxOutputText,
+        hasCompactionOverride,
+        setHasCompactionOverride,
+        selectedCompaction,
+        setSelectedCompaction,
+        maxInputError: () =>
+            tokenCapOverrideError(hasMaxInputOverride(), maxInputText(), "maxInputOverride"),
+        maxOutputError: () =>
+            tokenCapOverrideError(hasMaxOutputOverride(), maxOutputText(), "maxOutputOverride"),
+        normalizedLevels: () =>
+            normalizedThinkingLevelsOverride(hasLevelsOverride(), selectedLevels()),
+        normalizedMaxInput: () => normalizedTokenCapOverride(hasMaxInputOverride(), maxInputText()),
+        normalizedMaxOutput: () =>
+            normalizedTokenCapOverride(hasMaxOutputOverride(), maxOutputText()),
+        normalizedCompaction: () =>
+            normalizedCompactionOverride(hasCompactionOverride(), selectedCompaction()),
+        apply: (model) => {
+            setHasLevelsOverride(model.thinking_levels_override !== null);
+            setSelectedLevels(model.thinking_levels_override ?? []);
+            setHasMaxInputOverride(model.max_input_tokens_override !== null);
+            setMaxInputText(model.max_input_tokens_override?.toString() ?? "");
+            setHasMaxOutputOverride(model.max_output_tokens_override !== null);
+            setMaxOutputText(model.max_output_tokens_override?.toString() ?? "");
+            setHasCompactionOverride(model.compaction_support_override !== null);
+            setSelectedCompaction(compactionOverrideSelection(model.compaction_support_override));
+        },
+    };
 }
 
 /**

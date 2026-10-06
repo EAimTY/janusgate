@@ -71,14 +71,15 @@ impl DefinitionPayload {
     /// string leaves, every control request's full expression surface (URL, header-row
     /// values, query-row values, form-field values, and JSON string leaves) across the
     /// credential section's device-authorization, token-exchange, and refresh-grant requests,
-    /// the provisioning steps and their polls, the discovery and quota requests, and the compaction
-    /// section's standalone operation, token-count operation, and Messages overlay headers —
-    /// and must be extended alongside any new member of that set: the requirement checks
-    /// consult only this predicate, so a missed expression is accepted with no base URL and
-    /// every later evaluation of it fails as stored drift. The authorize URL and its extra
-    /// parameters are excluded: the write-time validation bars the base reference at the
-    /// authorize-URL stage (README §5.1), so those expressions can never evaluate against a
-    /// base URL.
+    /// the provisioning steps and their polls, the discovery and quota requests, and the
+    /// compaction section's declared mechanisms through [`compaction::MechanismDeclarations::
+    /// enumerated`] (a declaration member joins this walk through it) plus the token-count
+    /// operation — and must be extended alongside any new member of the manually walked set:
+    /// the requirement checks consult only this predicate, so a missed expression is accepted
+    /// with no base URL and every later evaluation of it fails as stored drift. The authorize
+    /// URL and its extra parameters are excluded: the write-time validation bars the base
+    /// reference at the authorize-URL stage (README §5.1), so those expressions can never
+    /// evaluate against a base URL.
     #[must_use]
     pub(crate) fn references_base(&self) -> bool {
         self.base_capable_surfaces()
@@ -89,6 +90,7 @@ impl DefinitionPayload {
     /// Enumerates each descriptor surface that can use a stored or working base URL.
     /// Authorization URLs and extra parameters are excluded because their stage forbids Base.
     fn base_capable_surfaces(&self) -> Vec<expressions::ExpressionSurface<'_>> {
+        use compaction::Declaration;
         use expressions::ExpressionSurface;
         let mut surfaces = vec![
             ExpressionSurface::String(&self.inference.url),
@@ -136,33 +138,30 @@ impl DefinitionPayload {
                 .map(|quota| ExpressionSurface::Control(&quota.request)),
         );
         if let Some(compaction) = &self.compaction {
-            if let Some(operation) = compaction
-                .mechanisms
-                .responses_standalone_compact
-                .as_ref()
-                .and_then(|declaration| declaration.operation.as_ref())
-            {
-                surfaces.push(ExpressionSurface::String(&operation.url));
-                surfaces.push(ExpressionSurface::Headers(&operation.headers));
-                surfaces.extend(operation.envelope.as_ref().map(ExpressionSurface::Template));
+            for (_, declaration) in compaction.mechanisms.enumerated() {
+                match declaration {
+                    Some(Declaration::Standalone(standalone)) => {
+                        if let Some(operation) = &standalone.operation {
+                            surfaces.push(ExpressionSurface::String(&operation.url));
+                            surfaces.push(ExpressionSurface::Headers(&operation.headers));
+                            surfaces.extend(
+                                operation.envelope.as_ref().map(ExpressionSurface::Template),
+                            );
+                        }
+                    }
+
+                    Some(Declaration::Overlay(overlay)) => {
+                        if let Some(headers) = overlay.overlay_headers.as_deref() {
+                            surfaces.push(ExpressionSurface::Headers(headers));
+                        }
+                    }
+
+                    // The ride-along declarations carry no operation data: the trigger and the
+                    // automatic controls ride the ordinary inference request.
+                    Some(Declaration::RideAlong(_)) | None => {}
+                }
             }
-            for headers in [
-                compaction
-                    .mechanisms
-                    .messages_on_demand_compaction
-                    .as_ref()
-                    .and_then(|declaration| declaration.overlay_headers.as_deref()),
-                compaction
-                    .mechanisms
-                    .messages_threshold_compaction
-                    .as_ref()
-                    .and_then(|declaration| declaration.overlay_headers.as_deref()),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                surfaces.push(ExpressionSurface::Headers(headers));
-            }
+
             if let Some(operation) = &compaction.count_tokens {
                 surfaces.push(ExpressionSurface::String(&operation.url));
                 surfaces.push(ExpressionSurface::Headers(&operation.headers));

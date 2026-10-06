@@ -1,17 +1,14 @@
 //! Completion parsing, route selection, compaction coordination, and concrete artifact rendering.
 
 use super::delivery::{
-    AggregationRender, detached_aggregation, finalize_buffered, prerendered_sse_response,
-    sse_response,
+    AggregationRender, CheckpointPrefix, detached_aggregation, finalize_buffered,
+    prerendered_sse_response, sse_response,
 };
 use crate::{
     accounting::ApiLogEndpointType,
     api::{Error, log_error},
-    compaction::{
-        accounting::CompactionLedger,
-        executor::{self, MessagesOuterOutcome, ResponsesOuterOutcome},
-        history::BoundaryPreparation,
-    },
+    compaction::executor::{self, MessagesOuterOutcome, ResponsesOuterOutcome},
+    compaction_model::{accounting::CompactionLedger, boundary::BoundaryPreparation},
     context::Context,
     format::{
         ClientFormat, ClientSseRenderer, CompactionBoundary, CompactionControl, NativeArtifact,
@@ -144,18 +141,21 @@ where
 
     let routing = selection.routing.clone();
 
-    let log_context = format!(
-        "{} for model `{}` via provider `{}`",
-        operation.as_str(),
-        routing.public_id,
-        routing.provider.name
-    );
-
     let public_id = routing.public_id.clone();
 
-    let is_streaming = parsed.is_streaming;
-
-    let should_include_usage = parsed.should_include_usage;
+    // The request's stable render facts: decided here at the surface boundary
+    // and consumed unchanged by every outcome rendering below.
+    let render = RenderContext {
+        is_streaming: parsed.is_streaming,
+        should_include_usage: parsed.should_include_usage,
+        public_id,
+        log_context: format!(
+            "{} for model `{}` via provider `{}`",
+            operation.as_str(),
+            routing.public_id,
+            routing.provider.name
+        ),
+    };
 
     // The accounting draft: every fact known before dispatch, built from the authenticated key,
     // the routing row, and the surface's endpoint type; `gateway::execute` stamps the dispatch
@@ -166,7 +166,7 @@ where
         routing.model.id,
         routing.model_route_id,
         endpoint_type,
-        is_streaming,
+        render.is_streaming,
     );
 
     // A request carrying compaction controls or compaction state routes
@@ -181,10 +181,7 @@ where
         preparation,
         selection,
         log,
-        log_context,
-        is_streaming,
-        should_include_usage,
-        public_id,
+        render,
         operation,
     )
     .await;
@@ -364,6 +361,59 @@ fn compaction_surface(parsed: &crate::format::ParsedRequest) -> CompactionSurfac
     }
 }
 
+/// The stable per-request render facts of one compaction pipeline request:
+/// decided once at the surface boundary and consumed unchanged by every
+/// outcome rendering.
+pub(super) struct RenderContext {
+    /// Whether the client requested a streaming response.
+    pub(super) is_streaming: bool,
+
+    /// Whether the client requested the trailing usage chunk; the renderers of
+    /// formats that always include usage ignore it.
+    pub(super) should_include_usage: bool,
+
+    /// The public model id the client addressed.
+    pub(super) public_id: String,
+
+    /// The log-line context naming the operation, model, and provider.
+    pub(super) log_context: String,
+}
+
+/// One compaction pipeline attempt's shared state: the facts every executor
+/// outcome rendering and the native-failure fallback recurse over unchanged.
+struct Pipeline<'a> {
+    /// The gateway context feeding dispatches and renderings.
+    context: &'a Context,
+
+    /// The authenticated compaction carrier preparation.
+    preparation: &'a BoundaryPreparation,
+
+    /// The compaction account selection advanced across the pipeline's attempts.
+    selection: &'a mut gateway::CompactionSelection,
+
+    /// The request's accounting guard owning the draft between attempts.
+    accounting: &'a mut ApiLogGuard,
+
+    /// The request's stable render facts.
+    render: &'a mut RenderContext,
+}
+
+/// The checkpoint-continue outcome's continuation facts, carried from the
+/// executor outcome into [`checkpoint_completion`] as one unit.
+struct CheckpointContinuation {
+    /// The checkpoint prefix rendering ahead of the continuation.
+    prefix: CheckpointPrefix,
+
+    /// The continuation request.
+    ir: crate::ir::IrRequest,
+
+    /// Operation headers required by a native checkpoint continuation.
+    overlay_headers: Vec<crate::provider::definition::template::ParamRow>,
+
+    /// Sealer-proven identity of the newly emitted checkpoint.
+    artifact_id: String,
+}
+
 /// The compaction pipeline for one parsed completion request: restore, resolve
 /// strategy and native operations (README §6.8), and render the outcome —
 /// the ordinary path for replays and below-threshold generations, the
@@ -373,17 +423,13 @@ fn compaction_surface(parsed: &crate::format::ParsedRequest) -> CompactionSurfac
 /// the executor's artifact ahead of the live continuation events, so a
 /// streaming client waits for the compaction to complete before its answer
 /// streams — the gateway-emulated threshold contract (README §6.8).
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_compaction_pipeline<TFormat>(
     context: &Context,
     parsed: ParsedRequest,
     preparation: BoundaryPreparation,
     mut selection: gateway::CompactionSelection,
     log: ApiLogDraft,
-    mut log_context: String,
-    is_streaming: bool,
-    should_include_usage: bool,
-    public_id: String,
+    mut render: RenderContext,
     operation: OperationKind,
 ) -> Result<Response, Error>
 where
@@ -394,17 +440,15 @@ where
     let outcome = loop {
         let routing = selection.routing.clone();
         let outcome = run_compaction_pipeline_inner::<TFormat>(
-            context,
+            &mut Pipeline {
+                context,
+                preparation: &preparation,
+                selection: &mut selection,
+                accounting: &mut guard,
+                render: &mut render,
+            },
             parsed.clone(),
-            &preparation,
-            &mut selection,
             routing,
-            &mut guard,
-            log_context.clone(),
-            is_streaming,
-            should_include_usage,
-            public_id.clone(),
-            operation,
         )
         .await;
         if matches!(outcome, Err(Error::QuotaRejected { .. })) {
@@ -413,7 +457,7 @@ where
                 .await
             {
                 Ok(true) => {
-                    log_context = format!(
+                    render.log_context = format!(
                         "{} for model `{}` via provider `{}`",
                         operation.as_str(),
                         selection.routing.public_id,
@@ -435,19 +479,10 @@ where
 }
 
 /// Resolves and renders one compaction attempt, with errors owned by the outer accounting guard.
-#[allow(clippy::too_many_arguments)]
 async fn run_compaction_pipeline_inner<TFormat>(
-    context: &Context,
+    pipeline: &mut Pipeline<'_>,
     parsed: crate::format::ParsedRequest,
-    preparation: &BoundaryPreparation,
-    selection: &mut gateway::CompactionSelection,
     routing: crate::provider::ModelRouting,
-    accounting: &mut ApiLogGuard,
-    log_context: String,
-    is_streaming: bool,
-    should_include_usage: bool,
-    public_id: String,
-    operation: OperationKind,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
@@ -466,12 +501,12 @@ where
 
     if surface == CompactionSurface::Messages {
         let outcome = executor::execute_messages_request(
-            context,
+            pipeline.context,
             &routing,
             &parsed,
-            preparation,
-            accounting.draft_mut(),
-            Some(&mut selection.ownership),
+            pipeline.preparation,
+            pipeline.accounting.draft_mut(),
+            Some(&mut pipeline.selection.ownership),
         )
         .await?;
 
@@ -487,22 +522,8 @@ where
                     ..CompactionDispatch::default()
                 };
 
-                ordinary_completion::<TFormat>(
-                    context,
-                    routing,
-                    ir,
-                    accounting,
-                    log_context,
-                    is_streaming,
-                    should_include_usage,
-                    public_id.clone(),
-                    dispatch,
-                    parsed.clone(),
-                    preparation,
-                    selection,
-                    operation,
-                )
-                .await
+                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed.clone())
+                    .await
             }
 
             MessagesOuterOutcome::CompactionOnly {
@@ -511,9 +532,9 @@ where
                 iterations,
                 ledger,
             } => {
-                stamp_billed(accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
 
-                let affinity = selection.accepted().map(|accepted| {
+                let affinity = pipeline.selection.accepted().map(|accepted| {
                     accepted.completed_prefix(
                         crate::format::anthropic::messages::completed_compaction_anchors(
                             &block,
@@ -522,18 +543,15 @@ where
                     )
                 });
                 compaction_only_messages_response(
-                    context,
-                    &public_id,
+                    pipeline,
                     &block,
                     &iterations,
-                    is_streaming,
                     parsed.compaction.as_ref().is_some_and(|compaction| {
                         matches!(
                             compaction.control,
                             Some(CompactionControl::MessagesThreshold { .. })
                         )
                     }),
-                    accounting.take(),
                     affinity,
                 )
             }
@@ -542,17 +560,10 @@ where
                 aggregation,
                 ledger,
             } => {
-                stamp_billed(accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
 
-                aggregated_artifact_response(
-                    context,
-                    &public_id,
-                    &aggregation,
-                    is_streaming,
-                    should_include_usage,
-                    accounting.take(),
-                    selection.accepted(),
-                )
+                let affinity = pipeline.selection.accepted();
+                aggregated_artifact_response::<TFormat>(pipeline, &aggregation, affinity)
             }
 
             MessagesOuterOutcome::ContinueWithCheckpoint {
@@ -563,35 +574,29 @@ where
                 iterations,
                 ledger,
             } => {
-                stamp_billed(accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
 
                 checkpoint_completion::<TFormat>(
-                    context,
+                    pipeline,
                     routing,
-                    ir,
-                    accounting,
-                    log_context,
-                    is_streaming,
-                    should_include_usage,
-                    public_id,
-                    Vec::new(),
-                    prefix_blocks,
-                    iterations,
-                    overlay_headers,
-                    selection,
-                    artifact_id,
+                    CheckpointContinuation {
+                        prefix: CheckpointPrefix::Messages(prefix_blocks, iterations),
+                        ir,
+                        overlay_headers,
+                        artifact_id,
+                    },
                 )
                 .await
             }
         }
     } else {
         let outcome = executor::execute_responses_request(
-            context,
+            pipeline.context,
             &routing,
             &parsed,
-            preparation,
-            accounting.draft_mut(),
-            Some(&mut selection.ownership),
+            pipeline.preparation,
+            pipeline.accounting.draft_mut(),
+            Some(&mut pipeline.selection.ownership),
         )
         .await?;
 
@@ -607,22 +612,8 @@ where
                     ..CompactionDispatch::default()
                 };
 
-                ordinary_completion::<TFormat>(
-                    context,
-                    routing,
-                    ir,
-                    accounting,
-                    log_context,
-                    is_streaming,
-                    should_include_usage,
-                    public_id.clone(),
-                    dispatch,
-                    parsed.clone(),
-                    preparation,
-                    selection,
-                    operation,
-                )
-                .await
+                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed.clone())
+                    .await
             }
 
             ResponsesOuterOutcome::CompactionOnly {
@@ -631,17 +622,12 @@ where
                 usage,
                 ledger,
             } => {
-                stamp_billed(accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
 
-                let response = compaction_only_responses_response(
-                    context,
-                    &public_id,
-                    &items,
-                    usage,
-                    is_streaming,
-                    accounting.take(),
-                )?;
-                selection.register_gateway_window(&artifact_id, &items);
+                let response = compaction_only_responses_response(pipeline, &items, usage)?;
+                pipeline
+                    .selection
+                    .register_gateway_window(&artifact_id, &items);
                 Ok(response)
             }
 
@@ -649,17 +635,9 @@ where
                 aggregation,
                 ledger,
             } => {
-                stamp_billed(accounting.draft_mut(), Some(&ledger));
-                let affinity = selection.accepted();
-                aggregated_artifact_response(
-                    context,
-                    &public_id,
-                    &aggregation,
-                    is_streaming,
-                    should_include_usage,
-                    accounting.take(),
-                    affinity,
-                )
+                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
+                let affinity = pipeline.selection.accepted();
+                aggregated_artifact_response::<TFormat>(pipeline, &aggregation, affinity)
             }
 
             ResponsesOuterOutcome::ContinueWithCheckpoint {
@@ -669,23 +647,17 @@ where
                 overlay_headers,
                 ledger,
             } => {
-                stamp_billed(accounting.draft_mut(), Some(&ledger));
+                stamp_billed(pipeline.accounting.draft_mut(), Some(&ledger));
 
                 checkpoint_completion::<TFormat>(
-                    context,
+                    pipeline,
                     routing,
-                    ir,
-                    accounting,
-                    log_context,
-                    is_streaming,
-                    should_include_usage,
-                    public_id,
-                    prefix_items,
-                    Vec::new(),
-                    Vec::new(),
-                    overlay_headers,
-                    selection,
-                    artifact_id,
+                    CheckpointContinuation {
+                        prefix: CheckpointPrefix::Responses(prefix_items),
+                        ir,
+                        overlay_headers,
+                        artifact_id,
+                    },
                 )
                 .await
             }
@@ -693,38 +665,33 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The ordinary continuation of a compaction pipeline outcome: the prepared
 /// request runs the existing execute-and-render path, carrying the compaction
 /// dispatch extension the executor resolved (passthrough controls, replay
-/// overlays — empty for a plain replay).
+/// overlays — empty for a plain replay). A native-unsupported upstream
+/// rejection falls back to the gateway summary on the same account and
+/// recurses into the pipeline with the fallback request.
 async fn ordinary_completion<TFormat>(
-    context: &Context,
+    pipeline: &mut Pipeline<'_>,
     routing: crate::provider::ModelRouting,
     ir: crate::ir::IrRequest,
-    accounting: &mut ApiLogGuard,
-    log_context: String,
-    is_streaming: bool,
-    should_include_usage: bool,
-    public_id: String,
     dispatch: CompactionDispatch,
     fallback_request: ParsedRequest,
-    preparation: &BoundaryPreparation,
-    selection: &mut gateway::CompactionSelection,
-    operation: OperationKind,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
     TFormat::JsonResponse: Serialize,
 {
+    let is_streaming = pipeline.render.is_streaming;
+
     let events = gateway::execute(
-        context,
+        pipeline.context,
         routing.clone(),
         ir,
         is_streaming,
-        accounting.draft_mut(),
+        pipeline.accounting.draft_mut(),
         Some(&dispatch),
-        Some(&mut selection.ownership),
+        Some(&mut pipeline.selection.ownership),
     )
     .await;
     let events = match events {
@@ -756,17 +723,9 @@ where
                         crate::provider::definition::compaction::CompactionStrategy::GatewaySummary;
                 }
                 return Box::pin(run_compaction_pipeline_inner::<TFormat>(
-                    context,
+                    pipeline,
                     fallback_request,
-                    preparation,
-                    selection,
                     fallback_routing,
-                    accounting,
-                    log_context,
-                    is_streaming,
-                    should_include_usage,
-                    public_id,
-                    operation,
                 ))
                 .await;
             }
@@ -787,39 +746,43 @@ where
             });
         let renderer: Box<dyn ClientSseRenderer + Send> = if is_threshold {
             Box::new(
-                crate::format::anthropic::messages::SseRenderer::new(public_id)
-                    .with_threshold_compaction(true),
+                crate::format::anthropic::messages::SseRenderer::new(
+                    pipeline.render.public_id.clone(),
+                )
+                .with_threshold_compaction(true),
             )
         } else {
-            TFormat::sse_renderer(should_include_usage, public_id)
+            TFormat::sse_renderer(
+                pipeline.render.should_include_usage,
+                pipeline.render.public_id.clone(),
+            )
         };
         Ok(sse_response(
             events,
             renderer,
-            context.api_log_store.clone(),
-            accounting.take(),
-            selection.accepted(),
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
+            pipeline.selection.accepted(),
         ))
     } else {
         detached_aggregation::<TFormat>(
             events,
-            public_id,
-            context.api_log_store.clone(),
-            accounting.take(),
-            log_context,
+            pipeline.render.public_id.clone(),
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
+            pipeline.render.log_context.clone(),
             AggregationRender::Ordinary,
-            selection.accepted(),
+            pipeline.selection.accepted(),
         )
         .await
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The checkpoint-continue outcome: the continuation runs the existing
 /// execute-and-render path while the executor's checkpoint renders ahead of
-/// it — prefix items on the Responses surface, prefix blocks on Messages,
-/// beside the lifecycle's vendor-shaped iteration entries on the Messages
-/// surface (README §6.8).
+/// it — prefix items on the Responses surface, prefix blocks beside the
+/// lifecycle's vendor-shaped iteration entries on the Messages surface
+/// (README §6.8).
 ///
 /// # Errors
 ///
@@ -829,104 +792,101 @@ where
 ///
 /// Panics if the executor's sealed single checkpoint lacks its replayable wire fields.
 async fn checkpoint_completion<TFormat>(
-    context: &Context,
+    pipeline: &mut Pipeline<'_>,
     routing: crate::provider::ModelRouting,
-    ir: crate::ir::IrRequest,
-    accounting: &mut ApiLogGuard,
-    log_context: String,
-    is_streaming: bool,
-    should_include_usage: bool,
-    public_id: String,
-    prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
-    prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
-    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
-    overlay_headers: Vec<crate::provider::definition::template::ParamRow>,
-    selection: &mut gateway::CompactionSelection,
-    artifact_id: String,
+    continuation: CheckpointContinuation,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
     TFormat::JsonResponse: Serialize,
 {
+    let CheckpointContinuation {
+        prefix,
+        ir,
+        overlay_headers,
+        artifact_id,
+    } = continuation;
+
     let dispatch = CompactionDispatch {
         overlay_headers,
         ..CompactionDispatch::default()
     };
     let events = gateway::execute(
-        context,
+        pipeline.context,
         routing,
         ir,
-        is_streaming,
-        accounting.draft_mut(),
+        pipeline.render.is_streaming,
+        pipeline.accounting.draft_mut(),
         Some(&dispatch),
-        Some(&mut selection.ownership),
+        Some(&mut pipeline.selection.ownership),
     )
     .await?;
 
-    let affinity = selection.accepted().map(|accepted| {
-        let (projector, anchors) = if prefix_blocks.is_empty() {
-            #[expect(
-                clippy::expect_used,
-                reason = "the executor emits a sealed replayable checkpoint"
-            )]
-            let projector =
-                crate::format::openai::response::gateway_checkpoint_projection(&prefix_items)
-                    .expect("a prepared Responses checkpoint has a canonical projection");
-            let mut anchors = projector.completed_anchors();
-            anchors.push(crate::affinity::Anchor::Artifact(
-                projector.gateway_artifact(&artifact_id),
-            ));
-            (projector, anchors)
-        } else {
-            #[expect(
-                clippy::expect_used,
-                reason = "the executor emits one sealed Messages checkpoint"
-            )]
-            let block = prefix_blocks
-                .first()
-                .expect("the checkpoint prefix contains its block");
-            #[expect(
-                clippy::expect_used,
-                reason = "the sealed block has accepted replay fields"
-            )]
-            crate::format::anthropic::messages::completed_compaction_projection(
-                block,
-                Some(&artifact_id),
-            )
-            .expect("a prepared Messages checkpoint has a canonical projection")
+    let affinity = pipeline.selection.accepted().map(|accepted| {
+        let (projector, anchors) = match &prefix {
+            CheckpointPrefix::Responses(items) => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the executor emits a sealed replayable checkpoint"
+                )]
+                let projector =
+                    crate::format::openai::response::gateway_checkpoint_projection(items)
+                        .expect("a prepared Responses checkpoint has a canonical projection");
+                let mut anchors = projector.completed_anchors();
+                anchors.push(crate::affinity::Anchor::Artifact(
+                    projector.gateway_artifact(&artifact_id),
+                ));
+                (projector, anchors)
+            }
+            CheckpointPrefix::Messages(blocks, _) => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the executor emits one sealed Messages checkpoint"
+                )]
+                let block = blocks
+                    .first()
+                    .expect("the checkpoint prefix contains its block");
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the sealed block has accepted replay fields"
+                )]
+                crate::format::anthropic::messages::completed_compaction_projection(
+                    block,
+                    Some(&artifact_id),
+                )
+                .expect("a prepared Messages checkpoint has a canonical projection")
+            }
         };
         accepted.completed_checkpoint(projector, anchors)
     });
 
-    if is_streaming {
-        let renderer = if prefix_blocks.is_empty() {
-            openai_sse_renderer_with_items(should_include_usage, public_id, prefix_items)
-        } else {
-            anthropic_sse_renderer_with_blocks(public_id, prefix_blocks, iterations)
+    if pipeline.render.is_streaming {
+        let renderer = match prefix {
+            CheckpointPrefix::Responses(items) => {
+                openai_sse_renderer_with_items(pipeline.render.public_id.clone(), items)
+            }
+            CheckpointPrefix::Messages(blocks, iterations) => anthropic_sse_renderer_with_blocks(
+                pipeline.render.public_id.clone(),
+                blocks,
+                iterations,
+            ),
         };
 
         Ok(sse_response(
             events,
             renderer,
-            context.api_log_store.clone(),
-            accounting.take(),
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
             affinity,
         ))
     } else {
         detached_aggregation::<TFormat>(
             events,
-            public_id,
-            context.api_log_store.clone(),
-            accounting.take(),
-            log_context,
-            AggregationRender::WithPrefix {
-                checkpoints: if prefix_items.is_empty() {
-                    prefix_blocks
-                } else {
-                    prefix_items
-                },
-                iterations,
-            },
+            pipeline.render.public_id.clone(),
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
+            pipeline.render.log_context.clone(),
+            AggregationRender::WithPrefix { prefix },
             affinity,
         )
         .await
@@ -935,14 +895,11 @@ where
 
 /// Boxes the Responses streaming renderer carrying checkpoint prefix items.
 fn openai_sse_renderer_with_items(
-    should_include_usage: bool,
     public_id: String,
     prefix_items: Vec<crate::format::compaction_wire::Checkpoint>,
 ) -> Box<dyn ClientSseRenderer + Send> {
-    let _ = should_include_usage;
-
     Box::new(
-        crate::format::openai::response::SseRenderer::new(public_id.clone())
+        crate::format::openai::response::SseRenderer::new(public_id)
             .with_prefix_items(prefix_items),
     )
 }
@@ -952,7 +909,7 @@ fn openai_sse_renderer_with_items(
 fn anthropic_sse_renderer_with_blocks(
     public_id: String,
     prefix_blocks: Vec<crate::format::compaction_wire::Checkpoint>,
-    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    iterations: Vec<crate::ir::compaction::UsageIteration>,
 ) -> Box<dyn ClientSseRenderer + Send> {
     Box::new(
         crate::format::anthropic::messages::SseRenderer::with_compaction_prefix(
@@ -968,17 +925,19 @@ fn anthropic_sse_renderer_with_blocks(
 /// lifecycle — streaming callers receive the complete frame sequence, JSON
 /// callers the same artifact as the aggregated body.
 fn compaction_only_responses_response(
-    context: &Context,
-    public_id: &str,
+    pipeline: &mut Pipeline<'_>,
     items: &[crate::format::compaction_wire::Checkpoint],
     usage: IrUsage,
-    is_streaming: bool,
-    log: ApiLogDraft,
 ) -> Result<Response, Error> {
-    if is_streaming {
-        let frames = render_trigger_stream_frames(public_id.to_string(), items.to_vec(), usage);
+    if pipeline.render.is_streaming {
+        let frames =
+            render_trigger_stream_frames(pipeline.render.public_id.clone(), items.to_vec(), usage);
 
-        prerendered_sse_response(frames, context.api_log_store.clone(), log)
+        prerendered_sse_response(
+            frames,
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
+        )
     } else {
         let aggregation = IrAggregation {
             usage: Some(usage),
@@ -986,35 +945,32 @@ fn compaction_only_responses_response(
         };
 
         let body = crate::format::openai::response::Format::render_json_response_with_prefix(
-            public_id,
+            &pipeline.render.public_id,
             &aggregation,
             items,
             &[],
         );
 
-        Ok(finalize_buffered(context.api_log_store.clone(), log, &body))
+        Ok(finalize_buffered(
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
+            &body,
+        ))
     }
 }
 
 /// Renders the Messages compact-only outcome: one compaction block with
 /// `stop_reason: "compaction"` and the iteration usage (README §6.8).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "delivery owns the prepared account binding"
-)]
 fn compaction_only_messages_response(
-    context: &Context,
-    public_id: &str,
+    pipeline: &mut Pipeline<'_>,
     block: &crate::format::compaction_wire::Checkpoint,
-    iterations: &[crate::format::compaction_wire::UsageIteration],
-    is_streaming: bool,
+    iterations: &[crate::ir::compaction::UsageIteration],
     is_threshold_compaction: bool,
-    log: ApiLogDraft,
     mut affinity: Option<crate::affinity::Accepted>,
 ) -> Result<Response, Error> {
-    if is_streaming {
+    if pipeline.render.is_streaming {
         let renderer = crate::format::anthropic::messages::SseRenderer::with_compaction_prefix(
-            public_id.to_string(),
+            pipeline.render.public_id.clone(),
             vec![block.clone()],
             Some(String::from("compaction")),
         )
@@ -1023,8 +979,8 @@ fn compaction_only_messages_response(
 
         let events = futures::stream::iter(vec![
             Ok::<IrEvent, gateway::Error>(IrEvent::MessageStart {
-                id: public_id.to_string(),
-                model: public_id.to_string(),
+                id: pipeline.render.public_id.clone(),
+                model: pipeline.render.public_id.clone(),
             }),
             Ok(IrEvent::Done),
         ]);
@@ -1032,8 +988,8 @@ fn compaction_only_messages_response(
         Ok(sse_response(
             Box::pin(events),
             Box::new(renderer),
-            context.api_log_store.clone(),
-            log,
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
             affinity,
         ))
     } else {
@@ -1045,44 +1001,41 @@ fn compaction_only_messages_response(
             cached_tokens: None,
         };
 
-        let body = render_compaction_only_response(public_id, block.clone(), &usage);
+        let body =
+            render_compaction_only_response(&pipeline.render.public_id, block.clone(), &usage);
 
         if let Some(affinity) = affinity.as_mut() {
             affinity.complete_artifacts();
         }
-        Ok(finalize_buffered(context.api_log_store.clone(), log, &body))
+        Ok(finalize_buffered(
+            pipeline.context.api_log_store.clone(),
+            pipeline.accounting.take(),
+            &body,
+        ))
     }
 }
 
 /// Renders a lifecycle the executor validated as one complete internal
 /// artifact — a native trigger passthrough or a native no-summary outcome —
-/// from its aggregation: the same body streaming and JSON callers see.
-fn aggregated_artifact_response(
-    context: &Context,
-    public_id: &str,
+/// from its aggregation: the same body streaming and JSON callers see,
+/// rendered through the request's own client format.
+fn aggregated_artifact_response<TFormat>(
+    pipeline: &mut Pipeline<'_>,
     aggregation: &IrAggregation,
-    is_streaming: bool,
-    should_include_usage: bool,
-    mut log: ApiLogDraft,
     mut affinity: Option<crate::affinity::Accepted>,
-) -> Result<Response, Error> {
-    let _ = should_include_usage;
+) -> Result<Response, Error>
+where
+    TFormat: ClientFormat,
+    TFormat::JsonResponse: Serialize,
+{
+    let mut log = pipeline.accounting.take();
+    let public_id = pipeline.render.public_id.clone();
 
-    if is_streaming {
+    if pipeline.render.is_streaming {
         // This same native observation is already present in the ledger; the streamed
         // events own its final observation instead, so it must not be added twice.
         log.billed_usage = None;
-        let events = aggregation_events(aggregation, public_id);
-
-        let renderer = if log.endpoint_type == ApiLogEndpointType::AnthropicMessages {
-            Box::new(crate::format::anthropic::messages::SseRenderer::new(
-                public_id.to_string(),
-            )) as Box<dyn ClientSseRenderer + Send>
-        } else {
-            Box::new(crate::format::openai::response::SseRenderer::new(
-                public_id.to_string(),
-            )) as Box<dyn ClientSseRenderer + Send>
-        };
+        let events = aggregation_events(aggregation, &public_id);
 
         let stream: IrEventStream = Box::pin(futures::stream::iter(
             events.into_iter().map(Ok::<IrEvent, gateway::Error>),
@@ -1090,8 +1043,8 @@ fn aggregated_artifact_response(
 
         Ok(sse_response(
             stream,
-            renderer,
-            context.api_log_store.clone(),
+            TFormat::sse_renderer(pipeline.render.should_include_usage, public_id),
+            pipeline.context.api_log_store.clone(),
             log,
             affinity,
         ))
@@ -1099,25 +1052,15 @@ fn aggregated_artifact_response(
         // A validated single-artifact lifecycle carries no checkpoint prefix:
         // the plain aggregated render keeps its native semantics — usage
         // without gateway-fabricated iteration entries.
-        if log.endpoint_type == ApiLogEndpointType::AnthropicMessages {
-            let body = crate::format::anthropic::messages::Format::render_json_response(
-                public_id,
-                aggregation,
-            );
-            if let Some(affinity) = &mut affinity {
-                affinity.complete_json::<crate::format::anthropic::messages::Format>(&body);
-            }
-            Ok(finalize_buffered(context.api_log_store.clone(), log, &body))
-        } else {
-            let body = crate::format::openai::response::Format::render_json_response(
-                public_id,
-                aggregation,
-            );
-            if let Some(affinity) = &mut affinity {
-                affinity.complete_json::<crate::format::openai::response::Format>(&body);
-            }
-            Ok(finalize_buffered(context.api_log_store.clone(), log, &body))
+        let body = TFormat::render_json_response(&public_id, aggregation);
+        if let Some(affinity) = &mut affinity {
+            affinity.complete_json::<TFormat>(&body);
         }
+        Ok(finalize_buffered(
+            pipeline.context.api_log_store.clone(),
+            log,
+            &body,
+        ))
     }
 }
 

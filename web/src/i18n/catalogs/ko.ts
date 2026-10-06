@@ -89,7 +89,6 @@ const korean = {
     },
     rich: {
         connected: "[[baseUrl]]에 연결되었습니다 — 토큰은 이 브라우저에만 저장됩니다.",
-        providerModel: "[[modelId]]는 [[providerLink]]에 속합니다.",
         setupToken: "관리 토큰은 해당 인스턴스 설정 파일의 [[setting]]입니다.",
         setupCors:
             "해당 인스턴스의 [[setting]]에서 이 앱의 오리진을 허용하세요. 단, 이 앱이 게이트웨이 자체에서 제공되는 경우는 예외입니다.",
@@ -149,6 +148,7 @@ const korean = {
             enabled: "사용",
             replacingTheSecretRevokesTheOldValueOnMessage:
                 "시크릿을 교체하면 저장할 때 이전 값이 폐기됩니다.",
+            aKeyNeedsASecret: "키에는 시크릿이 필요합니다.",
             deleteThisKey: "이 키 삭제",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "삭제하면 키가 즉시 폐기되어, 키를 보유한 클라이언트는 401 응답을 받기 시작합니다. 모델 접근 규칙은 제거되고 기록된 사용량은 남습니다.",
@@ -157,6 +157,7 @@ const korean = {
             createAPIKey: "API 키 만들기",
             oneSecretYourServingClientsShareMessage:
                 "서비스 클라이언트가 함께 사용하는 하나의 시크릿입니다.",
+            apiKeysBackLabel: "API 키",
             key: "키",
             theSecretHoldsLettersNumbersAndSymbolsOnlyMessage:
                 "시크릿은 영문자, 숫자, 기호로만 구성되며 공백은 포함할 수 없고 다른 키와 중복될 수 없습니다.",
@@ -180,8 +181,11 @@ const korean = {
             createAliases: "별칭 만들기",
             choosePhysicalModelsAndAuthorTheirPublicIDsMessage:
                 "물리 모델을 선택하고 공개 ID를 지정합니다. 선택할 때마다 사용 설정된 직접 라우트가 하나씩 생성되며, 이름 충돌은 이름을 바꾸거나 덮어쓰지 않고 별도로 보고됩니다.",
+            inventoryBackLabel: "모델 목록",
             noPhysicalModelsToAlias: "별칭을 만들 물리 모델이 없습니다",
             discoverOrAddInventoryFirstMessage: "먼저 모델을 탐색하거나 추가하세요.",
+            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
+                "다른 선택된 행이 이 공개 ID를 사용합니다. 서로 다른 이름을 분명히 지정하세요.",
             openRoute: "라우트 열기",
             createSelectedAliases: "선택한 별칭 만들기",
         },
@@ -213,6 +217,14 @@ const korean = {
                 "공급자 하나는 업스트림 계정 하나입니다. 모델은 탐색할 때 들어옵니다.",
             createYourFirstProvider: "첫 공급자 만들기",
             connectedToTheGateway: "게이트웨이에 연결됨",
+            discoverModels: "모델 탐색",
+            createAPIKey: "API 키 만들기",
+            openAndDiscover: "열고 탐색",
+            reviewModels: "모델 검토",
+            credentialNotFresh: "자격 증명이 유효했던 적 없음",
+            credentialExpired: "자격 증명 만료됨",
+            reconnect: "다시 연결",
+            openProvider: "공급자 열기",
             createAProvider: "공급자 만들기",
             discoverItsModelsFromUpstream: "업스트림에서 모델 탐색",
             issueAnAPIKeyForServingClients: "서비스 클라이언트용 API 키 발급",
@@ -220,6 +232,8 @@ const korean = {
         },
         modelDetailScreen: {
             model: "모델",
+            upstreamOnProvider: "{{provider}}의 {{upstreamId}}.",
+            modelsBackLabel: "모델",
             capabilities: "기능",
             whatTheModelListingsDeclareForThisModelMessage:
                 "모델 목록이 이 모델에 대해 선언한 내용입니다. 여기의 값은 요청을 제한하지 않으며, 응답은 업스트림이 결정합니다.",
@@ -229,6 +243,7 @@ const korean = {
             compaction: "압축",
             theRowsOwnCompactionFactsTheOverrideElseMessage:
                 "이 행 자체의 압축 정보입니다. 재정의가 있으면 재정의를, 없으면 최근 탐색 결과를 사용합니다. 둘 다 밝히지 않은 부분은 정의의 선언이 결정합니다.",
+            noLevels: "수준 없음",
             addAlias: "별칭 추가",
             editModel: "모델 편집",
             details: "세부 정보",
@@ -257,6 +272,7 @@ const korean = {
             createProvider: "공급자 만들기",
             aModelAddedByHandIsNeverRemovedMessage:
                 "직접 추가한 모델은 자동으로 제거되지 않으며, 탐색에서 놓친 모델을 되찾아옵니다.",
+            models: "모델",
             identity: "식별 정보",
             provider: "공급자",
             upstreamID: "업스트림 ID",
@@ -291,6 +307,9 @@ const korean = {
             noModelsYet: "모델이 아직 없습니다",
             addAProviderFirstThenDiscoverItsModelsMessage:
                 "공급자를 먼저 추가한 뒤 모델을 탐색하거나, 직접 하나 추가하세요.",
+            thisProviderHoldsNoModels: "이 공급자에는 모델이 없습니다.",
+            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
+                "이 공급자는 더 이상 목록에 없습니다 — 공급자 필터에서 다른 공급자를 선택하세요.",
             createProvider: "공급자 만들기",
             searchModels: "모델 검색",
             searchByUpstreamIDOrProviderName: "업스트림 ID 또는 공급자 이름으로 검색",
@@ -323,6 +342,8 @@ const korean = {
             theVerificationURL: "인증 URL",
             approveTheCodeAtTheVerificationPageThisMessage:
                 "인증 페이지에서 코드를 승인하세요. 이 페이지는 게이트웨이에 결과를 계속 질의하며, 흐름이 완료되는 즉시 다음으로 넘어갑니다.",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "흐름이 완료될 때까지 이 페이지에 머무르세요 — 콘솔 안에서 이동하면 흐름이 폐기됩니다.",
         },
         poolAvailabilityCard: {
             refreshQuota: "할당량 새로 고침",
@@ -358,12 +379,15 @@ const korean = {
             credentials: "자격 증명",
             oauthCredentialsExpireReconnectingReplacesThemMessage:
                 "OAuth 자격 증명은 만료되며, 다시 연결하면 교체됩니다.",
+            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
+                "이 공급자의 정의는 기본 URL을 기준으로 요청을 평가합니다 — URL을 복원하거나 되돌리기를 사용하세요.",
             deleteThisProvider: "이 공급자 삭제",
         },
         providerNewScreen: {
             createProvider: "공급자 만들기",
             oneUpstreamAccountPickThePresetTheCredentialMessage:
                 "업스트림 계정 하나입니다. 프리셋을 선택하면 자격 증명 경로가 그에 맞춰 정해집니다.",
+            providersBackLabel: "공급자",
             readAgain: "다시 읽기",
             preset: "프리셋",
             switchPreset: "프리셋 전환",
@@ -373,6 +397,8 @@ const korean = {
             theKeyIsWriteonlyTheGatewayNeverReturnsMessage:
                 "키는 쓰기 전용이며 게이트웨이는 값을 반환하지 않습니다.",
             connectTheAccount: "계정 연결",
+            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
+                "인증이 진행되는 동안에는 잠깁니다 — 공급자는 흐름 시작 시 이미 전송한 값으로 만들어집니다.",
             approveAccessWhereTheFlowPointsThenLetMessage:
                 "흐름이 안내하는 곳에서 접근을 승인한 뒤 완료되도록 두세요. 이 앱은 자격 증명을 저장하지 않습니다.",
             upstreamBaseURL: "업스트림 기본 URL",
@@ -426,6 +452,8 @@ const korean = {
             readingUpstreamQuota: "업스트림 할당량을 읽는 중…",
             showingThePreviousReadingMessage: "이전 읽기 결과를 표시합니다.",
             observed: "관측 시각",
+            resetTimeReachedRefreshToUpdate:
+                "초기화 시각에 도달했습니다, 새로 고침하여 업데이트하세요",
             theUpstreamReturnedNoQuotaEntriesMessage:
                 "업스트림이 할당량 항목을 반환하지 않았습니다.",
         },
@@ -450,6 +478,7 @@ const korean = {
             noPoolsYet: "계정 풀이 아직 없습니다",
             createANamedPoolWithAModelPrefixMessage:
                 "모델 접두사를 지정해 이름 있는 계정 풀을 만드세요. 구성원 모델은 자동으로 노출됩니다.",
+            noModelPrefix: "없음",
             publicRoutes: "공개 라우트",
             modelNamesClientsRequestStandaloneProvidersAndPoolsMessage:
                 "클라이언트가 요청하는 모델 이름입니다. 독립 공급자와 계정 풀은 모델 이름을 자동으로 노출합니다. 추가 별칭은 선택 사항입니다.",
@@ -457,6 +486,7 @@ const korean = {
             noPublicRoutesYet: "공개 라우트가 아직 없습니다",
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "물리 모델을 직접 게시하거나, 계정 풀과 정확한 업스트림 ID를 대상으로 지정하세요.",
+            automaticPrefix: "자동 · ",
         },
         screenFrame: {
             readAgain: "다시 읽기",
@@ -480,6 +510,10 @@ const korean = {
             exclusiveInThisBrowsersZoneLike20260923T1000BlankMessage:
                 "해당 시각을 제외하며 이 브라우저의 시간대를 기준으로 합니다(예: 2026-09-23T10:00). 비워 두면 범위를 지정하지 않습니다.",
             clearFilters: "필터 지우기",
+            usageBackLabel: "사용량",
+            theQueryDidNotRunAFilterValueIsInvalid:
+                "질의가 실행되지 않았습니다 — 필터 값이 잘못되었습니다.",
+            total: "합계",
             nothingRecordedInThisWindowMessage: "이 기간에는 기록된 내용이 없습니다.",
             noRowsInThisWindowMessage: "이 기간에는 행이 없습니다.",
             bucket: "버킷",
@@ -507,6 +541,9 @@ const korean = {
             oneRowAppearsPerDispatchedServingRequestTheMessage:
                 "게이트웨이가 업스트림으로 보내는 순간, 발송된 서비스 요청마다 행 하나가 나타납니다. 트래픽이 흐르는데 아무것도 나타나지 않으면 게이트웨이 설정 파일의 api_logs 섹션을 확인하세요.",
             noRecordedRequestsMatchThisFilterMessage: "이 필터와 일치하는 기록된 요청이 없습니다.",
+            filtersStayBehind: " — 기간과 나머지 모든 필터는 여기에 남습니다.",
+            streamMark: " · 스트리밍",
+            thisRowIsNoLongerListed: "이 행은 더 이상 목록에 없습니다.",
         },
         usageStats: {
             usage: "사용량",
@@ -530,7 +567,6 @@ const korean = {
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage:
                 "업스트림이 더 이상 이 모델을 보고하지 않습니다.",
-            itServesNothingMeanwhileMessage: "그동안에는 아무것도 서비스하지 않습니다.",
         },
     },
     diagnosis: {
@@ -875,8 +911,6 @@ const korean = {
     },
     operationNotices: {
         flowFailed: "흐름이 실패했습니다.",
-        flowGone:
-            "이 인증 흐름은 더 이상 완료할 수 없습니다 — state가 만료되었거나 이미 사용되었습니다.",
         freshFlow: "새 흐름을 시작하고 신속히 인증하세요.",
         flowExpired: "흐름이 만료되었습니다.",
         flowExpiryPassed: "이 페이지가 결과를 기다리는 동안 흐름의 만료 시각이 지났습니다.",
@@ -884,9 +918,6 @@ const korean = {
         pollFailed: "마지막 결과 조회가 실패했습니다.",
         invalidDefinition: "정의 JSON이 게이트웨이가 저장할 수 있는 정의가 아닙니다.",
         fixDefinition: "JSON을 수정하고 다시 제출하세요. 아무것도 기록되지 않았습니다.",
-        invalidFilter: "질의가 실행되지 않았습니다 — 필터 값이 잘못되었습니다.",
-        previousQuery:
-            "아래 답변은 아직 이전 질의의 결과입니다 — 인라인 오류를 표시하는 필드가 문제를 알려줍니다.",
         fixFilter: "해당 필드를 수정한 뒤 질의를 다시 실행하세요.",
         discoveryPending: "[[providerName]]에서 모델을 탐색하는 중…",
         discoveryQuery: "업스트림이 지금 보고하는 내용을 묻는 중입니다.",
@@ -916,12 +947,6 @@ const korean = {
         identifiers: {
             baseURLMustBeAnHttpOrHttpsAddressWithNoSpaces:
                 "기본 URL은 공백이 없는 http:// 또는 https:// 주소여야 합니다.",
-        },
-        presetQuotas: {
-            primaryWindow: "기본 창",
-            secondaryWindow: "보조 창",
-            allowance: "허용량",
-            modelAllowance: "모델 허용량",
         },
         presets: {
             anyEndpointSpeakingTheOpenAIResponsesProtocolWithAStaticKey:
@@ -959,56 +984,11 @@ const korean = {
             zenOverTheGeminiGenerateContentProtocolWithAStaticKey:
                 "정적 키를 사용하는 Gemini GenerateContent 프로토콜의 Zen입니다.",
         },
-        apiKeyEditScreen: {
-            aKeyNeedsASecret: "키에는 시크릿이 필요합니다.",
-        },
-        bulkPublicationScreen: {
-            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
-                "다른 선택된 행이 이 공개 ID를 사용합니다. 서로 다른 이름을 분명히 지정하세요.",
-        },
-        homeScreen: {
-            discoverModels: "모델 탐색",
-            createAPIKey: "API 키 만들기",
-            openAndDiscover: "열고 탐색",
-            reviewModels: "모델 검토",
-            credentialNotFresh: "자격 증명이 유효했던 적 없음",
-            credentialExpired: "자격 증명 만료됨",
-            reconnect: "다시 연결",
-            openProvider: "공급자 열기",
-        },
-        modelDetailScreen: {
-            noLevels: "수준 없음",
-        },
-        modelNewScreen: {
-            models: "모델",
-            provider: "공급자",
-        },
-        modelsScreen: {
-            thisProviderHoldsNoModels: "이 공급자에는 모델이 없습니다.",
-            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
-                "이 공급자는 더 이상 목록에 없습니다 — 공급자 필터에서 다른 공급자를 선택하세요.",
-        },
-        oauthFlowView: {
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "흐름이 완료될 때까지 이 페이지에 머무르세요 — 콘솔 안에서 이동하면 흐름이 폐기됩니다.",
-        },
         oauthFlow: {
             thatPasteHoldsNeitherABareCodeNorAURLWithACodeCopy:
                 "붙여넣은 내용에는 코드만 있지도, 코드가 담긴 URL도 아닙니다 — 로그인이 끝난 주소 전체 또는 코드만 복사해 여기에 붙여넣으세요.",
             theFlowStaysLiveThisPageKeepsAskingForTheOutcome:
                 "흐름은 계속 진행 중이며, 이 페이지는 결과를 계속 질의합니다.",
-        },
-        providerEditScreen: {
-            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
-                "이 공급자의 정의는 기본 URL을 기준으로 요청을 평가합니다 — URL을 복원하거나 되돌리기를 사용하세요.",
-        },
-        providerNewScreen: {
-            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
-                "인증이 진행되는 동안에는 잠깁니다 — 공급자는 흐름 시작 시 이미 전송한 값으로 만들어집니다.",
-        },
-        providerQuotaCard: {
-            resetTimeReachedRefreshToUpdate:
-                "초기화 시각에 도달했습니다, 새로 고침하여 업데이트하세요",
         },
         rowNotFound: {
             theGatewayHoldsNoPoolHereItWasDeletedOrTheAddressWasTyped:
@@ -1025,14 +1005,6 @@ const korean = {
         usageLabels: {
             streamed: "스트리밍",
             nonstreamed: "비스트리밍",
-        },
-        usageQueryScreen: {
-            theQueryDidNotRunAFilterValueIsInvalid:
-                "질의가 실행되지 않았습니다 — 필터 값이 잘못되었습니다.",
-            total: "합계",
-        },
-        usageScreen: {
-            thisRowIsNoLongerListed: "이 행은 더 이상 목록에 없습니다.",
         },
         apiKeyAccess: {
             inherit: "상속",
@@ -1076,6 +1048,8 @@ const korean = {
             last24Hours: "최근 24시간",
             last7Days: "최근 7일",
             last30Days: "최근 30일",
+            invalidStatusList:
+                "HTTP 상태는 200, 429 같은 일반 정수를 쉼표로 구분해서 입력해야 하며, 비워 두면 상태로 좁히지 않습니다.",
         },
     },
     validation: {
@@ -1156,9 +1130,6 @@ const korean = {
         enabledStored: "저장된 {{total}}개 중 사용 설정 개수",
         readyListed: "나열된 {{total}}개 중 준비 개수",
         copyEndpoint: "{{surface}} 엔드포인트 URL 복사",
-        noModels: " 에는 아직 모델이 없습니다.",
-        noReadyModels:
-            " 에는 사용 가능한 모델이 없습니다 — 모든 모델이 사용 안 함이거나 사라졌습니다.",
         disabledCredential:
             "{{expiry}} 공급자가 사용 안 함 상태입니다 — 다시 사용 설정할 때 다시 연결하세요.",
         noKeysDetail:

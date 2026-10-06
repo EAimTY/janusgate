@@ -10,12 +10,13 @@
 //! The architecture this surface plugs into:
 //! - [`crate::format::RouteContext`] carries the URL-routed public model id and the streaming mode
 //!   from the URL action; the body carries no model.
-//! - [`crate::ir::IrReasoningLevel`] for the inbound level parameter (unknown strings are a 400);
+//! - [`crate::vocabulary::ReasoningLevel`] for the inbound level parameter (unknown strings are a
+//!   400);
 //! - [`crate::ir::IrPart::Reasoning`] never originates here (GenerateContent has no reasoning input
 //!   slot); history-replay carve-outs stay minimal — only what the gateway itself emits
 //!   (`thoughtSignature` on `functionCall` parts, gateway-rendered `id` fields, and the `thought`
 //!   flag accepted-and-ignored as plain text);
-//! - [`crate::api::Error`] with [`crate::format::gemini::error`] for both error paths.
+//! - [`crate::api::Error`] with [`crate::api::error::gemini`] for both error paths.
 //!
 //! Rendered payloads are first-party types in their wire shapes, so field presence per request is
 //! declared by `skip_serializing_if` rather than assembled conditionally. Wire shapes follow the
@@ -31,7 +32,9 @@ use crate::{
     ir::{InvalidRequest, IrAggregation},
 };
 
+mod affinity;
 mod client_render;
+mod json_affinity;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
@@ -66,17 +69,6 @@ impl ClientFormat for Format {
         response: &Self::JsonResponse,
         projector: &mut crate::affinity::fingerprint::Projector,
     ) -> bool {
-        client_render::project_json_response(response, projector)
-    }
-
-    fn render_json_response_with_prefix(
-        _public_id: &str,
-        aggregation: &IrAggregation,
-        _prefix: &[crate::format::compaction_wire::Checkpoint],
-        _iterations: &[crate::format::compaction_wire::UsageIteration],
-    ) -> Self::JsonResponse {
-        // This surface has no compaction channel; its callers can never
-        // produce a checkpoint prefix, so the ordinary rendering stands.
-        Self::render_json_response(_public_id, aggregation)
+        json_affinity::project_json_response(response, projector)
     }
 }

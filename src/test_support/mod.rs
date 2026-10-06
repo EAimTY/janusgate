@@ -74,8 +74,6 @@ pub(crate) const FIXTURE_SEALING_KEY_ROTATED: &str = "ICEiIyQlJicoKSorLC0uLzAxMj
 ///
 /// # Panics
 ///
-/// # Panics
-///
 /// Panics if the loader rejects its file, or when a configuration is already
 /// installed without the compaction sealing keys.
 pub(crate) fn set_global_configuration(loader: crate::config::ConfigLoader) {

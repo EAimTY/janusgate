@@ -16,7 +16,7 @@ import {
     missingBucketKeyFieldMessage,
 } from "/src/management-api/usage-buckets";
 import { type ReadCall, readAll } from "/src/screen-state/read";
-import { readApiKeys, readModels, readProviders } from "../inventory/read";
+import { readApiKeys, readModelRoutes, readModels, readProviders } from "../inventory/read";
 import { USAGE_PAGE_SIZE } from "./pagination";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */
@@ -52,9 +52,7 @@ export function readUsageEntities(
                 readProviders(api),
                 readModels(api, {}),
                 readApiKeys(api),
-                {
-                    run: (signal) => api.listModelRoutes(signal),
-                },
+                readModelRoutes(api),
             );
 
             return {

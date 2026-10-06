@@ -2,15 +2,17 @@
 //! ([`schema::Config`]), the reloadable owner
 //! ([`ConfigLoader`]), and the loading, hot-reload, TLS, and CORS machinery.
 //!
-//! [`ConfigLoader`] owns the live state — the applied configuration generation, the schema and the
-//! TLS server configuration resolved from it as one value ([`AppliedConfig`]) — and the reload
-//! pipeline. Its watcher future, returned by [`ConfigLoader::new`] for the caller to spawn, watches
-//! the configuration file and the configured TLS material through the platform's native filesystem
-//! notifications; a reload is debounced — it applies once the watched inputs have been quiet for a
-//! fixed window — and a reload that fails for any reason keeps the previously applied state and
-//! logs the failure. Only startup is fatal.
+//! [`ConfigLoader`] owns the live state — the applied configuration generation, the schema and
+//! the TLS server configuration and compaction sealing keys resolved from it as one value
+//! ([`AppliedConfig`]) — and the reload pipeline. Its watcher future, returned by
+//! [`ConfigLoader::new`] for the caller to spawn, watches the configuration file and the
+//! configured TLS material through the platform's native filesystem notifications; a reload is
+//! debounced — it applies once the watched inputs have been quiet for a fixed window — and a
+//! reload that fails for any reason keeps the previously applied state and logs the failure.
+//! Only startup is fatal.
 
 use self::schema::Config;
+use crate::compaction_model::sealing::SealingKeys;
 use arc_swap::ArcSwap;
 use futures::{future, future::Either};
 use json_strip_comments::StripComments;
@@ -41,11 +43,12 @@ pub(crate) use self::error::Error;
 /// scale.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// One applied configuration generation: the schema and the TLS server configuration resolved from
-/// it, packed into a single value so [`ConfigLoader`] can swap both with one store. Every reader —
-/// the [`Deref`]-based schema reads and [`ConfigLoader::tls`] alike — therefore observes exactly
-/// one generation, and a reload can never present a new schema with the previous generation's TLS
-/// material, or the reverse (README §8).
+/// One applied configuration generation: the schema and the TLS server configuration and the
+/// compaction sealing keys resolved from it, packed into a single value so [`ConfigLoader`] can
+/// swap them all with one store. Every reader — the [`Deref`]-based schema reads,
+/// [`ConfigLoader::tls`], and [`ConfigLoader::sealing_keys`] alike — therefore observes exactly
+/// one generation, and a reload can never present a new schema with the previous generation's
+/// TLS material or sealing keys, or the reverse (README §8).
 #[derive(Debug)]
 struct AppliedConfig {
     /// The applied schema. Deliberately leaked: a dereferenced schema reference is borrowed from
@@ -60,14 +63,22 @@ struct AppliedConfig {
     /// configuration's last owning reference once the connections accepted under it finish, so
     /// reloads never accumulate.
     tls_server_config: Option<Arc<ServerConfig>>,
+
+    /// The compaction sealing keys resolved from the schema's typed `compaction` section; `None`
+    /// serves no sealed compaction artifacts. Refcounted like
+    /// [`AppliedConfig::tls_server_config`]: the ciphers are initialized exactly once, per
+    /// generation, in the load pipeline, and dropping a superseded generation releases its last
+    /// owning reference once the operations running under it finish.
+    sealing_keys: Option<Arc<SealingKeys>>,
 }
 
 /// The gateway's live configuration loader: the currently applied configuration generation
 /// ([`AppliedConfig`]) and the reload pipeline that keeps it current with its files.
 ///
-/// Schema reads are plain dereferences — `crate::CONFIG.field` — through [`Deref`]; TLS reads go
-/// through [`ConfigLoader::tls`]. Both read the one generation held in the loader's single
-/// [`ArcSwap`] cell, so they never disagree, and a reload applies with one store.
+/// Schema reads are plain dereferences — `crate::CONFIG.field` — through [`Deref`]; TLS and
+/// sealing-key reads go through [`ConfigLoader::tls`] and [`ConfigLoader::sealing_keys`]. All read
+/// the one generation held in the loader's single [`ArcSwap`] cell, so they never disagree, and a
+/// reload applies with one store.
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigLoader {
     /// Path of the configuration file, as given on the command line.
@@ -94,12 +105,14 @@ impl Deref for ConfigLoader {
 
 impl ConfigLoader {
     /// Loads the configuration from `path` — reads and parses the schema and resolves its TLS
-    /// material — and returns the loader together with its watcher future, which the caller spawns.
+    /// material and sealing keys — and returns the loader together with its watcher future, which
+    /// the caller spawns.
     ///
     /// # Errors
     ///
-    /// Returns the loading failure: an unreadable input, a schema the deserializer rejects, or TLS
-    /// material that does not resolve.
+    /// Returns the loading failure: an unreadable input, or a schema the deserializer rejects —
+    /// including a `compaction` section whose key set violates its contract — or TLS material that
+    /// does not resolve.
     pub(crate) fn new(path: PathBuf) -> Result<(Self, impl Future<Output = ()> + Send), Error> {
         let applied = read_inputs(&path)?;
 
@@ -111,6 +124,14 @@ impl ConfigLoader {
         let watcher = loader.clone().watch();
 
         Ok((loader, watcher))
+    }
+
+    /// The sealing keys resolved from the currently applied configuration generation, `None` when
+    /// no `compaction` section is configured. Sealing and unsealing read the one generation per
+    /// operation, so a reload applies to the next operation and can never pair a new schema with
+    /// the previous generation's keys, or the reverse.
+    pub(crate) fn sealing_keys(&self) -> Option<Arc<SealingKeys>> {
+        self.applied.load_full().sealing_keys.clone()
     }
 
     /// The watcher future: watches — through the platform's native filesystem notification API —
@@ -168,9 +189,9 @@ impl ConfigLoader {
     /// only when everything succeeded — swap the one configuration generation in a single store,
     /// moving the global log filter to the new `log_level`.
     ///
-    /// A configuration whose TLS material does not resolve keeps the previous schema as well, and
-    /// any failure keeps the previously applied state and logs the failure — a running gateway
-    /// never dies over a reload.
+    /// A configuration the deserializer rejects — an invalid sealing-key set included — or whose
+    /// TLS material does not resolve keeps the previous schema as well, and any failure keeps the
+    /// previously applied state and logs the failure — a running gateway never dies over a reload.
     fn reload(&self) {
         match read_inputs(&self.path) {
             Ok(applied) => {
@@ -192,8 +213,10 @@ impl ConfigLoader {
 
 /// The one configuration loading pipeline shared by startup ([`ConfigLoader::new`]) and every
 /// reload ([`ConfigLoader::reload`]): read the configuration file at `path`, strip its comments,
-/// deserialize the schema strictly, and resolve the TLS material into a Rustls server
-/// configuration, packed into one configuration generation.
+/// deserialize the schema strictly — an invalid `compaction` sealing-key set is a schema
+/// rejection, carrying the offending value's line and column — and resolve the TLS material into
+/// a Rustls server configuration and the typed sealing keys into their initialized ciphers, packed
+/// into one configuration generation.
 ///
 /// # Errors
 ///
@@ -211,12 +234,14 @@ fn read_inputs(path: &Path) -> Result<AppliedConfig, Error> {
             source,
         })?;
 
-    // The compaction sealing keys are validated as part of the load, so an
-    // invalid key set fails the load exactly like an unparsable schema — a
-    // startup failure, or a reload that keeps the previous generation.
-    crate::compaction::sealing::validate_key_configuration(&schema)?;
-
     let tls_server_config = self::tls::resolve(&schema)?;
+
+    // The typed `compaction` section is valid by construction, so the ciphers initialize
+    // infallibly, once per generation.
+    let sealing_keys = schema
+        .compaction
+        .as_ref()
+        .map(|section| Arc::new(SealingKeys::build(section)));
 
     // Leak the schema: dereferenced references borrow the process-lifetime loader, so every
     // applied schema must outlive it (see [`AppliedConfig`]). Leaked only past the resolution
@@ -224,6 +249,7 @@ fn read_inputs(path: &Path) -> Result<AppliedConfig, Error> {
     Ok(AppliedConfig {
         schema: Box::leak(Box::new(schema)),
         tls_server_config,
+        sealing_keys,
     })
 }
 
@@ -484,9 +510,10 @@ mod tests {
     }
 
     /// Verifies the failure classification of [`ConfigLoader::new`]: an unreadable configuration or
-    /// certificate file, a rejected schema — a missing field, an unknown field, or a DNS `listen`
-    /// host — a certificate chain with no certificates, an undecodable chain, an undecodable
-    /// private key, and a key that does not match the leaf certificate.
+    /// certificate file, a rejected schema — a missing field, an unknown field, a DNS `listen`
+    /// host, or a `compaction` key set that violates its contract — a certificate chain with no
+    /// certificates, an undecodable chain, an undecodable private key, and a key that does not
+    /// match the leaf certificate.
     ///
     /// # Panics
     ///
@@ -505,7 +532,7 @@ mod tests {
         let not_a_key = write_test_file("classify", "not-a-key.pem", "not a pem\n");
         let other_key = write_test_file("classify", "other-key.pem", SECOND_PRIVATE_KEY_PEM);
 
-        let cases: [FailureCase; 8] = [
+        let cases: [FailureCase; 9] = [
             (
                 "unreadable certificate",
                 configuration_body("token", Some(missing_tls_paths())),
@@ -533,6 +560,15 @@ mod tests {
                 String::from(
                     "{\"listen\": \"localhost:8080\", \"database\": {\"path\": \"x.db\"}, \
                      \"management_api\": {\"token\": \"t\"}, \"api\": {}}}",
+                ),
+                |failure| matches!(failure, Error::Parse { .. }),
+            ),
+            (
+                "invalid compaction keys",
+                String::from(
+                    "{\"listen\": \"127.0.0.1:8080\", \"database\": {\"path\": \"x.db\"}, \
+                     \"management_api\": {\"token\": \"t\"}, \"api\": {}, \
+                     \"compaction\": {\"keys\": [{\"id\": \"a\", \"key\": \"AAAA\"}]}}",
                 ),
                 |failure| matches!(failure, Error::Parse { .. }),
             ),

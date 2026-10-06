@@ -184,7 +184,9 @@ pub(super) async fn update(
 }
 
 /// Deletes the addressed entity; referenced pools produce a conflict.
-/// Deletion and affinity invalidation share a detached mutation owner across caller cancellation.
+/// Deletion and the affinity handle invalidation share the version's detached mutation owner across
+/// caller cancellation: ids are never reused, so a committed write whose invalidation is lost to a
+/// cancelled caller would leave a stale handle forever.
 ///
 /// # Panics
 ///
@@ -196,16 +198,13 @@ pub(super) async fn delete(
     let database = context.database.clone();
     let cache = context.affinity_cache.clone();
     let pool_id = request.provider_pool_id;
-    let deletion = tokio::spawn(async move {
+    super::detach_mutation(async move {
         routing::delete_pool(&database, pool_id).await?;
         cache.remove_pool(pool_id);
-        Ok::<_, crate::storage::Error>(())
-    });
-    #[expect(
-        clippy::expect_used,
-        reason = "the mutation task always hands its result to the handler"
-    )]
-    deletion.await.expect("pool deletion task completes")?;
+        Ok(())
+    })
+    .await?;
+
     Ok(Json(EmptyResponse {}))
 }
 

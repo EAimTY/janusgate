@@ -2,6 +2,8 @@
 
 These fixtures describe reviewed upstream wire shapes, with synthetic values and identifiers. They contain no live credentials or captured account data. Numeric values were changed to exercise decimals, zero, over-limit use, explicit unlimited, absent facts, and repeated pools. Passing them or inspecting mock UI data does not establish live upstream compatibility. All five quota additions remain unverified by a live quota query, independently of each preset's existing login/inference verification.
 
+These are shared test fixtures, not application data, so they live at the repository root — outside both the crate's source tree and the janusgate-web package's Vite/tsc/Biome-governed `web/src/` — and both build systems consume them in place: the Rust tests embed them with `include_str!` and the frontend tests import them as Vite `?raw` assets. Moving or renaming a document here must update every consumer in the same change.
+
 Each JSON document contains the actual catalog `descriptor`, foreign `response`, complete normalized `expected` list, and independently stated `expected_request` facts using synthetic credentials. Rust pure extraction tests and management-route tests share these documents; the latter exercise stored definitions, authenticated HTTP requests, and full result normalization. Frontend tests keep fixtures tied to catalog recipes and preserve quota through unrelated definition edits and strict stored/result decoding.
 
 | Capability | Pinned evidence and mapped facts | Verification and limits |

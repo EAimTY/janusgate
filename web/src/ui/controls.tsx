@@ -5,15 +5,44 @@ import { AppLink } from "/src/ui/app-link";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Glyph, type GlyphName } from "/src/ui/glyph";
 
-/** A labelled field: what an input is for, what went wrong, and a hint. */
+/**
+ * A labelled field: what an input is for, what went wrong, and a hint. The
+ * control receives the ids of the hint and error paragraphs through its
+ * `describedBy` callback, so a focused field announces its standing error
+ * and its hint instead of its name alone; the callback reads the current
+ * hint and error, so the wiring follows them as they come and go.
+ */
 function FieldFrame(props: {
     readonly label: JSX.Element;
     readonly controlId: string;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
-    readonly children: JSX.Element;
+    readonly children: (describedBy: () => string | undefined) => JSX.Element;
     readonly class?: string | undefined;
 }): JSX.Element {
+    const hintId = createUniqueId();
+    const errorId = createUniqueId();
+
+    // The standing error's id leads — an alert is announced ahead of the
+    // field's own text — then the hint's. With neither showing, the control
+    // describes nothing.
+    const describedBy = (): string | undefined => {
+        const ids = [
+            ...(props.error
+                ? [
+                      errorId,
+                  ]
+                : []),
+            ...(props.hint
+                ? [
+                      hintId,
+                  ]
+                : []),
+        ];
+
+        return ids.length === 0 ? undefined : ids.join(" ");
+    };
+
     return (
         <div class={props.class}>
             <label
@@ -22,10 +51,11 @@ function FieldFrame(props: {
             >
                 {props.label}
             </label>
-            <div class="mt-1.5">{props.children}</div>
+            <div class="mt-1.5">{props.children(describedBy)}</div>
             <Show when={props.error}>
                 {(error) => (
                     <p
+                        id={errorId}
                         class="mt-1.5 flex items-start gap-1.5 text-[13px] text-bad"
                         role="alert"
                     >
@@ -38,7 +68,14 @@ function FieldFrame(props: {
                 )}
             </Show>
             <Show when={props.hint}>
-                {(hint) => <p class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint">{hint()}</p>}
+                {(hint) => (
+                    <p
+                        id={hintId}
+                        class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint"
+                    >
+                        {hint()}
+                    </p>
+                )}
             </Show>
         </div>
     );
@@ -70,18 +107,21 @@ export function TextField(props: {
             error={props.error}
             class={props.class}
         >
-            <input
-                id={controlId}
-                type={props.type ?? "text"}
-                dir={props.isData === false ? "auto" : "ltr"}
-                class={joinClass(INPUT_CLASS, props.isData === false ? "" : "tnum")}
-                value={props.value}
-                placeholder={props.placeholder}
-                disabled={props.isDisabled ?? false}
-                autocomplete={props.autocomplete ?? "off"}
-                spellcheck={false}
-                onInput={(event) => props.onInput(event.currentTarget.value)}
-            />
+            {(describedBy) => (
+                <input
+                    id={controlId}
+                    type={props.type ?? "text"}
+                    dir={props.isData === false ? "auto" : "ltr"}
+                    class={joinClass(INPUT_CLASS, props.isData === false ? "" : "tnum")}
+                    value={props.value}
+                    placeholder={props.placeholder}
+                    disabled={props.isDisabled ?? false}
+                    autocomplete={props.autocomplete ?? "off"}
+                    spellcheck={false}
+                    aria-describedby={describedBy()}
+                    onInput={(event) => props.onInput(event.currentTarget.value)}
+                />
+            )}
         </FieldFrame>
     );
 }
@@ -157,47 +197,50 @@ export function SelectField<T extends string>(props: {
             hint={props.hint}
             class={props.class}
         >
-            <select
-                ref={(element) => {
-                    selectElement = element;
-                }}
-                id={controlId}
-                class={joinClass(INPUT_CLASS, "tnum pe-8")}
-                disabled={props.isDisabled ?? false}
-                onChange={(event) => {
-                    const picked = event.currentTarget.value;
-                    const selected = props.options.find((option) => option.value === picked);
+            {(describedBy) => (
+                <select
+                    ref={(element) => {
+                        selectElement = element;
+                    }}
+                    id={controlId}
+                    class={joinClass(INPUT_CLASS, "tnum pe-8")}
+                    disabled={props.isDisabled ?? false}
+                    aria-describedby={describedBy()}
+                    onChange={(event) => {
+                        const picked = event.currentTarget.value;
+                        const selected = props.options.find((option) => option.value === picked);
 
-                    if (selected !== undefined) {
-                        props.onChange(selected.value);
-                    } else if (picked === props.value) {
-                        // The trailing absent-value option: the choice the
-                        // caller already holds, reported like any other.
-                        props.onChange(props.value);
-                    }
-                }}
-            >
-                <For each={props.options}>
-                    {(option) => (
-                        <option
-                            value={option.value}
-                            selected={option.value === props.value}
-                        >
-                            {option.label}
-                        </option>
-                    )}
-                </For>
-                <Show when={absentOption()}>
-                    {(absent) => (
-                        <option
-                            value={absent().value}
-                            selected={true}
-                        >
-                            {absent().label}
-                        </option>
-                    )}
-                </Show>
-            </select>
+                        if (selected !== undefined) {
+                            props.onChange(selected.value);
+                        } else if (picked === props.value) {
+                            // The trailing absent-value option: the choice the
+                            // caller already holds, reported like any other.
+                            props.onChange(props.value);
+                        }
+                    }}
+                >
+                    <For each={props.options}>
+                        {(option) => (
+                            <option
+                                value={option.value}
+                                selected={option.value === props.value}
+                            >
+                                {option.label}
+                            </option>
+                        )}
+                    </For>
+                    <Show when={absentOption()}>
+                        {(absent) => (
+                            <option
+                                value={absent().value}
+                                selected={true}
+                            >
+                                {absent().label}
+                            </option>
+                        )}
+                    </Show>
+                </select>
+            )}
         </FieldFrame>
     );
 }
@@ -353,7 +396,8 @@ export function ButtonLink(props: {
  * never color alone. The label is a real `<label>` paired to the switch
  * through `for`, so clicking the visible text toggles exactly as clicking
  * the knob does — natively inert while the switch is disabled. The hint,
- * when present, states the current consequence of the switch's position.
+ * when present, states the current consequence of the switch's position,
+ * and a focused switch announces it through `aria-describedby`.
  */
 export function Switch(props: {
     readonly label: string;
@@ -364,6 +408,7 @@ export function Switch(props: {
     readonly class?: string | undefined;
 }): JSX.Element {
     const controlId = createUniqueId();
+    const hintId = createUniqueId();
 
     return (
         <div class={props.class}>
@@ -380,6 +425,7 @@ export function Switch(props: {
                     role="switch"
                     aria-checked={ariaBoolean(props.isOn)}
                     aria-label={props.label}
+                    aria-describedby={props.hint ? hintId : undefined}
                     disabled={props.isDisabled ?? false}
                     class={joinClass(
                         "relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-50",
@@ -397,7 +443,14 @@ export function Switch(props: {
                 </button>
             </div>
             <Show when={props.hint}>
-                {(hint) => <p class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint">{hint()}</p>}
+                {(hint) => (
+                    <p
+                        id={hintId}
+                        class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint"
+                    >
+                        {hint()}
+                    </p>
+                )}
             </Show>
         </div>
     );

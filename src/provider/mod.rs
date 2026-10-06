@@ -6,12 +6,12 @@
 //! module in [`crate::storage`].
 
 use crate::{
-    compaction::{
+    compaction_model::{
         mechanism::{Mechanism, MechanismSupport},
         support_facts::{CompactionSupportFacts, resolve_mechanism},
     },
-    ir::IrReasoningLevel,
     storage::Error as StorageError,
+    vocabulary::ReasoningLevel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -346,7 +346,7 @@ pub(crate) struct Model {
     /// (README §6.4), canonicalized. `None` is *unknown* (nothing extracted), never "none";
     /// an empty set is the positive declaration that no level is supported. Discovery-owned:
     /// every refresh rewrites it for a listed row.
-    pub(crate) thinking_levels: Option<Vec<IrReasoningLevel>>,
+    pub(crate) thinking_levels: Option<Vec<ReasoningLevel>>,
 
     /// Discovered maximum input tokens; `None` is unknown. Discovery-owned.
     pub(crate) max_input_tokens: Option<i64>,
@@ -357,7 +357,7 @@ pub(crate) struct Model {
     /// Administrator's replacement declaration for the thinking levels; `None` keeps the
     /// discovered value. The canonicalized set mirrors the base column's semantics, empty set
     /// included.
-    pub(crate) thinking_levels_override: Option<Vec<IrReasoningLevel>>,
+    pub(crate) thinking_levels_override: Option<Vec<ReasoningLevel>>,
 
     /// Administrator's replacement declaration for the maximum input tokens; `None` keeps the
     /// discovered value.
@@ -388,7 +388,7 @@ pub(crate) struct DiscoveredModel {
     pub(crate) upstream_id: String,
 
     /// Extracted thinking levels; `None` when unknown.
-    pub(crate) thinking_levels: Option<Vec<IrReasoningLevel>>,
+    pub(crate) thinking_levels: Option<Vec<ReasoningLevel>>,
 
     /// Extracted maximum input tokens; `None` when unknown.
     pub(crate) max_input_tokens: Option<i64>,
@@ -431,7 +431,7 @@ impl Model {
     /// The model's effective thinking-level declaration: the override when present, else the
     /// discovered set — `None` when neither is known, the value the outward listings omit
     /// (README §3/§6.5). A declaration, never an enforcement: dispatch never consults it.
-    pub(crate) fn effective_thinking_levels(&self) -> Option<&[IrReasoningLevel]> {
+    pub(crate) fn effective_thinking_levels(&self) -> Option<&[ReasoningLevel]> {
         self.thinking_levels_override
             .as_deref()
             .or(self.thinking_levels.as_deref())
@@ -463,7 +463,9 @@ impl Model {
 
         Mechanism::ALL.into_iter().filter_map(move |mechanism| {
             let support = resolve_mechanism(
-                definition_default(section, mechanism),
+                section.map_or(MechanismSupport::Unknown, |section| {
+                    section.declared_default(mechanism)
+                }),
                 base,
                 model_override,
                 mechanism,
@@ -472,47 +474,4 @@ impl Model {
             (support != MechanismSupport::Unknown).then_some((mechanism, support))
         })
     }
-}
-
-/// The compaction section's declared default support of one mechanism: the declaration's
-/// `default` when the mechanism is declared, else the unknown state — an absent declaration is
-/// no declaration at all.
-fn definition_default(
-    section: Option<&definition::compaction::CompactionSection>,
-    mechanism: Mechanism,
-) -> MechanismSupport {
-    let Some(section) = section else {
-        return MechanismSupport::Unknown;
-    };
-
-    let declarations = &section.mechanisms;
-
-    let declared = match mechanism {
-        Mechanism::ResponsesStandaloneCompact => declarations
-            .responses_standalone_compact
-            .as_ref()
-            .map(|declaration| declaration.default),
-
-        Mechanism::ResponsesExplicitTrigger => declarations
-            .responses_explicit_trigger
-            .as_ref()
-            .map(|declaration| declaration.default),
-
-        Mechanism::ResponsesAutomaticCompaction => declarations
-            .responses_automatic_compaction
-            .as_ref()
-            .map(|declaration| declaration.default),
-
-        Mechanism::MessagesOnDemandCompaction => declarations
-            .messages_on_demand_compaction
-            .as_ref()
-            .map(|declaration| declaration.default),
-
-        Mechanism::MessagesThresholdCompaction => declarations
-            .messages_threshold_compaction
-            .as_ref()
-            .map(|declaration| declaration.default),
-    };
-
-    declared.unwrap_or(MechanismSupport::Unknown)
 }

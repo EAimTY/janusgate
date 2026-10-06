@@ -192,14 +192,17 @@ fn finish_reason_to_gemini(reason: IrFinishReason) -> &'static str {
 /// Renders IR usage into the Gemini usage shape: the output total keeps including reasoning
 /// (matching the upstream codec), so the members come from the shared inverse split — the
 /// candidates count is the output minus reasoning — and the official total member is the sum of
-/// the members rendered here.
+/// the members rendered here, added with `saturating_add` so a third-party total can never
+/// panic (debug) or wrap (release), mirroring the fold in [`crate::format::gemini`].
 fn usage_to_gemini(usage: IrUsage) -> UsageMetadataOut {
     let (input, candidates, reasoning, cached) = split_gemini_usage(&usage);
 
     UsageMetadataOut {
         prompt_token_count: input,
         candidates_token_count: candidates,
-        total_token_count: input + candidates + reasoning.unwrap_or(0),
+        total_token_count: input
+            .saturating_add(candidates)
+            .saturating_add(reasoning.unwrap_or(0)),
         thoughts_token_count: reasoning,
         cached_content_token_count: cached,
     }
@@ -323,11 +326,12 @@ impl SseRenderer {
         crate::sse::format_data_frame(&crate::format::render_json(&chunk))
     }
 
-    /// Formats one content chunk carrying the given parts.
+    /// Formats one content chunk carrying the given parts; a pooled projection observes the
+    /// emitted parts at their typed render point.
     fn parts_frame(&mut self, parts: Vec<PartOut>) -> String {
         if let Some(projector) = self.projection.as_mut() {
             for part in &parts {
-                project_part(part, projector);
+                super::affinity::project_part(part, projector);
             }
         }
         self.chunk_frame(
@@ -470,64 +474,6 @@ impl ClientSseRenderer for SseRenderer {
     /// Renders a mid-stream error as a terminal SSE frame carrying the Gemini error envelope.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         error_data_frame(error)
-    }
-}
-/// Projects actual candidate parts, following accepted thought replay and the emitted invocation
-/// IDs.
-///
-/// # Panics
-///
-/// Panics if a gateway-rendered invocation lacks its mandatory emitted ID.
-pub(super) fn project_json_response(
-    response: &JsonResponse,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    for candidate in &response.candidates {
-        for part in &candidate.content.parts {
-            project_part(part, projector);
-        }
-    }
-    true
-}
-
-/// Projects one actual emitted part with the same identity semantics as GenerateContent replay.
-/// Empty emitted IDs are id-less, and their fresh resolver IDs never enter canonical units.
-///
-/// # Panics
-///
-/// Panics if a gateway-rendered invocation lacks its mandatory emitted ID field.
-fn project_part(part: &PartOut, projector: &mut crate::affinity::fingerprint::Projector) {
-    use crate::affinity::fingerprint::{Identity, Role};
-    match part {
-        // The accepted thought flag does not change this parser's plain-text replay semantics.
-        PartOut::Text { text, .. } => projector.text(Role::Assistant, text.as_bytes()),
-        PartOut::FunctionCall {
-            function_call,
-            thought_signature,
-        } => {
-            #[expect(
-                clippy::expect_used,
-                reason = "the gateway emits every invocation's ID field"
-            )]
-            let id = function_call
-                .id
-                .as_deref()
-                .expect("emitted invocation has an ID field");
-            let synthesized;
-            let identity = if id.is_empty() {
-                synthesized = crate::ids::new_uuid();
-                Identity::Synthetic(&synthesized)
-            } else {
-                Identity::Wire(id)
-            };
-            projector.call(
-                Role::Assistant,
-                identity,
-                &function_call.name,
-                &Value::Object(function_call.args.clone()),
-                thought_signature.as_deref(),
-            );
-        }
     }
 }
 

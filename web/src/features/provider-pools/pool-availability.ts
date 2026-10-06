@@ -5,6 +5,7 @@ import type {
     ProviderResponse,
     QuotaBlock,
 } from "/src/management-api/generated/v0";
+import { classifyStructuralAvailability } from "../inventory/availability";
 
 /** Structural state is independent of observed quota restrictions. */
 export type InventoryAvailability =
@@ -36,21 +37,17 @@ export function deriveMemberAvailability(
                   (candidate) =>
                       candidate.provider_id === provider.id && candidate.upstream_id === upstreamId,
               );
+    // The pool's own two rungs — the authored switch and the exact member
+    // choice — stand beside the shared structural ladder: the account rungs
+    // outrank the member choice, and every rung below is the ladder's.
+    const structural = classifyStructuralAvailability(provider, model);
     const inventory: InventoryAvailability = !isPoolEnabled
         ? "pool_disabled"
-        : provider === undefined
-          ? "account_missing"
-          : !provider.is_enabled
-            ? "account_disabled"
-            : upstreamId === null
-              ? "model_not_selected"
-              : model === undefined
-                ? "model_missing"
-                : !model.is_enabled
-                  ? "model_disabled"
-                  : model.discovery_state === "vanished"
-                    ? "model_vanished"
-                    : "ready";
+        : structural === "account_missing" || structural === "account_disabled"
+          ? structural
+          : upstreamId === null
+            ? "model_not_selected"
+            : structural;
     const blocks =
         observation?.blocks.filter(
             (block) =>

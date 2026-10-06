@@ -133,9 +133,7 @@ export function hasBaseReference(payload: DefinitionPayload): boolean {
         (payload.provisioning ?? []).some(
             (step) =>
                 requestReferencesBase(step.request) ||
-                optionalUrlReferencesBase(step.poll?.request.url) ||
-                rowsReferenceBase(step.poll?.request.headers ?? []) ||
-                rowsReferenceBase(step.poll?.request.query ?? []),
+                (step.poll != null && requestReferencesBase(step.poll.request)),
         )
     ) {
         return true;

@@ -10,6 +10,8 @@ import {
     expectInteger,
     expectNullableInteger,
     expectRecord,
+    expectRowId,
+    expectSafeInteger,
     expectString,
     parseListResponse,
 } from "../validation-primitives";
@@ -36,19 +38,19 @@ const BUCKET_KEY_FIELDS: ReadonlyArray<BucketKeyField> = [
     },
     {
         name: "model_id",
-        narrow: expectInteger,
+        narrow: expectRowId,
     },
     {
         name: "model_route_id",
-        narrow: expectInteger,
+        narrow: expectRowId,
     },
     {
         name: "provider_id",
-        narrow: expectInteger,
+        narrow: expectRowId,
     },
     {
         name: "api_key_id",
-        narrow: expectInteger,
+        narrow: expectRowId,
     },
     {
         name: "endpoint_type",
@@ -107,11 +109,11 @@ function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
     const record = expectRecord(value, context);
 
     return {
-        started_at: expectInteger(Reflect.get(record, "started_at"), `${context}.started_at`),
-        api_key_id: expectInteger(Reflect.get(record, "api_key_id"), `${context}.api_key_id`),
-        provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
-        model_id: expectInteger(Reflect.get(record, "model_id"), `${context}.model_id`),
-        model_route_id: expectInteger(
+        started_at: expectSafeInteger(Reflect.get(record, "started_at"), `${context}.started_at`),
+        api_key_id: expectRowId(Reflect.get(record, "api_key_id"), `${context}.api_key_id`),
+        provider_id: expectRowId(Reflect.get(record, "provider_id"), `${context}.provider_id`),
+        model_id: expectRowId(Reflect.get(record, "model_id"), `${context}.model_id`),
+        model_route_id: expectRowId(
             Reflect.get(record, "model_route_id"),
             `${context}.model_route_id`,
         ),

@@ -5,10 +5,9 @@
 //! repo's module-local `Error` convention, path-qualified against [`gateway::Error`] and the
 //! management API's own `Error` — and has no coupling to the management API's error domain, which
 //! stays as is. One variant per contract row, each pinning exactly one HTTP status; each wire
-//! format owns one render module (see `crate::format::openai::error`,
-//! `crate::format::gemini::error`, `crate::format::anthropic::error`) with a closed
-//! `render(&Error)` match, so compiler exhaustiveness forces every format to render a new variant
-//! and a new format is one new render module.
+//! format owns one render module beside the taxonomy ([`openai`], [`gemini`], [`anthropic`]) with
+//! a closed `render(&Error)` match, so compiler exhaustiveness forces every format to render a
+//! new variant and a new format is one new render module.
 //!
 //! Domain errors convert in exactly one place: the [`From`] impls below (from [`gateway::Error`]
 //! with its inner conversions for parse, storage, and provider failures) live here; surfaces stop
@@ -17,6 +16,12 @@
 //! mapping tables — HTTP response, stream frame, accounting — into one.
 //!
 //! [`gateway::Error`]: crate::gateway::Error
+
+// The render modules are consumed crate-wide: the `/api` surfaces render their HTTP error
+// responses through them, and the format codecs' mid-stream error frames render their bodies.
+pub(crate) mod anthropic;
+pub(crate) mod gemini;
+pub(crate) mod openai;
 
 use crate::{
     accounting::ApiLogOutcome, gateway::Error as GatewayError, ir::InvalidRequest,

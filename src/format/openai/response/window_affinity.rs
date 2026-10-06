@@ -278,12 +278,23 @@ pub(super) fn project(
                     );
                 }
                 Content::Parts(parts) => {
+                    // The chunked form hashes exactly the joined result's bytes without
+                    // assembling it; the separator is the shared text-part contract.
                     let chunks = parts
                         .iter()
                         .map(|ToolPart::InputText { text }| *text)
                         .skip_while(|text| text.is_empty())
                         .enumerate()
-                        .flat_map(|(index, text)| [if index == 0 { "" } else { "\n\n" }, text]);
+                        .flat_map(|(index, text)| {
+                            [
+                                if index == 0 {
+                                    ""
+                                } else {
+                                    crate::format::TEXT_PART_SEPARATOR
+                                },
+                                text,
+                            ]
+                        });
                     projector.result_text_chunks(
                         Role::Tool,
                         Identity::Wire(call_id),
@@ -305,7 +316,8 @@ pub(super) fn project(
                 }
             }
             Item::Compaction(compaction) => {
-                if crate::compaction::sealing::is_gateway_marker(compaction.encrypted_content) {
+                if crate::compaction_model::sealing::is_gateway_marker(compaction.encrypted_content)
+                {
                     if !has_gateway_provenance {
                         return None;
                     }
@@ -358,7 +370,9 @@ pub(super) fn prepare_native_state(
             ))
         }
         Item::Compaction(compaction)
-            if !crate::compaction::sealing::is_gateway_marker(compaction.encrypted_content) =>
+            if !crate::compaction_model::sealing::is_gateway_marker(
+                compaction.encrypted_content,
+            ) =>
         {
             Some(projector.prepare_state_canonical(
                 StateFamily::Responses,

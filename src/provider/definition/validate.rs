@@ -8,7 +8,7 @@
 
 use super::{
     compaction::{
-        CompactionSection, CountTokensOperation, MechanismDeclarations, StandaloneCompactOperation,
+        CompactionSection, CountTokensOperation, Declaration, StandaloneCompactOperation,
     },
     credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce, TokenRefresh},
     discovery::{CapabilityExtraction, DiscoveryExtract, Pagination, ThinkingLevelsExtraction},
@@ -17,14 +17,15 @@ use super::{
     template::{
         ControlBody, ControlMethod, ControlRequest, ExtractionShape, ParamRow, ResponseDescriptor,
         ResponseEncoding, ResponsePath, ResponseTarget as Target, StringExpr, TemplateNode,
-        ValueExpr, ValueKind,
+        ValueExpr,
     },
 };
 use crate::{
-    compaction::mechanism::MechanismSupport,
+    compaction_model::mechanism::{Mechanism, MechanismSupport},
     format::{RenderOption, UpstreamFormat},
 };
 use std::collections::BTreeSet;
+use vec1::Vec1;
 /// A definition payload rejection: one message naming the offending descriptor element, rendered
 /// verbatim to the management client as an invalid-request rejection.
 #[derive(Debug, thiserror::Error)]
@@ -83,18 +84,35 @@ enum Stage {
 }
 
 impl Stage {
-    /// Whether the stage's expressions may carry the value kind; the constant configuration
-    /// kinds — literals and the configured client credentials — are available everywhere, and
-    /// the flow-state kinds are available exactly at the stages that produce or consume them.
-    const fn allows(self, kind: ValueKind) -> bool {
-        match kind {
-            ValueKind::Literal => true,
+    /// Whether the stage's expressions may carry the value part; the constant configuration
+    /// kinds — literals and the configured client credentials — are available exactly where the
+    /// stage's evaluation environment carries them, and the flow-state kinds are available
+    /// exactly at the stages that produce or consume them. This table and the per-stage
+    /// [`ValueEnv`](super::eval::ValueEnv) constructors in `eval.rs` describe the same per-stage
+    /// value sets from the two sides — write-time admission and runtime supply — and must move
+    /// together: a part admitted here but never supplied is stored drift that fails every
+    /// dispatch at runtime.
+    const fn allows(self, part: &ValueExpr) -> bool {
+        match part {
+            ValueExpr::Literal { .. } | ValueExpr::Coalesce { .. } => true,
 
-            ValueKind::ClientId | ValueKind::ClientSecret => !matches!(self, Self::Quota),
+            // Only the stage constructors that carry the configured client credentials: the
+            // authorize-URL build, the device authorization, both token exchanges, the refresh
+            // grant, and provisioning. Inference, discovery, the quota query, and the compaction
+            // operations never receive them.
+            ValueExpr::ClientId | ValueExpr::ClientSecret => matches!(
+                self,
+                Self::AuthorizeUrl
+                    | Self::DeviceAuthorization
+                    | Self::ExchangeAuthorizationCode
+                    | Self::ExchangeDevice
+                    | Self::RefreshGrant
+                    | Self::Provisioning
+            ),
 
-            ValueKind::Base => !matches!(self, Self::AuthorizeUrl),
+            ValueExpr::Base => !matches!(self, Self::AuthorizeUrl),
 
-            ValueKind::Secret => matches!(
+            ValueExpr::Secret => matches!(
                 self,
                 Self::Inference
                     | Self::Provisioning
@@ -104,22 +122,22 @@ impl Stage {
                     | Self::CompactionCount
             ),
 
-            ValueKind::Slot => !matches!(self, Self::AuthorizeUrl),
+            ValueExpr::Slot { .. } => !matches!(self, Self::AuthorizeUrl),
 
-            ValueKind::Model | ValueKind::RequestUuid => matches!(
+            ValueExpr::Model | ValueExpr::RequestUuid => matches!(
                 self,
                 Self::Inference | Self::CompactionOperation | Self::CompactionCount
             ),
 
-            ValueKind::AuthorizationCode | ValueKind::CodeVerifier | ValueKind::RedirectUri => {
+            ValueExpr::AuthorizationCode | ValueExpr::CodeVerifier | ValueExpr::RedirectUri => {
                 matches!(self, Self::ExchangeAuthorizationCode)
             }
 
-            ValueKind::OAuthState => matches!(self, Self::AuthorizeUrl),
+            ValueExpr::OAuthState => matches!(self, Self::AuthorizeUrl),
 
-            ValueKind::DeviceCode => matches!(self, Self::ExchangeDevice),
+            ValueExpr::DeviceCode => matches!(self, Self::ExchangeDevice),
 
-            ValueKind::RefreshToken => matches!(self, Self::RefreshGrant),
+            ValueExpr::RefreshToken => matches!(self, Self::RefreshGrant),
         }
     }
 }
@@ -588,14 +606,6 @@ impl DefinitionPayload {
         validate_response_descriptor(&exchange.response, "token exchange")?;
         validate_terminal_codes(&exchange.terminal_codes, "token exchange")?;
 
-        if let Some(steps) = &self.provisioning
-            && steps.is_empty()
-        {
-            return Err(ValidationError::new(
-                "provisioning must carry at least one step when present",
-            ));
-        }
-
         // The access token must exist before the provider write: the exchange maps it, or a
         // later provisioning step supplies it.
         let provisions_access_token = exchange
@@ -651,13 +661,7 @@ impl DefinitionPayload {
                     // target folds every renewal into a tokenless outcome: the lease is
                     // acquired and cleared first, and the renewal then dies on the missing
                     // token — a permanent failure on every dispatch of the provider past its
-                    // first expiry. An absent mapping defaults to the exchange's response, so the
-                    // defaulted case leans on the access-token rule above — a rule that also
-                    // admits a provisioning-supplied token, which leaves a provisioning-only-
-                    // token definition under grant mode as the known residual edge. That edge
-                    // wedges loudly at the runtime guard, and closing it — requiring the
-                    // effective (declared-or-defaulted) mapping to carry the token row — is
-                    // deliberately left for a focused follow-up.
+                    // first expiry.
                     if !response
                         .fields
                         .iter()
@@ -667,6 +671,26 @@ impl DefinitionPayload {
                             "token refresh response must map the `access_token` target: a \
                              declared mapping replaces the exchange's default, and RFC 6749 §6 \
                              makes the access token REQUIRED in a refresh response",
+                        ));
+                    }
+                } else {
+                    // The renewal's fold input defaults to the exchange's response mapping, so
+                    // that mapping is the effective refresh mapping and must carry the token
+                    // row. The general access-token rule earlier in this method cannot stand in:
+                    // it also admits a provisioning-supplied token, which a refresh grant never
+                    // renews — a provisioning-only token source would wedge every renewal after
+                    // that token's first expiry.
+                    if !exchange
+                        .response
+                        .fields
+                        .iter()
+                        .any(|field| matches!(field.target, Target::AccessToken))
+                    {
+                        return Err(ValidationError::new(
+                            "token refresh without a declared response reuses the exchange \
+                             response's mapping, which must map the `access_token` target: \
+                             RFC 6749 §6 makes the access token REQUIRED in a refresh response, \
+                             and a token supplied only by provisioning is never renewed",
                         ));
                     }
                 }
@@ -704,14 +728,23 @@ impl DefinitionPayload {
         Ok(())
     }
 
-    /// Validates the provisioning descriptor: stage-available expressions, control-request
-    /// shapes, extraction shapes, and the poll configurations. Provisioning runs after a token
-    /// exchange, so an API-key recipe never carries one.
+    /// Validates the provisioning descriptor: the OAuth-only rule, the non-empty sequence, the
+    /// stage-available expressions, control-request shapes, extraction shapes, and the poll
+    /// configurations. Provisioning runs after a token exchange, so an API-key recipe never
+    /// carries one.
     fn validate_provisioning(&self, slots: &SlotNamespace) -> Result<(), ValidationError> {
-        if self.provisioning.is_some() && !self.credential.is_oauth() {
-            return Err(ValidationError::new(
-                "provisioning requires an OAuth credential: it runs after the token exchange",
-            ));
+        if let Some(steps) = &self.provisioning {
+            if steps.is_empty() {
+                return Err(ValidationError::new(
+                    "provisioning must carry at least one step when present",
+                ));
+            }
+
+            if !self.credential.is_oauth() {
+                return Err(ValidationError::new(
+                    "provisioning requires an OAuth credential: it runs after the token exchange",
+                ));
+            }
         }
 
         for step in self.provisioning.as_deref().unwrap_or_default() {
@@ -828,43 +861,15 @@ impl DefinitionPayload {
         // definition and a Messages mechanism only through an `anthropic_messages` one — a
         // declaration on the wrong format is an operation the definition can never render
         // (README §5).
-        for (mechanism, is_declared) in [
-            (
-                "responses_standalone_compact",
-                mechanisms.responses_standalone_compact.is_some(),
-            ),
-            (
-                "responses_explicit_trigger",
-                mechanisms.responses_explicit_trigger.is_some(),
-            ),
-            (
-                "responses_automatic_compaction",
-                mechanisms.responses_automatic_compaction.is_some(),
-            ),
-        ] {
-            if is_declared && self.format != UpstreamFormat::OpenAiResponse {
-                return Err(ValidationError::new(format!(
-                    "the `{mechanism}` compaction declaration requires the `openai_response` \
-                     format, but the definition speaks `{}`",
-                    self.format.as_str()
-                )));
-            }
-        }
+        for (mechanism, declaration) in mechanisms.enumerated() {
+            let required_format = required_format(mechanism);
 
-        for (mechanism, is_declared) in [
-            (
-                "messages_on_demand_compaction",
-                mechanisms.messages_on_demand_compaction.is_some(),
-            ),
-            (
-                "messages_threshold_compaction",
-                mechanisms.messages_threshold_compaction.is_some(),
-            ),
-        ] {
-            if is_declared && self.format != UpstreamFormat::AnthropicMessages {
+            if declaration.is_some() && self.format != required_format {
                 return Err(ValidationError::new(format!(
-                    "the `{mechanism}` compaction declaration requires the \
-                     `anthropic_messages` format, but the definition speaks `{}`",
+                    "the `{}` compaction declaration requires the `{}` format, but the \
+                     definition speaks `{}`",
+                    mechanism.as_str(),
+                    required_format.as_str(),
                     self.format.as_str()
                 )));
             }
@@ -883,73 +888,46 @@ impl DefinitionPayload {
         // overlay headers. The operation data is validated whenever present, regardless of the
         // declared default — an administrator model override can select a mechanism whose
         // definition default is unknown.
-        let MechanismDeclarations {
-            responses_standalone_compact,
-            responses_explicit_trigger,
-            responses_automatic_compaction,
-            messages_on_demand_compaction,
-            messages_threshold_compaction,
-        } = mechanisms;
+        for (mechanism, declaration) in mechanisms.enumerated() {
+            let Some(declaration) = declaration else {
+                continue;
+            };
 
-        if let Some(standalone) = responses_standalone_compact {
-            if standalone.default == MechanismSupport::Supported && standalone.operation.is_none() {
-                return Err(ValidationError::new(
-                    "the `responses_standalone_compact` compaction declaration declares \
-                     `supported` without an operation; a definition cannot advertise native \
-                     support without configuring how to execute it",
-                ));
+            let what = format!("the `{}` compaction declaration", mechanism.as_str());
+
+            match declaration {
+                Declaration::Standalone(standalone) => {
+                    if standalone.default == MechanismSupport::Supported
+                        && standalone.operation.is_none()
+                    {
+                        return Err(ValidationError::new(format!(
+                            "{what} declares `supported` without an operation; a definition \
+                             cannot advertise native support without configuring how to execute it"
+                        )));
+                    }
+
+                    if let Some(operation) = &standalone.operation {
+                        validate_compaction_operation(operation, slots)?;
+                    }
+
+                    validate_unsupported_classifier(standalone.unsupported.as_ref(), &what)?;
+                }
+
+                Declaration::RideAlong(ride_along) => {
+                    validate_unsupported_classifier(ride_along.unsupported.as_ref(), &what)?;
+                }
+
+                Declaration::Overlay(overlay) => {
+                    validate_overlay_headers(
+                        overlay.overlay_headers.as_deref(),
+                        overlay.default,
+                        mechanism.as_str(),
+                        slots,
+                    )?;
+
+                    validate_unsupported_classifier(overlay.unsupported.as_ref(), &what)?;
+                }
             }
-
-            if let Some(operation) = &standalone.operation {
-                validate_compaction_operation(operation, slots)?;
-            }
-
-            validate_unsupported_classifier(
-                standalone.unsupported.as_ref(),
-                "the `responses_standalone_compact` compaction declaration",
-            )?;
-        }
-
-        if let Some(trigger) = responses_explicit_trigger {
-            validate_unsupported_classifier(
-                trigger.unsupported.as_ref(),
-                "the `responses_explicit_trigger` compaction declaration",
-            )?;
-        }
-
-        if let Some(automatic) = responses_automatic_compaction {
-            validate_unsupported_classifier(
-                automatic.unsupported.as_ref(),
-                "the `responses_automatic_compaction` compaction declaration",
-            )?;
-        }
-
-        if let Some(on_demand) = messages_on_demand_compaction {
-            validate_overlay_headers(
-                on_demand.overlay_headers.as_deref(),
-                on_demand.default,
-                "messages_on_demand_compaction",
-                slots,
-            )?;
-
-            validate_unsupported_classifier(
-                on_demand.unsupported.as_ref(),
-                "the `messages_on_demand_compaction` compaction declaration",
-            )?;
-        }
-
-        if let Some(threshold) = messages_threshold_compaction {
-            validate_overlay_headers(
-                threshold.overlay_headers.as_deref(),
-                threshold.default,
-                "messages_threshold_compaction",
-                slots,
-            )?;
-
-            validate_unsupported_classifier(
-                threshold.unsupported.as_ref(),
-                "the `messages_threshold_compaction` compaction declaration",
-            )?;
         }
 
         if let Some(count_tokens) = &compaction.count_tokens {
@@ -957,6 +935,22 @@ impl DefinitionPayload {
         }
 
         Ok(())
+    }
+}
+
+/// The one upstream wire format a compaction mechanism's declaration may ride (README §5): the
+/// Responses mechanisms speak `openai_response` and the Messages mechanisms
+/// `anthropic_messages`. The exhaustive match keeps the format gating aligned with the
+/// mechanism vocabulary.
+fn required_format(mechanism: Mechanism) -> UpstreamFormat {
+    match mechanism {
+        Mechanism::ResponsesStandaloneCompact
+        | Mechanism::ResponsesExplicitTrigger
+        | Mechanism::ResponsesAutomaticCompaction => UpstreamFormat::OpenAiResponse,
+
+        Mechanism::MessagesOnDemandCompaction | Mechanism::MessagesThresholdCompaction => {
+            UpstreamFormat::AnthropicMessages
+        }
     }
 }
 
@@ -1227,14 +1221,9 @@ fn validate_capability_extraction(
     Ok(())
 }
 
-/// Validates one terminal-code list: the list and every code non-empty (README §5.1).
-fn validate_terminal_codes(codes: &[String], what: &str) -> Result<(), ValidationError> {
-    if codes.is_empty() {
-        return Err(ValidationError::new(format!(
-            "{what} terminal codes must carry at least one code"
-        )));
-    }
-
+/// Validates one terminal-code list: every code non-empty (README §5.1). The list's own
+/// non-emptiness is the carrying `Vec1` type's, rejected at parse.
+fn validate_terminal_codes(codes: &Vec1<String>, what: &str) -> Result<(), ValidationError> {
     for code in codes {
         if code.is_empty() {
             return Err(ValidationError::new(format!(
@@ -1263,26 +1252,20 @@ fn validate_control_request(
     walk.headers(&request.headers, "control request header")?;
     walk.params(&request.query, "control request query parameter")?;
 
+    if request.body.is_some() && request.method == ControlMethod::Get {
+        return Err(ValidationError::new(
+            "a GET control request never carries a body",
+        ));
+    }
+
     match &request.body {
         None => {}
 
         Some(ControlBody::Form { fields }) => {
-            if request.method == ControlMethod::Get {
-                return Err(ValidationError::new(
-                    "a GET control request never carries a body",
-                ));
-            }
-
             walk.params(fields, "control request form field")?;
         }
 
         Some(ControlBody::Json { node }) => {
-            if request.method == ControlMethod::Get {
-                return Err(ValidationError::new(
-                    "a GET control request never carries a body",
-                ));
-            }
-
             let body_count = walk.template_node(node, "control request JSON body")?;
 
             if body_count != 0 {
@@ -1436,7 +1419,7 @@ impl<'a> ExpressionWalk<'a> {
             ValueExpr::Literal { .. } | ValueExpr::Coalesce { .. } => Ok(()),
 
             ValueExpr::Slot { name } => {
-                if !self.stage.allows(ValueKind::Slot) {
+                if !self.stage.allows(expr) {
                     return Err(ValidationError::new(format!(
                         "{what} references a slot, which the {} stage does not carry",
                         stage_name(self.stage)
@@ -1447,14 +1430,12 @@ impl<'a> ExpressionWalk<'a> {
             }
 
             other => {
-                let kind = other.kind();
-
-                if self.stage.allows(kind) {
+                if self.stage.allows(other) {
                     Ok(())
                 } else {
                     Err(ValidationError::new(format!(
                         "{what} references `{}`, which the {} stage does not carry",
-                        kind.display_name(),
+                        other.display_name(),
                         stage_name(self.stage)
                     )))
                 }
@@ -3074,6 +3055,66 @@ mod tests {
         let error = outcome.unwrap_err();
 
         assert!(error.contains("request UUID"), "{error}");
+
+        // The client ID inside an inference header: the inference environment never carries the
+        // configured client credentials, so a reference is stored drift failing every dispatch.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["inference"]["headers"][1]["value"] = serde_json::json!([
+              {
+                "type": "client_id"
+              }
+            ]);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("client ID") && error.contains("inference"),
+            "{error}"
+        );
+
+        // The client secret inside the discovery request: the discovery environment never
+        // carries it either.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["discovery"]["request"]["headers"][0]["value"] = serde_json::json!([
+              {
+                "type": "client_secret"
+              }
+            ]);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("client secret") && error.contains("discovery"),
+            "{error}"
+        );
+    }
+
+    /// The configured client credentials ride exactly the stages whose evaluation environments
+    /// carry them: provisioning runs after the token exchange, so like the OAuth flow stages it
+    /// receives the credentials and its requests may reference both parts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a credential-carrying provisioning request is rejected.
+    #[test]
+    fn accepts_a_provisioning_request_referencing_the_client_credentials() {
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["provisioning"][0]["request"]["headers"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "name": "X-Client",
+                  "value": [
+                    {"type": "client_id"},
+                    {"type": "literal", "value": ":"},
+                    {"type": "client_secret"}
+                  ]
+                }));
+        });
+
+        outcome.unwrap();
     }
 
     /// Every slot reference — in expressions, guards, and template strings — resolves against
@@ -3231,9 +3272,20 @@ mod tests {
 
         assert!(outcome.unwrap_err().contains("reprovision"));
 
-        // An empty exchange terminal-code list.
+        // An empty exchange terminal-code list: unrepresentable in the `Vec1`-typed field, so
+        // the rejection happens at parse, before validation.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["exchange"]["terminal_codes"] = serde_json::json!([]);
+        });
+
+        assert!(
+            outcome.is_err(),
+            "an empty terminal-code list must be rejected"
+        );
+
+        // An empty terminal code is rejected by validation, naming the list.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["terminal_codes"] = serde_json::json!([""]);
         });
 
         assert!(outcome.unwrap_err().contains("terminal codes"));
@@ -3895,6 +3947,70 @@ mod tests {
 
         // A narrower declared mapping whose `access_token` row is the only target.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["response"] = json!({
+              "encoding": "json",
+              "fields": [
+                {
+                  "path": ["access_token"],
+                  "target": {
+                    "type": "access_token"
+                  },
+                  "required": true
+                }
+              ]
+            });
+        });
+
+        outcome.unwrap();
+    }
+
+    /// With no declared refresh response the renewal's fold input is the exchange's response
+    /// mapping, so that mapping must itself map the `access_token` target: the general
+    /// access-token rule cannot stand in, because it also admits a provisioning-supplied token
+    /// the refresh grant never renews. A grant-mode definition whose token comes only from
+    /// provisioning must declare a refresh response mapping the token instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provisioning-only-token grant-mode definition validates.
+    #[test]
+    fn requires_the_defaulted_refresh_mapping_to_map_the_access_token() {
+        // Retarget the Antigravity exchange's `access_token` row at a slot and add an
+        // access-token extraction to the provisioning sequence instead: the exchange mapping no
+        // longer carries the token row, and the refresh response stays defaulted. The
+        // sequence's own slot extractions stay in place so the fixture's later references hold.
+        let provisioning_only_token = |payload: &mut serde_json::Value| {
+            payload["credential"]["exchange"]["response"]["fields"][0] = json!({
+              "path": ["access_token"],
+              "target": {"type": "slot", "name": "exchanged_token"},
+              "required": true
+            });
+            payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "path": ["token"],
+                  "target": {"type": "access_token"},
+                  "shape": {"type": "string"},
+                  "required": true
+                }));
+        };
+
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            provisioning_only_token(payload);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("access_token"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+        assert!(error.contains("reuses the exchange"), "{error}");
+
+        // Declaring the token mapping on the refresh response closes the gap: the declared
+        // rows are the renewal's whole fold input.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            provisioning_only_token(payload);
+
             payload["credential"]["refresh"]["response"] = json!({
               "encoding": "json",
               "fields": [
@@ -5761,7 +5877,7 @@ mod tests {
             )
         };
 
-        let probes: [(serde_json::Value, &str); 7] = [
+        let probes: [(serde_json::Value, &str); 8] = [
             // Zero body placeholders.
             (
                 standalone_operation(|operation| {
@@ -5806,6 +5922,16 @@ mod tests {
             (
                 standalone_operation(|operation| {
                     operation["url"] = json!([{"type": "device_code"}]);
+                }),
+                "compaction operation stage does not carry",
+            ),
+            // The configured client credentials never reach the compaction stage either: its
+            // environment carries the inference values only.
+            (
+                standalone_operation(|operation| {
+                    operation["headers"] = json!([
+                        {"name": "X-Client", "value": [{"type": "client_id"}]}
+                    ]);
                 }),
                 "compaction operation stage does not carry",
             ),

@@ -2,16 +2,17 @@ import { translation } from "../i18n";
 import type { QuotaEntryExtraction } from "../management-api/generated/v0";
 import {
     authorizationCode,
-    bearer,
+    bearerAuthorization,
     clientId,
     codeVerifier,
+    jsonRefreshGrantBody,
     literal,
     paramRow,
     redirectUri,
-    refreshToken,
     requestUuid,
-    secret,
+    responseField,
     slot,
+    tokenExchangeResponse,
 } from "./expressions";
 import { field, numberField, ratioEntry } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
@@ -24,9 +25,7 @@ function codexWindows(at: string[] = []): QuotaEntryExtraction[] {
     ].map((key) =>
         ratioEntry(
             key,
-            key === "primary"
-                ? translation()(($) => $.helpers.presetQuotas.primaryWindow)
-                : translation()(($) => $.helpers.presetQuotas.secondaryWindow),
+            key === "primary" ? "Primary window" : "Secondary window",
             [
                 ...at,
                 `${key}_window`,
@@ -70,9 +69,12 @@ export const codexPreset: ProviderPreset = {
     payload: {
         quota: {
             request: {
-                ...bearer("https://chatgpt.com/backend-api/wham/usage"),
+                method: "GET",
+                url: [
+                    literal("https://chatgpt.com/backend-api/wham/usage"),
+                ],
                 headers: [
-                    ...(bearer("").headers ?? []),
+                    bearerAuthorization(),
                     paramRow("ChatGPT-Account-Id", [
                         slot("account_id"),
                     ]),
@@ -135,10 +137,7 @@ export const codexPreset: ProviderPreset = {
                 literal("https://chatgpt.com/backend-api/codex/responses"),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
                 paramRow("chatgpt-account-id", [
                     slot("account_id"),
                 ]),
@@ -211,47 +210,15 @@ export const codexPreset: ProviderPreset = {
                         ],
                     },
                 },
-                response: {
-                    encoding: "json",
-                    fields: [
+                response: tokenExchangeResponse(
+                    responseField(
+                        "id_token",
                         {
-                            path: [
-                                "access_token",
-                            ],
-                            target: {
-                                type: "access_token",
-                            },
-                            required: true,
+                            type: "id_token",
                         },
-                        {
-                            path: [
-                                "refresh_token",
-                            ],
-                            target: {
-                                type: "refresh_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "id_token",
-                            ],
-                            target: {
-                                type: "id_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "expires_in",
-                            ],
-                            target: {
-                                type: "expires_in_seconds",
-                            },
-                            required: false,
-                        },
-                    ],
-                },
+                        true,
+                    ),
+                ),
                 terminal_codes: [
                     "invalid_grant",
                     "token_expired",
@@ -280,32 +247,7 @@ export const codexPreset: ProviderPreset = {
                             literal("codex_cli_rs/0.147.0"),
                         ]),
                     ],
-                    body: {
-                        kind: "json",
-                        node: {
-                            type: "object",
-                            fields: {
-                                client_id: {
-                                    type: "string",
-                                    expr: [
-                                        clientId(),
-                                    ],
-                                },
-                                grant_type: {
-                                    type: "string",
-                                    expr: [
-                                        literal("refresh_token"),
-                                    ],
-                                },
-                                refresh_token: {
-                                    type: "string",
-                                    expr: [
-                                        refreshToken(),
-                                    ],
-                                },
-                            },
-                        },
-                    },
+                    body: jsonRefreshGrantBody(),
                 },
                 terminal_codes: [
                     "invalid_grant",
@@ -329,10 +271,7 @@ export const codexPreset: ProviderPreset = {
                     ]),
                 ],
                 headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
+                    bearerAuthorization(),
                     paramRow("chatgpt-account-id", [
                         slot("account_id"),
                     ]),

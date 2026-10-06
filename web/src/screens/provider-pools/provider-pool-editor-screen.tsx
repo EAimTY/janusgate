@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
+import { readModels, readProviderPools, readProviders } from "/src/features/inventory/read";
 import { PoolAvailabilityCard } from "/src/features/provider-pools/pool-availability-card";
 import { translation } from "/src/i18n";
 import { editNameMessage } from "/src/i18n/rich";
@@ -15,7 +16,7 @@ import { createDeleteAction, createEditForm } from "/src/screen-state/edit-form"
 import { createScreenRead, readAll, type ScreenRead } from "/src/screen-state/read";
 import { createEditRow } from "/src/screen-state/row-state";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { Button, SelectField, Switch, TextField } from "/src/ui/controls";
+import { Button, entitySelectOptions, SelectField, Switch, TextField } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { RowNotFound } from "/src/ui/row-not-found";
@@ -24,6 +25,21 @@ import { ScreenFrame } from "/src/ui/screen-frame";
 type PoolSeed = Omit<ProviderPoolResponse, "id"> & {
     readonly id: number | null;
 };
+
+/**
+ * The saved pool the inspection card reads: the seed's own state once its id
+ * is a row's — `PoolSeed` with a non-null id is exactly `ProviderPoolResponse`,
+ * so the narrowing restates the id it already carries — and `null` while a
+ * creation is still unsaved.
+ */
+function savedPool(pool: PoolSeed): ProviderPoolResponse | null {
+    return pool.id === null
+        ? null
+        : {
+              ...pool,
+              id: pool.id,
+          };
+}
 
 /** Ordered membership is authored configuration; identity compares the complete state. */
 function isSamePool(left: PoolSeed, right: PoolSeed): boolean {
@@ -56,15 +72,9 @@ export function ProviderPoolEditorScreen(props: {
         load: async (signal) => {
             const [pools, accounts, inventory] = await readAll(
                 signal,
-                {
-                    run: (signal) => props.api.listProviderPools(signal),
-                },
-                {
-                    run: (signal) => props.api.listProviders(signal),
-                },
-                {
-                    run: (signal) => props.api.listModels({}, signal),
-                },
+                readProviderPools(props.api),
+                readProviders(props.api),
+                readModels(props.api, {}),
             );
             setProviders(accounts.providers);
             setModels(inventory.models);
@@ -107,13 +117,6 @@ export function ProviderPoolEditorScreen(props: {
             }
         >
             {(pool) => {
-                const savedPool =
-                    pool.id === null
-                        ? null
-                        : {
-                              ...pool,
-                              id: pool.id,
-                          };
                 return (
                     <>
                         <PageHeader
@@ -147,10 +150,10 @@ export function ProviderPoolEditorScreen(props: {
                             onSaved={edit.reportSaved}
                         />
                         <Show
-                            when={savedPool}
+                            when={savedPool(pool)}
                             keyed
                         >
-                            {(savedPool) => (
+                            {(saved) => (
                                 <>
                                     <TextField
                                         label={translation()(
@@ -168,7 +171,7 @@ export function ProviderPoolEditorScreen(props: {
                                     />
                                     <PoolAvailabilityCard
                                         api={props.api}
-                                        pool={savedPool}
+                                        pool={saved}
                                         providers={providers()}
                                         models={models()}
                                         upstreamId={inspectionId() === "" ? null : inspectionId()}
@@ -320,6 +323,13 @@ function PoolForm(props: {
     };
     const nextPriority = (): number =>
         members().reduce((maximum, member) => Math.max(maximum, member.priority), -1) + 1;
+    // The add select offers every account the members do not already hold —
+    // the same absent-head entry `entitySelectOptions` owns, over the
+    // pre-filtered rows.
+    const addableAccounts = (): ReadonlyArray<ProviderResponse> =>
+        props.providers.filter(
+            (provider) => !members().some((member) => member.provider_id === provider.id),
+        );
     const canAdd = (): boolean =>
         selectedAccount() !== "" &&
         !members().some((member) => member.provider_id === Number(selectedAccount())) &&
@@ -463,25 +473,13 @@ function PoolForm(props: {
                     <SelectField
                         label={translation()(($) => $.screens.providerPoolEditorScreen.addAccount)}
                         value={selectedAccount()}
-                        options={[
-                            {
-                                value: "",
-                                label: translation()(
-                                    ($) => $.additional.providerPoolEditorScreen.chooseAnAccount,
-                                ),
-                            },
-                            ...props.providers
-                                .filter(
-                                    (provider) =>
-                                        !members().some(
-                                            (member) => member.provider_id === provider.id,
-                                        ),
-                                )
-                                .map((provider) => ({
-                                    value: String(provider.id),
-                                    label: provider.name,
-                                })),
-                        ]}
+                        options={entitySelectOptions(
+                            addableAccounts(),
+                            (provider) => provider.name,
+                            translation()(
+                                ($) => $.additional.providerPoolEditorScreen.chooseAnAccount,
+                            ),
+                        )}
                         onChange={setSelectedAccount}
                         isDisabled={form.isSaving()}
                     />

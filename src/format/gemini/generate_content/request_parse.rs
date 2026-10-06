@@ -7,9 +7,10 @@ use crate::{
         gemini::{GeminiResponseFormatRejection, parse_gemini_response_format},
     },
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
+        IrToolChoice,
     },
+    vocabulary::ReasoningLevel,
 };
 use serde::{Deserialize, de::IgnoredAny};
 use serde_json::{Map, Value};
@@ -480,15 +481,8 @@ fn parse_system_instruction(
         return Ok(None);
     };
 
-    // The separator only ever separates text the accumulator already holds, so a leading run
-    // of empty parts carries none: skip it, then join the rest with the blank-line separator.
-    let combined = instruction
-        .parts
-        .iter()
-        .map(|part| part.text.as_str())
-        .skip_while(|text| text.is_empty())
-        .collect::<Vec<&str>>()
-        .join("\n\n");
+    let combined =
+        crate::format::join_text_parts(instruction.parts.iter().map(|part| part.text.as_str()));
 
     if combined.is_empty() {
         return Ok(None);
@@ -551,35 +545,17 @@ fn parse_user_content(
     call_registry: &mut [CallRecord],
     affinity: &mut crate::format::affinity::Sources,
 ) -> Result<(), InvalidRequest> {
-    let mut has_function_call = false;
-    let mut has_function_response = false;
-    let mut has_image = false;
-
-    for part in &content.parts {
-        if part.function_call.is_some() {
-            has_function_call = true;
-        }
-
-        if part.function_response.is_some() {
-            has_function_response = true;
-        }
-
-        if part.inline_data.is_some() || part.file_data.is_some() {
-            has_image = true;
-        }
-    }
-
-    if has_function_call {
+    // `functionCall` parts belong to `model` contents alone; an image beside a tool result is
+    // an ordinary image part, and only media inside a `functionResponse` itself is rejected
+    // below (README §6.6).
+    if content
+        .parts
+        .iter()
+        .any(|part| part.function_call.is_some())
+    {
         return Err(InvalidRequest::field(
             "contents",
             "functionCall parts must appear in `model` contents, not `user`",
-        ));
-    }
-
-    if has_function_response && has_image {
-        return Err(InvalidRequest::field(
-            "functionResponse",
-            "Image content inside tool results is not supported",
         ));
     }
 
@@ -943,7 +919,7 @@ fn parse_generation_config(
         Option<f64>,
         Option<f64>,
         Option<u64>,
-        Option<IrReasoningLevel>,
+        Option<ReasoningLevel>,
         Option<IrResponseFormat>,
     ),
     InvalidRequest,
@@ -1007,7 +983,7 @@ fn parse_generation_config(
         }
 
         (Some(level), None) | (None, Some(level)) => {
-            Some(IrReasoningLevel::parse(level, "thinkingLevel")?)
+            Some(ReasoningLevel::parse(level, "thinkingLevel")?)
         }
 
         (None, None) => None,
@@ -1463,7 +1439,7 @@ mod tests {
         assert_eq!(parsed.ir.temperature, Some(0.5));
         assert_eq!(parsed.ir.top_p, Some(0.9));
         assert_eq!(parsed.ir.max_output_tokens, Some(128));
-        assert_eq!(parsed.ir.reasoning_effort, Some(IrReasoningLevel::High));
+        assert_eq!(parsed.ir.reasoning_effort, Some(ReasoningLevel::High));
         assert_eq!(parsed.ir.response_format, Some(IrResponseFormat::Json));
 
         #[expect(
@@ -1557,20 +1533,22 @@ mod tests {
         assert_eq!(error.param.as_deref(), Some("responseMimeType"));
     }
 
-    /// Verifies image content inside tool results is a 400 naming the result: a `user`
-    /// content mixing `functionResponse` with image parts cannot enter the IR, which has
-    /// no media channel on tool outputs.
+    /// Verifies the README §6.6 rejection cell stays pinned to media inside a
+    /// `functionResponse` itself: an image part beside a tool result in the same `user`
+    /// content is an ordinary image part and parses, while any `functionResponse.parts`
+    /// member is a 400 naming `parts` (the IR tool output has no media channel).
     ///
     /// # Panics
     ///
-    /// Panics if the rejection lands outside its documented wording.
+    /// Panics if the beside cell fails, the inside cell passes, or the rejection lands
+    /// outside its documented wording.
     #[test]
     fn rejects_images_inside_tool_results() {
         #[expect(
             clippy::expect_used,
-            reason = "the mixed result is constructed to fail"
+            reason = "the image-beside-result content is constructed to parse"
         )]
-        let error = parse_body(serde_json::json!({
+        let parsed = parse_body(serde_json::json!({
             "contents": [
                 {"role": "user", "parts": [
                     {"functionResponse": {"name": "lint", "response": {"ok": true}}},
@@ -1578,9 +1556,38 @@ mod tests {
                 ]},
             ],
         }))
+        .expect("an image beside a tool result must parse");
+
+        assert_eq!(
+            parsed
+                .ir
+                .messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            vec![IrRole::Tool, IrRole::User],
+            "the tool result and the image part parse into their own messages",
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the image-inside-result content is constructed to fail"
+        )]
+        let error = parse_body(serde_json::json!({
+            "contents": [
+                {"role": "user", "parts": [
+                    {"functionResponse": {
+                        "name": "lint",
+                        "response": {"ok": true},
+                        "parts": [{"inlineData": {"mimeType": "image/png",
+                                   "data": "aGVsbG8="}}],
+                    }},
+                ]},
+            ],
+        }))
         .expect_err("an image inside a tool result must fail");
 
-        assert_eq!(error.param.as_deref(), Some("functionResponse"));
+        assert_eq!(error.param.as_deref(), Some("parts"));
     }
 
     /// Verifies the official `functionResponse` companion members: the media channel `parts`

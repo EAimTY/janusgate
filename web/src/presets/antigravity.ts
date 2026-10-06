@@ -1,7 +1,7 @@
 import { translation } from "../i18n";
 import {
     authorizationCode,
-    bearer,
+    bearerAuthorization,
     clientId,
     clientSecret,
     coalesce,
@@ -11,8 +11,8 @@ import {
     redirectUri,
     refreshToken,
     requestUuid,
-    secret,
     slot,
+    tokenExchangeResponse,
 } from "./expressions";
 import { field, numberField } from "./quota-helpers";
 import type { ProviderPreset } from "./types";
@@ -43,7 +43,7 @@ export const antigravityPreset: ProviderPreset = {
                     literal("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"),
                 ],
                 headers: [
-                    ...(bearer("").headers ?? []),
+                    bearerAuthorization(),
                     paramRow("User-Agent", [
                         literal(
                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/1.18.3 Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36",
@@ -82,9 +82,7 @@ export const antigravityPreset: ProviderPreset = {
                             routing: {
                                 type: "monitoring_only",
                             },
-                            get label() {
-                                return translation()(($) => $.helpers.presetQuotas.modelAllowance);
-                            },
+                            label: "Model allowance",
                             at: [
                                 "quotaInfo",
                             ],
@@ -123,10 +121,7 @@ export const antigravityPreset: ProviderPreset = {
                 ),
             ],
             headers: [
-                paramRow("Authorization", [
-                    literal("Bearer "),
-                    secret(),
-                ]),
+                bearerAuthorization(),
                 paramRow("User-Agent", [
                     literal("antigravity"),
                 ]),
@@ -227,38 +222,7 @@ export const antigravityPreset: ProviderPreset = {
                         ],
                     },
                 },
-                response: {
-                    encoding: "json",
-                    fields: [
-                        {
-                            path: [
-                                "access_token",
-                            ],
-                            target: {
-                                type: "access_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "refresh_token",
-                            ],
-                            target: {
-                                type: "refresh_token",
-                            },
-                            required: true,
-                        },
-                        {
-                            path: [
-                                "expires_in",
-                            ],
-                            target: {
-                                type: "expires_in_seconds",
-                            },
-                            required: false,
-                        },
-                    ],
-                },
+                response: tokenExchangeResponse(),
                 terminal_codes: [
                     "invalid_grant",
                 ],
@@ -303,10 +267,7 @@ export const antigravityPreset: ProviderPreset = {
                         ),
                     ],
                     headers: [
-                        paramRow("Authorization", [
-                            literal("Bearer "),
-                            secret(),
-                        ]),
+                        bearerAuthorization(),
                         paramRow("User-Agent", [
                             literal("antigravity"),
                         ]),
@@ -383,10 +344,7 @@ export const antigravityPreset: ProviderPreset = {
                             ),
                         ],
                         headers: [
-                            paramRow("Authorization", [
-                                literal("Bearer "),
-                                secret(),
-                            ]),
+                            bearerAuthorization(),
                             paramRow("User-Agent", [
                                 literal("antigravity"),
                             ]),
@@ -456,10 +414,7 @@ export const antigravityPreset: ProviderPreset = {
                     ),
                 ],
                 headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
+                    bearerAuthorization(),
                     paramRow("User-Agent", [
                         literal("antigravity"),
                     ]),

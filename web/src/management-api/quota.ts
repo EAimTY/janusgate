@@ -1,4 +1,3 @@
-import { expectDeclaredKeys, expectOneOf } from "./definitions/validation";
 import { ContractViolationError } from "./errors";
 import type {
     QuotaExhaustion,
@@ -10,26 +9,17 @@ import type {
     QuotaWindow,
     RestrictionKeySegment,
 } from "./generated/v0";
-import { isRoutingToken } from "./identifiers";
+import { expectModelIdentifier } from "./identifiers";
 import {
     expectArray,
+    expectDeclaredKeys,
     expectDeclaredRecord,
-    expectInteger,
     expectNonEmptyString,
+    expectOneOf,
     expectRecord,
+    expectSafeInteger,
     expectString,
 } from "./validation-primitives";
-
-/** Exact authored model token; selectors never derive IDs from a presentation label. */
-export function expectModelIdentifier(value: unknown, context: string): string {
-    const identifier = expectNonEmptyString(value, context);
-
-    if (!isRoutingToken(identifier)) {
-        throw new ContractViolationError(`${context} is not a routing token: ${identifier}`);
-    }
-
-    return identifier;
-}
 
 /**
  * Object-member paths share the existing descriptor language (README §5.1),
@@ -40,19 +30,6 @@ export function expectQuotaPath(value: unknown, context: string): string[] {
     return expectArray(value, context).map((member, index) =>
         expectNonEmptyString(member, `${context}[${index}]`),
     );
-}
-
-/** A frontend-safe integer, optionally positive; scale values survive JavaScript exactly. */
-function safeInteger(value: unknown, context: string, isPositive = false): number {
-    const integer = expectInteger(value, context);
-
-    if (!Number.isSafeInteger(integer) || (isPositive && integer <= 0)) {
-        throw new ContractViolationError(
-            `${context} must be a safe ${isPositive ? "positive " : ""}integer`,
-        );
-    }
-
-    return integer;
 }
 
 /** Finite informational amounts keep decimals, over-limit use, and normalize negative zero. */
@@ -177,7 +154,7 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
                     expectArray(Reflect.get(rule, "statuses"), `${ruleContext}.statuses`).map(
                         (value, index) => {
                             const statusContext = `${ruleContext}.statuses[${index}]`;
-                            const status = safeInteger(value, statusContext);
+                            const status = expectSafeInteger(value, statusContext);
                             if (status < 100 || status > 999 || (status >= 200 && status < 300)) {
                                 throw new ContractViolationError(
                                     `${statusContext} is not a rejected status: ${status}`,
@@ -285,7 +262,7 @@ export function parseQuotaExhaustion(value: unknown, context: string): QuotaExha
 }
 
 /** A normalized scope variant. */
-export function scope(value: unknown, context: string): QuotaScope {
+export function parseQuotaScope(value: unknown, context: string): QuotaScope {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     switch (type) {
@@ -319,7 +296,7 @@ export function scope(value: unknown, context: string): QuotaScope {
 }
 
 /** A normalized period, independent of its reset metadata. */
-export function window(value: unknown, context: string): QuotaWindow {
+export function parseQuotaWindow(value: unknown, context: string): QuotaWindow {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     switch (type) {
@@ -345,7 +322,7 @@ export function window(value: unknown, context: string): QuotaWindow {
             );
             return {
                 type,
-                seconds: safeInteger(Reflect.get(record, "seconds"), `${context}.seconds`, true),
+                seconds: expectSafeInteger(Reflect.get(record, "seconds"), `${context}.seconds`, 1),
             };
         case "calendar":
             expectDeclaredKeys(
@@ -373,7 +350,7 @@ export function window(value: unknown, context: string): QuotaWindow {
 }
 
 /** A normalized measurement; no totals or remaining percentages are invented. */
-export function measurement(value: unknown, context: string): QuotaMeasurement {
+export function parseQuotaMeasurement(value: unknown, context: string): QuotaMeasurement {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     switch (type) {
@@ -443,7 +420,7 @@ export function measurement(value: unknown, context: string): QuotaMeasurement {
 }
 
 /** An exact instant or calendar date, never a guessed midnight. */
-export function reset(value: unknown, context: string): QuotaReset {
+export function parseQuotaReset(value: unknown, context: string): QuotaReset {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     switch (type) {
@@ -469,7 +446,7 @@ export function reset(value: unknown, context: string): QuotaReset {
             );
             return {
                 type,
-                at: safeInteger(Reflect.get(record, "at"), `${context}.at`),
+                at: expectSafeInteger(Reflect.get(record, "at"), `${context}.at`),
             };
         case "date": {
             expectDeclaredKeys(

@@ -1,5 +1,5 @@
-//! Remote compaction: the gateway's fulfillment of client-directed context
-//! compaction requests.
+//! The compaction executor: the gateway's fulfillment of client-directed
+//! context compaction requests.
 //!
 //! A client using the Responses or Messages protocol can request compaction
 //! even when its selected upstream cannot perform native compaction. The
@@ -14,35 +14,23 @@
 //! existing artifact is not a new compaction and never triggers a summary
 //! call.
 //!
-//! The module decomposes into:
+//! This is the one module allowed to depend on the layers above the
+//! [`compaction_model`] vocabulary it consumes — `gateway`, `api`, `provider`,
+//! and `storage` — and it is the executor: strategy selection and multi-call
+//! coordination for compaction operations. The module decomposes into:
 //!
-//! - [`mechanism`]: the closed vocabulary of the five compaction mechanisms and their support
-//!   states.
-//! - [`support_facts`]: the per-model mechanism-to-support fact map and its three-layer resolution.
-//! - [`identity`]: stable item identities used to detect overlapping history across a compaction
-//!   boundary.
-//! - [`envelope`]: the versioned gateway envelope holding a gateway summary or a wrapped native
-//!   window.
-//! - [`sealing`]: authenticated encryption of envelopes into the namespaced gateway carrier format.
 //! - [`error`]: the typed compaction failures and their stable message codes.
-//! - [`accounting`]: the per-request ledger of dispatched calls.
 //! - [`threshold`]: the shared context estimator and the documented threshold defaults.
-//! - [`history`]: boundary preparation, window restoration, checkpoint planning, and sealing.
+//! - [`history`]: window restoration, checkpoint planning, and sealing.
 //! - [`summary`]: the default summarization prompt, the summarizer planner, and summary validity.
 //! - [`native`]: the native compaction operation dispatches.
 //! - [`executor`]: strategy selection and multi-call coordination for compaction operations.
 
-pub(crate) mod accounting;
-pub(crate) mod envelope;
 pub(crate) mod error;
 pub(crate) mod executor;
 pub(crate) mod history;
-pub(crate) mod identity;
-pub(crate) mod mechanism;
 pub(crate) mod native;
-pub(crate) mod sealing;
 pub(crate) mod summary;
-pub(crate) mod support_facts;
 pub(crate) mod threshold;
 
 #[cfg(test)]

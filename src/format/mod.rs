@@ -6,7 +6,9 @@
 //! provider definition's render options), each protocol parent ([`anthropic`], [`gemini`],
 //! [`openai`]) holds the families speaking that one client/upstream protocol (README §1, §6) plus
 //! the items its families share, and each family directory splits by concern (`request_parse`,
-//! `client_render`, `upstream_render`, `upstream_parse`).
+//! `client_render`, `upstream_render`, `upstream_parse`, and the pooled-projection pair
+//! `affinity` for the streaming render points and `json_affinity` for the aggregated body;
+//! families with a compaction channel add their compaction modules beside the pair).
 //!
 //! Two contracts are declared once here. Every outward format implements [`ClientFormat`], which
 //! parses client requests and boxes a [`ClientSseRenderer`] for live streaming (aggregated
@@ -201,7 +203,7 @@ pub(crate) struct ParsedCompaction {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ParsedInstructionItem {
     /// The instruction's role.
-    pub(crate) role: crate::compaction::identity::InstructionRole,
+    pub(crate) role: crate::compaction_model::identity::InstructionRole,
 
     /// The instruction text.
     pub(crate) text: String,
@@ -224,7 +226,7 @@ pub(crate) enum CompactionControl {
     ResponsesAutomatic {
         /// The requested entries, in order; each carries its threshold when
         /// stated.
-        entries: Vec<compaction_control::AutomaticEntry>,
+        entries: Vec<crate::ir::compaction::AutomaticEntry>,
     },
 
     /// Messages on-demand compaction (`compaction: {"type": "summarize"}`).
@@ -241,17 +243,12 @@ pub(crate) enum CompactionControl {
     },
 }
 
-/// Parsed control payloads of the compaction controls.
+/// Parsed control payloads of the compaction controls. The Responses
+/// automatic entry is field-identical to its wire form, so it lives directly
+/// as the IR's [`crate::ir::compaction::AutomaticEntry`]; the Messages edit's
+/// parsed semantic shape differs from its vendor wire object, which
+/// [`crate::ir::compaction::ThresholdEdit`] carries.
 pub(crate) mod compaction_control {
-    /// One Responses automatic `context_management` entry.
-    #[derive(Debug, Clone, PartialEq)]
-    pub(crate) struct AutomaticEntry {
-        /// The compaction threshold in input tokens, when the client stated
-        /// one; `None` keeps the upstream's own default (native) or the
-        /// gateway's declared-capacity default (emulated).
-        pub(crate) compact_threshold: Option<u64>,
-    }
-
     /// One Messages `compact_20260112` threshold edit.
     #[derive(Debug, Clone, PartialEq)]
     pub(crate) struct ThresholdEdit {
@@ -266,6 +263,18 @@ pub(crate) mod compaction_control {
         /// Custom summarization instructions replacing the gateway's default
         /// summarization prompt.
         pub(crate) instructions: Option<String>,
+    }
+}
+
+impl From<&compaction_control::ThresholdEdit> for crate::ir::compaction::ThresholdEdit {
+    fn from(edit: &compaction_control::ThresholdEdit) -> Self {
+        Self {
+            trigger: edit
+                .trigger
+                .map(|value| crate::ir::compaction::InputTokenTrigger { value }),
+            should_pause_after_compaction: edit.pause_after_compaction.then_some(true),
+            instructions: edit.instructions.clone(),
+        }
     }
 }
 
@@ -663,13 +672,16 @@ pub(crate) trait ClientFormat {
     /// prefix state — the checkpoint-before-answer ordering of the compaction
     /// flows — beside the vendor-shaped iteration entries a compaction
     /// lifecycle renders under its usage. Formats without a compaction channel
-    /// ignore both (their surfaces can never produce them).
+    /// ignore both (their surfaces can never produce them), so the default
+    /// delegates to [`ClientFormat::render_json_response`].
     fn render_json_response_with_prefix(
         public_id: &str,
         aggregation: &IrAggregation,
-        prefix: &[crate::format::compaction_wire::Checkpoint],
-        iterations: &[crate::format::compaction_wire::UsageIteration],
-    ) -> Self::JsonResponse;
+        _prefix: &[crate::format::compaction_wire::Checkpoint],
+        _iterations: &[crate::ir::compaction::UsageIteration],
+    ) -> Self::JsonResponse {
+        Self::render_json_response(public_id, aggregation)
+    }
 }
 
 /// Re-renders an aggregated completion as the IR event sequence its live
@@ -944,6 +956,23 @@ pub(in crate::format) fn arguments_to_object_or_empty(arguments: &str) -> Map<St
     arguments_as_object(arguments).unwrap_or_default()
 }
 
+/// The blank-line separator between flattened text parts (README §6.6): one cross-codec contract,
+/// shared by every surface that flattens a string-or-text-parts shape into one string and by the
+/// affinity projection that hashes the same flattened bytes.
+pub(in crate::format) const TEXT_PART_SEPARATOR: &str = "\n\n";
+
+/// Flattens text parts into one string under the shared wire contract (README §6.6): the parts
+/// join with [`TEXT_PART_SEPARATOR`], and a leading run of empty parts is skipped — the separator
+/// only ever separates text the accumulator already holds, so leading empties carry none and an
+/// all-empty input flattens to the empty string.
+pub(in crate::format) fn join_text_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    parts
+        .into_iter()
+        .skip_while(|text| text.is_empty())
+        .collect::<Vec<_>>()
+        .join(TEXT_PART_SEPARATOR)
+}
+
 /// Parses the JSON payload of an upstream SSE frame into a codec's typed upstream shape; the single
 /// home of the malformed-frame rejection shared by every codec's `ingest_frame`.
 ///
@@ -970,6 +999,17 @@ where
 {
     serde_json::from_slice(body)
         .map_err(|error| PayloadError::new(format!("malformed upstream payload: {error}")))
+}
+
+/// Selects the primary entry of an upstream parallel array: the entry the `is_primary` predicate
+/// accepts (each codec passes "the entry whose index is 0"), tolerating index-less upstreams by
+/// taking the first entry instead. Parallel entries beyond the primary are not supported and the
+/// remainder is ignored.
+pub(in crate::format) fn primary<T>(entries: &[T], is_primary: impl Fn(&T) -> bool) -> Option<&T> {
+    entries
+        .iter()
+        .find(|entry| is_primary(entry))
+        .or_else(|| entries.first())
 }
 
 /// Rejects an OpenAI-family tool payload whose `type` tag is not `function`.
@@ -1127,5 +1167,42 @@ mod tests {
         }
 
         assert_eq!(UpstreamFormat::parse("openai_responses"), None);
+    }
+
+    /// The shared text-part flattening carries the README §6.6 contract at its single home: a
+    /// leading run of empty parts is skipped (the separator only ever separates held text),
+    /// remaining parts join on the blank-line separator, and an all-empty input flattens to the
+    /// empty string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flattened text diverges from the pinned rule.
+    #[test]
+    fn join_text_parts_skips_leading_empties_and_joins_the_blank_line_separator() {
+        // Only the leading run is skipped; a mid-array empty part keeps its separators.
+        assert_eq!(
+            super::join_text_parts(["", "", "a", "", "b"]),
+            format!("a{0}{0}b", super::TEXT_PART_SEPARATOR)
+        );
+
+        assert_eq!(super::join_text_parts(["", ""]), "");
+    }
+
+    /// Primary-entry selection follows the declared index, not array position: an entry whose
+    /// index the predicate accepts wins even when a parallel entry precedes it, and an array of
+    /// index-less entries degrades to the first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selection diverges from the index-first rule.
+    #[test]
+    fn primary_prefers_the_declared_index_over_array_position() {
+        let indexed = [7, 0, 9];
+
+        assert_eq!(super::primary(&indexed, |entry| *entry == 0), Some(&0));
+
+        assert_eq!(super::primary(&[7, 9], |_| false), Some(&7));
+
+        assert_eq!(super::primary::<i32>(&[], |_| true), None);
     }
 }

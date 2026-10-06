@@ -87,7 +87,6 @@ const chinese = {
     },
     rich: {
         connected: "已连接 [[baseUrl]] — 令牌仅保存在此浏览器中。",
-        providerModel: "[[modelId]] 所属的上游账户为 [[providerLink]]。",
         setupToken: "实例配置文件中 [[setting]] 的管理令牌。",
         setupCors: "在实例的 [[setting]] 中允许此应用的源地址，除非此应用由网关自身提供。",
     },
@@ -146,6 +145,7 @@ const chinese = {
             enabled: "已启用",
             replacingTheSecretRevokesTheOldValueOnMessage:
                 "保存后，新密钥将取代旧密钥，旧密钥随即失效。",
+            aKeyNeedsASecret: "请输入密钥值。",
             deleteThisKey: "删除此密钥",
             deletingRevokesTheKeyAtOnceClientsHoldingMessage:
                 "删除后密钥立即失效，持有此密钥的客户端将收到 401 响应。该密钥的模型权限规则也将移除，历史用量记录会保留。",
@@ -153,6 +153,7 @@ const chinese = {
         apiKeyNewScreen: {
             createAPIKey: "创建 API 密钥",
             oneSecretYourServingClientsShareMessage: "供推理客户端使用的密钥。",
+            apiKeysBackLabel: "API 密钥",
             key: "密钥",
             theSecretHoldsLettersNumbersAndSymbolsOnlyMessage:
                 "密钥只能包含英文字母、数字和符号，不能包含空格，且不得与其他密钥重复。",
@@ -175,8 +176,11 @@ const chinese = {
             createAliases: "创建别名",
             choosePhysicalModelsAndAuthorTheirPublicIDsMessage:
                 "选择物理模型并设置公共 ID。每个选中模型将创建一条已启用的直接路由；名称冲突会单独报告，不会自动重命名或覆盖。",
+            inventoryBackLabel: "模型清单",
             noPhysicalModelsToAlias: "没有可创建别名的物理模型",
             discoverOrAddInventoryFirstMessage: "请先发现或添加模型。",
+            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
+                "另一个选中条目已使用此公共 ID，请设置不同名称。",
             openRoute: "打开路由",
             createSelectedAliases: "创建选中的别名",
         },
@@ -207,6 +211,14 @@ const chinese = {
                 "每个上游账户对应一个供应商账户。发现模型后，其模型将出现在清单中。",
             createYourFirstProvider: "创建第一个上游账户",
             connectedToTheGateway: "已连接网关",
+            discoverModels: "发现模型",
+            createAPIKey: "创建 API 密钥",
+            openAndDiscover: "打开并发现模型",
+            reviewModels: "检查模型",
+            credentialNotFresh: "凭据未曾有效",
+            credentialExpired: "凭据已过期",
+            reconnect: "重新连接",
+            openProvider: "打开上游账户",
             createAProvider: "创建上游账户",
             discoverItsModelsFromUpstream: "从上游发现模型",
             issueAnAPIKeyForServingClients: "为推理客户端创建 API 密钥",
@@ -214,6 +226,8 @@ const chinese = {
         },
         modelDetailScreen: {
             model: "模型",
+            upstreamOnProvider: "{{provider}} 上的 {{upstreamId}}。",
+            modelsBackLabel: "模型",
             capabilities: "能力",
             whatTheModelListingsDeclareForThisModelMessage:
                 "模型列表对该模型声明的能力。这些值不限制请求，实际响应由上游决定。",
@@ -223,6 +237,7 @@ const chinese = {
             compaction: "压缩",
             theRowsOwnCompactionFactsTheOverrideElseMessage:
                 "此模型的压缩能力使用覆盖值，未设置时使用最近发现的值。两者均未声明的部分由供应商定义决定。",
+            noLevels: "没有推理级别",
             addAlias: "添加别名",
             editModel: "编辑模型",
             details: "详情",
@@ -251,6 +266,7 @@ const chinese = {
             createProvider: "创建上游账户",
             aModelAddedByHandIsNeverRemovedMessage:
                 "手动添加的模型不会自动移除，也可恢复发现时丢失的模型。",
+            models: "模型",
             identity: "标识",
             provider: "上游账户",
             upstreamID: "上游 ID",
@@ -285,6 +301,9 @@ const chinese = {
             noModelsYet: "暂无模型",
             addAProviderFirstThenDiscoverItsModelsMessage:
                 "先创建上游账户，再发现其模型，也可手动添加。",
+            thisProviderHoldsNoModels: "此上游账户没有模型。",
+            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
+                "此上游账户已不在列表中，请在账户筛选中选择其他账户。",
             createProvider: "创建上游账户",
             searchModels: "搜索模型",
             searchByUpstreamIDOrProviderName: "按上游 ID 或账户名称搜索",
@@ -317,6 +336,8 @@ const chinese = {
             theVerificationURL: "验证 URL",
             approveTheCodeAtTheVerificationPageThisMessage:
                 "在验证页面确认验证码。此页面会持续查询网关，并在流程完成后自动继续。",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "请留在此页面直到流程完成。切换控制台页面会丢弃此流程。",
         },
         poolAvailabilityCard: {
             refreshQuota: "刷新配额",
@@ -351,12 +372,15 @@ const chinese = {
             credentials: "凭据",
             oauthCredentialsExpireReconnectingReplacesThemMessage:
                 "OAuth 凭据会过期，重新连接可替换凭据。",
+            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
+                "此供应商定义需要基础 URL，请恢复地址或还原修改。",
             deleteThisProvider: "删除此上游账户",
         },
         providerNewScreen: {
             createProvider: "创建上游账户",
             oneUpstreamAccountPickThePresetTheCredentialMessage:
                 "创建一个上游账户。选择预设后即可按对应方式获取凭据。",
+            providersBackLabel: "上游账户",
             readAgain: "重新读取",
             preset: "预设",
             switchPreset: "切换预设",
@@ -365,6 +389,8 @@ const chinese = {
             connection: "连接",
             theKeyIsWriteonlyTheGatewayNeverReturnsMessage: "密钥只可写入，网关不会返回其值。",
             connectTheAccount: "连接账户",
+            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
+                "授权期间不可修改，账户将使用流程开始时提交的值创建。",
             approveAccessWhereTheFlowPointsThenLetMessage:
                 "在流程指向的页面批准访问，然后等待完成。此应用不会保存上游凭据。",
             upstreamBaseURL: "上游基础 URL",
@@ -414,6 +440,7 @@ const chinese = {
             readingUpstreamQuota: "正在读取上游配额…",
             showingThePreviousReadingMessage: "正在显示上一次读取结果。",
             observed: "观测时间",
+            resetTimeReachedRefreshToUpdate: "已到重置时间，请刷新更新",
             theUpstreamReturnedNoQuotaEntriesMessage: "上游未返回配额条目。",
         },
         providersScreen: {
@@ -437,6 +464,7 @@ const chinese = {
             noPoolsYet: "暂无账户池",
             createANamedPoolWithAModelPrefixMessage:
                 "创建账户池并设置模型前缀，成员模型将自动发布。",
+            noModelPrefix: "无",
             publicRoutes: "公共模型路由",
             modelNamesClientsRequestStandaloneProvidersAndPoolsMessage:
                 "客户端请求的模型名称。独立上游账户和账户池会自动发布模型名称，也可按需添加别名。",
@@ -444,6 +472,7 @@ const chinese = {
             noPublicRoutesYet: "暂无公共模型路由",
             publishAPhysicalModelDirectlyOrTargetAMessage:
                 "直接发布物理模型，或指定账户池和精确上游 ID。",
+            automaticPrefix: "自动 · ",
         },
         screenFrame: {
             readAgain: "重新读取",
@@ -467,6 +496,9 @@ const chinese = {
             exclusiveInThisBrowsersZoneLike20260923T1000BlankMessage:
                 "不包含此时刻，使用浏览器本地时区，例如 2026-09-23T10:00。留空表示不限制。",
             clearFilters: "清除筛选",
+            usageBackLabel: "用量",
+            theQueryDidNotRunAFilterValueIsInvalid: "查询未运行，筛选值无效。",
+            total: "合计",
             nothingRecordedInThisWindowMessage: "此时间窗口内没有记录。",
             noRowsInThisWindowMessage: "此时间窗口内没有记录。",
             bucket: "分组",
@@ -493,6 +525,9 @@ const chinese = {
             oneRowAppearsPerDispatchedServingRequestTheMessage:
                 "网关向上游发送每个推理请求时会生成一条记录。如果已有流量却没有记录，请检查网关配置中的 api_logs 部分。",
             noRecordedRequestsMatchThisFilterMessage: "没有符合筛选条件的请求记录。",
+            filtersStayBehind: " — 时间窗口与所有其他筛选条件都保留在此处。",
+            streamMark: " · 流式",
+            thisRowIsNoLongerListed: "此条目已不在列表中。",
         },
         usageStats: {
             usage: "用量",
@@ -514,7 +549,6 @@ const chinese = {
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage: "上游不再报告此模型。",
-            itServesNothingMeanwhileMessage: "此期间无法提供推理服务。",
         },
     },
     diagnosis: {
@@ -846,7 +880,6 @@ const chinese = {
     },
     operationNotices: {
         flowFailed: "流程失败。",
-        flowGone: "此授权流程已无法完成：state 已过期或已被使用。",
         freshFlow: "请重新开始授权流程并及时完成授权。",
         flowExpired: "流程已过期。",
         flowExpiryPassed: "等待结果期间，流程已超过有效期。",
@@ -854,8 +887,6 @@ const chinese = {
         pollFailed: "上一次结果查询失败。",
         invalidDefinition: "定义 JSON 不符合网关要求。",
         fixDefinition: "请修正 JSON 后重新提交，尚未写入任何内容。",
-        invalidFilter: "查询未运行：筛选值无效。",
-        previousQuery: "下方仍显示上一次查询结果，有行内错误的字段即为问题所在。",
         fixFilter: "请修正该字段后重新查询。",
         discoveryPending: "正在从 [[providerName]] 发现模型…",
         discoveryQuery: "正在查询上游当前报告的模型。",
@@ -885,12 +916,6 @@ const chinese = {
         identifiers: {
             baseURLMustBeAnHttpOrHttpsAddressWithNoSpaces:
                 "基础 URL 必须使用 http:// 或 https://，且不能包含空格。",
-        },
-        presetQuotas: {
-            primaryWindow: "主要窗口",
-            secondaryWindow: "次要窗口",
-            allowance: "配额",
-            modelAllowance: "模型配额",
         },
         presets: {
             anyEndpointSpeakingTheOpenAIResponsesProtocolWithAStaticKey:
@@ -928,55 +953,11 @@ const chinese = {
             zenOverTheGeminiGenerateContentProtocolWithAStaticKey:
                 "通过 Gemini GenerateContent 协议和静态密钥访问 Zen。",
         },
-        apiKeyEditScreen: {
-            aKeyNeedsASecret: "请输入密钥值。",
-        },
-        bulkPublicationScreen: {
-            anotherSelectedRowUsesThisPublicIDChooseDistinctExplicitNames:
-                "另一个选中条目已使用此公共 ID，请设置不同名称。",
-        },
-        homeScreen: {
-            discoverModels: "发现模型",
-            createAPIKey: "创建 API 密钥",
-            openAndDiscover: "打开并发现模型",
-            reviewModels: "检查模型",
-            credentialNotFresh: "凭据未曾有效",
-            credentialExpired: "凭据已过期",
-            reconnect: "重新连接",
-            openProvider: "打开上游账户",
-        },
-        modelDetailScreen: {
-            noLevels: "没有推理级别",
-        },
-        modelNewScreen: {
-            models: "模型",
-            provider: "上游账户",
-        },
-        modelsScreen: {
-            thisProviderHoldsNoModels: "此上游账户没有模型。",
-            thisProviderIsNoLongerListedPickAnotherInTheProviderFilter:
-                "此上游账户已不在列表中，请在账户筛选中选择其他账户。",
-        },
-        oauthFlowView: {
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "请留在此页面直到流程完成。切换控制台页面会丢弃此流程。",
-        },
         oauthFlow: {
             thatPasteHoldsNeitherABareCodeNorAURLWithACodeCopy:
                 "粘贴的内容既不是授权码，也不是含授权码的 URL。请复制登录完成后的完整地址或其中的授权码。",
             theFlowStaysLiveThisPageKeepsAskingForTheOutcome:
                 "流程仍在进行，此页面会持续查询结果。",
-        },
-        providerEditScreen: {
-            thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert:
-                "此供应商定义需要基础 URL，请恢复地址或还原修改。",
-        },
-        providerNewScreen: {
-            lockedWhileTheAuthorizationIsLiveTheProviderIsCreatedFromWhatTheFlows:
-                "授权期间不可修改，账户将使用流程开始时提交的值创建。",
-        },
-        providerQuotaCard: {
-            resetTimeReachedRefreshToUpdate: "已到重置时间，请刷新更新",
         },
         rowNotFound: {
             theGatewayHoldsNoPoolHereItWasDeletedOrTheAddressWasTyped:
@@ -993,13 +974,6 @@ const chinese = {
         usageLabels: {
             streamed: "流式",
             nonstreamed: "非流式",
-        },
-        usageQueryScreen: {
-            theQueryDidNotRunAFilterValueIsInvalid: "查询未运行，筛选值无效。",
-            total: "合计",
-        },
-        usageScreen: {
-            thisRowIsNoLongerListed: "此条目已不在列表中。",
         },
         apiKeyAccess: {
             inherit: "继承",
@@ -1042,6 +1016,8 @@ const chinese = {
             last24Hours: "最近 24 小时",
             last7Days: "最近 7 天",
             last30Days: "最近 30 天",
+            invalidStatusList:
+                "HTTP 状态必须为以逗号分隔的普通整数，例如 200, 429；留空则不按状态筛选。",
         },
     },
     validation: {
@@ -1117,8 +1093,6 @@ const chinese = {
         enabledStored: "已存储 {{total}} 个中的已启用数量",
         readyListed: "已列出 {{total}} 个中的就绪数量",
         copyEndpoint: "复制 {{surface}} 端点 URL",
-        noModels: "尚无模型。",
-        noReadyModels: "没有就绪库存 — 所有模型均已禁用或消失。",
         disabledCredential: "{{expiry}} 上游账户已禁用 — 重新启用时请重新连接。",
         noKeysDetail: " 服务客户端需要 API 密钥进行认证 — 没有密钥时，网关没有就绪库存。",
     },

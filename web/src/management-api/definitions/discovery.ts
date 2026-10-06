@@ -1,8 +1,13 @@
 import { ContractViolationError } from "../errors";
 import type { Discovery, DiscoveryExtract, Pagination } from "../generated/v0";
-import { expectInteger, expectRecord, expectString } from "../validation-primitives";
+import {
+    expectDeclaredKeys,
+    expectInteger,
+    expectRecord,
+    expectString,
+    isPresentValue,
+} from "../validation-primitives";
 import { expectControlRequest, expectResponsePath } from "./control";
-import { expectDeclaredKeys, isPresentValue } from "./validation";
 
 /** The page-list extraction of a discovery, rebuilt from its mode (README §5.5). */
 function expectDiscoveryExtract(value: unknown, context: string): DiscoveryExtract {

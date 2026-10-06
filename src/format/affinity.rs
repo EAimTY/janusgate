@@ -278,13 +278,8 @@ impl Sources {
             if message_index < first_message {
                 continue;
             }
-            while states
-                .peek()
-                .is_some_and(|item| item.offset <= message_index)
-            {
-                if let Some(state) = states.next() {
-                    self.append_state(state, projector);
-                }
+            while let Some(state) = states.next_if(|item| item.offset <= message_index) {
+                self.append_state(state, projector);
             }
             let role = match source_role {
                 IrRole::User => Role::User,

@@ -1,13 +1,14 @@
 //! Management-boundary structural validation of quota extraction descriptors.
+//!
+//! The nonempty-collection contracts — the descriptor's sources, an array source's identity, a
+//! source's entries, and a routing selector's model set — belong to the carrying `Vec1` types:
+//! their empty lists are parse rejections, not validation rejections.
 
 use super::{ValidationError, quota::*, template::ResponsePath};
 use std::collections::BTreeSet;
 
 /// Validates contexts, uniqueness, nonempty configuration, and stable array identity.
 pub(super) fn validate(descriptor: &QuotaDescriptor) -> Result<(), ValidationError> {
-    if descriptor.sources.is_empty() {
-        return Err(invalid("quota sources must not be empty"));
-    }
     let mut sources = BTreeSet::new();
     for source in &descriptor.sources {
         let (key, at, scope, entries, is_map) = match source {
@@ -38,19 +39,19 @@ pub(super) fn validate(descriptor: &QuotaDescriptor) -> Result<(), ValidationErr
         if !sources.insert(key) {
             return Err(invalid("quota source keys must be unique"));
         }
-        match scope {
-            QuotaScopeSource::Unknown => {}
-            QuotaScopeSource::Literal { value } => nonempty(value)?,
-            QuotaScopeSource::Field {
-                field: selection, ..
-            } => field(selection, false)?,
-            QuotaScopeSource::MapKey if is_map => {}
-            QuotaScopeSource::MapKey => return Err(invalid("quota map_key requires a map source")),
+        if let Some(scope) = scope {
+            match scope {
+                QuotaTextSource::Literal { value } => nonempty(value)?,
+                QuotaTextSource::Field {
+                    field: selection, ..
+                } => field(selection, false)?,
+                QuotaTextSource::MapKey if is_map => {}
+                QuotaTextSource::MapKey => {
+                    return Err(invalid("quota map_key requires a map source"));
+                }
+            }
         }
         if let QuotaSource::Array { identity, .. } = source {
-            if identity.is_empty() {
-                return Err(invalid("quota array identity must not be empty"));
-            }
             let mut has_item_field = false;
             for part in identity {
                 match part {
@@ -73,9 +74,6 @@ pub(super) fn validate(descriptor: &QuotaDescriptor) -> Result<(), ValidationErr
                 return Err(invalid("quota array identity requires an item field"));
             }
         }
-        if entries.is_empty() {
-            return Err(invalid("quota source entries must not be empty"));
-        }
         let mut keys = BTreeSet::new();
         for entry in entries {
             nonempty(&entry.key)?;
@@ -85,9 +83,6 @@ pub(super) fn validate(descriptor: &QuotaDescriptor) -> Result<(), ValidationErr
                 return Err(invalid("quota entry keys must be unique within a source"));
             }
             if let QuotaRoutingSource::Models { upstream_ids } = &entry.routing {
-                if upstream_ids.is_empty() {
-                    return Err(invalid("quota routing model selectors must not be empty"));
-                }
                 for source in upstream_ids {
                     match source {
                         QuotaTextSource::Literal { value } => {

@@ -12,7 +12,7 @@
 //! native ciphertext; it is not a gateway-readable summary.
 
 use crate::{
-    compaction::{
+    compaction_model::{
         identity::{InstructionRole, ItemIdentity},
         mechanism::Mechanism,
     },
@@ -257,7 +257,7 @@ mod tests {
 
     use super::{EnvelopePayload, EnvelopeV1, ReplacementMode, summary_message};
     use crate::{
-        compaction::identity::ItemIdentity,
+        compaction_model::identity::ItemIdentity,
         ir::{IrMessage, IrPart, IrRole},
     };
 
@@ -286,7 +286,6 @@ mod tests {
                 }],
                 retained_units: vec![super::RetainedUnit {
                     identity: ItemIdentity::for_message(
-                        IrRole::User,
                         0,
                         &IrMessage {
                             role: IrRole::User,

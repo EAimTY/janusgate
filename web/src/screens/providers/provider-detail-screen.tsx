@@ -8,6 +8,7 @@ import {
     credentialBadge,
     oauthNeverFreshSentence,
 } from "/src/features/providers/credential-presentation";
+import { createDiscoveryNotice } from "/src/features/providers/notices";
 import { ProviderQuotaCard } from "/src/features/providers/provider-quota-card";
 import { createProviderQuotaView } from "/src/features/providers/quota-view";
 import { EntityUsageCard } from "/src/features/usage/stats";
@@ -36,7 +37,6 @@ import { indexRowsById } from "/src/row-index";
 import { type ScreenNotice, screenFailureNotice } from "/src/screen-state/notices";
 import { createScreenRead, readOne } from "/src/screen-state/read";
 import { createPinnedRow } from "/src/screen-state/row-state";
-import { createDiscoveryNotice } from "/src/screen-state/success-notices";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
@@ -133,7 +133,7 @@ export function ProviderDetailScreen(props: {
         setDiscoveryNotice({
             tone: "info",
             get title() {
-                return discoveryPendingMessage(translation(), current.name);
+                return discoveryPendingMessage(current.name);
             },
             get detail() {
                 return translation()(($) => $.operationNotices.discoveryQuery);

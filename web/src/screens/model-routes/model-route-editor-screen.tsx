@@ -1,5 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
+import {
+    readModelRoutes,
+    readModels,
+    readProviderPools,
+    readProviders,
+} from "/src/features/inventory/read";
 import { PoolAvailabilityCard } from "/src/features/provider-pools/pool-availability-card";
 import { translation } from "/src/i18n";
 import { editIdentifierMessage } from "/src/i18n/rich";
@@ -16,7 +22,14 @@ import { createDeleteAction, createEditForm } from "/src/screen-state/edit-form"
 import { createScreenRead, readAll, type ScreenRead } from "/src/screen-state/read";
 import { createEditRow } from "/src/screen-state/row-state";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
+import {
+    Button,
+    ButtonLink,
+    entitySelectOptions,
+    SelectField,
+    Switch,
+    TextField,
+} from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { RowNotFound } from "/src/ui/row-not-found";
@@ -67,18 +80,10 @@ export function ModelRouteEditorScreen(props: {
         load: async (signal) => {
             const [routes, inventory, poolRows, accounts] = await readAll(
                 signal,
-                {
-                    run: (signal) => props.api.listModelRoutes(signal),
-                },
-                {
-                    run: (signal) => props.api.listModels({}, signal),
-                },
-                {
-                    run: (signal) => props.api.listProviderPools(signal),
-                },
-                {
-                    run: (signal) => props.api.listProviders(signal),
-                },
+                readModelRoutes(props.api),
+                readModels(props.api, {}),
+                readProviderPools(props.api),
+                readProviders(props.api),
             );
             setModels(inventory.models);
             setPools(poolRows.provider_pools);
@@ -441,19 +446,13 @@ function RouteForm(props: {
                                         ($) => $.screens.modelRouteEditorScreen.pool,
                                     )}
                                     value={poolId()}
-                                    options={[
-                                        {
-                                            value: "",
-                                            label: translation()(
-                                                ($) =>
-                                                    $.additional.modelRouteEditorScreen.chooseAPool,
-                                            ),
-                                        },
-                                        ...props.pools.map((pool) => ({
-                                            value: String(pool.id),
-                                            label: pool.name,
-                                        })),
-                                    ]}
+                                    options={entitySelectOptions(
+                                        props.pools,
+                                        (pool) => pool.name,
+                                        translation()(
+                                            ($) => $.additional.modelRouteEditorScreen.chooseAPool,
+                                        ),
+                                    )}
                                     onChange={setPoolId}
                                     isDisabled={form.isSaving()}
                                 />
@@ -487,20 +486,13 @@ function RouteForm(props: {
                                 ($) => $.screens.modelRouteEditorScreen.physicalModel,
                             )}
                             value={modelId()}
-                            options={[
-                                {
-                                    value: "",
-                                    label: translation()(
-                                        ($) =>
-                                            $.additional.modelRouteEditorScreen
-                                                .chooseAPhysicalModel,
-                                    ),
-                                },
-                                ...props.models.map((model) => ({
-                                    value: String(model.id),
-                                    label: `${model.provider} · ${model.upstream_id}`,
-                                })),
-                            ]}
+                            options={entitySelectOptions(
+                                props.models,
+                                (model) => `${model.provider} · ${model.upstream_id}`,
+                                translation()(
+                                    ($) => $.additional.modelRouteEditorScreen.chooseAPhysicalModel,
+                                ),
+                            )}
                             onChange={setModelId}
                             isDisabled={form.isSaving()}
                         />

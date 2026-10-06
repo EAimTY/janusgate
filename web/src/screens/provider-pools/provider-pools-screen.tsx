@@ -1,11 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
+import { readProviderPools } from "/src/features/inventory/read";
 import { translation } from "/src/i18n";
 import { poolMembersMessage } from "/src/i18n/rich";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderPoolResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createScreenRead } from "/src/screen-state/read";
+import { createScreenRead, readOne } from "/src/screen-state/read";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
@@ -18,7 +19,8 @@ export function ProviderPoolsScreen(props: { readonly api: ManagementApi }): JSX
     const [pools, setPools] = createSignal<ReadonlyArray<ProviderPoolResponse>>([]);
     const read = createScreenRead({
         load: async (signal) => {
-            const result = await props.api.listProviderPools(signal);
+            const result = await readOne(signal, readProviderPools(props.api));
+
             setPools(result.provider_pools);
         },
     });
@@ -75,7 +77,9 @@ export function ProviderPoolsScreen(props: { readonly api: ManagementApi }): JSX
                                             pool.members.length,
                                             pool.model_prefix === ""
                                                 ? translation()(
-                                                      ($) => $.vocabulary.reasoningLevel.none,
+                                                      ($) =>
+                                                          $.screens.routingListsScreen
+                                                              .noModelPrefix,
                                                   )
                                                 : pool.model_prefix,
                                         )}

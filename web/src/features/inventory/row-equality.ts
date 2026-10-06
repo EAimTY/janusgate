@@ -1,37 +1,68 @@
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 
 /**
+ * Per-field equality overrides for `isSameRowFields`: a field whose values
+ * need content equality beyond the default — a structured policy object
+ * compared by its canonical rules, say — names its own comparator. Fields
+ * without an override compare by the walk's default.
+ */
+export type RowFieldEquality<TRow extends object> = Partial<{
+    [TFieldKey in keyof TRow]: (previous: TRow[TFieldKey], fresh: TRow[TFieldKey]) => boolean;
+}>;
+
+/**
  * Whether two rows of one generated wire shape are field-for-field equal. The
  * comparison walks every key the previous row carries and requires the fresh
  * row to carry exactly those keys with equal values, so a tagged union's
- * members — whose key sets differ — never answer equal. Most fields are
- * primitives compared with `===`; the model row's capability level sets are
- * arrays compared element-wise, since equal content in distinct instances
- * must keep the row's identity. Were a row ever to grow another structured
- * field, equal content in distinct instances would compare unequal,
- * degrading benignly to adopting the fresh row — never to keeping a stale one.
+ * members — whose key sets differ — never answer equal, and a row that grows
+ * another generated column joins the walk automatically instead of silently
+ * comparing unequal rows as equal. Most fields are primitives compared with
+ * `===`; array values are compared element-wise, since equal content in
+ * distinct instances must keep the row's identity. A field named in
+ * `isSameField` is compared by its own comparator instead, so a structured
+ * field can answer content equality; every other field keeps the default.
+ * Were a row ever to grow another structured field with no override, equal
+ * content in distinct instances would compare unequal, degrading benignly to
+ * adopting the fresh row — never to keeping a stale one.
  */
-function isSameRowFields<TRow extends object>(previous: TRow, fresh: TRow): boolean {
+export function isSameRowFields<TRow extends object>(
+    previous: TRow,
+    fresh: TRow,
+    isSameField: RowFieldEquality<TRow> = {},
+): boolean {
     const previousKeys = Object.keys(previous) as (keyof TRow)[];
     const freshKeys = Object.keys(fresh) as (keyof TRow)[];
     return (
         previousKeys.length === freshKeys.length &&
-        previousKeys.every((key) => {
-            const before: unknown = previous[key];
-            const after: unknown = fresh[key];
-
-            if (Array.isArray(before) || Array.isArray(after)) {
-                return (
-                    Array.isArray(before) &&
-                    Array.isArray(after) &&
-                    before.length === after.length &&
-                    before.every((entry, index) => entry === after[index])
-                );
-            }
-
-            return before === after;
-        })
+        previousKeys.every((key) => isSameFieldValue(previous, fresh, key, isSameField))
     );
+}
+
+/** One field's equality under the walk: its override where named, the default otherwise. */
+function isSameFieldValue<TRow extends object, TFieldKey extends keyof TRow>(
+    previous: TRow,
+    fresh: TRow,
+    fieldKey: TFieldKey,
+    isSameField: RowFieldEquality<TRow>,
+): boolean {
+    const isSameOverride = isSameField[fieldKey];
+    if (isSameOverride !== undefined) {
+        return isSameOverride(previous[fieldKey], fresh[fieldKey]);
+    }
+
+    const before: unknown = previous[fieldKey];
+    const after: unknown = fresh[fieldKey];
+
+    if (Array.isArray(before) || Array.isArray(after)) {
+        return (
+            Array.isArray(before) &&
+            Array.isArray(after) &&
+            before.length === after.length &&
+            before.every((entry, index) => entry === after[index])
+        );
+    }
+
+    return before === after;
 }
 
 /**

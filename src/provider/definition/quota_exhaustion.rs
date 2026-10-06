@@ -3,6 +3,7 @@
 use super::{ValidationError, template::ResponsePath};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use vec1::Vec1;
 
 /// An HTTP status that can identify a rejected dispatch, excluding every success status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -32,8 +33,12 @@ impl From<RejectedStatus> for u16 {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct QuotaExhaustion {
-    /// Authored evaluation order, validated once at the management boundary.
-    pub rules: Vec<QuotaExhaustionRule>,
+    /// Authored evaluation order; the `Vec1` type rejects an empty list at parse.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(as = "Vec<QuotaExhaustionRule>")
+    )]
+    pub rules: Vec1<QuotaExhaustionRule>,
 }
 
 /// One positive discrimination rule; status alone can never establish exhaustion.
@@ -47,8 +52,13 @@ pub struct QuotaExhaustionRule {
     pub statuses: BTreeSet<RejectedStatus>,
     /// Exact string member required in a complete valid JSON object.
     pub code: ExactQuotaCode,
-    /// Nonempty ordered restriction identity recipe.
-    pub restriction_key: Vec<RestrictionKeySegment>,
+    /// Nonempty ordered restriction identity recipe; the `Vec1` type rejects an empty recipe at
+    /// parse.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(as = "Vec<RestrictionKeySegment>")
+    )]
+    pub restriction_key: Vec1<RestrictionKeySegment>,
     /// Account-wide or exact requested physical model applicability.
     pub applies_to: RejectionApplicability,
 }
@@ -94,14 +104,9 @@ impl QuotaExhaustion {
     ///
     /// # Errors
     ///
-    /// Returns errors for empty rules, names, status sets, paths, or restriction recipes, and
-    /// duplicate rule names. String code values remain exact, including an explicitly empty code.
+    /// Returns errors for empty names, status sets, paths, or restriction recipes, and duplicate
+    /// rule names. String code values remain exact, including an explicitly empty code.
     pub(super) fn validate(&self) -> Result<(), ValidationError> {
-        if self.rules.is_empty() {
-            return Err(ValidationError::new(
-                "quota exhaustion rules must not be empty",
-            ));
-        }
         let mut names = BTreeSet::new();
         for rule in &self.rules {
             if rule.name.is_empty() || !names.insert(&rule.name) {
@@ -122,7 +127,7 @@ impl QuotaExhaustion {
             let has_empty_segment = rule.restriction_key.iter().any(
                 |part| matches!(part, RestrictionKeySegment::Literal { value } if value.is_empty()),
             );
-            if rule.restriction_key.is_empty() || has_empty_segment {
+            if has_empty_segment {
                 return Err(ValidationError::new(
                     "quota restriction keys require nonempty segments",
                 ));

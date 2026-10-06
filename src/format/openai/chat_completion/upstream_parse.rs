@@ -207,7 +207,7 @@ impl UpstreamParser {
 
         let mut events = self.message_start_events(&response);
 
-        if let Some(choice) = primary_choice(&response.choices) {
+        if let Some(choice) = format::primary(&response.choices, |choice| choice.index == Some(0)) {
             if let Some(delta) = &choice.delta {
                 push_text_events(delta, &mut events);
 
@@ -423,13 +423,13 @@ impl UpstreamEventParser for UpstreamParser {
 
         let mut events = self.message_start_events(&response);
 
-        if let Some(message) =
-            primary_choice(&response.choices).and_then(|choice| choice.message.as_ref())
+        if let Some(message) = format::primary(&response.choices, |choice| choice.index == Some(0))
+            .and_then(|choice| choice.message.as_ref())
         {
             events.append(&mut message_events_from_full(message));
         }
 
-        let finish_reason = primary_choice(&response.choices)
+        let finish_reason = format::primary(&response.choices, |choice| choice.index == Some(0))
             .and_then(|choice| choice.finish_reason.as_deref())
             .map(super::finish_reason_from_openai)
             .unwrap_or(IrFinishReason::Stop);
@@ -455,16 +455,6 @@ impl UpstreamEventParser for UpstreamParser {
 
         events
     }
-}
-
-/// Selects the primary entry of an upstream `choices` array: the entry whose `index` is 0,
-/// tolerating index-less upstreams by taking the first entry instead. Parallel entries beyond the
-/// primary are not supported and the remainder is ignored.
-fn primary_choice(choices: &[Choice]) -> Option<&Choice> {
-    choices
-        .iter()
-        .find(|choice| choice.index == Some(0))
-        .or_else(|| choices.first())
 }
 
 /// Renders one upstream usage observation as an IR event.

@@ -111,6 +111,10 @@ export function ApiKeyAccess(props: {
     const isOwnerVisible = (owner: Owner, name: string): boolean =>
         visibleRoutes(owner, name).length > 0 ||
         (matches(name) && (!hasOverridesOnly() || ownerChoice(props.policy, owner) !== "inherit"));
+    // One computed sweep per reactive run: the missing-reference scan walks
+    // every rule against all four listings, translating each missing rule —
+    // the render and the submit-gate read it together.
+    const missing = createMemo(() => missingReferences(props.policy, props.inventory));
 
     return (
         <section
@@ -166,7 +170,7 @@ export function ApiKeyAccess(props: {
                     onToggle={setHasOverridesOnly}
                 />
             </div>
-            <For each={missingReferences(props.policy, props.inventory)}>
+            <For each={missing()}>
                 {(missing) => (
                     <div class="flex flex-wrap items-center justify-between gap-2 text-[13px] text-bad">
                         <span>
@@ -199,9 +203,7 @@ export function ApiKeyAccess(props: {
                     </div>
                 )}
             </For>
-            <Show
-                when={missingReferences(props.policy, props.inventory).length > 0 && props.onChange}
-            >
+            <Show when={missing().length > 0 && props.onChange}>
                 <p
                     role="alert"
                     class="text-[13px] text-bad"

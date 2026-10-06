@@ -8,9 +8,10 @@
 //! `/models/{model}:generateContent` — constructing such a route panics with "Only one
 //! parameter is allowed per path segment" (verified with a build-time probe against axum
 //! 0.8.9; see [`router`] tests). The endpoints therefore share one wildcard route,
-//! `/models/{*rest}`, plus manual parsing in [`parse_model_action`]; malformed paths return
-//! the same Gemini 404 the prefix fallback renders, so the observable behavior matches a
-//! native partial-segment router.
+//! `/models/{*rest}`, whose capture [`WildcardCapture`] extracts through the router's own
+//! route parameter and [`parse_model_action`] parses; malformed paths return the same
+//! Gemini 404 the prefix fallback renders, so the observable behavior matches a native
+//! partial-segment router.
 //!
 //! Shared concerns (authentication, 404/405 bodies, body limit, JSON helper, accounting row
 //! id, completion pipeline) live in [`crate::api::serving`] and the prefix module [`super`];
@@ -20,16 +21,16 @@
 use crate::{
     accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
-    compaction::support_facts::CompactionSupportFacts,
+    compaction_model::support_facts::CompactionSupportFacts,
     context::Context,
     format::{RouteContext, gemini::generate_content::Format as InboundFormat},
 };
 use axum::{
     Router,
     body::Bytes,
-    extract::{OriginalUri, State},
-    http::Method,
-    response::Response,
+    extract::{FromRequestParts, OriginalUri, Path, State},
+    http::{Method, request::Parts as RequestParts},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use axum_extra::extract::WithRejection;
@@ -98,26 +99,74 @@ async fn models(
     .await
 }
 
-/// Handles both completion actions behind the wildcard route: parses the `rest` capture
-/// into its model plus action, enforces the streaming query convention, then runs the
-/// shared completion pipeline.
+/// The router's own `{*rest}` capture: everything after `/models/`, extracted
+/// through the route parameter so no mount prefix is spelled in the handler. A
+/// matched single-capture wildcard route always carries its capture, so the
+/// rejection — the surface's unmapped-path 404 over the request's own path —
+/// is unrepresentable in practice and exists only to keep the surface's error
+/// wire should that contract change.
+struct WildcardCapture(String);
+
+impl<S> FromRequestParts<S> for WildcardCapture
+where
+    S: Send + Sync,
+{
+    type Rejection = WildcardRejection;
+
+    async fn from_request_parts(
+        parts: &mut RequestParts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let rejection = WildcardRejection {
+            method: parts.method.clone(),
+            path: parts.uri.path().to_string(),
+        };
+
+        match Path::<String>::from_request_parts(parts, state).await {
+            Ok(Path(capture)) => Ok(Self(capture)),
+            Err(_) => Err(rejection),
+        }
+    }
+}
+
+/// Why [`WildcardCapture`] could not extract: the router failed to hand the
+/// handler its own route's capture. Rendered as the surface's unmapped-path
+/// 404 — the same body the prefix fallback renders.
+#[derive(Debug)]
+struct WildcardRejection {
+    /// The request method, for the invalid-URL classification.
+    method: Method,
+
+    /// The request path, for the invalid-URL classification.
+    path: String,
+}
+
+impl IntoResponse for WildcardRejection {
+    fn into_response(self) -> Response {
+        let error = Error::InvalidUrl {
+            method: self.method.as_str().to_string(),
+            path: self.path,
+        };
+
+        log_error("request", &error);
+
+        serving::error_response::<super::Surface>(error)
+    }
+}
+
+/// Handles both completion actions behind the wildcard route: parses the route
+/// capture into its model plus action, enforces the streaming query
+/// convention, then runs the shared completion pipeline.
 async fn dispatch(
     State(context): State<Context>,
     api_key: serving::AuthenticatedApiKeyRow,
     OriginalUri(uri): OriginalUri,
+    WildcardCapture(capture): WildcardCapture,
     WithRejection(body, _): WithRejection<Bytes, serving::BodyError<super::Surface>>,
 ) -> Response {
-    let path = uri.path();
-
-    let rest = path
-        .strip_prefix("/api/gemini-v1beta/models/")
-        .or_else(|| path.strip_prefix("/models/"))
-        .unwrap_or("");
-
-    // The wildcard capture is everything after `/models/`; it is re-derived from the
-    // request path rather than through a typed extractor so malformed paths stay in
-    // this handler's 404 domain instead of the router's.
-    let action = match parse_model_action(rest) {
+    // Malformed captures stay in this handler's 404 domain: the same surface
+    // 404 the prefix fallback renders for unmapped paths.
+    let action = match parse_model_action(&capture, uri.path()) {
         Ok(action) => action,
 
         Err(error) => {
@@ -168,7 +217,7 @@ struct ModelAction {
     is_streaming: bool,
 }
 
-/// Parses the wildcard capture after `/models/` into its model plus action.
+/// Parses the router's wildcard capture into its model plus action.
 ///
 /// The capture must be `<model>:generateContent` or `<model>:streamGenerateContent`
 /// with a non-empty model containing no `/` (the URL path cannot carry such a public
@@ -178,22 +227,25 @@ struct ModelAction {
 /// outside the two action shapes is an unmapped path and returns the surface 404, so
 /// malformed paths observe the same body the prefix fallback renders.
 ///
+/// `request_path` is the request's raw path, carried verbatim into the invalid-URL
+/// classification.
+///
 /// # Errors
 ///
 /// Returns [`Error::InvalidUrl`] for captures outside the two action shapes.
-fn parse_model_action(rest: &str) -> Result<ModelAction, Error> {
+fn parse_model_action(capture: &str, request_path: &str) -> Result<ModelAction, Error> {
     let invalid_url = || Error::InvalidUrl {
         method: Method::POST.as_str().to_string(),
-        path: format!("/api/gemini-v1beta/models/{rest}"),
+        path: request_path.to_string(),
     };
 
     // A `/` inside the capture means the model segment itself contained a slash: the
     // URL path cannot carry such a public ID, so the path is unmapped.
-    if rest.contains('/') {
+    if capture.contains('/') {
         return Err(invalid_url());
     }
 
-    let (model, action) = rest.split_once(':').ok_or_else(invalid_url)?;
+    let (model, action) = capture.split_once(':').ok_or_else(invalid_url)?;
 
     if model.is_empty() {
         return Err(invalid_url());
@@ -229,6 +281,8 @@ mod tests {
     /// Panics if a capture parses outside its documented outcome.
     #[test]
     fn parses_wildcard_captures_into_model_actions() {
+        let request_path = |rest: &str| format!("/api/gemini-v1beta/models/{rest}");
+
         for (rest, model, is_streaming) in [
             ("gemini-2.0:generateContent", "gemini-2.0", false),
             ("gemini-2.0:streamGenerateContent", "gemini-2.0", true),
@@ -237,7 +291,8 @@ mod tests {
                 clippy::expect_used,
                 reason = "each valid capture is constructed to parse"
             )]
-            let action = parse_model_action(rest).expect("a valid capture must parse");
+            let action =
+                parse_model_action(rest, &request_path(rest)).expect("a valid capture must parse");
 
             assert_eq!(
                 action,
@@ -261,7 +316,8 @@ mod tests {
                 clippy::expect_used,
                 reason = "each invalid capture is constructed to fail"
             )]
-            let error = parse_model_action(rest).expect_err("an invalid capture must 404");
+            let error = parse_model_action(rest, &request_path(rest))
+                .expect_err("an invalid capture must 404");
 
             assert!(
                 matches!(error, Error::InvalidUrl { .. }),
@@ -294,7 +350,7 @@ mod tests {
     /// Panics if the rendered shape diverges from the native contract.
     #[test]
     fn renders_native_model_listing_shape() {
-        use crate::compaction::{
+        use crate::compaction_model::{
             mechanism::{Mechanism, MechanismSupport},
             support_facts::CompactionSupportFacts as Facts,
         };

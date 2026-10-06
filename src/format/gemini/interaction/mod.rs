@@ -123,18 +123,7 @@ impl ClientFormat for Format {
         response: &Self::JsonResponse,
         projector: &mut crate::affinity::fingerprint::Projector,
     ) -> bool {
-        client_render::project_json_response(response, projector)
-    }
-
-    fn render_json_response_with_prefix(
-        _public_id: &str,
-        aggregation: &IrAggregation,
-        _prefix: &[crate::format::compaction_wire::Checkpoint],
-        _iterations: &[crate::format::compaction_wire::UsageIteration],
-    ) -> Self::JsonResponse {
-        // This surface has no compaction channel; its callers can never
-        // produce a checkpoint prefix, so the ordinary rendering stands.
-        Self::render_json_response(_public_id, aggregation)
+        json_affinity::project_json_response(response, projector)
     }
 }
 
@@ -207,17 +196,12 @@ enum RenderStep {
     Typed(TypedStep),
 }
 
-/// One typed input step of the official Interactions vocabulary.
+/// One typed input step of the official Interactions vocabulary, as the client response renders
+/// it: the model turns a response can carry. The upstream render speaks the same step shapes in
+/// its borrowed vocabulary, so serializing either spells the same steps.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum TypedStep {
-    /// A user turn.
-    #[serde(rename = "user_input")]
-    UserInput {
-        /// The turn's content blocks in order.
-        content: Vec<ContentBlock>,
-    },
-
     /// A model output turn.
     #[serde(rename = "model_output")]
     ModelOutput {
@@ -251,22 +235,10 @@ enum TypedStep {
         /// to define, so it rides as an opaque JSON object.
         arguments: Value,
     },
-
-    /// A tool result for a prior function call.
-    #[serde(rename = "function_result")]
-    FunctionResult {
-        /// Name of the function being answered.
-        name: String,
-
-        /// Identifier of the invocation being answered.
-        call_id: String,
-
-        /// Result content as text blocks.
-        result: Vec<ContentBlock>,
-    },
 }
 
-/// One content block of a `user_input`, `model_output`, or `function_result` step.
+/// One content block of a `model_output` or thought-summary step: the gateway emits text blocks
+/// only, the IR output channel being text.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum ContentBlock {
@@ -275,23 +247,6 @@ enum ContentBlock {
     Text {
         /// The text content.
         text: String,
-    },
-
-    /// An image in the official spelling: a remote `uri`, or inline base64 `data` with its
-    /// `mime_type`. Exactly one spelling is ever constructed.
-    #[serde(rename = "image")]
-    Image {
-        /// Remote image URL, rendered for a URL image.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        uri: Option<String>,
-
-        /// Base64-encoded image data, rendered for an inline image.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        data: Option<String>,
-
-        /// MIME type of the inline data.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mime_type: Option<String>,
     },
 }
 

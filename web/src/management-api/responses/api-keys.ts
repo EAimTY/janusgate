@@ -9,36 +9,39 @@ import type {
 import {
     expectArray,
     expectBoolean,
-    expectInteger,
+    expectDeclaredRecord,
+    expectOneOf,
     expectRecord,
+    expectRowId,
+    expectSafeInteger,
     expectString,
     parseEnvelopeResponse,
     parseListResponse,
 } from "../validation-primitives";
 
-/** One gateway API key row: the complete readable state, plaintext secret included. */
-/** Strict permission boundaries mirror the generated contract, including tagged owners. */
-function accessRecord(value: unknown, context: string, fields: ReadonlyArray<string>): object {
-    const record = expectRecord(value, context);
-    for (const field of Object.keys(record)) {
-        if (!fields.includes(field))
-            throw new ContractViolationError(`${context}.${field} is unknown`);
-    }
-    return record;
-}
-
+/** One access decision: the closed allow/deny pair every policy member carries. */
 function parseAccessDecision(value: unknown, context: string): AccessDecision {
-    if (value !== "allow" && value !== "deny")
-        throw new ContractViolationError(`${context} must be allow or deny`);
-    return value;
+    return expectOneOf(
+        value,
+        [
+            "allow",
+            "deny",
+        ],
+        context,
+        "an access decision",
+    );
 }
 
 function parseAccessControl(value: unknown, context: string): ApiKeyAccessControl {
-    const record = accessRecord(value, context, [
-        "default_access",
-        "owner_defaults",
-        "route_overrides",
-    ]);
+    const record = expectDeclaredRecord(
+        value,
+        [
+            "default_access",
+            "owner_defaults",
+            "route_overrides",
+        ],
+        context,
+    );
     return {
         default_access: parseAccessDecision(
             Reflect.get(record, "default_access"),
@@ -52,14 +55,18 @@ function parseAccessControl(value: unknown, context: string): ApiKeyAccessContro
             const owner = expectRecord(value, path);
             const type = Reflect.get(owner, "type");
             if (type === "provider") {
-                accessRecord(owner, path, [
-                    "type",
-                    "provider_id",
-                    "access",
-                ]);
+                expectDeclaredRecord(
+                    owner,
+                    [
+                        "type",
+                        "provider_id",
+                        "access",
+                    ],
+                    path,
+                );
                 return {
                     type,
-                    provider_id: expectInteger(
+                    provider_id: expectRowId(
                         Reflect.get(owner, "provider_id"),
                         `${path}.provider_id`,
                     ),
@@ -67,14 +74,18 @@ function parseAccessControl(value: unknown, context: string): ApiKeyAccessContro
                 };
             }
             if (type === "pool") {
-                accessRecord(owner, path, [
-                    "type",
-                    "pool_id",
-                    "access",
-                ]);
+                expectDeclaredRecord(
+                    owner,
+                    [
+                        "type",
+                        "pool_id",
+                        "access",
+                    ],
+                    path,
+                );
                 return {
                     type,
-                    pool_id: expectInteger(Reflect.get(owner, "pool_id"), `${path}.pool_id`),
+                    pool_id: expectRowId(Reflect.get(owner, "pool_id"), `${path}.pool_id`),
                     access: parseAccessDecision(Reflect.get(owner, "access"), `${path}.access`),
                 };
             }
@@ -85,12 +96,16 @@ function parseAccessControl(value: unknown, context: string): ApiKeyAccessContro
             `${context}.route_overrides`,
         ).map((value, index) => {
             const path = `${context}.route_overrides[${index}]`;
-            const rule = accessRecord(value, path, [
-                "model_route_id",
-                "access",
-            ]);
+            const rule = expectDeclaredRecord(
+                value,
+                [
+                    "model_route_id",
+                    "access",
+                ],
+                path,
+            );
             return {
-                model_route_id: expectInteger(
+                model_route_id: expectRowId(
                     Reflect.get(rule, "model_route_id"),
                     `${path}.model_route_id`,
                 ),
@@ -100,15 +115,16 @@ function parseAccessControl(value: unknown, context: string): ApiKeyAccessContro
     };
 }
 
+/** One gateway API key row: the complete readable state, plaintext secret included. */
 function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
     const record = expectRecord(value, context);
 
     return {
-        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
+        id: expectRowId(Reflect.get(record, "id"), `${context}.id`),
         name: expectString(Reflect.get(record, "name"), `${context}.name`),
         key: expectString(Reflect.get(record, "key"), `${context}.key`),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
-        created_at: expectInteger(Reflect.get(record, "created_at"), `${context}.created_at`),
+        created_at: expectSafeInteger(Reflect.get(record, "created_at"), `${context}.created_at`),
         access_control: parseAccessControl(
             Reflect.get(record, "access_control"),
             `${context}.access_control`,

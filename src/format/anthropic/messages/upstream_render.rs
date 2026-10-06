@@ -14,11 +14,12 @@ use super::{ImageSourceOut, OutBlock, TypedBlock, is_anthropic_block};
 use crate::{
     format::RoleRun,
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-        IrRole, IrToolChoice,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
+        IrToolChoice,
     },
+    vocabulary::ReasoningLevel,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 /// Fixed synthesis constant rendered as `max_tokens` when the client sent no
@@ -106,7 +107,7 @@ struct OnDemandControl<'a> {
 #[derive(Debug, Serialize)]
 struct ContextManagementBody<'a> {
     /// The vendor-shaped edit objects.
-    edits: &'a [crate::format::compaction_wire::ThresholdEdit],
+    edits: &'a [crate::ir::compaction::ThresholdEdit],
 }
 
 /// One upstream conversation turn.
@@ -201,12 +202,12 @@ struct ThinkingDisabled {
 
 /// Default input schema for a tool declared without parameters: the empty object schema, modelled
 /// as a concrete type rather than assembled JSON.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename = "object", deny_unknown_fields)]
 struct DefaultInputSchema {}
 
 /// An advertised schema: a client's arbitrary JSON Schema or the concrete default object.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum InputSchema {
     /// Closed default supplied when the caller declared no parameter schema.
@@ -218,6 +219,23 @@ enum InputSchema {
 /// Builds the fixed empty object parameter schema.
 fn default_input_schema() -> InputSchema {
     InputSchema::Default(DefaultInputSchema {})
+}
+
+/// Renders the IR tools into the upstream shape: the client's schema rides through, and a tool
+/// declared without one receives the empty object schema.
+fn render_tools(tools: &[IrTool]) -> Vec<UpstreamTool<'_>> {
+    tools
+        .iter()
+        .map(|tool| UpstreamTool {
+            name: &tool.name,
+            description: tool.description.as_deref(),
+            input_schema: tool
+                .parameters
+                .clone()
+                .map(InputSchema::Authored)
+                .unwrap_or_else(default_input_schema),
+        })
+        .collect()
 }
 
 /// Renders the upstream Anthropic Messages payload: the body only — the URL, the headers, and the
@@ -253,19 +271,7 @@ pub(crate) fn render_request_body<'a>(
         }),
     };
 
-    let tools = ir
-        .tools
-        .iter()
-        .map(|tool| UpstreamTool {
-            name: &tool.name,
-            description: tool.description.as_deref(),
-            input_schema: tool
-                .parameters
-                .clone()
-                .map(InputSchema::Authored)
-                .unwrap_or_else(default_input_schema),
-        })
-        .collect();
+    let tools = render_tools(&ir.tools);
 
     let tool_choice = ir
         .tool_choice
@@ -280,7 +286,7 @@ pub(crate) fn render_request_body<'a>(
     let (effort, thinking) = match &ir.reasoning_effort {
         None => (None, None),
 
-        Some(IrReasoningLevel::None) => (None, Some(ThinkingDisabled { kind: "disabled" })),
+        Some(ReasoningLevel::None) => (None, Some(ThinkingDisabled { kind: "disabled" })),
 
         Some(level) => (Some(level.as_str()), None),
     };
@@ -340,15 +346,9 @@ pub(crate) fn render_on_demand_body<'a>(
     Ok(body)
 }
 
-/// Renders the native threshold compaction body: the normal upstream payload with the
-/// `context_management` member carrying the caller's vendor-shaped edit objects verbatim.
-///
-/// # Errors
-///
-/// Renders the native token-count request the definition's `count_tokens`
-/// operation dispatches: the count endpoint's own body shape — model, system,
-/// messages, and tools, with no generation-only control (no `max_tokens`, no
-/// `stream`, no output configuration).
+/// Renders the native token-count request the definition's `count_tokens` operation dispatches:
+/// the count endpoint's own body shape — model, system, messages, and tools, with no
+/// generation-only control (no `max_tokens`, no `stream`, no output configuration).
 ///
 /// # Errors
 ///
@@ -360,19 +360,7 @@ pub(crate) fn render_count_tokens_request(
         model: &ir.model,
         system: ir.instructions.as_deref(),
         messages: render_messages(ir)?,
-        tools: ir
-            .tools
-            .iter()
-            .map(|tool| UpstreamTool {
-                name: &tool.name,
-                description: tool.description.as_deref(),
-                input_schema: tool
-                    .parameters
-                    .clone()
-                    .map(InputSchema::Authored)
-                    .unwrap_or_else(default_input_schema),
-            })
-            .collect(),
+        tools: render_tools(&ir.tools),
     })
 }
 
@@ -394,11 +382,16 @@ pub(crate) struct CountTokensBody<'a> {
     pub(crate) tools: Vec<UpstreamTool<'a>>,
 }
 
+/// Renders the native threshold compaction body: the normal upstream payload with the
+/// `context_management` member carrying the caller's vendor-shaped edit objects verbatim.
+///
+/// # Errors
+///
 /// Returns [`InvalidRequest`] exactly when [`render_request_body`] does.
 pub(crate) fn render_threshold_body<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
-    edits: &'a [crate::format::compaction_wire::ThresholdEdit],
+    edits: &'a [crate::ir::compaction::ThresholdEdit],
 ) -> Result<RequestBody<'a>, InvalidRequest> {
     let mut body = render_request_body(ir, is_streaming)?;
 
@@ -864,9 +857,9 @@ mod tests {
             ..IrRequest::default()
         };
 
-        for (level, effort) in IrReasoningLevel::VOCABULARY {
+        for (level, effort) in ReasoningLevel::VOCABULARY {
             // `none` renders as the native disabled spelling, asserted separately below.
-            if level == IrReasoningLevel::None {
+            if level == ReasoningLevel::None {
                 continue;
             }
 
@@ -884,7 +877,7 @@ mod tests {
 
         let ir = IrRequest {
             state_items: Vec::new(),
-            reasoning_effort: Some(IrReasoningLevel::None),
+            reasoning_effort: Some(ReasoningLevel::None),
             ..base.clone()
         };
 
@@ -1167,7 +1160,7 @@ mod tests {
             state_items: Vec::new(),
             model: "claude-test".to_string(),
             max_output_tokens: Some(999),
-            reasoning_effort: Some(IrReasoningLevel::Low),
+            reasoning_effort: Some(ReasoningLevel::Low),
             tools: vec![crate::ir::IrTool {
                 name: "search".to_string(),
                 description: None,
@@ -1262,9 +1255,9 @@ mod tests {
             clippy::expect_used,
             reason = "the fixture request renders; a failing render is the failure"
         )]
-        let concrete_edits = serde_json::from_value::<
-            Vec<crate::format::compaction_wire::ThresholdEdit>,
-        >(serde_json::json!(edits))
+        let concrete_edits = serde_json::from_value::<Vec<crate::ir::compaction::ThresholdEdit>>(
+            serde_json::json!(edits),
+        )
         .expect("threshold controls parse");
         #[expect(
             clippy::expect_used,

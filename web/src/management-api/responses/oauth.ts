@@ -1,6 +1,6 @@
 import { ContractViolationError } from "../errors";
 import type { CompleteProviderOauthResponse, StartProviderOauthResponse } from "../generated/v0";
-import { expectInteger, expectRecord, expectString } from "../validation-primitives";
+import { expectRecord, expectSafeInteger, expectString } from "../validation-primitives";
 import { parseProviderResponse } from "./providers";
 
 /**
@@ -12,7 +12,7 @@ export function parseStartProviderOauthResponse(value: unknown): StartProviderOa
     const record = expectRecord(value, "response");
     const grant = expectString(Reflect.get(record, "grant"), "response.grant");
     const state = expectString(Reflect.get(record, "state"), "response.state");
-    const expiresAt = expectInteger(Reflect.get(record, "expires_at"), "response.expires_at");
+    const expiresAt = expectSafeInteger(Reflect.get(record, "expires_at"), "response.expires_at");
 
     if (grant === "authorization_code") {
         return {

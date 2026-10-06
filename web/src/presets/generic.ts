@@ -1,5 +1,14 @@
 import { translation } from "../i18n";
-import { base, literal, model, paramRow, secret } from "./expressions";
+import {
+    anthropicModelsDiscovery,
+    base,
+    geminiModelsDiscovery,
+    literal,
+    model,
+    openAiModelsDiscovery,
+    paramRow,
+    secret,
+} from "./expressions";
 import type { ProviderPreset } from "./types";
 
 /** Complete authored preset for generic-openai-responses. */
@@ -27,33 +36,10 @@ export const genericOpenaiResponsesPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery([
+            base(),
+            literal("/models"),
+        ]),
     },
 };
 
@@ -83,33 +69,10 @@ export const genericOpenaiChatCompletionsPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/models"),
-                ],
-                headers: [
-                    paramRow("Authorization", [
-                        literal("Bearer "),
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "none",
-            },
-        },
+        discovery: openAiModelsDiscovery([
+            base(),
+            literal("/models"),
+        ]),
     },
 };
 
@@ -150,43 +113,10 @@ export const genericGeminiGenerateContentPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/models"),
-                ],
-                query: [
-                    paramRow("pageSize", [
-                        literal("1000"),
-                    ]),
-                ],
-                headers: [
-                    paramRow("x-goog-api-key", [
-                        secret(),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "models",
-                ],
-                id_field: [
-                    "name",
-                ],
-                strip_prefix: "models/",
-            },
-            pagination: {
-                type: "token",
-                request_param: "pageToken",
-                response_path: [
-                    "nextPageToken",
-                ],
-                max_pages: 10,
-            },
-        },
+        discovery: geminiModelsDiscovery([
+            base(),
+            literal("/models"),
+        ]),
     },
 };
 
@@ -223,46 +153,17 @@ export const genericGeminiInteractionsPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/v1beta/models"),
-                ],
-                query: [
-                    paramRow("pageSize", [
-                        literal("1000"),
-                    ]),
-                ],
-                headers: [
-                    paramRow("x-goog-api-key", [
-                        secret(),
-                    ]),
-                    paramRow("Api-Revision", [
-                        literal("2026-09-01"),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "models",
-                ],
-                id_field: [
-                    "name",
-                ],
-                strip_prefix: "models/",
-            },
-            pagination: {
-                type: "token",
-                request_param: "pageToken",
-                response_path: [
-                    "nextPageToken",
-                ],
-                max_pages: 10,
-            },
-        },
+        discovery: geminiModelsDiscovery(
+            [
+                base(),
+                literal("/v1beta/models"),
+            ],
+            [
+                paramRow("Api-Revision", [
+                    literal("2026-09-01"),
+                ]),
+            ],
+        ),
     },
 };
 
@@ -299,42 +200,16 @@ export const genericAnthropicMessagesPreset: ProviderPreset = {
         credential: {
             type: "api_key",
         },
-        discovery: {
-            request: {
-                method: "GET",
-                url: [
-                    base(),
-                    literal("/v1/models"),
-                ],
-                headers: [
-                    paramRow("x-api-key", [
-                        secret(),
-                    ]),
-                    paramRow("anthropic-version", [
-                        literal("2023-06-01"),
-                    ]),
-                ],
-            },
-            extract: {
-                mode: "array",
-                array_at: [
-                    "data",
-                ],
-                id_field: [
-                    "id",
-                ],
-            },
-            pagination: {
-                type: "cursor",
-                has_more_path: [
-                    "has_more",
-                ],
-                last_id_path: [
-                    "last_id",
-                ],
-                request_param: "after_id",
-                max_pages: 10,
-            },
-        },
+        discovery: anthropicModelsDiscovery(
+            [
+                base(),
+                literal("/v1/models"),
+            ],
+            [
+                paramRow("x-api-key", [
+                    secret(),
+                ]),
+            ],
+        ),
     },
 };

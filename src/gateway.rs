@@ -4,7 +4,7 @@
 use super::{
     context::Context,
     format::{PayloadError, UpstreamEventParser, UpstreamFormat, anthropic, gemini, openai},
-    ir::{Aggregator, InvalidRequest, IrAggregation, IrEvent, IrRequest},
+    ir::{Aggregator, InvalidRequest, IrAggregation, IrEvent, IrRequest, IrUsage},
     provider::{
         Error as ProviderError, ModelRouting,
         definition::inference::{Inference, UpstreamStreaming},
@@ -13,7 +13,7 @@ use super::{
     sse::{SseFrame, SseParser},
     storage::{Error as StorageError, api_logs::ApiLogDraft},
 };
-use crate::compaction::accounting::{CompactionLedger, IterationKind};
+use crate::compaction_model::{accounting::CompactionLedger, boundary::BoundaryError};
 #[cfg(test)]
 use crate::database::Database;
 use futures::{Stream, StreamExt as _};
@@ -203,7 +203,7 @@ pub(crate) async fn resolve_routing(
 pub(crate) async fn resolve_compaction_routing(
     context: &Context,
     parsed: &crate::format::ParsedRequest,
-    preparation: &crate::compaction::history::BoundaryPreparation,
+    preparation: &crate::compaction_model::boundary::BoundaryPreparation,
     api_key_id: i64,
 ) -> Result<CompactionSelection, Error> {
     selection::select_compaction(context, parsed, preparation, api_key_id).await
@@ -214,11 +214,11 @@ pub(crate) async fn resolve_compaction_routing(
 pub(crate) struct CompactionDispatch {
     /// The vendor-shaped Responses `context_management` entries riding the
     /// upstream body verbatim.
-    pub(crate) context_management: Option<Vec<crate::format::compaction_wire::AutomaticEntry>>,
+    pub(crate) context_management: Option<Vec<crate::ir::compaction::AutomaticEntry>>,
 
     /// The vendor-shaped Messages threshold edits riding the upstream body
     /// verbatim.
-    pub(crate) threshold_edits: Option<Vec<crate::format::compaction_wire::ThresholdEdit>>,
+    pub(crate) threshold_edits: Option<Vec<crate::ir::compaction::ThresholdEdit>>,
 
     /// Header rows overlaying the inference descriptor's own, replacing
     /// same-named rows — the operation betas a native passthrough requires.
@@ -236,16 +236,116 @@ pub(crate) struct CompactionDispatch {
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
-    mut ir: IrRequest,
+    ir: IrRequest,
     is_client_streaming: bool,
     log: &mut ApiLogDraft,
     compaction: Option<&CompactionDispatch>,
     affinity: Option<&mut crate::affinity::Ownership>,
 ) -> Result<IrEventStream, Error> {
-    // The client's reasoning effort string needs no interpretation here: it is opaque end to end
-    // (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
-    // renderers write it verbatim into the upstream's own parameter.
+    let AcceptedDispatch {
+        response,
+        parser,
+        response_unwrap,
+        is_upstream_streaming,
+        upstream_label,
+    } = prepare_and_dispatch(
+        context,
+        &routing,
+        ir,
+        is_client_streaming,
+        compaction,
+        log,
+        affinity,
+    )
+    .await?;
+
+    let status = response.status();
+
+    debug!("{upstream_label}: upstream responded {status}");
+
+    // The parser is chosen by the upstream streaming mode the gateway requested, never by
+    // response-header sniffing: the Codex upstream answers its 200 SSE streams without a
+    // `Content-Type` header, and a 200 response to a streaming request is contractually a stream
+    // while a 200 response to a non-streaming request is contractually a JSON document (README
+    // §6.2).
+    if is_upstream_streaming {
+        let body = response.bytes_stream().map(|chunk| {
+            chunk.map_err(|error| Error::Unavailable {
+                detail: format!("upstream stream failed: {error}"),
+            })
+        });
+        Ok(sse_event_stream(
+            body,
+            parser,
+            upstream_label,
+            is_client_streaming,
+            response_unwrap,
+        ))
+    } else {
+        let body = async move {
+            response.bytes().await.map_err(|error| Error::Unavailable {
+                detail: format!("upstream read failed: {error}"),
+            })
+        };
+        Ok(json_event_stream(body, parser, response_unwrap))
+    }
+}
+
+/// The upstream streaming mode one dispatch requests: the definition's mode decides — always
+/// streaming upstream (the forced-streaming upstreams, such as Codex), or matching the client's
+/// requested mode. The same decision selects the SSE or JSON response parser.
+pub(crate) fn is_upstream_streaming(inference: &Inference, is_client_streaming: bool) -> bool {
+    match inference.upstream_streaming {
+        UpstreamStreaming::Always => true,
+        UpstreamStreaming::MatchClient => is_client_streaming,
+    }
+}
+
+/// One accepted upstream dispatch beside the parsing facts its response pumping needs: the
+/// setup the provider definition pins, resolved once per request and shared by both entry
+/// points.
+struct AcceptedDispatch {
+    /// The accepted 2xx upstream response.
+    response: reqwest::Response,
+
+    /// The upstream event parser for the definition's wire format.
+    parser: Box<dyn UpstreamEventParser + Send>,
+
+    /// The provider-configured response envelope member to unwrap.
+    response_unwrap: Option<String>,
+
+    /// The streaming mode the gateway requested: the definition's mode decides — always
+    /// streaming upstream, or matching the client's requested mode ([`is_upstream_streaming`]).
+    is_upstream_streaming: bool,
+
+    /// Human-readable provider and upstream model label naming the upstream in error-level
+    /// records the lazy parser emits and in the accepted-headers debug line.
+    upstream_label: String,
+}
+
+/// The dispatch prelude shared by [`execute`] and [`execute_internal`]: stamp the routed
+/// upstream model onto the request, fail fast on an unprepared gateway carrier, renew the
+/// provider's credential, render the upstream request, and send once, committing headers.
+///
+/// The client's reasoning effort string needs no interpretation here: it is opaque end to end
+/// (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
+/// renderers write it verbatim into the upstream's own parameter.
+///
+/// # Errors
+///
+/// Returns typed [`Error`] values for preparation, transport, and rejected headers. Classified
+/// quota evidence remains distinguishable until the caller decides its operation's fallback.
+async fn prepare_and_dispatch(
+    context: &Context,
+    routing: &ModelRouting,
+    mut ir: IrRequest,
+    is_client_streaming: bool,
+    compaction: Option<&CompactionDispatch>,
+    log: &mut ApiLogDraft,
+    affinity: Option<&mut crate::affinity::Ownership>,
+) -> Result<AcceptedDispatch, Error> {
     ir.model = routing.model.upstream_id.clone();
+
     // A gateway carrier never reaches dispatch: compaction preparation must decode, verify, and
     // remove it first, and a damaged marker must never be forwarded upstream. Its presence here is
     // an internal invariant violation, not client state, so it fails fast (README §6.8).
@@ -288,7 +388,7 @@ pub(crate) async fn execute(
     let request_builder = build_upstream_request(
         &context.data_plane,
         &provider,
-        &routing,
+        routing,
         &ir,
         is_client_streaming,
         compaction,
@@ -305,58 +405,22 @@ pub(crate) async fn execute(
     )
     .await?
     .into_accepted()?;
-    let status = response.status();
 
-    debug!("{upstream_label}: upstream responded {status}");
-
-    // The parser is chosen by the upstream streaming mode the gateway requested, never by
-    // response-header sniffing: the Codex upstream answers its 200 SSE streams without a
-    // `Content-Type` header, and a 200 response to a streaming request is contractually a stream
-    // while a 200 response to a non-streaming request is contractually a JSON document (README
-    // §6.2).
-    let is_upstream_streaming =
-        is_upstream_streaming(&provider.definition.payload.inference, is_client_streaming);
-
-    let parser = upstream_parser(upstream_format);
-
-    let response_unwrap = provider
-        .definition
-        .payload
-        .inference
-        .response_unwrap
-        .clone();
-
-    if is_upstream_streaming {
-        let body = response.bytes_stream().map(|chunk| {
-            chunk.map_err(|error| Error::Unavailable {
-                detail: format!("upstream stream failed: {error}"),
-            })
-        });
-        Ok(sse_event_stream(
-            body,
-            parser,
-            upstream_label,
+    Ok(AcceptedDispatch {
+        is_upstream_streaming: is_upstream_streaming(
+            &provider.definition.payload.inference,
             is_client_streaming,
-            response_unwrap,
-        ))
-    } else {
-        let body = async move {
-            response.bytes().await.map_err(|error| Error::Unavailable {
-                detail: format!("upstream read failed: {error}"),
-            })
-        };
-        Ok(json_event_stream(body, parser, response_unwrap))
-    }
-}
-
-/// The upstream streaming mode one dispatch requests: the definition's mode decides — always
-/// streaming upstream (the forced-streaming upstreams, such as Codex), or matching the client's
-/// requested mode. The same decision selects the SSE or JSON response parser.
-pub(crate) fn is_upstream_streaming(inference: &Inference, is_client_streaming: bool) -> bool {
-    match inference.upstream_streaming {
-        UpstreamStreaming::Always => true,
-        UpstreamStreaming::MatchClient => is_client_streaming,
-    }
+        ),
+        parser: upstream_parser(upstream_format),
+        response_unwrap: provider
+            .definition
+            .payload
+            .inference
+            .response_unwrap
+            .clone(),
+        response,
+        upstream_label,
+    })
 }
 
 /// Executes one internal compaction-path dispatch end to end: the ordinary
@@ -368,7 +432,7 @@ pub(crate) fn is_upstream_streaming(inference: &Inference, is_client_streaming: 
 /// acquisition, payload rendering, transport, a mirrored non-2xx) leave the
 /// ledger untouched, because pre-dispatch and usage-less failures acquire no
 /// fabricated token counts. A successful completion records the usage the
-/// upstream reported into the ledger under the given iteration kind.
+/// upstream reported into the ledger.
 ///
 /// A clean upstream end that carried no real terminal event fails the dispatch:
 /// the degraded-finish rule of the ordinary pipeline never papers over a
@@ -391,60 +455,25 @@ pub(crate) fn is_upstream_streaming(inference: &Inference, is_client_streaming: 
 pub(crate) async fn execute_internal(
     context: &Context,
     routing: &ModelRouting,
-    mut ir: IrRequest,
+    ir: IrRequest,
     ledger: &mut CompactionLedger,
-    kind: IterationKind,
     log: &mut ApiLogDraft,
     ownership: Option<&mut crate::affinity::Ownership>,
 ) -> Result<IrAggregation, Error> {
-    ir.model = routing.model.upstream_id.clone();
-
-    // The same fail-fast guard the ordinary dispatch applies: a gateway carrier
-    // must have been decoded and removed during compaction preparation.
-    if ir.state_items.iter().any(|item| item.is_gateway) {
-        return Err(Error::Internal {
-            message: "a gateway compaction carrier reached dispatch without preparation"
-                .to_string(),
-        });
-    }
-
-    let provider =
-        oauth::ensure_fresh_token(&context.database, &context.control_plane, &routing.provider)
-            .await?;
-
-    let request =
-        build_upstream_request(&context.data_plane, &provider, routing, &ir, false, None)?;
-
-    let response = dispatch(
-        context,
-        request,
-        &provider,
-        &routing.model.upstream_id,
-        log,
-        ownership,
-        QuotaPolicy::Classify,
-    )
-    .await?
-    .into_accepted()?;
-
-    let is_streaming = is_upstream_streaming(&provider.definition.payload.inference, false);
-
-    let mut parser = upstream_parser(provider.definition.payload.format);
-
-    let response_unwrap = provider
-        .definition
-        .payload
-        .inference
-        .response_unwrap
-        .clone();
+    let AcceptedDispatch {
+        response,
+        mut parser,
+        response_unwrap,
+        is_upstream_streaming,
+        ..
+    } = prepare_and_dispatch(context, routing, ir, false, None, log, ownership).await?;
 
     let (aggregation, is_terminal_real) = pump_internal_response(
         response,
         parser.as_mut(),
-        is_streaming,
+        is_upstream_streaming,
         response_unwrap,
         ledger,
-        kind,
         log,
     )
     .await?;
@@ -457,23 +486,44 @@ pub(crate) async fn execute_internal(
     Ok(aggregation)
 }
 
-/// Saves each internal usage observation immediately so failure and cancellation keep billed work.
-fn observe_internal_usage(
-    event: &IrEvent,
-    billed_before: crate::ir::IrUsage,
-    last_usage: &mut Option<crate::ir::IrUsage>,
-    iteration_usage: &mut Option<crate::ir::IrUsage>,
-    log: &mut ApiLogDraft,
-) {
-    match event {
-        IrEvent::Usage(usage) => *last_usage = Some(*usage),
-        IrEvent::CompactionMetadata { iterations, .. } => {
-            *iteration_usage = crate::compaction::accounting::reported_iteration_totals(iterations)
+/// Tracks one event stream's usage observations under the accounting rule that a compaction
+/// lifecycle's reported iteration totals override the ordinary terminal usage: the resolved
+/// usage is the latest iteration total when one arrived, otherwise the last ordinary usage
+/// observation (README §6.2's last-observation rule).
+///
+/// Every consumer of a stream's usage observation — the internal compaction pump, the outward
+/// SSE render task, and the detached non-streaming aggregation — resolves its recorded usage
+/// through this tracker, so the override rule is implemented exactly once.
+#[derive(Debug, Default)]
+pub(crate) struct UsageTracker {
+    /// The last ordinary usage the stream reported.
+    last_usage: Option<IrUsage>,
+
+    /// The iteration totals the last compaction metadata reported, overriding the ordinary
+    /// usage once present.
+    iteration_usage: Option<IrUsage>,
+}
+
+impl UsageTracker {
+    /// Observes one event's usage report, replacing the matching observation. Returns whether
+    /// the event carried a usage observation, so stamping call sites record only on new
+    /// evidence.
+    pub(crate) fn observe(&mut self, event: &IrEvent) -> bool {
+        match event {
+            IrEvent::Usage(usage) => self.last_usage = Some(*usage),
+            IrEvent::CompactionMetadata { iterations, .. } => {
+                self.iteration_usage =
+                    crate::compaction_model::accounting::reported_iteration_totals(iterations);
+            }
+            _ => return false,
         }
-        _ => return,
+        true
     }
-    if let Some(usage) = iteration_usage.or(*last_usage) {
-        log.stamp_billed_usage(Some(billed_before.saturating_sum(usage)));
+
+    /// The usage the stream's accounting records: the iteration totals override the ordinary
+    /// usage.
+    pub(crate) fn resolved(&self) -> Option<IrUsage> {
+        self.iteration_usage.or(self.last_usage)
     }
 }
 
@@ -493,7 +543,6 @@ pub(crate) async fn pump_internal_response<P>(
     is_upstream_streaming: bool,
     response_unwrap: Option<String>,
     ledger: &mut CompactionLedger,
-    kind: IterationKind,
     log: &mut ApiLogDraft,
 ) -> Result<(IrAggregation, bool), Error>
 where
@@ -501,13 +550,35 @@ where
 {
     let mut aggregator = Aggregator::default();
     let billed_before = ledger.billed_totals();
-    let mut last_usage = None;
-    let mut iteration_usage = None;
+    let mut usage_tracker = UsageTracker::default();
 
     // Whether a real terminal finish arrived: only finishes the parser emitted
     // from its frame or body ingestion count; the clean-end flush's degraded
     // finish is emitted after this flag's last real observation.
     let mut is_terminal_real = false;
+
+    // One event-ingest step over the pump's shared state: every event updates
+    // the usage tracker and stamps the resulting billed totals immediately, so
+    // failure and cancellation keep billed work, and folds into the
+    // aggregation. A terminal finish counts as real only when the event source
+    // can carry one — the clean end-of-stream flush's degraded finish
+    // (`crate::format::degrade_finish_once`) and the parser's own finish hook
+    // never do.
+    let mut ingest = |events: Vec<IrEvent>, is_terminal_source: bool| {
+        for event in events {
+            if is_terminal_source && matches!(event, IrEvent::Finish { .. }) {
+                is_terminal_real = true;
+            }
+
+            if usage_tracker.observe(&event)
+                && let Some(usage) = usage_tracker.resolved()
+            {
+                log.stamp_billed_usage(Some(billed_before.saturating_sum(usage)));
+            }
+
+            aggregator.ingest(&event);
+        }
+    };
 
     if is_upstream_streaming {
         let mut body = response.bytes_stream();
@@ -525,20 +596,7 @@ where
             for mut frame in frames {
                 unwrap_frame(&mut frame, &response_unwrap);
 
-                for event in parser.ingest_frame(&frame)? {
-                    if matches!(event, IrEvent::Finish { .. }) {
-                        is_terminal_real = true;
-                    }
-
-                    observe_internal_usage(
-                        &event,
-                        billed_before,
-                        &mut last_usage,
-                        &mut iteration_usage,
-                        log,
-                    );
-                    aggregator.ingest(&event);
-                }
+                ingest(parser.ingest_frame(&frame)?, true);
             }
         }
 
@@ -552,28 +610,10 @@ where
 
             unwrap_frame(&mut frame, &response_unwrap);
 
-            for event in parser.ingest_frame(&frame)? {
-                observe_internal_usage(
-                    &event,
-                    billed_before,
-                    &mut last_usage,
-                    &mut iteration_usage,
-                    log,
-                );
-                aggregator.ingest(&event);
-            }
+            ingest(parser.ingest_frame(&frame)?, false);
         }
 
-        for event in parser.finish() {
-            observe_internal_usage(
-                &event,
-                billed_before,
-                &mut last_usage,
-                &mut iteration_usage,
-                log,
-            );
-            aggregator.ingest(&event);
-        }
+        ingest(parser.finish(), false);
     } else {
         let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
             detail: format!("upstream read failed: {error}"),
@@ -581,23 +621,10 @@ where
 
         let body = unwrap_response(&bytes, &response_unwrap)?;
 
-        for event in parser.parse_json_response(body)? {
-            if matches!(event, IrEvent::Finish { .. }) {
-                is_terminal_real = true;
-            }
-
-            observe_internal_usage(
-                &event,
-                billed_before,
-                &mut last_usage,
-                &mut iteration_usage,
-                log,
-            );
-            aggregator.ingest(&event);
-        }
+        ingest(parser.parse_json_response(body)?, true);
     }
 
-    ledger.record(kind, iteration_usage.or(last_usage));
+    ledger.record(usage_tracker.resolved());
     Ok((aggregator.finish(), is_terminal_real))
 }
 
@@ -656,6 +683,23 @@ impl From<PayloadError> for Error {
     fn from(error: PayloadError) -> Self {
         Self::Unavailable {
             detail: error.to_string(),
+        }
+    }
+}
+
+impl From<BoundaryError> for Error {
+    fn from(error: BoundaryError) -> Self {
+        match error {
+            // Configuration is the server's own gap; its detail reaches the log
+            // record only, beside the stable code the error carries.
+            BoundaryError::ConfigurationMissing { message } => Self::Internal { message },
+
+            // Client-state failures render as invalid requests, their stable
+            // code riding the rendered message.
+            error @ (BoundaryError::InvalidGatewayState { .. }
+            | BoundaryError::InaccessibleNativeState { .. }) => {
+                Self::InvalidRequest(crate::ir::InvalidRequest::request(error.to_string()))
+            }
         }
     }
 }

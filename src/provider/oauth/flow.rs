@@ -16,9 +16,9 @@ use crate::{
         Error,
         control::{self, ControlFailure, Extracted},
         definition::{
-            credential::{Grant, OAuthRecipe, Pkce, SlotGenerator},
+            credential::{self, Grant, OAuthRecipe, Pkce, SlotGenerator},
             eval::ValueEnv,
-            template::ResponseTarget as Target,
+            template::{ParamRow, ResponseTarget as Target, StringExpr},
         },
     },
     storage::{
@@ -236,7 +236,14 @@ pub(crate) async fn begin_flow(
     // cannot recover: the authorization-code grant's authorize URL. The device grant's
     // verification facts exist only as the row's stored columns, so no fact is computed twice.
     let (grant_fields, authorize_url) = match grant {
-        Grant::AuthorizationCode { pkce, .. } => {
+        Grant::AuthorizationCode {
+            authorize_url,
+            redirect_uri,
+            pkce,
+            extra_params,
+        } => {
+            // The verifier is minted exactly when the grant declares PKCE S256, so its
+            // presence is the only marker the URL builder needs to append the challenge pair.
             let code_verifier = match pkce {
                 Pkce::S256 => Some(random_url_safe(64)),
                 Pkce::None => None,
@@ -249,8 +256,15 @@ pub(crate) async fn begin_flow(
                 &state_token,
             );
 
-            let authorize_url =
-                build_authorize_url(grant, &env, &state_token, code_verifier.as_deref())?;
+            let authorize_url = build_authorize_url(
+                &env,
+                client_id.as_str(),
+                &state_token,
+                authorize_url,
+                redirect_uri,
+                extra_params,
+                code_verifier.as_deref(),
+            )?;
 
             let grant_fields = GrantFlowFields {
                 grant_type: FlowGrant::AuthorizationCode,
@@ -268,7 +282,7 @@ pub(crate) async fn begin_flow(
         }
 
         Grant::Device {
-            authorization: _,
+            authorization,
             expires_in_fallback_seconds,
         } => {
             let env = ValueEnv::for_device_authorization(
@@ -278,7 +292,7 @@ pub(crate) async fn begin_flow(
                 client_secret.as_deref(),
             );
 
-            let device = execute_device_authorization(http, grant, &env).await?;
+            let device = execute_device_authorization_stage(http, authorization, &env).await?;
 
             // The expiry comes from the response's lifetime, else the definition's explicit
             // fallback. The write-time validation makes a definition carrying neither
@@ -403,28 +417,20 @@ pub(crate) async fn begin_flow(
 
 /// Builds the authorize URL of an authorization-code grant: the evaluated base URL, the standard
 /// parameters the builder appends itself (`response_type`, `client_id`, `redirect_uri`,
-/// `state`, and the PKCE pair when configured), and the definition's extra parameters in order.
-/// The parameters join through [`control::append_query_row`], which keeps them in the query
-/// component ahead of a `#` fragment in the stored base (RFC 3986 §3) so every authorization
-/// parameter reaches the provider.
+/// `state`, and the PKCE pair when the caller minted a verifier), and the grant's extra
+/// parameters in order. The caller destructures the grant arm, so every parameter arrives as
+/// its own stage datum. The parameters join through [`control::append_query_row`], which keeps
+/// them in the query component ahead of a `#` fragment in the stored base (RFC 3986 §3) so
+/// every authorization parameter reaches the provider.
 fn build_authorize_url(
-    grant: &Grant,
     env: &ValueEnv<'_>,
+    client_id: &str,
     state_token: &str,
+    authorize_url: &StringExpr,
+    redirect_uri: &str,
+    extra_params: &[ParamRow],
     code_verifier: Option<&str>,
 ) -> Result<String, Error> {
-    let Grant::AuthorizationCode {
-        authorize_url,
-        redirect_uri,
-        pkce,
-        extra_params,
-    } = grant
-    else {
-        return Err(Error::Internal {
-            message: "the flow's definition carries no authorization-code grant".to_string(),
-        });
-    };
-
     let mut url = env
         .evaluate(authorize_url, "authorize URL")
         .map_err(|error| Error::Internal {
@@ -437,13 +443,14 @@ fn build_authorize_url(
 
     append("response_type", "code");
 
-    append("client_id", env.client_id.unwrap_or_default());
+    append("client_id", client_id);
 
     append("redirect_uri", redirect_uri);
 
-    if let Some(verifier) = code_verifier
-        && matches!(pkce, Pkce::S256)
-    {
+    // The caller mints a verifier exactly when the grant declares PKCE S256 (RFC 7636 §4.2),
+    // so the verifier's presence is the challenge pair's marker and the method is S256 by the
+    // same construction.
+    if let Some(verifier) = code_verifier {
         append("code_challenge", &pkce_challenge(verifier));
         append("code_challenge_method", "S256");
     }
@@ -486,18 +493,18 @@ pub(crate) struct DeviceAuthorization {
     pub(crate) interval_seconds: Option<i64>,
 }
 
-/// Executes the device authorization request of a definition and decodes its response.
-pub(crate) async fn execute_device_authorization(
+/// Executes the device authorization stage of a device grant and decodes its response. The
+/// caller destructures the grant arm, so the stage arrives directly — a grant of another kind
+/// is unrepresentable here.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the device authorization request fails or its response is malformed.
+async fn execute_device_authorization_stage(
     http: &Client,
-    grant: &Grant,
+    authorization: &credential::DeviceAuthorization,
     env: &ValueEnv<'_>,
 ) -> Result<DeviceAuthorization, Error> {
-    let Grant::Device { authorization, .. } = grant else {
-        return Err(Error::Internal {
-            message: "the flow's definition carries no device grant".to_string(),
-        });
-    };
-
     let body = control::execute(
         http,
         &authorization.request,
@@ -581,6 +588,35 @@ pub(crate) async fn execute_device_authorization(
         expires_in_seconds,
         interval_seconds,
     })
+}
+
+/// Executes the device authorization of a whole grant — the engine tests' surface. The
+/// production begin path destructures the grant arm and calls
+/// [`execute_device_authorization_stage`] directly, so a grant of another kind reaches only
+/// this adapter, where it is a fixture mismatch and fails the call.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the device authorization fails.
+///
+/// # Panics
+///
+/// Panics when `grant` is not a device grant — a fixture mismatch is the failure report.
+#[cfg(test)]
+pub(crate) async fn execute_device_authorization(
+    http: &Client,
+    grant: &Grant,
+    env: &ValueEnv<'_>,
+) -> Result<DeviceAuthorization, Error> {
+    #[expect(
+        clippy::panic,
+        reason = "a fixture grant of the wrong kind is the failure report"
+    )]
+    let Grant::Device { authorization, .. } = grant else {
+        panic!("the fixture grant is a device grant");
+    };
+
+    execute_device_authorization_stage(http, authorization, env).await
 }
 
 /// Parses one upstream-reported device-authorization duration: a non-integer spelling and a
@@ -694,6 +730,28 @@ mod tests {
         }
     }
 
+    /// Destructures the test's authorization-code grant into the stage data the URL builder
+    /// takes, failing the test when the fixture is another grant kind.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture grant is not an authorization-code grant — a broken fixture is
+    /// the failure report.
+    fn code_grant_parts(authorize_base: &str) -> (StringExpr, String, Vec<ParamRow>) {
+        #[expect(clippy::panic, reason = "a divergent grant kind is the failure report")]
+        let Grant::AuthorizationCode {
+            authorize_url,
+            redirect_uri,
+            extra_params,
+            ..
+        } = code_grant(authorize_base)
+        else {
+            panic!("the fixture grant is an authorization-code grant");
+        };
+
+        (authorize_url, redirect_uri, extra_params)
+    }
+
     /// The authorize-URL builder joins every appended parameter into the evaluated URL's query
     /// component — before a `#` fragment when the stored base carries one — and re-attaches the
     /// fragment after the last parameter (RFC 3986 §3): a parameter appended after the first
@@ -710,10 +768,16 @@ mod tests {
 
         let env = ValueEnv::for_authorize_url(&slots, "client-id", None, "state-token");
 
+        let (authorize_url, redirect_uri, extra_params) =
+            code_grant_parts("https://auth.example/authorize#tenant");
+
         let url = build_authorize_url(
-            &code_grant("https://auth.example/authorize#tenant"),
             &env,
+            "client-id",
             "state-token",
+            &authorize_url,
+            &redirect_uri,
+            &extra_params,
             None,
         )
         .unwrap();
@@ -740,10 +804,16 @@ mod tests {
 
         let env = ValueEnv::for_authorize_url(&slots, "client-id", None, "state-token");
 
+        let (authorize_url, redirect_uri, extra_params) =
+            code_grant_parts("https://auth.example/authorize");
+
         let url = build_authorize_url(
-            &code_grant("https://auth.example/authorize"),
             &env,
+            "client-id",
             "state-token",
+            &authorize_url,
+            &redirect_uri,
+            &extra_params,
             None,
         )
         .unwrap();

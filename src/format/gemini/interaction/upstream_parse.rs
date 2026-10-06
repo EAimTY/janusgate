@@ -13,7 +13,7 @@ use crate::{
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// Parses upstream Gemini Interactions responses — SSE frames or a full Interaction body — into IR
@@ -50,15 +50,17 @@ enum OpenStep {
         index: u64,
     },
 
-    /// An open model reasoning block, accumulating its summary text and signature. The closing
-    /// done's opaque replay payload is the synthesized official step — summary blocks beside the
-    /// signature — so a same-family replay stays byte-exact.
+    /// An open model reasoning block, accumulating its summary blocks and signature. The official
+    /// stream delivers one summary block per text-carrying `thought_summary` delta, and the
+    /// closing done's opaque replay payload is the synthesized official step — one summary block
+    /// per delta beside the signature — so a same-family replay stays byte-exact with the JSON
+    /// body path, which preserves the raw step verbatim.
     Thought {
         /// Upstream step index.
         index: u64,
 
-        /// Summary text streamed so far.
-        summary: String,
+        /// Summary blocks streamed so far, in delta order.
+        summary: Vec<String>,
 
         /// Signature streamed so far, when the upstream sent one mid-step.
         signature: Option<String>,
@@ -93,12 +95,12 @@ impl OpenStep {
         }
     }
 
-    /// Mints the implicit-open defaults for a thought step: an empty summary and no signature,
+    /// Mints the implicit-open defaults for a thought step: no summary blocks and no signature,
     /// exactly as a `thought` start would record them.
     fn thought(index: u64) -> Self {
         Self::Thought {
             index,
-            summary: String::new(),
+            summary: Vec::new(),
             signature: None,
         }
     }
@@ -165,8 +167,8 @@ struct InteractionBody {
 }
 
 /// Complete model-visible step; only thoughts require opaque producer metadata for replay.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
+/// The manual deserialization below discriminates the step kinds; nothing here serializes.
+#[derive(Debug)]
 enum CompleteStep {
     /// Model text output.
     ModelOutput(ModelOutputStep),
@@ -225,7 +227,7 @@ struct StepProbe {
 }
 
 /// One content block of a body step, reduced to the members the IR can carry: only text survives.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct BodyBlock {
     /// Block kind tag; non-text blocks carry no IR-representable content.
     #[serde(rename = "type", default)]
@@ -248,7 +250,7 @@ impl BodyBlock {
 }
 
 /// A `model_output` step of an Interaction body: the content blocks, text ones only.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(tag = "type", rename = "model_output")]
 struct ModelOutputStep {
     /// The content blocks; every non-text block is dropped (the IR output channel is text).
@@ -274,7 +276,7 @@ struct ThoughtStep {
 }
 
 /// A `function_call` step of an Interaction body.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(tag = "type", rename = "function_call")]
 struct FunctionCallStep {
     /// Identifier of the invocation, empty when the upstream omits it.
@@ -708,9 +710,10 @@ impl UpstreamParser {
                 events.extend(self.implicit_open(frame.index, |_| OpenStep::thought(frame.index)));
 
                 // A delta for a step of another kind contradicts the opened kind, so it is
-                // dropped rather than misattributed to foreign content.
+                // dropped rather than misattributed to foreign content. Each text-carrying
+                // delta is one summary block: the boundaries the official upstream declared.
                 if let Some(OpenStep::Thought { summary: open, .. }) = self.find_open(frame.index) {
-                    open.push_str(&content.text);
+                    open.push(content.text.clone());
 
                     events.push(IrEvent::ReasoningDelta(content.text));
                 }
@@ -789,13 +792,13 @@ impl UpstreamParser {
             Some(OpenStep::Thought {
                 summary, signature, ..
             }) => {
-                let summary_blocks = if summary.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![super::ContentBlock::Text {
-                        text: summary.clone(),
-                    }]
-                };
+                // One summary block per streamed delta: the synthesized step preserves the block
+                // boundaries the upstream declared, exactly as the JSON body path preserves the
+                // raw step's blocks verbatim.
+                let summary_blocks = summary
+                    .iter()
+                    .map(|text| super::ContentBlock::Text { text: text.clone() })
+                    .collect::<Vec<_>>();
 
                 let step = TypedStep::Thought {
                     summary: summary_blocks,
@@ -809,7 +812,7 @@ impl UpstreamParser {
                 let opaque = serde_json::to_value(step).expect("the thought step serializes");
 
                 events.push(IrEvent::ReasoningDone {
-                    text: summary,
+                    text: summary.concat(),
                     signature,
                     opaque,
                 });
@@ -1631,6 +1634,58 @@ mod tests {
         );
 
         assert!(stray.is_empty());
+    }
+
+    /// Each text-carrying `thought_summary` delta is one summary block: the stop synthesizes the
+    /// replay opaque with one block per delta — the boundaries the official upstream declared —
+    /// so a multi-block thought replays byte-exact against the JSON body path, which preserves
+    /// the raw step's blocks verbatim, while the done's text stays the concatenation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closed block diverges from the streamed block boundaries.
+    #[test]
+    fn synthesizes_one_summary_block_per_streamed_thought_delta() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 1, "step": {"type": "thought"}}),
+        );
+
+        for text in ["first ", "second"] {
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({
+                    "index": 1,
+                    "delta": {
+                        "type": "thought_summary",
+                        "content": {"type": "text", "text": text},
+                    },
+                }),
+            );
+        }
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 1}),
+            ),
+            vec![IrEvent::ReasoningDone {
+                text: "first second".to_string(),
+                signature: None,
+                opaque: serde_json::json!({
+                    "type": "thought",
+                    "summary": [
+                        {"type": "text", "text": "first "},
+                        {"type": "text", "text": "second"},
+                    ],
+                }),
+            }],
+        );
     }
 
     /// Verifies the non-streaming parse of the official Interaction resource: `model_output`

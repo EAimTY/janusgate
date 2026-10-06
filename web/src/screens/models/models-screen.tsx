@@ -147,10 +147,10 @@ export function ModelsScreen(props: {
         }
 
         return isFilteredProviderListed()
-            ? translation()(($) => $.helpers.modelsScreen.thisProviderHoldsNoModels)
+            ? translation()(($) => $.screens.modelsScreen.thisProviderHoldsNoModels)
             : translation()(
                   ($) =>
-                      $.helpers.modelsScreen
+                      $.screens.modelsScreen
                           .thisProviderIsNoLongerListedPickAnotherInTheProviderFilter,
               );
     });

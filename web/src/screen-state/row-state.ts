@@ -1,6 +1,6 @@
 import type { Accessor } from "solid-js";
 import { createMemo, createSignal, onCleanup } from "solid-js";
-import { registerDirtyForm } from "../dirty-form-registry";
+import { registerLeaveGuardSubject } from "/src/leave-guard-registry";
 
 /**
  * The edit screens' held row (README §6.3): while the settings form holds
@@ -67,10 +67,10 @@ export function createHeldRow<TRow>(
  * land, so a failed reload leaves the hold standing instead of resting the
  * screen on the pre-save rows.
  *
- * `reportFormDirty` also mirrors the form's dirt into the dirty-form registry
- * (`/src/dirty-form-registry`), the live truth the shell's `beforeunload`
- * guard reads: a tab close, a reload, or a navigation off the document asks
- * for confirmation while edits stand (README §6.3).
+ * `reportFormDirty` also mirrors the form's dirt into the leave-guard
+ * registry (`/src/leave-guard-registry`), the live truth the shell's
+ * `beforeunload` guard reads: a tab close, a reload, or a navigation off
+ * the document asks for confirmation while edits stand (README §6.3).
  */
 export function createEditRow<TRow>(
     latest: Accessor<TRow | null>,
@@ -88,14 +88,14 @@ export function createEditRow<TRow>(
     const [isFormDirty, setIsFormDirty] = createSignal(false);
     const [isSaveSettling, setIsSaveSettling] = createSignal(false);
 
-    // The same dirt report feeds the row hold above and the dirty-form
+    // The same dirt report feeds the row hold above and the leave-guard
     // registry, whose live truth the shell's `beforeunload` guard reads —
     // there is never a second dirt source (README §6.3). The seat dies with
     // this mount's owner, so a screen that goes away — dirty or not — cannot
     // leave the guard armed behind it; a remounted form registers afresh.
-    const formRegistration = registerDirtyForm();
+    const formSeat = registerLeaveGuardSubject();
     onCleanup(() => {
-        formRegistration.unregister();
+        formSeat.release();
     });
 
     const { row, isRowHeld } = createHeldRow(
@@ -109,7 +109,7 @@ export function createEditRow<TRow>(
         isRowHeld,
         reportFormDirty: (isDirty: boolean): void => {
             setIsFormDirty(isDirty);
-            formRegistration.reportDirty(isDirty);
+            formSeat.reportGuarded(isDirty);
         },
         reportSaved: () => {
             setIsSaveSettling(true);

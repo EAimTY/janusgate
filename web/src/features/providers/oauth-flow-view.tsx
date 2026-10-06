@@ -20,7 +20,7 @@ import type { OauthFlow } from "./oauth-flow";
 const navigationWarning = (): string =>
     translation()(
         ($) =>
-            $.helpers.oauthFlowView
+            $.screens.oauthFlowView
                 .stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe,
     );
 

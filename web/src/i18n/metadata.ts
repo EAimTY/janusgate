@@ -15,7 +15,6 @@ export type MessagePath = SemanticKey<typeof english>;
 export type PluralContract = {
     readonly path: string;
     readonly kind: "cardinal" | "ordinal";
-    readonly hasExplicitZero?: boolean;
 };
 export type RichContract = {
     readonly path: string;
@@ -449,13 +448,6 @@ export const richMessages = [
         path: "rich.connected",
         slots: [
             "baseUrl",
-        ],
-    },
-    {
-        path: "rich.providerModel",
-        slots: [
-            "providerLink",
-            "modelId",
         ],
     },
     {

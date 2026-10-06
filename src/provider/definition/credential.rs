@@ -8,6 +8,7 @@
 use super::template::{ControlRequest, ParamRow, ResponseDescriptor, ResponsePath, StringExpr};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
+use vec1::Vec1;
 /// The credential acquisition a provider definition describes (README §5.3): the `type`
 /// discriminator is the only stored credential-kind representation for the definition, and it must
 /// match the provider row's credential kind at the management boundary.
@@ -192,8 +193,10 @@ pub struct Exchange {
     pub response: ResponseDescriptor,
 
     /// The full list of terminal failure codes — the codes whose retry is futile — compared
-    /// case-insensitively; no engine defaults apply.
-    pub terminal_codes: Vec<String>,
+    /// case-insensitively; no engine defaults apply. The `Vec1` type rejects an empty list at
+    /// parse.
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(as = "Vec<String>"))]
+    pub terminal_codes: Vec1<String>,
 }
 
 /// One JWT payload claim copied into a slot at exchange time (README §5.3).
@@ -225,8 +228,9 @@ pub enum TokenRefresh {
         response: Option<ResponseDescriptor>,
 
         /// The full list of terminal failure codes, compared case-insensitively; no engine
-        /// defaults apply.
-        terminal_codes: Vec<String>,
+        /// defaults apply. The `Vec1` type rejects an empty list at parse.
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(as = "Vec<String>"))]
+        terminal_codes: Vec1<String>,
     },
 
     /// Re-run the definition's provisioning sequence under the existing lease — the Copilot

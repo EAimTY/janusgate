@@ -2,7 +2,7 @@
 //! format surface renders through its own wire shape (README §6.7), and the shared outward
 //! serving pipeline every format surface runs through ([`serving`]).
 
-use super::{context::Context, database::Database, server};
+use super::{context::Context, database::Database, router_fallback};
 use axum::Router;
 
 mod anthropic_v1;
@@ -19,12 +19,12 @@ pub(crate) use self::error::{Error, log_error};
 /// path with the same empty 404 the root router renders. `database` feeds the format
 /// sub-routers' authentication middleware.
 pub(crate) fn router(database: Database) -> Router<Context> {
-    // The shared empty 404 fallback; see `server::fallback` for the axum 0.9 rationale.
+    // The shared empty 404 fallback; see `router_fallback::fallback` for the axum 0.9 rationale.
     Router::new()
         .nest("/openai-v1", openai_v1::router(database.clone()))
         .nest("/gemini-v1beta", gemini_v1beta::router(database.clone()))
         .nest("/anthropic-v1", anthropic_v1::router(database))
-        .fallback(server::fallback)
+        .fallback(router_fallback::fallback)
         .layer(crate::CONFIG.api_cors_layer())
 }
 

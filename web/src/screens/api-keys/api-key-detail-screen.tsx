@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import type { AccessInventory } from "/src/features/api-keys/access-control";
 import { ApiKeyAccess } from "/src/features/api-keys/api-key-access";
 import { ApiKeySecretValue } from "/src/features/api-keys/api-key-form";
@@ -148,26 +148,26 @@ export function ApiKeyDetailScreen(props: {
                         </FactList>
                     </Card>
 
-                    {inventory() && (
-                        <Card>
-                            <ApiKeyAccess
-                                policy={row.access_control}
-                                inventory={
-                                    inventory() ?? {
-                                        providers: [],
-                                        models: [],
-                                        pools: [],
-                                        modelRoutes: [],
-                                    }
-                                }
-                            />
-                            <div class="mt-4">
-                                <ButtonLink href={hrefs.apiKeyEdit(row.id)}>
-                                    {translation()(($) => $.screens.apiKeyDetailScreen.editAPIKey)}
-                                </ButtonLink>
-                            </div>
-                        </Card>
-                    )}
+                    <Show
+                        when={inventory()}
+                        keyed
+                    >
+                        {(accessInventory) => (
+                            <Card>
+                                <ApiKeyAccess
+                                    policy={row.access_control}
+                                    inventory={accessInventory}
+                                />
+                                <div class="mt-4">
+                                    <ButtonLink href={hrefs.apiKeyEdit(row.id)}>
+                                        {translation()(
+                                            ($) => $.screens.apiKeyDetailScreen.editAPIKey,
+                                        )}
+                                    </ButtonLink>
+                                </div>
+                            </Card>
+                        )}
+                    </Show>
                     <EntityUsageCard
                         api={props.api}
                         filter={{

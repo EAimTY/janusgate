@@ -1,8 +1,8 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, guardUnsavedFormsOnLeave } from "./app";
+import { App, guardLeaveOnGuardedSubjects } from "./app";
 import { connectionService } from "./connection/app-service";
-import { type DirtyFormRegistration, registerDirtyForm } from "./dirty-form-registry";
+import { type LeaveGuardSeat, registerLeaveGuardSubject } from "./leave-guard-registry";
 import { hrefs, navigate } from "./router";
 import {
     bodyText,
@@ -45,26 +45,26 @@ function leaveStandIn(): {
 
 // The registry is module state: every test gives the seats it took back, so
 // no test leaves the guard armed for the next one.
-const takenSeats: Array<DirtyFormRegistration> = [];
+const takenSeats: Array<LeaveGuardSeat> = [];
 
 afterEach(() => {
     for (const seat of takenSeats) {
-        seat.unregister();
+        seat.release();
     }
     takenSeats.length = 0;
 });
 
-function takeSeat(): DirtyFormRegistration {
-    const seat = registerDirtyForm();
+function takeSeat(): LeaveGuardSeat {
+    const seat = registerLeaveGuardSubject();
     takenSeats.push(seat);
     return seat;
 }
 
-describe("guardUnsavedFormsOnLeave", () => {
+describe("guardLeaveOnGuardedSubjects", () => {
     it("cancels nothing while the registry is clean", () => {
         const { event, cancelCount } = leaveStandIn();
 
-        guardUnsavedFormsOnLeave(event);
+        guardLeaveOnGuardedSubjects(event);
 
         expect(cancelCount()).toBe(0);
         expect(event.returnValue).toBe("");
@@ -72,10 +72,10 @@ describe("guardUnsavedFormsOnLeave", () => {
 
     it("marks the leave for the browser's confirmation while a form stands dirty", async () => {
         const { event, cancelCount } = leaveStandIn();
-        takeSeat().reportDirty(true);
+        takeSeat().reportGuarded(true);
         await drainWrites();
 
-        guardUnsavedFormsOnLeave(event);
+        guardLeaveOnGuardedSubjects(event);
 
         expect(cancelCount()).toBe(1);
         expect(event.returnValue).toBe("");
@@ -85,35 +85,35 @@ describe("guardUnsavedFormsOnLeave", () => {
         const { event, cancelCount } = leaveStandIn();
         const seat = takeSeat();
 
-        seat.reportDirty(true);
+        seat.reportGuarded(true);
         await drainWrites();
-        guardUnsavedFormsOnLeave(event);
+        guardLeaveOnGuardedSubjects(event);
         expect(cancelCount()).toBe(1);
 
         // The dirt clears: the same listener, asked again, cancels nothing —
         // a captured snapshot would keep blocking.
-        seat.reportDirty(false);
+        seat.reportGuarded(false);
         await drainWrites();
-        guardUnsavedFormsOnLeave(event);
+        guardLeaveOnGuardedSubjects(event);
         expect(cancelCount()).toBe(1);
 
         // And the dirt returns.
-        seat.reportDirty(true);
+        seat.reportGuarded(true);
         await drainWrites();
-        guardUnsavedFormsOnLeave(event);
+        guardLeaveOnGuardedSubjects(event);
         expect(cancelCount()).toBe(2);
     });
 
     it("stays disarmed once the dirty form's seat is given up", async () => {
         const { event, cancelCount } = leaveStandIn();
         const seat = takeSeat();
-        seat.reportDirty(true);
+        seat.reportGuarded(true);
 
         // The screen went away without clearing its dirt first: the seat's
         // disposal must still leave the guard disarmed.
-        seat.unregister();
+        seat.release();
         await drainWrites();
-        guardUnsavedFormsOnLeave(event);
+        guardLeaveOnGuardedSubjects(event);
 
         expect(cancelCount()).toBe(0);
     });

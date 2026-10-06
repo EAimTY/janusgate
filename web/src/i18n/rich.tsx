@@ -1,19 +1,73 @@
 import type { JSX } from "@solidjs/web";
-import type { TFunction } from "i18next";
 import { AppLink } from "/src/ui/app-link";
 import { formatNumber } from "./formatters";
 import { translation } from "./index";
+import type { richMessages } from "./metadata";
 
-/** Parses authored flat markers only; inserted elements are never scanned. */
-function slots(template: string, values: Readonly<Record<string, JSX.Element>>): JSX.Element {
-    return template.split(/(\[\[[A-Za-z][A-Za-z0-9]*\]\])/g).map((part) => {
-        if (!part.startsWith("[[")) return part;
-        return values[part.slice(2, -2)];
-    });
+/** One rich message's slot-name union, keyed by its declared metadata path. */
+type RichSlots = {
+    [TEntry in (typeof richMessages)[number] as TEntry["path"]]: TEntry["slots"][number];
+};
+
+/** Every metadata-declared rich message path. */
+type RichMessagePath = keyof RichSlots & string;
+
+/** Parses authored flat markers only; inserted values are never scanned. */
+function splitMarkers(template: string): string[] {
+    return template.split(/(\[\[[A-Za-z][A-Za-z0-9]*\]\])/g);
 }
-export function connectedMessage(t: TFunction<"translation">, baseUrl: string): JSX.Element {
-    return slots(
-        t(($) => $.rich.connected),
+
+/**
+ * Renders one declared rich message's template as plain text: every flat
+ * [[slot]] marker is replaced by the string passed for it, in the catalog's
+ * own order, with no `$`-pattern interpretation of any inserted value. The
+ * path is a compile-only witness — it pins `values` to exactly the slots the
+ * metadata declares for that message, so a missing or extra slot key fails to
+ * compile instead of rendering nothing.
+ */
+export function renderRichText<TPath extends RichMessagePath>(
+    _path: TPath,
+    template: string,
+    values: Record<RichSlots[TPath], string>,
+): string {
+    return splitMarkers(template)
+        .map((part) =>
+            part.startsWith("[[") ? values[part.slice(2, -2) as RichSlots[TPath]] : part,
+        )
+        .join("");
+}
+
+/**
+ * Renders one declared rich message's template as JSX, under the same
+ * compile-only slot contract as [`renderRichText`]. Every renderer here reads
+ * the committed translator through the module-global [`translation`], so the
+ * message follows the active catalog wherever the renderer runs.
+ */
+function renderRichMessage<TPath extends RichMessagePath>(
+    _path: TPath,
+    template: string,
+    values: Record<RichSlots[TPath], JSX.Element>,
+): JSX.Element {
+    return splitMarkers(template).map((part) =>
+        part.startsWith("[[") ? values[part.slice(2, -2) as RichSlots[TPath]] : part,
+    );
+}
+
+/** The styled in-app link every rich message's link slot renders as. */
+function richLink(href: string, label: string | JSX.Element): JSX.Element {
+    return (
+        <AppLink
+            href={href}
+            class="font-medium text-accent underline underline-offset-4"
+        >
+            {label}
+        </AppLink>
+    );
+}
+export function connectedMessage(baseUrl: string): JSX.Element {
+    return renderRichMessage(
+        "rich.connected",
+        translation()(($) => $.rich.connected),
         {
             baseUrl: (
                 <bdi
@@ -26,36 +80,10 @@ export function connectedMessage(t: TFunction<"translation">, baseUrl: string): 
         },
     );
 }
-export function providerModelMessage(
-    t: TFunction<"translation">,
-    values: {
-        readonly providerName: string;
-        readonly providerHref: string;
-        readonly modelId: string;
-    },
-): JSX.Element {
-    return slots(
-        t(($) => $.rich.providerModel),
-        {
-            providerLink: (
-                <AppLink href={values.providerHref}>
-                    <bdi dir="auto">{values.providerName}</bdi>
-                </AppLink>
-            ),
-            modelId: (
-                <bdi
-                    dir="ltr"
-                    class="tnum"
-                >
-                    {values.modelId}
-                </bdi>
-            ),
-        },
-    );
-}
-export function setupTokenMessage(t: TFunction<"translation">): JSX.Element {
-    return slots(
-        t(($) => $.rich.setupToken),
+export function setupTokenMessage(): JSX.Element {
+    return renderRichMessage(
+        "rich.setupToken",
+        translation()(($) => $.rich.setupToken),
         {
             setting: (
                 <bdi
@@ -68,9 +96,10 @@ export function setupTokenMessage(t: TFunction<"translation">): JSX.Element {
         },
     );
 }
-export function setupCorsMessage(t: TFunction<"translation">): JSX.Element {
-    return slots(
-        t(($) => $.rich.setupCors),
+export function setupCorsMessage(): JSX.Element {
+    return renderRichMessage(
+        "rich.setupCors",
+        translation()(($) => $.rich.setupCors),
         {
             setting: (
                 <bdi
@@ -84,66 +113,69 @@ export function setupCorsMessage(t: TFunction<"translation">): JSX.Element {
     );
 }
 
-export function savedNameMessage(t: TFunction<"translation">, name: string): JSX.Element {
-    return slots(
-        t(($) => $.notices.savedName),
+export function savedNameMessage(name: string): JSX.Element {
+    return renderRichMessage(
+        "notices.savedName",
+        translation()(($) => $.notices.savedName),
         {
             name: <bdi dir="auto">{name}</bdi>,
         },
     );
 }
-export function discoveredMessage(
-    t: TFunction<"translation">,
-    providerName: string,
-    count: number,
-): JSX.Element {
-    const template =
-        count > 0
-            ? t(($) => $.notices.discovered, {
-                  count,
-              })
-            : t(($) => $.notices.nothingDiscovered);
-    return slots(template, {
-        quantity: <bdi dir="ltr">{formatNumber(count)}</bdi>,
-        providerName: <bdi dir="auto">{providerName}</bdi>,
-    });
+export function discoveredMessage(providerName: string, count: number): JSX.Element {
+    const isolated = <bdi dir="ltr">{formatNumber(count)}</bdi>;
+    const provider = <bdi dir="auto">{providerName}</bdi>;
+    if (count > 0)
+        return renderRichMessage(
+            "notices.discovered",
+            translation()(($) => $.notices.discovered, {
+                count,
+            }),
+            {
+                quantity: isolated,
+                providerName: provider,
+            },
+        );
+    return renderRichMessage(
+        "notices.nothingDiscovered",
+        translation()(($) => $.notices.nothingDiscovered),
+        {
+            providerName: provider,
+        },
+    );
 }
 
-export function discoveryPendingMessage(
-    t: TFunction<"translation">,
-    providerName: string,
-): JSX.Element {
-    return slots(
-        t(($) => $.operationNotices.discoveryPending),
+export function discoveryPendingMessage(providerName: string): JSX.Element {
+    return renderRichMessage(
+        "operationNotices.discoveryPending",
+        translation()(($) => $.operationNotices.discoveryPending),
         {
             providerName: <bdi dir="auto">{providerName}</bdi>,
         },
     );
 }
 
-export function keyCountMessage(
-    t: TFunction<"translation">,
-    values: {
-        readonly total: number;
-        readonly shown: number;
-        readonly enabled: number;
-        readonly hasSearch: boolean;
-    },
-): JSX.Element {
+export function keyCountMessage(values: {
+    readonly total: number;
+    readonly shown: number;
+    readonly enabled: number;
+    readonly hasSearch: boolean;
+}): JSX.Element {
     const parameters = {
         count: values.total,
         total: formatNumber(values.total),
         enabled: formatNumber(values.enabled),
     };
-    if (!values.hasSearch) return t(($) => $.counts.enabledKeys, parameters);
-    return slots(
-        t(($) => $.counts.filteredKeys, {
+    if (!values.hasSearch) return translation()(($) => $.counts.enabledKeys, parameters);
+    return renderRichMessage(
+        "counts.filteredKeys",
+        translation()(($) => $.counts.filteredKeys, {
             count: values.total,
         }),
         {
             total: <bdi dir="ltr">{parameters.total}</bdi>,
             enabled: <bdi dir="ltr">{parameters.enabled}</bdi>,
-            shownSentence: t(($) => $.counts.shownKeys, {
+            shownSentence: translation()(($) => $.counts.shownKeys, {
                 count: values.shown,
                 shown: formatNumber(values.shown),
             }),
@@ -151,7 +183,6 @@ export function keyCountMessage(
     );
 }
 export function requestSummaryMessage(
-    t: TFunction<"translation">,
     total: number,
     peak: {
         readonly requests: number;
@@ -159,12 +190,13 @@ export function requestSummaryMessage(
     } | null,
 ): JSX.Element {
     if (peak === null)
-        return t(($) => $.counts.requests, {
+        return translation()(($) => $.counts.requests, {
             count: total,
             total: formatNumber(total),
         });
-    return slots(
-        t(($) => $.counts.requestsPeak, {
+    return renderRichMessage(
+        "counts.requestsPeak",
+        translation()(($) => $.counts.requestsPeak, {
             count: total,
         }),
         {
@@ -216,65 +248,69 @@ export function quotaFactMessage(
     const isolated = <bdi dir="ltr">{value}</bdi>;
     switch (args[0]) {
         case "counter":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.counter",
                 translation()(($) => $.quotaMessages.counter),
                 {
                     used: <bdi dir="ltr">{args[2].used}</bdi>,
                     limit: <bdi dir="ltr">{args[2].limit}</bdi>,
-
                     unit: isolated,
                 },
             );
         case "remaining":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.remaining",
                 translation()(($) => $.quotaMessages.remaining),
                 {
                     remaining: <bdi dir="ltr">{args[2].remaining}</bdi>,
-
                     unit: isolated,
                 },
             );
         case "atReset":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.atReset",
                 translation()(($) => $.quotaMessages.atReset),
                 {
                     distance: args[2].distance,
-
                     instant: isolated,
                 },
             );
         case "observed":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.observed",
                 translation()(($) => $.quotaMessages.observed),
                 {
                     distance: args[2].distance,
-
                     instant: isolated,
                 },
             );
         case "dateReset":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.dateReset",
                 translation()(($) => $.quotaMessages.dateReset),
                 {
                     date: isolated,
                 },
             );
         case "quotaObserved":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.quotaObserved",
                 translation()(($) => $.quotaMessages.quotaObserved),
                 {
                     instant: isolated,
                 },
             );
         case "models":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.models",
                 translation()(($) => $.quotaMessages.models),
                 {
                     identifiers: isolated,
                 },
             );
         case "resets":
-            return slots(
+            return renderRichMessage(
+                "quotaMessages.resets",
                 translation()(($) => $.quotaMessages.resets),
                 {
                     instant: isolated,
@@ -284,7 +320,8 @@ export function quotaFactMessage(
 }
 
 export function editNameMessage(name: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.editName",
         translation()(($) => $.entityMessages.editName),
         {
             name: <bdi dir="auto">{name}</bdi>,
@@ -293,7 +330,8 @@ export function editNameMessage(name: string): JSX.Element {
 }
 
 export function editIdentifierMessage(identifier: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.editIdentifier",
         translation()(($) => $.entityMessages.editIdentifier),
         {
             identifier: <bdi dir="ltr">{identifier}</bdi>,
@@ -301,9 +339,10 @@ export function editIdentifierMessage(identifier: string): JSX.Element {
     );
 }
 
-export function deleteKeyMessage(t: TFunction<"translation">, name: string): JSX.Element {
-    return slots(
-        t(($) => $.entityMessages.deleteKey),
+export function deleteKeyMessage(name: string): JSX.Element {
+    return renderRichMessage(
+        "entityMessages.deleteKey",
+        translation()(($) => $.entityMessages.deleteKey),
         {
             name: <bdi dir="auto">{name}</bdi>,
         },
@@ -311,7 +350,8 @@ export function deleteKeyMessage(t: TFunction<"translation">, name: string): JSX
 }
 
 export function deleteLastKeyMessage(name: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.deleteLastKey",
         translation()(($) => $.entityMessages.deleteLastKey),
         {
             name: <bdi dir="auto">{name}</bdi>,
@@ -320,7 +360,8 @@ export function deleteLastKeyMessage(name: string): JSX.Element {
 }
 
 export function deleteModelMessage(identifier: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.deleteModel",
         translation()(($) => $.entityMessages.deleteModel),
         {
             identifier: <bdi dir="ltr">{identifier}</bdi>,
@@ -329,7 +370,8 @@ export function deleteModelMessage(identifier: string): JSX.Element {
 }
 
 export function deleteProviderMessage(name: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.deleteProvider",
         translation()(($) => $.entityMessages.deleteProvider),
         {
             name: <bdi dir="auto">{name}</bdi>,
@@ -338,7 +380,8 @@ export function deleteProviderMessage(name: string): JSX.Element {
 }
 
 export function switchPresetMessage(name: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.switchPreset",
         translation()(($) => $.entityMessages.switchPreset),
         {
             name: <bdi dir="auto">{name}</bdi>,
@@ -347,7 +390,8 @@ export function switchPresetMessage(name: string): JSX.Element {
 }
 
 export function noKeysMatchMessage(query: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.noKeysMatch",
         translation()(($) => $.entityMessages.noKeysMatch),
         {
             query: <bdi dir="auto">{query}</bdi>,
@@ -356,7 +400,8 @@ export function noKeysMatchMessage(query: string): JSX.Element {
 }
 
 export function noProvidersMatchMessage(query: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.noProvidersMatch",
         translation()(($) => $.entityMessages.noProvidersMatch),
         {
             query: <bdi dir="auto">{query}</bdi>,
@@ -365,7 +410,8 @@ export function noProvidersMatchMessage(query: string): JSX.Element {
 }
 
 export function noModelsMatchMessage(query: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.noModelsMatch",
         translation()(($) => $.entityMessages.noModelsMatch),
         {
             query: <bdi dir="auto">{query}</bdi>,
@@ -374,7 +420,8 @@ export function noModelsMatchMessage(query: string): JSX.Element {
 }
 
 export function noProviderModelsMatchMessage(query: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.noProviderModelsMatch",
         translation()(($) => $.entityMessages.noProviderModelsMatch),
         {
             query: <bdi dir="auto">{query}</bdi>,
@@ -383,7 +430,8 @@ export function noProviderModelsMatchMessage(query: string): JSX.Element {
 }
 
 export function missingPathMessage(path: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.missingPath",
         translation()(($) => $.entityMessages.missingPath),
         {
             path: <bdi dir="ltr">{path}</bdi>,
@@ -392,7 +440,8 @@ export function missingPathMessage(path: string): JSX.Element {
 }
 
 export function aliasCreatedMessage(identifier: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.aliasCreated",
         translation()(($) => $.entityMessages.aliasCreated),
         {
             identifier: <bdi dir="ltr">{identifier}</bdi>,
@@ -401,7 +450,8 @@ export function aliasCreatedMessage(identifier: string): JSX.Element {
 }
 
 export function addAliasMessage(identifier: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "entityMessages.addAlias",
         translation()(($) => $.entityMessages.addAlias),
         {
             identifier: <bdi dir="ltr">{identifier}</bdi>,
@@ -410,7 +460,8 @@ export function addAliasMessage(identifier: string): JSX.Element {
 }
 
 export function poolMembersMessage(count: number, prefix: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.poolMembers",
         translation()(($) => $.routingMessages.poolMembers, {
             count,
         }),
@@ -421,7 +472,8 @@ export function poolMembersMessage(count: number, prefix: string): JSX.Element {
     );
 }
 export function directTargetMessage(provider: string, model: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.direct",
         translation()(($) => $.routingMessages.direct),
         {
             provider: <bdi dir="auto">{provider}</bdi>,
@@ -430,7 +482,8 @@ export function directTargetMessage(provider: string, model: string): JSX.Elemen
     );
 }
 export function missingDirectTargetMessage(id: number): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.directMissing",
         translation()(($) => $.routingMessages.directMissing),
         {
             id: <bdi dir="ltr">{formatNumber(id)}</bdi>,
@@ -438,7 +491,8 @@ export function missingDirectTargetMessage(id: number): JSX.Element {
     );
 }
 export function poolTargetMessage(pool: string, model: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.pool",
         translation()(($) => $.routingMessages.pool),
         {
             pool: <bdi dir="auto">{pool}</bdi>,
@@ -447,7 +501,8 @@ export function poolTargetMessage(pool: string, model: string): JSX.Element {
     );
 }
 export function publicIdsMessage(identifiers: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.publicIds",
         translation()(($) => $.routingMessages.publicIds),
         {
             identifiers: <bdi dir="ltr">{identifiers}</bdi>,
@@ -455,71 +510,105 @@ export function publicIdsMessage(identifiers: string): JSX.Element {
     );
 }
 export function reconnectMessage(isEnabled: boolean, href: string): JSX.Element {
-    return slots(
-        isEnabled
-            ? translation()(($) => $.routingMessages.reconnect)
-            : translation()(($) => $.routingMessages.reconnectDisabled),
-        {
-            editLink: (
-                <AppLink
-                    href={href}
-                    class="font-medium text-accent underline underline-offset-4"
-                >
-                    {translation()(($) => $.screens.providerDetailScreen.editPage)}
-                </AppLink>
-            ),
-        },
+    const editLink = richLink(
+        href,
+        translation()(($) => $.screens.providerDetailScreen.editPage),
     );
+    return isEnabled
+        ? renderRichMessage(
+              "routingMessages.reconnect",
+              translation()(($) => $.routingMessages.reconnect),
+              {
+                  editLink,
+              },
+          )
+        : renderRichMessage(
+              "routingMessages.reconnectDisabled",
+              translation()(($) => $.routingMessages.reconnectDisabled),
+              {
+                  editLink,
+              },
+          );
 }
 
 export function networkTitleMessage(
-    t: TFunction<"translation">,
     kind: "unreachable" | "mixed-content" | "blocked" | "no-answer",
     baseUrl: string,
 ): JSX.Element {
     const template =
         kind === "unreachable"
-            ? t(($) => $.diagnosis.nothingAnsweredAtBaseUrl)
+            ? translation()(($) => $.diagnosis.nothingAnsweredAtBaseUrl)
             : kind === "mixed-content"
-              ? t(($) => $.diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl)
+              ? translation()(($) => $.diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl)
               : kind === "blocked"
-                ? t(($) => $.diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl)
-                : t(($) => $.diagnosis.noAnswerFromBaseUrl);
-    return slots(template, {
-        baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
-    });
+                ? translation()(
+                      ($) =>
+                          $.diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl,
+                  )
+                : translation()(($) => $.diagnosis.noAnswerFromBaseUrl);
+    return renderRichMessage(
+        kind === "unreachable"
+            ? "diagnosis.nothingAnsweredAtBaseUrl"
+            : kind === "mixed-content"
+              ? "diagnosis.anHTTPSPageCannotCallTheHTTPAddressBaseUrl"
+              : kind === "blocked"
+                ? "diagnosis.theGatewayAnsweredButTheBrowserBlockedTheResponseFromBaseUrl"
+                : "diagnosis.noAnswerFromBaseUrl",
+        template,
+        {
+            baseUrl: <bdi dir="ltr">{baseUrl}</bdi>,
+        },
+    );
 }
 export function corsRecoveryMessage(isConfirmed: boolean, origin: string): JSX.Element {
-    const t = translation();
-    return slots(
-        isConfirmed
-            ? t(
+    return isConfirmed
+        ? renderRichMessage(
+              "diagnosis.addOriginToSettingInThatInstancesConfigurationFileAndRestartTheGatewayServing",
+              translation()(
                   ($) =>
                       $.diagnosis
                           .addOriginToSettingInThatInstancesConfigurationFileAndRestartTheGatewayServing,
-              )
-            : t(
+              ),
+              {
+                  origin: <bdi dir="ltr">{origin}</bdi>,
+                  setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
+              },
+          )
+        : renderRichMessage(
+              "diagnosis.eitherNothingIsListeningAtThatAddressOrTheBrowserBlockedTheResponseBefore",
+              translation()(
                   ($) =>
                       $.diagnosis
                           .eitherNothingIsListeningAtThatAddressOrTheBrowserBlockedTheResponseBefore,
               ),
-        {
-            origin: <bdi dir="ltr">{origin}</bdi>,
-            setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
-        },
-    );
+              {
+                  origin: <bdi dir="ltr">{origin}</bdi>,
+                  setting: <bdi dir="ltr">management_api.cors.allowed_origin</bdi>,
+              },
+          );
 }
 
 export function ownerDefaultMessage(name: string, kind: "provider" | "pool"): JSX.Element {
-    return slots(
-        translation()(($) => $.routingMessages.ownerDefault[kind]),
-        {
-            name: <bdi dir="auto">{name}</bdi>,
-        },
-    );
+    const nameSlot = <bdi dir="auto">{name}</bdi>;
+    return kind === "provider"
+        ? renderRichMessage(
+              "routingMessages.ownerDefault.provider",
+              translation()(($) => $.routingMessages.ownerDefault.provider),
+              {
+                  name: nameSlot,
+              },
+          )
+        : renderRichMessage(
+              "routingMessages.ownerDefault.pool",
+              translation()(($) => $.routingMessages.ownerDefault.pool),
+              {
+                  name: nameSlot,
+              },
+          );
 }
 export function modelAccessMessage(identifier: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.modelAccess",
         translation()(($) => $.routingMessages.modelAccess),
         {
             identifier: <bdi dir="ltr">{identifier}</bdi>,
@@ -527,7 +616,8 @@ export function modelAccessMessage(identifier: string): JSX.Element {
     );
 }
 export function directAccessTargetMessage(id: number): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.directTarget",
         translation()(($) => $.routingMessages.directTarget),
         {
             id: <bdi dir="ltr">{formatNumber(id)}</bdi>,
@@ -535,7 +625,8 @@ export function directAccessTargetMessage(id: number): JSX.Element {
     );
 }
 export function poolAccessTargetMessage(identifier: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "routingMessages.poolTarget",
         translation()(($) => $.routingMessages.poolTarget),
         {
             identifier: <bdi dir="ltr">{identifier}</bdi>,
@@ -544,54 +635,41 @@ export function poolAccessTargetMessage(identifier: string): JSX.Element {
 }
 
 export function keyEndpointMessage(overviewHref: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "linkedMessages.keyEndpoint",
         translation()(($) => $.linkedMessages.keyEndpoint),
         {
-            overviewLink: (
-                <AppLink
-                    href={overviewHref}
-                    class="font-medium text-accent underline underline-offset-4"
-                >
-                    {translation()(($) => $.screens.apiKeyDetailScreen.overview)}
-                </AppLink>
+            overviewLink: richLink(
+                overviewHref,
+                translation()(($) => $.screens.apiKeyDetailScreen.overview),
             ),
         },
     );
 }
 export function servingKeyMessage(keysHref: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "linkedMessages.servingKey",
         translation()(($) => $.linkedMessages.servingKey),
         {
-            keysLink: (
-                <AppLink
-                    href={keysHref}
-                    class="font-medium text-accent underline underline-offset-4"
-                >
-                    {translation()(($) => $.screens.homeScreen.apiKeys)}
-                </AppLink>
+            keysLink: richLink(
+                keysHref,
+                translation()(($) => $.screens.homeScreen.apiKeys),
             ),
         },
     );
 }
 export function vanishedModelMessage(providerHref: string, claimHref: string): JSX.Element {
-    return slots(
+    return renderRichMessage(
+        "linkedMessages.vanished",
         translation()(($) => $.linkedMessages.vanished),
         {
-            discoverLink: (
-                <AppLink
-                    href={providerHref}
-                    class="font-medium text-accent underline underline-offset-4"
-                >
-                    {translation()(($) => $.linkedMessages.discoverLabel)}
-                </AppLink>
+            discoverLink: richLink(
+                providerHref,
+                translation()(($) => $.linkedMessages.discoverLabel),
             ),
-            claimLink: (
-                <AppLink
-                    href={claimHref}
-                    class="font-medium text-accent underline underline-offset-4"
-                >
-                    {translation()(($) => $.linkedMessages.claimLabel)}
-                </AppLink>
+            claimLink: richLink(
+                claimHref,
+                translation()(($) => $.linkedMessages.claimLabel),
             ),
         },
     );
@@ -600,23 +678,31 @@ export function inventoryAttentionMessage(
     name: string,
     reason: "no-models" | "no-ready-models",
 ): JSX.Element {
-    const template =
-        reason === "no-models"
-            ? translation()(($) => $.linkedMessages.inventoryEmpty)
-            : translation()(($) => $.linkedMessages.inventoryUnready);
-    return slots(template, {
-        name: (
-            <bdi
-                dir="auto"
-                class="font-medium text-ink"
-            >
-                {name}
-            </bdi>
-        ),
-    });
+    const nameSlot = (
+        <bdi
+            dir="auto"
+            class="font-medium text-ink"
+        >
+            {name}
+        </bdi>
+    );
+    return reason === "no-models"
+        ? renderRichMessage(
+              "linkedMessages.inventoryEmpty",
+              translation()(($) => $.linkedMessages.inventoryEmpty),
+              {
+                  name: nameSlot,
+              },
+          )
+        : renderRichMessage(
+              "linkedMessages.inventoryUnready",
+              translation()(($) => $.linkedMessages.inventoryUnready),
+              {
+                  name: nameSlot,
+              },
+          );
 }
 export function requestChartPointMessage(
-    t: TFunction<"translation">,
     day: string,
     count: number,
     quantity: string,
@@ -624,12 +710,15 @@ export function requestChartPointMessage(
     readonly accessibleName: string;
     readonly content: JSX.Element;
 } {
-    const template = t(($) => $.linkedMessages.chartPoint, {
+    const template = translation()(($) => $.linkedMessages.chartPoint, {
         count,
     });
     return {
-        accessibleName: template.replace("[[day]]", day).replace("[[quantity]]", quantity),
-        content: slots(template, {
+        accessibleName: renderRichText("linkedMessages.chartPoint", template, {
+            day,
+            quantity,
+        }),
+        content: renderRichMessage("linkedMessages.chartPoint", template, {
             day: (
                 <bdi
                     dir="ltr"

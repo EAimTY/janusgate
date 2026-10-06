@@ -8,23 +8,26 @@
 //! content — the hex digest of that content, so a carrier can never be
 //! consumed with content other than what it authenticated.
 //!
-//! Key material is stable configuration: the first configured key seals, and
-//! every configured key unseals by its carrier-carried identifier, so keys can
-//! rotate while existing artifacts stay readable. Removing a key intentionally
-//! invalidates its artifacts. There is no random process-local key and no
-//! derivation from a provider access token.
+//! Key material is stable configuration: the configuration loader deserializes
+//! the typed key set and resolves it into initialized ciphers exactly once per
+//! configuration generation, so the keys ride the swapped configuration
+//! generation and every operation reads them without re-validation. The first
+//! configured key seals, and every configured key unseals by its
+//! carrier-carried identifier, so keys can rotate while existing artifacts
+//! stay readable. Removing a key intentionally invalidates its artifacts.
+//! There is no random process-local key and no derivation from a provider
+//! access token.
 
-use crate::{compaction::envelope::EnvelopeV1, config::schema::CompactionConfig};
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use crate::{compaction_model::envelope::EnvelopeV1, config::schema::CompactionConfig};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
     XChaCha20Poly1305,
     aead::{Aead, KeyInit, Payload},
 };
 use serde_json::Error as JsonError;
+use std::fmt;
 use thiserror::Error;
+use vec1::Vec1;
 
 /// The carrier namespace: every gateway carrier starts with it, which is what
 /// lets a recognizable gateway marker be distinguished from native state — and
@@ -39,28 +42,9 @@ const AAD_DOMAIN: &[u8] = b"janusgate.compaction.v1";
 /// every seal.
 const NONCE_BYTES: usize = 24;
 
-/// Key length in bytes.
-pub(crate) const KEY_BYTES: usize = 32;
-
 /// The separator between the key id and the encoded payload inside a carrier.
-/// Key ids never contain it; configuration validation rejects one that does.
+/// Key ids never contain it; the configuration contract rejects one that does.
 const KEY_ID_SEPARATOR: char = '.';
-
-/// Errors of building the sealing keys from configuration.
-#[derive(Debug, Error)]
-pub(crate) enum KeyError {
-    /// The configuration declares no sealing key.
-    #[error("the compaction section declares no sealing key")]
-    Empty,
-
-    /// A key id is empty, repeats, or carries the carrier separator.
-    #[error("the compaction key id `{0}` is empty, repeated, or carries a `.`")]
-    InvalidId(String),
-
-    /// A key value does not decode to exactly [`KEY_BYTES`] bytes.
-    #[error("a compaction key for id `{0}` does not decode to {KEY_BYTES} bytes")]
-    InvalidKey(String),
-}
 
 /// Errors of unsealing a gateway carrier.
 #[derive(Debug, Clone, Error)]
@@ -81,7 +65,7 @@ pub(crate) enum UnsealError {
     #[error("the gateway compaction carrier failed authentication")]
     AuthenticationFailed,
 
-    /// No sealing configuration is present at all.
+    /// No sealing keys are configured at all.
     #[error("no compaction sealing keys are configured")]
     ConfigurationMissing,
 }
@@ -99,79 +83,50 @@ struct SealingKey {
 /// The set of configured sealing keys: the first seals, every one unseals.
 pub(crate) struct SealingKeys {
     /// Configured keys in declaration order; the first is the sealing key.
-    entries: Vec<SealingKey>,
+    entries: Vec1<SealingKey>,
+}
+
+impl fmt::Debug for SealingKeys {
+    // The key material is secret: the rendering names the configured
+    // identifiers, never the ciphers' key material.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.entries.iter().map(|entry| &entry.id))
+            .finish()
+    }
 }
 
 impl SealingKeys {
-    /// Resolves the configured keys, rejecting empty, repeated, or
-    /// separator-carrying identifiers and malformed key material.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`KeyError`] for any invalid key entry; the configuration
-    /// loader runs the same resolution at load time, so a request only ever
-    /// sees a violation after configuration drift.
+    /// Builds the sealing keys from the typed configuration section, whose
+    /// deserializer enforces the key-set contract: every cipher initializes
+    /// exactly once, per configuration generation, in the configuration
+    /// loader's load pipeline. The first entry seals, every entry unseals by
+    /// its carrier identifier.
     ///
     /// # Panics
     ///
-    /// Panics if decoded key material fails its length conversion —
-    /// impossible, the decode above filters to exactly [`KEY_BYTES`].
-    pub(crate) fn resolve(config: &CompactionConfig) -> Result<Self, KeyError> {
-        let mut entries = Vec::with_capacity(config.keys.len());
+    /// Panics if the typed section carries no key — impossible, its
+    /// deserializer rejects an empty set.
+    pub(crate) fn build(config: &CompactionConfig) -> Self {
+        let entries: Vec<SealingKey> = config
+            .keys
+            .iter()
+            .map(|key| SealingKey {
+                id: key.id.clone(),
+                cipher: XChaCha20Poly1305::new((&key.key).into()),
+            })
+            .collect();
 
-        for entry in &config.keys {
-            if entry.id.is_empty() || entry.id.contains(KEY_ID_SEPARATOR) {
-                return Err(KeyError::InvalidId(entry.id.clone()));
-            }
-
-            if entries
-                .iter()
-                .any(|existing: &SealingKey| existing.id == entry.id)
-            {
-                return Err(KeyError::InvalidId(entry.id.clone()));
-            }
-
-            let raw = STANDARD
-                .decode(entry.key.as_bytes())
-                .ok()
-                .filter(|decoded| decoded.len() == KEY_BYTES)
-                .ok_or_else(|| KeyError::InvalidKey(entry.id.clone()))?;
-
+        Self {
             #[expect(
                 clippy::expect_used,
-                reason = "the resolved key material is exactly KEY_BYTES by construction"
+                reason = "the typed configuration section declares at least one key, which its \
+                          deserializer enforces"
             )]
-            let key_bytes: [u8; KEY_BYTES] = raw
-                .try_into()
-                .expect("the resolved key material is exactly KEY_BYTES");
-
-            entries.push(SealingKey {
-                id: entry.id.clone(),
-                cipher: XChaCha20Poly1305::new((&key_bytes).into()),
-            });
+            entries: Vec1::try_from_vec(entries)
+                .expect("the typed configuration section declares at least one key"),
         }
-
-        if entries.is_empty() {
-            return Err(KeyError::Empty);
-        }
-
-        Ok(Self { entries })
-    }
-
-    /// Resolves the keys from the live configuration, mapped to the unseal
-    /// error domain (the request-side failure shape).
-    fn from_live_config() -> Result<Self, UnsealError> {
-        let Some(config) = crate::CONFIG.compaction.as_ref() else {
-            return Err(UnsealError::ConfigurationMissing);
-        };
-
-        Self::resolve(config).map_err(|failure| {
-            // The configuration loader validated the same material at load; a
-            // failure here is configuration drift and fails the request.
-            log::error!("invalid compaction key configuration: {failure}");
-
-            UnsealError::ConfigurationMissing
-        })
     }
 }
 
@@ -190,25 +145,6 @@ fn aad(key_id: &str, binding: Option<&[u8]>) -> Vec<u8> {
     bound
 }
 
-/// Validates the configuration's sealing key set: the exact check the
-/// configuration loader runs at every load, so an invalid key set fails the
-/// load instead of surfacing on the first compaction request.
-///
-/// # Errors
-///
-/// Returns [`KeyError`] for an empty set, a repeated or separator-carrying key
-/// identifier, or key material that does not decode to exactly [`KEY_BYTES`]
-/// bytes.
-pub(crate) fn validate_key_configuration(
-    config: &crate::config::schema::Config,
-) -> Result<(), KeyError> {
-    match config.compaction.as_ref() {
-        Some(section) => SealingKeys::resolve(section).map(|_keys| ()),
-
-        None => Ok(()),
-    }
-}
-
 /// Whether a string is a recognizable gateway carrier marker: any string in
 /// the gateway compaction namespace, sealed or damaged. A marker must never be
 /// forwarded upstream as native state.
@@ -220,26 +156,13 @@ pub(crate) fn is_gateway_marker(value: &str) -> bool {
 /// Seals an envelope into the gateway carrier string, binding the optional
 /// visible-content digest into the authentication.
 ///
-/// # Errors
-///
-/// Returns [`UnsealError::ConfigurationMissing`] when no valid key
-/// configuration is present: sealing requires the compaction configuration
-/// section, and its absence is a server configuration gap, not a panic.
-///
 /// # Panics
 ///
 /// Panics if serializing the envelope fails — impossible for concrete serde
 /// types — or if AEAD encryption fails under a constructed key and a fresh
 /// nonce.
-pub(crate) fn seal(
-    keys: &SealingKeys,
-    envelope: &EnvelopeV1,
-    binding: Option<&[u8]>,
-) -> Result<String, UnsealError> {
-    let active = keys
-        .entries
-        .first()
-        .ok_or(UnsealError::ConfigurationMissing)?;
+pub(crate) fn seal(keys: &SealingKeys, envelope: &EnvelopeV1, binding: Option<&[u8]>) -> String {
+    let active = keys.entries.first();
 
     #[expect(
         clippy::expect_used,
@@ -270,11 +193,11 @@ pub(crate) fn seal(
 
     nonce_and_ciphertext.extend_from_slice(&ciphertext);
 
-    Ok(format!(
+    format!(
         "{CARRIER_NAMESPACE}{}{KEY_ID_SEPARATOR}{}",
         active.id,
         URL_SAFE_NO_PAD.encode(nonce_and_ciphertext)
-    ))
+    )
 }
 
 /// Verifies whether a string unseals as a gateway envelope under the given
@@ -335,31 +258,42 @@ pub(crate) fn unseal(
     decode_envelope(&plaintext)
 }
 
-/// Seals under the live configuration's keys.
+/// Seals under the applied configuration generation's keys: the resolved keys
+/// ride the swapped generation, so a reload applies at the very next
+/// operation.
 ///
 /// # Errors
 ///
-/// Returns [`UnsealError::ConfigurationMissing`] when no valid key
-/// configuration is present.
+/// Returns [`UnsealError::ConfigurationMissing`] when no `compaction`
+/// configuration section is present: sealing requires the section, and its
+/// absence is a server configuration gap, not a panic.
 pub(crate) fn seal_with_live_config(
     envelope: &EnvelopeV1,
     binding: Option<&[u8]>,
 ) -> Result<String, UnsealError> {
-    seal(&SealingKeys::from_live_config()?, envelope, binding)
+    let keys = crate::CONFIG
+        .sealing_keys()
+        .ok_or(UnsealError::ConfigurationMissing)?;
+
+    Ok(seal(&keys, envelope, binding))
 }
 
-/// Unseals under the live configuration's keys.
+/// Unseals under the applied configuration generation's keys.
 ///
 /// # Errors
 ///
 /// Returns [`UnsealError`] as [`unseal`], plus
-/// [`UnsealError::ConfigurationMissing`] when no valid key configuration is
-/// present.
+/// [`UnsealError::ConfigurationMissing`] when no `compaction` configuration
+/// section is present.
 pub(crate) fn unseal_with_live_config(
     carrier: &str,
     binding: Option<&[u8]>,
 ) -> Result<EnvelopeV1, UnsealError> {
-    unseal(&SealingKeys::from_live_config()?, carrier, binding)
+    let keys = crate::CONFIG
+        .sealing_keys()
+        .ok_or(UnsealError::ConfigurationMissing)?;
+
+    unseal(&keys, carrier, binding)
 }
 
 /// Decodes the authenticated plaintext into the envelope, rejecting an
@@ -383,10 +317,10 @@ mod tests {
     )]
 
     use super::{
-        CARRIER_NAMESPACE, KeyError, SealingKeys, UnsealError, aad, is_gateway_marker, seal, unseal,
+        CARRIER_NAMESPACE, SealingKeys, UnsealError, aad, is_gateway_marker, seal, unseal,
     };
     use crate::{
-        compaction::envelope::{
+        compaction_model::envelope::{
             EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, ReplacementMode,
         },
         config::schema::CompactionConfig,
@@ -399,15 +333,15 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if the fixture configuration fails to parse or resolve, which
-    /// the fixed fixture material prevents.
+    /// Panics if the fixture configuration fails to parse, which the fixed
+    /// fixture material prevents.
     fn build_keys() -> SealingKeys {
         let config: CompactionConfig = serde_json::from_value(serde_json::json!({
             "keys": [{"id": "primary", "key": KEY_MATERIAL}]
         }))
         .expect("the fixture key configuration parses");
 
-        SealingKeys::resolve(&config).expect("the fixture key configuration resolves")
+        SealingKeys::build(&config)
     }
 
     /// A minimal gateway summary envelope for the sealing round-trips.
@@ -433,7 +367,7 @@ mod tests {
     /// Panics if an assertion fails — the assertion is the failure report.
     #[test]
     fn round_trips_under_the_same_binding() {
-        let carrier = seal(&build_keys(), &envelope(), Some(b"abc")).expect("seals");
+        let carrier = seal(&build_keys(), &envelope(), Some(b"abc"));
 
         assert!(is_gateway_marker(&carrier));
         assert!(carrier.starts_with(CARRIER_NAMESPACE));
@@ -452,7 +386,7 @@ mod tests {
     #[test]
     fn binding_and_ciphertext_tampering_fail_authentication() {
         let keys = build_keys();
-        let carrier = seal(&keys, &envelope(), Some(b"abc")).expect("seals");
+        let carrier = seal(&keys, &envelope(), Some(b"abc"));
 
         assert!(matches!(
             unseal(&keys, &carrier, Some(b"xyz")),
@@ -487,53 +421,6 @@ mod tests {
         assert!(matches!(
             unseal(&build_keys(), &carrier, None),
             Err(UnsealError::UnknownKey)
-        ));
-    }
-
-    /// Key resolution rejects empty lists, repeated ids, separator-carrying
-    /// ids, and wrong-length material.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn key_resolution_validates() {
-        assert!(matches!(
-            SealingKeys::resolve(&CompactionConfig { keys: Vec::new() }),
-            Err(KeyError::Empty)
-        ));
-
-        let repeated: CompactionConfig = serde_json::from_value(serde_json::json!({
-            "keys": [
-                {"id": "a", "key": KEY_MATERIAL},
-                {"id": "a", "key": KEY_MATERIAL}
-            ]
-        }))
-        .expect("parses");
-
-        assert!(matches!(
-            SealingKeys::resolve(&repeated),
-            Err(KeyError::InvalidId(_))
-        ));
-
-        let separator: CompactionConfig = serde_json::from_value(serde_json::json!({
-            "keys": [{"id": "a.b", "key": KEY_MATERIAL}]
-        }))
-        .expect("parses");
-
-        assert!(matches!(
-            SealingKeys::resolve(&separator),
-            Err(KeyError::InvalidId(_))
-        ));
-
-        let short: CompactionConfig = serde_json::from_value(serde_json::json!({
-            "keys": [{"id": "a", "key": "AAAA"}]
-        }))
-        .expect("parses");
-
-        assert!(matches!(
-            SealingKeys::resolve(&short),
-            Err(KeyError::InvalidKey(_))
         ));
     }
 

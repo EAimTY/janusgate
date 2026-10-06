@@ -4,14 +4,13 @@
 //! items, and each protocol parent holds the families speaking that one protocol plus the items
 //! its families share. This module groups the Chat Completions family ([`chat_completion`]) and
 //! the Responses family ([`response`]) — the two codecs over the OpenAI client protocol and the
-//! two OpenAI upstream wires (README §1, §6) — beside the OpenAI error renderer ([`error`],
-//! README §6.7) both outward surfaces render over, the `tool_choice` mode vocabulary's inbound
-//! parse ([`parse_tool_choice_mode`]) and outbound render ([`render_tool_choice`]), and the
-//! official usage detail objects ([`PromptTokensDetails`], [`CompletionTokensDetails`]) both
+//! two OpenAI upstream wires (README §1, §6; the outward error render both surfaces share lives
+//! in [`crate::api::error::openai`], README §6.7) — with the `tool_choice` mode vocabulary's
+//! inbound parse ([`parse_tool_choice_mode`]) and outbound render ([`render_tool_choice`]), and
+//! the official usage detail objects ([`PromptTokensDetails`], [`CompletionTokensDetails`]) both
 //! codecs share.
 
 pub(crate) mod chat_completion;
-pub(crate) mod error;
 pub(crate) mod response;
 
 use crate::ir::{InvalidRequest, IrToolChoice};

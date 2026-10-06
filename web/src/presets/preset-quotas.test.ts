@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
+import antigravity from "../../../fixtures/quota/antigravity.json?raw";
+import claude from "../../../fixtures/quota/claude-code.json?raw";
+import codex from "../../../fixtures/quota/codex.json?raw";
+import copilot from "../../../fixtures/quota/github-copilot.json?raw";
+import kimi from "../../../fixtures/quota/kimi-code.json?raw";
 import { hasBaseReference } from "../management-api/definitions/base-reference";
 import {
     parseListProviderDefinitionsResponse,
     validateDefinitionPayload,
 } from "../management-api/definitions/payload";
 import { parseGetProviderQuotaResponse } from "../management-api/responses/quota";
-import antigravity from "../quota-fixtures/antigravity.json?raw";
-import claude from "../quota-fixtures/claude-code.json?raw";
-import codex from "../quota-fixtures/codex.json?raw";
-import copilot from "../quota-fixtures/github-copilot.json?raw";
-import kimi from "../quota-fixtures/kimi-code.json?raw";
 import { PROVIDER_PRESETS } from "./catalog";
 
 describe("researched quota definition round trips", () => {

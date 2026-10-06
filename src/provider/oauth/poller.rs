@@ -14,8 +14,8 @@
 use super::{
     completion,
     exchange::{
-        DEFAULT_DEVICE_INTERVAL_SECONDS, ExchangeOutcome, ExchangeProduct,
-        SLOW_DOWN_PENALTY_SECONDS, execute_exchange,
+        DEFAULT_DEVICE_INTERVAL_SECONDS, ExchangeFailure, ExchangeOutcome, ExchangeProduct,
+        SLOW_DOWN_PENALTY_SECONDS, execute_classified_exchange,
     },
 };
 use crate::{
@@ -211,15 +211,32 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         flow.id, flow.device_next_poll_at, definition.name
     );
 
-    let product = match execute_exchange(http, exchange, &env).await {
+    let product = match execute_classified_exchange(http, exchange, &env).await {
         Ok(product) => product,
+
+        // A fold failure after the upstream's decoded 2xx response is a deterministic
+        // response-shape violation a retry cannot fix, and the single-use device code is
+        // consumed upstream whether or not the gateway could use the response — so the flow
+        // records the gateway-owned terminal pair instead of scheduling a retry that could
+        // only re-present the consumed code and lose the approved grant to a misleading
+        // upstream rejection (README §3, §7.2).
+        Err(ExchangeFailure::Consumed(error)) => {
+            return persist_terminal(
+                database,
+                flow,
+                flow.device_poll_started_at,
+                "exchange_failed",
+                &format!("the exchange succeeded but its token response was unusable: {error}"),
+            )
+            .await;
+        }
 
         // A transport timeout backs off the next attempt — the stored interval is persisted
         // unchanged, so the transient doubling never compounds across claims (RFC 8628 §3.5
         // reserves the permanent raise for `slow_down`); any other transport or response
         // failure schedules the plain interval retry, so a transient outage never kills the
         // flow.
-        Err(error) => {
+        Err(ExchangeFailure::Retryable(error)) => {
             debug!("device flow {} exchange attempt failed: {error}", flow.id);
 
             return schedule_retry(database, flow, is_timeout(&error)).await;
@@ -336,7 +353,10 @@ async fn checkpoint_completed_exchange(
 
 /// Schedules the next attempt after a failed transport round-trip: a timeout doubles only the
 /// next attempt's delay while the stored interval is persisted unchanged — the transient
-/// backoff never compounds across claims — and everything else keeps the stored interval.
+/// backoff never compounds across claims — and everything else keeps the stored interval. The
+/// cap bounds only the doubling from above; the stored interval bounds the delay from below,
+/// so a flow whose upstream interval exceeds the cap is never polled earlier than it asked
+/// (README §3).
 async fn schedule_retry(
     database: &Database,
     flow: &OngoingFlow,
@@ -349,7 +369,7 @@ async fn schedule_retry(
     let delay = if is_timeout {
         stored
             .checked_mul(2)
-            .map(|doubled| doubled.min(BACKOFF_INTERVAL_CAP_SECONDS))
+            .map(|doubled| stored.max(doubled.min(BACKOFF_INTERVAL_CAP_SECONDS)))
             .ok_or_else(|| interval_overflow(stored))?
     } else {
         stored
@@ -688,7 +708,7 @@ mod tests {
 
     use super::{
         Error, ExchangeOutcome, ExchangeProduct, claim_next_due_flow, commit_success,
-        execute_exchange, process, schedule_retry,
+        execute_classified_exchange, process, schedule_retry,
     };
     use crate::{
         format::UpstreamFormat,
@@ -709,7 +729,7 @@ mod tests {
         test_support::{
             self, FlowFixtureDelta, MockAction, MockUpstream, OAuthDefinitionFixture,
             OAuthDeviceAuthorizationFixture, OAuthGrantFixture, OAuthRefreshFixture,
-            oauth_definition_payload,
+            OAuthResponseField, OAuthTarget, oauth_definition_payload,
         },
     };
     use std::{collections::BTreeMap, time::Duration};
@@ -833,6 +853,7 @@ mod tests {
             "device-def",
             &mock.base(),
             ProvisioningFixture::Succeeding,
+            vec![],
         )
         .await;
 
@@ -1095,6 +1116,68 @@ mod tests {
         );
     }
 
+    /// The cap bounds only the doubling, never the base interval (README §3): an
+    /// upstream-reported interval above the cap keeps its full magnitude as a timeout's
+    /// next-attempt delay — clamping a one-hour-interval flow down to the cap would re-poll
+    /// every couple of minutes, the over-polling that earns `slow_down` penalties (RFC 8628
+    /// §3.5).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the schedule diverges from the contract.
+    #[tokio::test]
+    async fn a_transport_timeout_never_undercuts_an_interval_above_the_cap() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = insert_plain_device_definition(&database).await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        test_support::insert_flow_fixture(
+            &database,
+            &definition,
+            now,
+            FlowFixtureDelta {
+                device_poll_interval_seconds: Some(600),
+                ..FlowFixtureDelta::default()
+            },
+        )
+        .await;
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        let before = crate::unix_time::unix_now_micros();
+
+        schedule_retry(&database, &claimed, true).await.unwrap();
+
+        let after = crate::unix_time::unix_now_micros();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let backed_off = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row survives the timeout");
+
+        // The stored interval persists unchanged.
+        assert_eq!(
+            backed_off.device_poll_interval_seconds,
+            Some(600),
+            "the timeout must not raise the stored interval"
+        );
+
+        let interval = 600 * crate::unix_time::MICROS_PER_SEC;
+
+        assert!(
+            backed_off.device_next_poll_at.unwrap() >= before + interval
+                && backed_off.device_next_poll_at.unwrap() <= after + interval,
+            "the next attempt never rides a delay shorter than the stored interval"
+        );
+    }
+
     /// The batch's claim staleness threshold derives from each claim's own instant, not the
     /// tick start: a claim that has aged past the staleness window by the time the batch
     /// reaches its flow is recovered by that very claim call, while a claim still inside the
@@ -1219,9 +1302,10 @@ mod tests {
         }
     }
 
-    /// Inserts one device-grant OAuth definition whose exchange points at `token_url` and whose
+    /// Inserts one device-grant OAuth definition whose exchange points at `token_url`, whose
     /// terminal codes exclude the non-terminal error the fixture's upstream reports, carrying
-    /// the `provisioning` fixture's step sequence.
+    /// the `provisioning` fixture's step sequence and the `response_fields` mapped beside the
+    /// skeleton's required `access_token` row.
     ///
     /// # Panics
     ///
@@ -1232,6 +1316,7 @@ mod tests {
         name: &str,
         token_url: &str,
         provisioning: ProvisioningFixture,
+        response_fields: Vec<OAuthResponseField>,
     ) -> crate::provider::ProviderDefinition {
         let payload = oauth_definition_payload(OAuthDefinitionFixture {
             format: UpstreamFormat::OpenAiChatCompletion,
@@ -1249,7 +1334,7 @@ mod tests {
                 },
             },
             exchange_url: token_url,
-            response_fields: vec![],
+            response_fields,
             terminal_codes: &["access_denied"],
             refresh: OAuthRefreshFixture::None,
             provisioning: provisioning.steps(token_url),
@@ -1291,6 +1376,7 @@ mod tests {
             "device-def",
             "http://127.0.0.1:1/token",
             ProvisioningFixture::None,
+            vec![],
         )
         .await
     }
@@ -1361,6 +1447,7 @@ mod tests {
             "device-def",
             &mock.base(),
             ProvisioningFixture::None,
+            vec![],
         )
         .await;
 
@@ -1391,6 +1478,109 @@ mod tests {
         assert_eq!(settled.device_poll_interval_seconds, Some(5));
         assert!(settled.device_next_poll_at.unwrap() >= now);
         assert_eq!(settled.device_poll_started_at, None);
+
+        mock.shutdown.send(()).ok();
+    }
+
+    /// A token response that decodes but folds badly fails the flow terminally (README §3,
+    /// §7.2): the exchange round-trip completed — the single-use device code is consumed
+    /// upstream whether or not the gateway could use the response — so a deterministic fold
+    /// failure records the gateway-owned terminal pair instead of scheduling a retry that could
+    /// only re-present the consumed code and lose the approved grant to a misleading upstream
+    /// rejection. The terminal message is gateway-authored: no upstream value lands in it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_fold_failure_after_a_decoded_token_response_fails_the_flow_terminally() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The response maps a valid access token beside a slot value outside the routing-safe
+        // machine-consumed text contract: the 2xx body decodes, and the fold fails on the slot
+        // target's storage-boundary validation.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&serde_json::json!({
+                "access_token": "exchange-token",
+                "stage": "has space"
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            &mock.base(),
+            ProvisioningFixture::None,
+            vec![OAuthResponseField::new("stage", OAuthTarget::Slot("stage"))],
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        test_support::insert_flow_fixture(&database, &definition, now, FlowFixtureDelta::default())
+            .await;
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        process(&database, &http_client::control_plane(), &claimed)
+            .await
+            .unwrap();
+
+        let settled = settled_flow(&database, now).await;
+
+        // The gateway-owned terminal pair, with no upstream body content in the message.
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("exchange_failed"));
+
+        #[expect(clippy::expect_used, reason = "the failed outcome carries its pair")]
+        let message = settled
+            .failure_message
+            .as_deref()
+            .expect("the failed outcome carries its message");
+
+        assert!(
+            message.starts_with("the exchange succeeded but its token response was unusable"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("has space"),
+            "no upstream value lands in the terminal result: {message}"
+        );
+
+        assert_eq!(
+            settled.device_poll_started_at, None,
+            "the persisted terminal outcome clears the claim stamp"
+        );
+
+        // The terminal row is unclaimable, so the poll loop can never re-present the consumed
+        // device code.
+        #[expect(clippy::unwrap_used, reason = "the claim query executes")]
+        let reclaims = claim_due_device_flow(
+            &database,
+            now + 60 * crate::unix_time::MICROS_PER_SEC,
+            now + 30 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            reclaims.is_none(),
+            "a terminal flow is never re-claimed for another exchange"
+        );
+
+        // The fold failure never wrote the provider.
+        assert!(
+            storage::providers::find_provider(&database, "created")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         mock.shutdown.send(()).ok();
     }
@@ -1686,6 +1876,7 @@ mod tests {
             "device-def",
             &mock.base(),
             ProvisioningFixture::Failing,
+            vec![],
         )
         .await;
 
@@ -1711,7 +1902,10 @@ mod tests {
         assert_eq!(settled.failure_code.as_deref(), Some("provisioning_failed"));
         assert_eq!(
             settled.failure_message.as_deref(),
-            Some("Upstream request failed: provisioning response lacks a required field")
+            Some(concat!(
+                "Upstream request failed: provisioning response lacks the required path ",
+                r#"["machine"]"#
+            ))
         );
 
         // The terminal persist released the claim stamp.
@@ -1873,6 +2067,7 @@ mod tests {
             "device-def",
             &mock.base(),
             ProvisioningFixture::None,
+            vec![],
         )
         .await;
 
@@ -1912,7 +2107,7 @@ mod tests {
             claimed.device_code.as_deref(),
         );
 
-        let product = execute_exchange(&http_client::control_plane(), exchange, &env)
+        let product = execute_classified_exchange(&http_client::control_plane(), exchange, &env)
             .await
             .unwrap();
 

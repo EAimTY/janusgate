@@ -96,7 +96,7 @@ impl Selection {
         context: &Context,
         api_key_id: i64,
         mut evidence: Evidence,
-        preparation: Option<&crate::compaction::history::BoundaryPreparation>,
+        preparation: Option<&crate::compaction_model::boundary::BoundaryPreparation>,
     ) -> Result<Ownership, Error> {
         loop {
             let Some(pool_id) = self.pool_id() else {
@@ -207,7 +207,7 @@ impl Selection {
     /// Panics if a pooled snapshot has a direct authored target, prevented by snapshot loading.
     fn compaction_provider(
         &self,
-        preparation: &crate::compaction::history::BoundaryPreparation,
+        preparation: &crate::compaction_model::boundary::BoundaryPreparation,
     ) -> Result<Option<i64>, Error> {
         let Some(requirement) = preparation.native_requirement() else {
             return Ok(None);
@@ -227,7 +227,7 @@ impl Selection {
         };
         let incompatible = || {
             Error::from(
-                crate::compaction::error::CompactionError::inaccessible_native_state(
+                crate::compaction_model::boundary::BoundaryError::inaccessible_native_state(
                     "the wrapped native state belongs to another provider, model, or format",
                 ),
             )
@@ -402,6 +402,27 @@ impl Selection {
             })
         }
     }
+
+    /// Reloads the just-rejected account's persisted quota evidence and observes it as fresh
+    /// candidate evidence. The rejection's classification has already persisted its
+    /// generation-fenced storage, so this reload reads reset hints without writing a second
+    /// revision or issuing another classification. Returns whether stored state exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage failures.
+    async fn absorb_rejection_evidence(
+        &mut self,
+        database: &Database,
+        provider_id: i64,
+        upstream_id: &str,
+    ) -> Result<bool, crate::storage::Error> {
+        let Some(state) = storage::quota_blocks::load_state(database, provider_id).await? else {
+            return Ok(false);
+        };
+        self.observe_blocks(&state.blocks, upstream_id);
+        Ok(true)
+    }
 }
 
 /// Request-owned compaction account selection retained across its same-account stages.
@@ -450,12 +471,13 @@ impl CompactionSelection {
         }
         if matches!(self.ownership, Ownership::Bound(_)) {
             selection.candidate_resets.clear();
-            if let Some(state) =
-                storage::quota_blocks::load_state(&context.database, self.routing.provider.id)
-                    .await?
-            {
-                selection.observe_blocks(&state.blocks, &self.routing.model.upstream_id);
-            }
+            selection
+                .absorb_rejection_evidence(
+                    &context.database,
+                    self.routing.provider.id,
+                    &self.routing.model.upstream_id,
+                )
+                .await?;
             return Err(selection.bound_quota_failure());
         }
 
@@ -475,11 +497,13 @@ impl CompactionSelection {
             .finalize(ApiLogOutcome::UpstreamError, None)
             .await;
         selection.has_quota_restrictions = true;
-        if let Some(state) =
-            storage::quota_blocks::load_state(&context.database, self.routing.provider.id).await?
-        {
-            selection.observe_blocks(&state.blocks, &self.routing.model.upstream_id);
-        }
+        selection
+            .absorb_rejection_evidence(
+                &context.database,
+                self.routing.provider.id,
+                &self.routing.model.upstream_id,
+            )
+            .await?;
         self.routing = selection.next(context).await?;
         draft.provider_id = self.routing.provider.id;
         draft.model_id = self.routing.model.id;
@@ -544,7 +568,7 @@ impl CompactionSelection {
 pub(super) async fn select_compaction(
     context: &Context,
     parsed: &ParsedRequest,
-    preparation: &crate::compaction::history::BoundaryPreparation,
+    preparation: &crate::compaction_model::boundary::BoundaryPreparation,
     api_key_id: i64,
 ) -> Result<CompactionSelection, Error> {
     let mut selection = Selection::load(&context.database, &parsed.ir.model, api_key_id).await?;
@@ -580,6 +604,24 @@ pub(crate) struct SelectedAttempt {
     pub(crate) outcome: AttemptOutcome,
     /// Accepted client continuation transferred to the result task independently of IR events.
     pub(crate) affinity: Option<Accepted>,
+}
+
+/// Builds the final result for a dispatch whose post-rejection evidence reload failed storage:
+/// the failure ends account selection immediately, and the attempt's unfinalized draft travels
+/// to the outward boundary that owns error accounting.
+fn dispatched_storage_failure(
+    routing: ModelRouting,
+    attempt: ApiLogGuard,
+    error: crate::storage::Error,
+) -> SelectedAttempt {
+    SelectedAttempt {
+        routing,
+        affinity: None,
+        outcome: AttemptOutcome::DispatchedFailure {
+            error: Error::Storage(error),
+            attempt,
+        },
+    }
 }
 
 /// Resolves ordinary affinity and executes on its required account or bounded fresh priority scan.
@@ -634,27 +676,18 @@ pub(crate) async fn execute_selection(
                 error: Error::QuotaRejected { status, .. },
                 attempt,
             } if ownership.is_fresh() && attempt.draft().can_abandon_quota_rejection() => {
-                // Classification has already persisted generation-fenced evidence. Reload it
-                // for reset hints without writing a second revision or issuing another query.
-                let state =
-                    match storage::quota_blocks::load_state(&context.database, routing.provider.id)
-                        .await
-                    {
-                        Ok(state) => state,
-                        Err(error) => {
-                            return Ok(SelectedAttempt {
-                                routing,
-                                affinity: None,
-                                outcome: AttemptOutcome::DispatchedFailure {
-                                    error: Error::Storage(error),
-                                    attempt,
-                                },
-                            });
-                        }
-                    };
+                // The rejection itself is positive quota evidence even when the reload below
+                // finds no stored state.
                 selection.has_quota_restrictions = true;
-                if let Some(state) = state {
-                    selection.observe_blocks(&state.blocks, &routing.model.upstream_id);
+                if let Err(error) = selection
+                    .absorb_rejection_evidence(
+                        &context.database,
+                        routing.provider.id,
+                        &routing.model.upstream_id,
+                    )
+                    .await
+                {
+                    return Ok(dispatched_storage_failure(routing, attempt, error));
                 }
                 log::debug!(
                     "abandoning quota-rejected account {} model {} route {} status {}",
@@ -670,24 +703,15 @@ pub(crate) async fn execute_selection(
                 attempt,
             } if matches!(ownership, Ownership::Bound(_)) => {
                 selection.candidate_resets.clear();
-                let state =
-                    match storage::quota_blocks::load_state(&context.database, routing.provider.id)
-                        .await
-                    {
-                        Ok(state) => state,
-                        Err(error) => {
-                            return Ok(SelectedAttempt {
-                                routing,
-                                affinity: None,
-                                outcome: AttemptOutcome::DispatchedFailure {
-                                    error: Error::Storage(error),
-                                    attempt,
-                                },
-                            });
-                        }
-                    };
-                if let Some(state) = state {
-                    selection.observe_blocks(&state.blocks, &routing.model.upstream_id);
+                if let Err(error) = selection
+                    .absorb_rejection_evidence(
+                        &context.database,
+                        routing.provider.id,
+                        &routing.model.upstream_id,
+                    )
+                    .await
+                {
+                    return Ok(dispatched_storage_failure(routing, attempt, error));
                 }
                 return Ok(SelectedAttempt {
                     routing,

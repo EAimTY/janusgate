@@ -186,7 +186,7 @@ async fn physical_inventory_exposes_models_and_preserves_aliases() -> Result<(),
 #[tokio::test]
 async fn public_listings_expose_direct_models_and_combine_structural_candidates()
 -> Result<(), Box<dyn StdError>> {
-    use crate::compaction::{
+    use crate::compaction_model::{
         mechanism::{Mechanism, MechanismSupport},
         support_facts::CompactionSupportFacts,
     };
@@ -196,7 +196,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
     let b = insert_test_provider(&database, "B").await?;
     let discovered = crate::provider::DiscoveredModel {
         upstream_id: "M".into(),
-        thinking_levels: Some(vec![crate::ir::IrReasoningLevel::Low]),
+        thinking_levels: Some(vec![crate::vocabulary::ReasoningLevel::Low]),
         max_input_tokens: Some(1000),
         max_output_tokens: Some(500),
         compaction: CompactionSupportFacts::from_pairs([(mechanism, MechanismSupport::Supported)]),
@@ -211,7 +211,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         &database,
         b,
         &[crate::provider::DiscoveredModel {
-            thinking_levels: Some(vec![crate::ir::IrReasoningLevel::High]),
+            thinking_levels: Some(vec![crate::vocabulary::ReasoningLevel::High]),
             max_input_tokens: Some(800),
             max_output_tokens: None,
             compaction: None,
@@ -377,7 +377,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         .clone();
     assert_eq!(
         remaining_levels,
-        Some(vec![crate::ir::IrReasoningLevel::High])
+        Some(vec![crate::vocabulary::ReasoningLevel::High])
     );
     database
         .execute(
@@ -406,7 +406,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         b,
         &[crate::provider::DiscoveredModel {
             upstream_id: "N".into(),
-            thinking_levels: Some(vec![crate::ir::IrReasoningLevel::Low]),
+            thinking_levels: Some(vec![crate::vocabulary::ReasoningLevel::Low]),
             max_input_tokens: Some(2400),
             max_output_tokens: Some(600),
             compaction: None,
@@ -438,7 +438,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
     assert!(listed.iter().all(|entry| entry.provider_name == "coding"
         && entry.max_input_tokens == Some(2400)
         && entry.max_output_tokens == Some(600)
-        && entry.thinking_levels == Some(vec![crate::ir::IrReasoningLevel::Low])));
+        && entry.thinking_levels == Some(vec![crate::vocabulary::ReasoningLevel::Low])));
     Ok(())
 }
 
@@ -711,17 +711,17 @@ async fn dispatch_resolves_explicit_routes_with_ordered_physical_targets()
         axum::http::StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
-        crate::format::openai::error::render_body(&outward)
+        crate::api::error::openai::render_body(&outward)
             .code
             .as_deref(),
         Some("pool_unavailable")
     );
     assert_eq!(
-        crate::format::gemini::error::render_body(&outward).status,
+        crate::api::error::gemini::render_body(&outward).status,
         "UNAVAILABLE"
     );
     assert_eq!(
-        crate::format::anthropic::error::render_body(&outward).r#type,
+        crate::api::error::anthropic::render_body(&outward).r#type,
         "api_error"
     );
     database

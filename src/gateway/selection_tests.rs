@@ -1510,7 +1510,7 @@ async fn failed_quota_reads_preserve_blocks_and_allow_unrestricted_accounts()
             "request":{"method":"GET","url":[{"type":"base"},
                 {"type":"literal","value":"/quota"}]},
             "sources":[{"type":"object","key":"account","at":[],"is_required":true,
-                "scope":{"type":"unknown"},"entries":[{"key":"weekly","label":"Weekly",
+                "entries":[{"key":"weekly","label":"Weekly",
                     "at":[],"is_required":true,"routing":{"type":"all_models"},
                     "window":{"type":"unknown"},"reset":{"type":"unknown"},
                     "measurement":{"type":"remaining","value":{
@@ -2506,7 +2506,7 @@ async fn released_affinity_waiters_reauthorize_coherent_admission() -> Result<()
                 selection::select_compaction(
                     &task_context,
                     &request,
-                    &crate::compaction::history::BoundaryPreparation::default(),
+                    &crate::compaction_model::boundary::BoundaryPreparation::default(),
                     key.id,
                 )
                 .await

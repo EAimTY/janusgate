@@ -15,6 +15,7 @@ use crate::{
 mod affinity;
 mod client_render;
 mod compaction;
+mod json_affinity;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
@@ -57,25 +58,25 @@ impl ClientFormat for Format {
         response: &Self::JsonResponse,
         projector: &mut crate::affinity::fingerprint::Projector,
     ) -> bool {
-        client_render::project_json_response(response, projector)
+        json_affinity::project_json_response(response, projector)
     }
 
     fn completed_json_artifacts(response: &Self::JsonResponse) -> Vec<crate::affinity::Anchor> {
-        client_render::completed_json_artifacts(response)
+        json_affinity::completed_json_artifacts(response)
     }
 
     fn project_json_checkpoint(
         response: &Self::JsonResponse,
         projector: &mut crate::affinity::fingerprint::Projector,
     ) -> bool {
-        client_render::project_json_after_prefix(response, projector, 1)
+        json_affinity::project_json_after_prefix(response, projector, 1)
     }
 
     fn render_json_response_with_prefix(
         public_id: &str,
         aggregation: &IrAggregation,
         prefix: &[crate::format::compaction_wire::Checkpoint],
-        _iterations: &[crate::format::compaction_wire::UsageIteration],
+        _iterations: &[crate::ir::compaction::UsageIteration],
     ) -> Self::JsonResponse {
         client_render::render_json_response_with_prefix_items(
             public_id,

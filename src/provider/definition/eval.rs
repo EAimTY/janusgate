@@ -419,7 +419,7 @@ impl ValueEnv<'_> {
             other => {
                 let value = self
                     .stage_value(other)
-                    .ok_or_else(|| missing(other.kind().display_name()))?;
+                    .ok_or_else(|| missing(other.display_name()))?;
 
                 rendered.push_str(value);
 

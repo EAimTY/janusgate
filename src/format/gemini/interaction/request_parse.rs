@@ -51,9 +51,9 @@ use crate::{
         gemini::{GeminiResponseFormatRejection, parse_gemini_response_format},
     },
     ir::{
-        InvalidRequest, IrImage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat, IrRole,
-        IrTool, IrToolChoice,
+        InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice,
     },
+    vocabulary::ReasoningLevel,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -373,14 +373,8 @@ impl FunctionResultPayload {
                     .collect::<Result<Vec<_>, _>>()?;
 
                 // The separator only ever separates text the accumulator already holds, so a
-                // leading run of empty blocks carries none: skip it, then join the rest with
-                // the blank-line separator.
-                let combined = texts
-                    .iter()
-                    .skip_while(|text| text.is_empty())
-                    .copied()
-                    .collect::<Vec<&str>>()
-                    .join("\n\n");
+                // leading run of empty blocks carries none (see `format::join_text_parts`).
+                let combined = format::join_text_parts(texts);
 
                 Ok(combined)
             }
@@ -604,7 +598,7 @@ pub(super) fn parse_request(
 
     let reasoning_effort = generation_config
         .thinking_level
-        .map(|level| IrReasoningLevel::parse(&level, "thinking_level"))
+        .map(|level| ReasoningLevel::parse(&level, "thinking_level"))
         .transpose()?;
 
     Ok(ParsedRequest {
@@ -1017,7 +1011,7 @@ mod tests {
         assert_eq!(parsed.ir.instructions.as_deref(), Some("be terse"));
         assert!(parsed.is_streaming);
 
-        assert_eq!(parsed.ir.reasoning_effort, Some(IrReasoningLevel::High),);
+        assert_eq!(parsed.ir.reasoning_effort, Some(ReasoningLevel::High),);
         assert_eq!(parsed.ir.response_format, Some(IrResponseFormat::Json),);
         assert_eq!(
             parsed.ir.tool_choice,

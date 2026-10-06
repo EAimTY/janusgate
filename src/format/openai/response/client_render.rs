@@ -4,8 +4,10 @@
 //! Every rendered payload is a first-party type in the official Responses shape (README §6.3), so
 //! the wire contract lives in the type system rather than in assembled JSON.
 
+use super::upstream_parse::UpstreamUsage;
 use crate::{
-    format::{self, ClientSseRenderer, openai::error::OpenAiErrorBody},
+    api::error::openai::OpenAiErrorBody,
+    format::{self, ClientSseRenderer},
     ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse, unix_time,
@@ -115,7 +117,7 @@ struct TrackedItem {
 /// a verbatim vendor-shaped state item replayed at the output head.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
-enum OutputItem {
+pub(super) enum OutputItem {
     /// A gateway-rendered item.
     Rendered(RenderedOutputItem),
 
@@ -128,7 +130,7 @@ enum OutputItem {
 /// The gateway-rendered output items in the official Responses shape.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum RenderedOutputItem {
+pub(super) enum RenderedOutputItem {
     /// A reasoning item carrying its summary.
     Reasoning {
         /// Gateway-issued item identifier.
@@ -186,7 +188,7 @@ pub(super) struct FunctionCallItem {
 /// Lifecycle status of a rendered output item.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ItemStatus {
+pub(super) enum ItemStatus {
     /// The item is still streaming.
     InProgress,
 
@@ -214,7 +216,7 @@ enum ResponseStatus {
 /// One summary part of a reasoning item.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum SummaryPart {
+pub(super) enum SummaryPart {
     /// The reasoning text the gateway accumulated.
     SummaryText {
         /// Accumulated reasoning text.
@@ -225,7 +227,7 @@ enum SummaryPart {
 /// One content part of a rendered message item; the gateway renders text only.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum OutputTextPart {
+pub(super) enum OutputTextPart {
     /// An output text part carrying the assistant's text.
     OutputText {
         /// Accumulated assistant text.
@@ -269,8 +271,8 @@ pub(crate) struct ResponseObject {
     /// Public model name the client addressed.
     model: String,
 
-    /// Completed output items in output order.
-    output: Vec<OutputItem>,
+    /// Completed output items in output order, read by the aggregated-body projection.
+    pub(super) output: Vec<OutputItem>,
 
     /// Always `false`: the gateway exposes no parallel tool-call control.
     parallel_tool_calls: bool,
@@ -300,9 +302,11 @@ pub(crate) struct ResponseObject {
 /// openai-python's `ResponseUsage` types all five fields as required — the two detail objects
 /// included, their inner integers too (official OpenAPI schema: `input_tokens_details` requires
 /// `cached_tokens` and `cache_write_tokens`, `output_tokens_details` requires `reasoning_tokens`) —
-/// so the details are always carried, zero-filled when the upstream reported no breakdown.
+/// so the details are always carried, zero-filled when the upstream reported no breakdown. xAI's
+/// optional `dropped_message_count` rides beside the five only when a native compact passthrough
+/// reported it.
 #[derive(Debug, Clone, Serialize)]
-struct ResponseUsage {
+pub(super) struct ResponseUsage {
     /// Tokens consumed by the input.
     input_tokens: u64,
 
@@ -317,11 +321,19 @@ struct ResponseUsage {
 
     /// Sum of input and output tokens.
     total_tokens: u64,
+
+    /// Messages the upstream dropped while compacting (xAI extension); rendered only when a
+    /// native compact passthrough reported it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dropped_message_count: Option<u64>,
 }
 
 impl ResponseUsage {
-    /// Renders one observation, zero-filling every absent breakdown.
-    fn render(usage: IrUsage) -> Self {
+    /// Renders one IR observation, zero-filling every absent breakdown. The total adds with
+    /// `saturating_add`: for every token count whose sum fits `u64` — every count a real upstream
+    /// reports — the rendered total is the exact sum, and a third-party total can never panic
+    /// (debug) or wrap (release) the renderer the way a plain add could at overflow.
+    pub(super) fn render(usage: IrUsage) -> Self {
         Self {
             input_tokens: usage.input_tokens,
             input_tokens_details: InputTokensDetails {
@@ -332,7 +344,37 @@ impl ResponseUsage {
             output_tokens_details: OutputTokensDetails {
                 reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
             },
-            total_tokens: usage.input_tokens + usage.output_tokens,
+            total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
+            dropped_message_count: None,
+        }
+    }
+
+    /// Renders one native upstream observation into the compact body's usage, zero-filling every
+    /// absent breakdown and carrying the upstream's `dropped_message_count` through. The total
+    /// adds with `saturating_add`, exactly as in [`ResponseUsage::render`].
+    pub(super) fn render_upstream(usage: UpstreamUsage) -> Self {
+        let input_details = usage.input_tokens_details.as_ref();
+
+        Self {
+            input_tokens: usage.input_tokens,
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: input_details
+                    .and_then(|details| details.cached_tokens)
+                    .unwrap_or(0),
+                cache_write_tokens: input_details
+                    .and_then(|details| details.cache_write_tokens)
+                    .unwrap_or(0),
+            },
+            output_tokens: usage.output_tokens,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: usage
+                    .output_tokens_details
+                    .as_ref()
+                    .and_then(|details| details.reasoning_tokens)
+                    .unwrap_or(0),
+            },
+            total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
+            dropped_message_count: usage.dropped_message_count,
         }
     }
 }
@@ -807,7 +849,7 @@ impl ClientSseRenderer for SseRenderer {
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
 
-        shell.error = Some(crate::format::openai::error::render_body(error));
+        shell.error = Some(crate::api::error::openai::render_body(error));
 
         self.event_frame("response.failed", ResponseEvent { response: shell })
     }
@@ -1370,74 +1412,6 @@ fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
 
         IrFinishReason::Stop | IrFinishReason::ToolCall => None,
     }
-}
-
-/// Projects actual ordered output items, excluding unencrypted reasoning dropped on replay.
-pub(super) fn project_json_response(
-    response: &ResponseObject,
-    projector: &mut crate::affinity::fingerprint::Projector,
-) -> bool {
-    project_json_after_prefix(response, projector, 0)
-}
-
-/// Projects actual answer fields after the already normalized prepared checkpoint prefix.
-pub(super) fn project_json_after_prefix(
-    response: &ResponseObject,
-    projector: &mut crate::affinity::fingerprint::Projector,
-    prefix_count: usize,
-) -> bool {
-    for item in response.output.iter().skip(prefix_count) {
-        match item {
-            OutputItem::Rendered(RenderedOutputItem::Message { content, .. }) => {
-                for OutputTextPart::OutputText { text, .. } in content {
-                    projector.text(
-                        crate::affinity::fingerprint::Role::Assistant,
-                        text.as_bytes(),
-                    );
-                }
-            }
-            OutputItem::Rendered(RenderedOutputItem::FunctionCall(call)) => {
-                if !crate::format::affinity::project_call(
-                    projector,
-                    &call.call_id,
-                    &call.name,
-                    &call.arguments,
-                    call.thought_signature.as_deref(),
-                ) {
-                    return false;
-                }
-            }
-            OutputItem::Rendered(RenderedOutputItem::Reasoning { .. }) => {}
-            OutputItem::State(crate::format::compaction_wire::Checkpoint::Native(value)) => {
-                let Some(state) = super::window_affinity::prepare_native_state(value, projector)
-                else {
-                    return false;
-                };
-                if super::compaction::native_artifact_anchor(value, projector).is_some() {
-                    *projector = crate::affinity::fingerprint::Projector::new();
-                }
-                projector.state_prepared(state);
-            }
-            OutputItem::State(_) => return false,
-        }
-    }
-    true
-}
-
-/// Identifies actual complete raw native checkpoints without treating reflected markers as ours.
-pub(super) fn completed_json_artifacts(response: &ResponseObject) -> Vec<crate::affinity::Anchor> {
-    let projector = crate::affinity::fingerprint::Projector::new();
-    response
-        .output
-        .iter()
-        .flat_map(|item| match item {
-            OutputItem::State(crate::format::compaction_wire::Checkpoint::Native(value)) => {
-                super::window_affinity::prepare_native_checkpoint(value, &projector)
-                    .map_or_else(Vec::new, |(_, anchors)| anchors)
-            }
-            OutputItem::Rendered(_) | OutputItem::State(_) => Vec::new(),
-        })
-        .collect()
 }
 
 #[cfg(test)]

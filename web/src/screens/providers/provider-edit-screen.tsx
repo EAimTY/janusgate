@@ -3,6 +3,7 @@ import { type Accessor, createMemo, createSignal, Show } from "solid-js";
 import { readProviderCatalog } from "/src/features/inventory/read";
 import { isSameProviderRow } from "/src/features/inventory/row-equality";
 import { noStoredExpirySentence } from "/src/features/providers/credential-presentation";
+import { providerSavedNotice } from "/src/features/providers/notices";
 import { createOauthFlow, type OauthFlow } from "/src/features/providers/oauth-flow";
 import { CompletionForm, DeviceStep } from "/src/features/providers/oauth-flow-view";
 import {
@@ -32,7 +33,6 @@ import { hrefs, navigate } from "/src/router";
 import { createDeleteAction, createEditForm } from "/src/screen-state/edit-form";
 import { createScreenRead, readOne, type ScreenRead } from "/src/screen-state/read";
 import { createEditRow } from "/src/screen-state/row-state";
-import { providerSavedNotice } from "/src/screen-state/success-notices";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
@@ -251,7 +251,7 @@ function withEdits(
 const emptyBaseUrlError = (): string =>
     translation()(
         ($) =>
-            $.helpers.providerEditScreen
+            $.screens.providerEditScreen
                 .thisProvidersDefinitionEvaluatesRequestsAgainstABaseURLRestoreOneOrRevert,
     );
 

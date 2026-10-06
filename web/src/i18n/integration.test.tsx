@@ -1,7 +1,6 @@
 import { render } from "@solidjs/web";
 import { createRoot } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasDirtyForms } from "../dirty-form-registry";
 import {
     CompactionSupportOverrideFields,
     compactionOverrideSelection,
@@ -9,6 +8,7 @@ import {
 } from "../features/models/model-form";
 import { createOauthFlow } from "../features/providers/oauth-flow";
 import { DeviceStep } from "../features/providers/oauth-flow-view";
+import { hasGuardedSubjects } from "../leave-guard-registry";
 import { ErrorCode } from "../management-api/generated/v0";
 import { performManagementCall } from "../management-api/outcome";
 import { ApiKeyEditScreen } from "../screens/api-keys/api-key-edit-screen";
@@ -244,7 +244,7 @@ describe("language switching inside an existing administration form", () => {
             ...document.querySelectorAll("bdi"),
         ].find((element) => element.textContent === facts.user_code);
         expect(poll).toHaveBeenCalledTimes(1);
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
         await setLanguagePreference("zh-CN");
         await vi.advanceTimersByTimeAsync(0);
         expect(flow.flow()).toBe(live);
@@ -254,7 +254,7 @@ describe("language switching inside an existing administration form", () => {
             document.querySelector(`a[href="${facts.verification_uri_complete}"]`),
         ).not.toBeNull();
         expect(poll).toHaveBeenCalledTimes(1);
-        expect(hasDirtyForms()).toBe(true);
+        expect(hasGuardedSubjects()).toBe(true);
         await vi.advanceTimersByTimeAsync(3000);
         await vi.advanceTimersByTimeAsync(0);
         expect(poll).toHaveBeenCalledTimes(2);

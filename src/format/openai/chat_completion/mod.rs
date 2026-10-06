@@ -12,6 +12,7 @@ use crate::{
 
 mod affinity;
 mod client_render;
+mod json_affinity;
 mod request_parse;
 mod upstream_parse;
 mod upstream_render;
@@ -44,18 +45,7 @@ impl ClientFormat for Format {
         response: &Self::JsonResponse,
         projector: &mut crate::affinity::fingerprint::Projector,
     ) -> bool {
-        client_render::project_json_response(response, projector)
-    }
-
-    fn render_json_response_with_prefix(
-        _public_id: &str,
-        aggregation: &IrAggregation,
-        _prefix: &[crate::format::compaction_wire::Checkpoint],
-        _iterations: &[crate::format::compaction_wire::UsageIteration],
-    ) -> Self::JsonResponse {
-        // This surface has no compaction channel; its callers can never
-        // produce a checkpoint prefix, so the ordinary rendering stands.
-        Self::render_json_response(_public_id, aggregation)
+        json_affinity::project_json_response(response, projector)
     }
 }
 

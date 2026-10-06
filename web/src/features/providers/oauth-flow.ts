@@ -17,21 +17,21 @@
  * step's loop, which schedules only on the fragment's `"pending"`, stops by
  * itself (README §6.4).
  *
- * The live flow also seats itself in the dirty-form registry (README §6.3):
+ * The live flow also seats itself in the leave-guard registry (README §6.3):
  * the approval happens in another tab, so stepping elsewhere in the console
  * while authorizing is natural — and the flow's state lives in this
  * fragment, so any in-app navigation discards it silently. A tab close or a
  * reload cannot be warned at in place, so while a flow stands live the
  * fragment holds a seat in the registry the shell's `beforeunload` guard
  * reads: armed on a succeeded begin, disarmed by `discardFlow` — which every
- * settle, discard, expiry, and failure path runs — and given up by the
+ * settle, discard, expiry, and failure path runs — and released by the
  * disposal cleanup, so no path, including a screen that goes away with its
  * flow live, can leave the guard armed behind it.
  */
 import { type Accessor, createSignal, onCleanup } from "solid-js";
-import { registerDirtyForm } from "/src/dirty-form-registry";
 import { nowMicros } from "/src/format";
 import { translation } from "/src/i18n";
+import { registerLeaveGuardSubject } from "/src/leave-guard-registry";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
 import type {
@@ -234,12 +234,12 @@ export function createOauthFlow(options: {
 
     // The live flow's seat in the leave-guard registry (README §6.3), armed
     // beside the begin's success below and disarmed by `discardFlow`; the
-    // cleanup gives the seat up when the consuming screen goes away, so a
+    // cleanup releases the seat when the consuming screen goes away, so a
     // flow abandoned live cannot leave the `beforeunload` guard armed behind
     // it — the same owner-owned lifetime every registry seat keeps.
-    const flowRegistration = registerDirtyForm();
+    const flowSeat = registerLeaveGuardSubject();
     onCleanup(() => {
-        flowRegistration.unregister();
+        flowSeat.release();
     });
 
     // The flow's begin is the screens' shared begin action: the fragment's
@@ -257,7 +257,7 @@ export function createOauthFlow(options: {
             // The flow stands live on the gateway and in this fragment: its
             // loss to a tab close or a reload is now the leave guard's to
             // intercept, exactly as an unsaved edit form's is.
-            flowRegistration.reportDirty(true);
+            flowSeat.reportGuarded(true);
         },
     });
 
@@ -290,7 +290,7 @@ export function createOauthFlow(options: {
         setHasPasteRefusal(false);
         setFailure(null);
         failedPolls = 0;
-        flowRegistration.reportDirty(false);
+        flowSeat.reportGuarded(false);
     };
 
     /**

@@ -2,24 +2,24 @@
 
 use super::{EmptyResponse, Error, Nullable, route};
 use crate::{
-    compaction::{
+    compaction_model::{
         mechanism::{Mechanism, MechanismSupport},
         support_facts::CompactionSupportFacts,
     },
     context::Context,
-    ir::IrReasoningLevel,
     provider::{DiscoveredModel, DiscoveryState, discovery},
     storage::{
         self,
         models::{ModelCreate, ModelEntry, ModelUpdate},
     },
+    vocabulary::ReasoningLevel,
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
 use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 route! {
     pub(super) ListModels: {
@@ -132,35 +132,54 @@ pub(super) struct ModelResponse {
 }
 
 impl ModelResponse {
-    /// Renders one stored entry.
-    fn from_entry(entry: &ModelEntry) -> Self {
-        let model = &entry.model;
+    /// Renders one stored entry, consuming it.
+    fn from_entry(entry: ModelEntry) -> Self {
+        let ModelEntry {
+            provider_id,
+            provider_name,
+            model,
+        } = entry;
+
+        let crate::provider::Model {
+            id,
+            upstream_id,
+            is_enabled,
+            discovery_state,
+            thinking_levels,
+            max_input_tokens,
+            max_output_tokens,
+            thinking_levels_override,
+            max_input_tokens_override,
+            max_output_tokens_override,
+            compaction_support,
+            compaction_support_override,
+        } = model;
 
         Self {
-            id: model.id,
-            provider_id: entry.provider_id,
-            provider: entry.provider_name.clone(),
-            upstream_id: model.upstream_id.clone(),
-            is_enabled: model.is_enabled,
-            discovery_state: model.discovery_state,
-            thinking_levels: model.thinking_levels.as_ref().map(|levels| {
+            id,
+            provider_id,
+            provider: provider_name,
+            upstream_id,
+            is_enabled,
+            discovery_state,
+            thinking_levels: thinking_levels.map(|levels| {
                 levels
-                    .iter()
+                    .into_iter()
                     .map(|level| level.as_str().to_string())
                     .collect()
             }),
-            max_input_tokens: model.max_input_tokens,
-            max_output_tokens: model.max_output_tokens,
-            thinking_levels_override: model.thinking_levels_override.as_ref().map(|levels| {
+            max_input_tokens,
+            max_output_tokens,
+            thinking_levels_override: thinking_levels_override.map(|levels| {
                 levels
-                    .iter()
+                    .into_iter()
                     .map(|level| level.as_str().to_string())
                     .collect()
             }),
-            max_input_tokens_override: model.max_input_tokens_override,
-            max_output_tokens_override: model.max_output_tokens_override,
-            compaction_support: model.compaction_support.clone(),
-            compaction_support_override: model.compaction_support_override.clone(),
+            max_input_tokens_override,
+            max_output_tokens_override,
+            compaction_support,
+            compaction_support_override,
         }
     }
 }
@@ -338,7 +357,7 @@ pub(super) async fn list(
         storage::models::list_model_entries(&context.database, request.provider_id).await?;
 
     Ok(Json(ListModelsResponse {
-        models: entries.iter().map(ModelResponse::from_entry).collect(),
+        models: entries.into_iter().map(ModelResponse::from_entry).collect(),
     }))
 }
 
@@ -350,7 +369,7 @@ pub(super) async fn discover(
     let entries = handle_discover(&context.database, &context.control_plane, request).await?;
 
     Ok(Json(DiscoverModelsResponse {
-        models: entries.iter().map(ModelResponse::from_entry).collect(),
+        models: entries.into_iter().map(ModelResponse::from_entry).collect(),
     }))
 }
 
@@ -362,7 +381,7 @@ pub(super) async fn create(
     let entry = handle_create(&context.database, request).await?;
 
     Ok(Json(ModelEnvelope {
-        model: ModelResponse::from_entry(&entry),
+        model: ModelResponse::from_entry(entry),
     }))
 }
 
@@ -374,7 +393,7 @@ pub(super) async fn update(
     let entry = handle_update(&context.database, request).await?;
 
     Ok(Json(ModelEnvelope {
-        model: ModelResponse::from_entry(&entry),
+        model: ModelResponse::from_entry(entry),
     }))
 }
 
@@ -398,16 +417,13 @@ fn unique_discovered_models(
     discovered: Vec<DiscoveredModel>,
 ) -> Result<Vec<DiscoveredModel>, Error> {
     let mut unique: Vec<DiscoveredModel> = Vec::with_capacity(discovered.len());
+    let mut seen: HashSet<String> = HashSet::with_capacity(discovered.len());
 
     for model in discovered {
-        if unique
-            .iter()
-            .any(|existing| existing.upstream_id == model.upstream_id)
-        {
-            continue;
+        if !seen.contains(&model.upstream_id) {
+            seen.insert(model.upstream_id.clone());
+            unique.push(model);
         }
-
-        unique.push(model);
     }
 
     if unique.is_empty() {
@@ -426,7 +442,7 @@ fn unique_discovered_models(
 #[derive(Debug)]
 struct CapabilityOverrides {
     /// Validated, canonicalized thinking-level override; `None` keeps the discovered value.
-    thinking_levels: Option<Vec<IrReasoningLevel>>,
+    thinking_levels: Option<Vec<ReasoningLevel>>,
 
     /// Validated maximum-input-tokens override.
     max_input_tokens: Option<i64>,
@@ -463,7 +479,7 @@ fn parse_capability_overrides(
             levels
                 .into_iter()
                 .map(|level| {
-                    IrReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| {
+                    ReasoningLevel::from_vocabulary_str(&level).ok_or_else(|| {
                         Error::UnknownReasoningLevel {
                             param: "thinking_levels_override",
                             value: level,
@@ -471,7 +487,7 @@ fn parse_capability_overrides(
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map(IrReasoningLevel::canonicalize_levels)
+                .map(ReasoningLevel::canonicalize_levels)
         })
         .transpose()?;
 
@@ -653,10 +669,10 @@ mod tests {
         MechanismSupport, ModelResponse, UpdateModelRequest,
     };
     use crate::{
-        ir::IrReasoningLevel,
         management_api::v0::Nullable,
         provider::{DiscoveredModel, DiscoveryState, Model},
         storage::models::ModelEntry,
+        vocabulary::ReasoningLevel,
     };
 
     /// One discovered fixture carrying no capability facts.
@@ -710,7 +726,7 @@ mod tests {
                     upstream_id: "gpt-4".to_string(),
                     is_enabled,
                     discovery_state,
-                    thinking_levels: Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High]),
+                    thinking_levels: Some(vec![ReasoningLevel::Low, ReasoningLevel::High]),
                     max_input_tokens: Some(200_000),
                     max_output_tokens: None,
                     thinking_levels_override: None,
@@ -723,7 +739,7 @@ mod tests {
         };
 
         #[expect(clippy::expect_used, reason = "the row body always serializes")]
-        let rendered = serde_json::to_value(ModelResponse::from_entry(&entry(
+        let rendered = serde_json::to_value(ModelResponse::from_entry(entry(
             DiscoveryState::Discovered,
             true,
         )))
@@ -750,7 +766,7 @@ mod tests {
         );
 
         #[expect(clippy::expect_used, reason = "the row body always serializes")]
-        let vanished = serde_json::to_value(ModelResponse::from_entry(&entry(
+        let vanished = serde_json::to_value(ModelResponse::from_entry(entry(
             DiscoveryState::Vanished,
             true,
         )))
@@ -937,10 +953,10 @@ mod tests {
         )
         .unwrap();
 
-        use crate::ir::IrReasoningLevel;
+        use crate::vocabulary::ReasoningLevel;
         assert_eq!(
             parsed.thinking_levels,
-            Some(vec![IrReasoningLevel::Low, IrReasoningLevel::High])
+            Some(vec![ReasoningLevel::Low, ReasoningLevel::High])
         );
         assert_eq!(parsed.max_input_tokens, Some(200_000));
         assert_eq!(parsed.max_output_tokens, None);

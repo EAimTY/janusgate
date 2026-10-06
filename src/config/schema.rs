@@ -4,8 +4,15 @@
 use log::LevelFilter;
 use serde::Deserialize;
 use serde_with::{As, DurationMilliSeconds};
-use std::{net::SocketAddr, num::NonZero, path::PathBuf, time::Duration};
+use std::{
+    fmt::{self, Formatter},
+    net::SocketAddr,
+    num::NonZero,
+    path::PathBuf,
+    time::Duration,
+};
 use tower_http::cors::AllowOrigin;
+use vec1::Vec1;
 
 /// Root gateway configuration schema.
 ///
@@ -96,26 +103,48 @@ impl Default for PoolingConfig {
 }
 
 /// Remote-compaction sealing key configuration.
+///
+/// Deserialization enforces the whole key-set contract and decodes every key to its material, so
+/// an invalid set fails the parse with the offending value's line and column — exactly like any
+/// other schema rejection — and a parsed section is valid by construction.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CompactionConfig {
     /// Configured keys in rotation order: the first entry seals, every entry unseals by its
     /// identifier. At least one key is required; identifiers must be unique, non-empty, and
-    /// free of `.`; each key is standard base64 of exactly 32 bytes. The loader validates the
-    /// whole set at load time.
-    pub(crate) keys: Vec<CompactionKeyConfig>,
+    /// free of `.`; each key is standard base64 of exactly 32 bytes. Deserialization enforces
+    /// the whole contract, rejecting an empty set and repeated identifiers.
+    #[serde(deserialize_with = "super::deserializers::compaction_keys")]
+    pub(crate) keys: Vec1<CompactionKeyConfig>,
 }
 
-/// One configured sealing key.
-#[derive(Debug, Deserialize, Clone)]
+/// The decoded byte length of every compaction sealing key's material.
+pub(super) const SEALING_KEY_BYTES: usize = 32;
+
+/// One configured sealing key: its carrier identifier and its decoded material.
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CompactionKeyConfig {
     /// The key's carrier identifier, ridden in the clear by every carrier it
-    /// sealed.
+    /// sealed. Non-empty and free of `.`, the carrier's key-id separator.
+    #[serde(deserialize_with = "super::deserializers::sealing_key_id")]
     pub(crate) id: String,
 
-    /// The key material: standard base64 of exactly 32 bytes.
-    pub(crate) key: String,
+    /// The key material: the [`SEALING_KEY_BYTES`] bytes the standard-base64 configuration value
+    /// decodes to.
+    #[serde(deserialize_with = "super::deserializers::sealing_key_material")]
+    pub(crate) key: [u8; SEALING_KEY_BYTES],
+}
+
+impl fmt::Debug for CompactionKeyConfig {
+    // The material is a secret: the rendering names the identifier and the material's presence,
+    // never its bytes.
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CompactionKeyConfig")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Inbound TLS termination schema.
@@ -304,6 +333,10 @@ mod tests {
             schema.api_logs.is_none(),
             "the omitted api_logs section means recording is off"
         );
+        assert!(
+            schema.compaction.is_none(),
+            "the omitted compaction section means sealing is unavailable"
+        );
 
         // The section's presence is the recording switch: present, it must state the api-log
         // directory, and retention may ride along or fall back to its default.
@@ -395,5 +428,100 @@ mod tests {
 
         assert!(schema.management_api.cors.allow_private_network);
         assert!(!schema.api.cors.allow_private_network);
+    }
+
+    /// Renders a configuration body carrying the given `compaction.keys` JSON fragment.
+    fn sealing_keys_body(keys: &str) -> String {
+        format!(
+            r#"{{
+                "listen": "127.0.0.1:8080",
+                "database": {{"path": "janusgate.db"}},
+                "management_api": {{"token": "management-token"}},
+                "api": {{}},
+                "compaction": {{"keys": {keys}}}
+            }}"#
+        )
+    }
+
+    /// Verifies the compaction sealing-key contract at parse time: a valid set parses into
+    /// identifiers and decoded 32-byte materials, and an empty set, a repeated, empty, or
+    /// separator-carrying identifier, a non-base64 or wrong-length key value, and an unknown
+    /// entry field are all rejected — with the offending value's location, like any other
+    /// schema rejection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a valid set fails to parse, an invalid set parses, or a rejection omits the
+    /// location.
+    #[test]
+    fn enforces_the_sealing_key_contract_at_parse_time() {
+        let key = crate::test_support::FIXTURE_SEALING_KEY;
+        let rotated = crate::test_support::FIXTURE_SEALING_KEY_ROTATED;
+
+        let schema = parse(
+            sealing_keys_body(&format!(
+                r#"[{{"id": "primary", "key": "{key}"}}, {{"id": "spare", "key": "{rotated}"}}]"#
+            ))
+            .as_bytes(),
+        );
+
+        #[expect(clippy::expect_used, reason = "the valid set carries the section")]
+        let compaction = schema.compaction.as_ref().expect("the section parses");
+
+        assert_eq!(compaction.keys.len(), 2);
+        assert_eq!(compaction.keys.first().id, "primary");
+        assert_eq!(
+            compaction.keys.first().key,
+            std::array::from_fn(|index| index as u8),
+            "the base64 value decodes to its material"
+        );
+
+        let repeated =
+            format!(r#"[{{"id": "a", "key": "{key}"}}, {{"id": "a", "key": "{rotated}"}}]"#);
+
+        for (index, (label, keys)) in [
+            ("empty set", String::from("[]")),
+            ("repeated id", repeated),
+            (
+                "separator id",
+                format!(r#"[{{"id": "a.b", "key": "{key}"}}]"#),
+            ),
+            ("empty id", format!(r#"[{{"id": "", "key": "{key}"}}]"#)),
+            (
+                "non-base64 key",
+                r#"[{"id": "a", "key": "!!!"}]"#.to_string(),
+            ),
+            ("short key", r#"[{"id": "a", "key": "AAAA"}]"#.to_string()),
+            (
+                "unknown entry field",
+                format!(r#"[{{"id": "a", "key": "{key}", "comment": 1}}]"#),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                parse_result(sealing_keys_body(&keys).as_bytes()).is_err(),
+                "case {index} ({label}) parses but must be rejected"
+            );
+        }
+
+        #[expect(
+            clippy::panic,
+            reason = "the repeated-id set is rejected above, which is what the test asserts"
+        )]
+        let Err(failure) = parse_result(
+            sealing_keys_body(&format!(
+                r#"[{{"id": "a", "key": "{key}"}}, {{"id": "a", "key": "{rotated}"}}]"#
+            ))
+            .as_bytes(),
+        ) else {
+            panic!("a repeated id parses but must be rejected");
+        };
+
+        let rendered = failure.to_string();
+
+        assert!(rendered.contains("repeated"), "{rendered}");
+        assert!(rendered.contains("line"), "{rendered}");
     }
 }

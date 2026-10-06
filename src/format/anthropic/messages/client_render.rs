@@ -4,11 +4,8 @@
 
 use super::{OutBlock, TypedBlock, is_anthropic_block};
 use crate::{
-    format::{
-        ClientSseRenderer,
-        anthropic::error::{AnthropicErrorBody, render_body},
-        arguments_to_object_or_empty,
-    },
+    api::error::anthropic::{AnthropicErrorBody, render_body},
+    format::{ClientSseRenderer, arguments_to_object_or_empty},
     ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse,
@@ -76,7 +73,7 @@ struct ResponseUsage {
     /// compaction performed; omitted on every ordinary response, whose usage carries no
     /// iterations.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    iterations: Vec<crate::ir::compaction::UsageIteration>,
 }
 
 /// The native output token breakdown.
@@ -135,7 +132,7 @@ impl ResponseUsage {
 #[derive(Debug, Clone)]
 pub(crate) struct CompactionOnlyUsage {
     /// Raw vendor iteration entries to render under `usage.iterations`, verbatim.
-    pub(crate) iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    pub(crate) iterations: Vec<crate::ir::compaction::UsageIteration>,
 
     /// Top-level input tokens; zero for a compact-only reply per the protocol.
     pub(crate) input_tokens: u64,
@@ -151,11 +148,9 @@ pub(crate) struct CompactionOnlyUsage {
 }
 
 /// Builds the concrete iteration report for an actual ordinary generation dispatch.
-pub(super) fn message_iteration_entry(
-    usage: IrUsage,
-) -> crate::format::compaction_wire::UsageIteration {
-    crate::format::compaction_wire::UsageIteration::gateway(
-        crate::format::compaction_wire::SamplingKind::Message,
+pub(super) fn message_iteration_entry(usage: IrUsage) -> crate::ir::compaction::UsageIteration {
+    crate::ir::compaction::UsageIteration::gateway(
+        crate::ir::compaction::SamplingKind::Message,
         usage,
     )
 }
@@ -261,7 +256,7 @@ pub(super) fn render_json_response_with_prefix_blocks(
     model: &str,
     aggregation: &IrAggregation,
     blocks: &[crate::format::compaction_wire::Checkpoint],
-    iterations: &[crate::format::compaction_wire::UsageIteration],
+    iterations: &[crate::ir::compaction::UsageIteration],
 ) -> MessagesResponse {
     let mut response = render_json_response(model, aggregation);
     if blocks.is_empty() && iterations.is_empty() {
@@ -429,7 +424,7 @@ pub(crate) struct SseRenderer {
     is_threshold_compaction: bool,
 
     /// Native cumulative iteration reports, separate from gateway prefix iterations.
-    native_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    native_iterations: Vec<crate::ir::compaction::UsageIteration>,
 
     /// Stop reason forced onto the terminal `message_delta`, set for a compaction lifecycle
     /// whose outcome is the compaction stop (`"compaction"`); the finish-derived reason stands
@@ -445,7 +440,7 @@ pub(crate) struct SseRenderer {
 
     /// The vendor-shaped iteration entries of a compaction lifecycle, rendered
     /// under the terminal delta's `usage.iterations` (README §6.8).
-    compaction_iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+    compaction_iterations: Vec<crate::ir::compaction::UsageIteration>,
 
     /// Whether the renderer carries a compaction lifecycle — a prefix, a
     /// forced stop, or carried iteration entries — whose terminal delta closes
@@ -734,7 +729,7 @@ impl SseRenderer {
     #[must_use]
     pub(crate) fn with_usage_iterations(
         mut self,
-        iterations: Vec<crate::format::compaction_wire::UsageIteration>,
+        iterations: Vec<crate::ir::compaction::UsageIteration>,
     ) -> Self {
         self.is_compaction_lifecycle = self.is_compaction_lifecycle || !iterations.is_empty();
         self.compaction_iterations = iterations;

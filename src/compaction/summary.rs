@@ -37,7 +37,7 @@ work without the replaced history, and invent nothing.";
 pub(crate) const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
 
 /// Builds the internal summarizer request from the restored window and the
-/// gateway checkpoint plan (README §6.8, of the design).
+/// gateway checkpoint plan (README §6.8).
 ///
 /// The request is the restored window's clone with: the supplied instructions
 /// replacing the default prompt (their absence keeping the default); the
@@ -48,10 +48,13 @@ pub(crate) const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
 /// and the caller's compact-only output cap, whichever is smaller; the response
 /// format dropped; and the sampling controls and reasoning effort preserved.
 /// The opaque state items never ride the summarizer.
+///
+/// Consumes the plan's summary input messages: they become the summarizer's
+/// input history, and no later consumer of the plan reads them.
 #[must_use]
 pub(crate) fn plan_summary_request(
     restored: &IrRequest,
-    plan: &GatewayCheckpointPlan,
+    plan: &mut GatewayCheckpointPlan,
     instructions: Option<&str>,
     output_cap: Option<u64>,
 ) -> IrRequest {
@@ -63,7 +66,7 @@ pub(crate) fn plan_summary_request(
             .unwrap_or_else(|| String::from(DEFAULT_SUMMARY_PROMPT)),
     );
 
-    summarizer.messages = plan.summary_input_messages.clone();
+    summarizer.messages = std::mem::take(&mut plan.summary_input_messages);
     summarizer.messages.push(IrMessage {
         role: IrRole::User,
         parts: vec![IrPart::Text {

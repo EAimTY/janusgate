@@ -59,7 +59,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
     );
 
     const countLine = createMemo(() =>
-        keyCountMessage(translation(), {
+        keyCountMessage({
             total: keys().length,
             shown: visibleKeys().length,
             enabled: visibleEnabledCount(),

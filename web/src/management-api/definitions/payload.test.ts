@@ -1151,6 +1151,19 @@ describe("definition response validation", () => {
         ).toThrow(/response\.provider_definitions\[0\]\.version must be an integer/);
     });
 
+    it("rejects a stored row carrying a member the row does not declare", () => {
+        expect(() =>
+            parseListProviderDefinitionsResponse({
+                provider_definitions: [
+                    {
+                        ...storedDefinition,
+                        future_row_field: true,
+                    },
+                ],
+            }),
+        ).toThrow(/response\.provider_definitions\[0\]\.future_row_field is not a declared field/);
+    });
+
     it("rejects a stored payload that breaks the descriptor contract", () => {
         expect(() =>
             parseListProviderDefinitionsResponse({

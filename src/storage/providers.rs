@@ -388,14 +388,10 @@ pub(crate) async fn try_acquire_refresh_lease(
             "UPDATE providers SET credentials = json_set(credentials, \
              '$.refresh_started_at', ?1) \
              WHERE id = ?2 \
-             AND json_extract(credentials, '$.refresh_started_at') IS NULL \
              AND json_extract(credentials, '$.expires_at') IS NOT NULL \
              AND json_extract(credentials, '$.expires_at') <= ?1 + ?3 \
-             OR (id = ?2 \
-                 AND json_extract(credentials, '$.refresh_started_at') IS NOT NULL \
-                 AND json_extract(credentials, '$.refresh_started_at') < ?4 \
-                 AND json_extract(credentials, '$.expires_at') IS NOT NULL \
-                 AND json_extract(credentials, '$.expires_at') <= ?1 + ?3)",
+             AND (json_extract(credentials, '$.refresh_started_at') IS NULL \
+                  OR json_extract(credentials, '$.refresh_started_at') < ?4)",
             params![now, provider_id, freshness_margin, lease_stale_before],
         )
         .await?;
