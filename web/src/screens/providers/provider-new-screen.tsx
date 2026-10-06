@@ -105,11 +105,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const preset = (): ProviderPreset => presetById(presetId());
 
-    /**
-     * The latest stored version of this preset's definition, when the gateway
-     * holds one — the listing orders by name then version, so the last of a
-     * name is the newest.
-     */
+    /** The latest stored version of this preset's definition, when the gateway holds one. */
     const stored = createMemo(() => matchStoredDefinition(preset(), definitions()));
 
     /** The definition JSON the operator edits; prefilled from the preset. */

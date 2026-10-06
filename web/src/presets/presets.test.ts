@@ -560,6 +560,80 @@ describe("generic Gemini presets", () => {
     }
 });
 
+describe("opencode zen URLs", () => {
+    it("composes the Anthropic Messages path off the pinned Zen root", () => {
+        // The Zen root already carries the version segment, so the path
+        // literal must not repeat it: `{zen}/messages`, never `{zen}/v1/messages`.
+        expect(
+            at(findPreset("zen-anthropic-messages"), [
+                "inference",
+                "url",
+            ]),
+        ).toEqual([
+            {
+                type: "literal",
+                value: "https://opencode.ai/zen/v1",
+            },
+            {
+                type: "literal",
+                value: "/messages",
+            },
+        ]);
+    });
+
+    it("addresses the GenerateContent resource path under the discovered bare model id", () => {
+        // OpenAI-style discovery reports bare ids (`data[].id`), so the
+        // inference URLs must spell the resource segment the protocol
+        // requires: `{zen}/models/{model}:generateContent`.
+        const gemini = findPreset("zen-gemini-generate-content");
+
+        expect(
+            at(gemini, [
+                "inference",
+                "url",
+            ]),
+        ).toEqual([
+            {
+                type: "literal",
+                value: "https://opencode.ai/zen/v1",
+            },
+            {
+                type: "literal",
+                value: "/models/",
+            },
+            {
+                type: "model",
+            },
+            {
+                type: "literal",
+                value: ":generateContent",
+            },
+        ]);
+        expect(
+            at(gemini, [
+                "inference",
+                "stream_url",
+            ]),
+        ).toEqual([
+            {
+                type: "literal",
+                value: "https://opencode.ai/zen/v1",
+            },
+            {
+                type: "literal",
+                value: "/models/",
+            },
+            {
+                type: "model",
+            },
+            {
+                type: "literal",
+                value: ":streamGenerateContent?alt=sse",
+            },
+        ]);
+    });
+});
+
 describe("claude-code preset", () => {
     const claude = findPreset("claude-code");
 

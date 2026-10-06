@@ -535,15 +535,21 @@ export const currentLocation: Accessor<AppLocation> = location;
 
 /**
  * Whether `target` names the address the browser already holds — the one rule
- * of "same address", read from the location the router alone sees. Selecting
- * the address already shown is not a navigation, and every caller that
- * branches reload-versus-navigate asks this instead of re-reading the
- * location itself.
+ * of "same address", read from the location the router alone sees. The target
+ * reads through the same normalization the location read applies, so both
+ * spellings of one resource are one address. Selecting the address already
+ * shown is not a navigation, and every caller that branches
+ * reload-versus-navigate asks this instead of re-reading the location itself.
  */
 export function isCurrentAddress(target: string): boolean {
+    // The target is an hrefs-built `pathname` + `search` pair; the search
+    // keeps its leading "?", matching the shape of `window.location.search`.
+    const queryStart = target.indexOf("?");
+    const pathname = queryStart === -1 ? target : target.slice(0, queryStart);
+    const search = queryStart === -1 ? "" : target.slice(queryStart);
     const current = readLocation();
 
-    return target === `${current.pathname}${current.search}`;
+    return normalizePathname(pathname) === current.pathname && search === current.search;
 }
 
 /** Client-side navigation: push a history entry and re-render. */

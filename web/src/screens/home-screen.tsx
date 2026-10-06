@@ -551,9 +551,9 @@ function AttentionRow(props: {
 }
 
 /**
- * A fresh gateway: the six steps from here to a working endpoint. The key
+ * A fresh gateway: the five steps from here to a working endpoint. The key
  * count rides in because keys can exist with no provider standing — the
- * Endpoints card below links them — and a key already issued is step five's
+ * Endpoints card below links them — and a key already issued is step four's
  * done state, however early it was taken.
  */
 function GettingStarted(props: { readonly apiKeyCount: number }): JSX.Element {

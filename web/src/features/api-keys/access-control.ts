@@ -10,6 +10,7 @@ import type {
     ProviderPoolResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
+import { indexRowsById } from "/src/row-index";
 import {
     classifyStructuralAvailability,
     type StructuralAvailability,
@@ -95,11 +96,32 @@ export function resolveAccess(
     };
 }
 
+/** One decision's two words, resolved lazily so the catalog in force renders. */
+export type AccessDecisionWords = {
+    readonly allow: string;
+    readonly deny: string;
+};
+
+/**
+ * The `AccessDecision` → word mapping, the conditional's single home: the
+ * allow decision reads the pair's allow word, deny its deny word. The two
+ * label pairs in force are deliberate — the resolved state reads the past
+ * participle ("Allowed"), the choice controls the imperative ("Allow") — so
+ * the pair rides the call.
+ */
+export function accessDecisionLabel(decision: AccessDecision, words: AccessDecisionWords): string {
+    return decision === "allow" ? words.allow : words.deny;
+}
+
 export function accessLabel(result: ResolvedAccess): string {
-    const decision =
-        result.access === "allow"
-            ? translation()(($) => $.helpers.accessControl.allowed)
-            : translation()(($) => $.helpers.accessControl.denied);
+    const decision = accessDecisionLabel(result.access, {
+        get allow() {
+            return translation()(($) => $.helpers.accessControl.allowed);
+        },
+        get deny() {
+            return translation()(($) => $.helpers.accessControl.denied);
+        },
+    });
     return `${decision} · ${result.source === "route" ? translation()(($) => $.helpers.accessControl.modelOverride) : translation()(($) => $.domainMessages.source[result.source])}`;
 }
 
@@ -218,20 +240,62 @@ export function setRouteChoice(
     };
 }
 
-export function routeOwner(route: ModelRouteResponse, inventory: AccessInventory): Owner | null {
+/** The owner's composite map key: type and id are unique together by contract. */
+export function ownerKey(owner: Owner): string {
+    return `${owner.type}:${owner.id}`;
+}
+
+/**
+ * The route's owner against an id-indexed model map: a pool target owns
+ * itself, a direct target rides its model's provider. A model answering no
+ * id leaves the route unowned — the missing-reference sweep owns it there.
+ */
+function indexedRouteOwner(
+    route: ModelRouteResponse,
+    models: ReadonlyMap<number, ModelResponse>,
+): Owner | null {
     const target = route.target;
     if (target.type === "pool")
         return {
             type: "pool",
             id: target.pool_id,
         };
-    const model = inventory.models.find((model) => model.id === target.model_id);
+    const model = models.get(target.model_id);
     return model
         ? {
               type: "provider",
               id: model.provider_id,
           }
         : null;
+}
+
+/**
+ * Routes grouped by resolved owner, built in one sweep against an
+ * id-indexed model map: the per-owner walk this replaces resolved every
+ * route against a linear model lookup once per rendered cell per reactive
+ * run — O(routes × models) each time.
+ */
+export function groupRoutesByOwner(
+    inventory: AccessInventory,
+): ReadonlyMap<string, ReadonlyArray<ModelRouteResponse>> {
+    const models = indexRowsById(inventory.models);
+    const grouped = new Map<string, Array<ModelRouteResponse>>();
+    for (const route of inventory.modelRoutes) {
+        const identity = indexedRouteOwner(route, models);
+        if (identity === null) {
+            continue;
+        }
+        const key = ownerKey(identity);
+        const owned = grouped.get(key);
+        if (owned === undefined) {
+            grouped.set(key, [
+                route,
+            ]);
+        } else {
+            owned.push(route);
+        }
+    }
+    return grouped;
 }
 
 /** Known deleted references stay in the draft and must be explicitly removed. */

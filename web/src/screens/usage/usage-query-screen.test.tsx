@@ -530,6 +530,79 @@ describe("UsageQueryScreen a resolved query superseded before its continuation r
     });
 });
 
+describe("UsageQueryScreen a failure answer racing its cycle's superseding submit", () => {
+    const disposes = createDisposals();
+
+    it("installs nothing from the dead cycle and lets the superseding submit own the screen", async () => {
+        let queryCount = 0;
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {
+            queryCount += 1;
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The initial cycle's listings are held, and two of the three answer,
+        // leaving the providers listing the cycle's one pending call.
+        expect(holder.providers).toHaveLength(1);
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The pending listing rejects with the gateway's failure, and a
+        // submit supersedes its cycle inside the same synchronous block —
+        // before the rejection's diagnosis reaches the screen. The failure
+        // lands on an already-aborted signal: the diagnosis belongs to a
+        // cycle the operator has replaced, so it must install nothing,
+        // exactly as the shared harness's catch orders its abort test ahead
+        // of any diagnosis.
+        const deadListing = holder.providers.at(0);
+
+        if (deadListing === undefined) {
+            throw new Error("No held provider listing to refuse");
+        }
+
+        deadListing.refuse(new Error("listings refused"));
+        buttonWithText("Run query").click();
+        await settle();
+
+        // The dead cycle installed nothing — not its diagnosis, and no
+        // loading state: the superseding submit's skeleton window and busy
+        // state stand over it untouched.
+        expect(document.body.textContent).not.toContain("listings refused");
+        expect(skeleton()).not.toBeNull();
+        expect(buttonWithText("Querying…").disabled).toBe(true);
+        expect(queryCount).toBe(0);
+
+        // The superseding submit's cycle answers whole and owns the screen.
+        await answerListings(holder);
+
+        expect(queryCount).toBe(1);
+        expect(skeleton()).toBeNull();
+        expect(buttonWithText("Run query").disabled).toBe(false);
+        expect(document.body.textContent).toContain("2026-09-01");
+    });
+});
+
 describe("UsageQueryScreen arrival subject", () => {
     const disposes = createDisposals();
 

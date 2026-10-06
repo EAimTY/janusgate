@@ -102,7 +102,7 @@ export const zenAnthropicMessagesPreset: ProviderPreset = {
         inference: {
             url: [
                 zenV1,
-                literal("/v1/messages"),
+                literal("/messages"),
             ],
             headers: [
                 paramRow("x-api-key", [
@@ -146,13 +146,18 @@ export const zenGeminiGenerateContentPreset: ProviderPreset = {
     payload: {
         format: "gemini_generate_content",
         inference: {
+            // Discovery reports bare model ids (`data[].id`), so the
+            // inference URLs spell the `models/` resource segment the
+            // protocol requires: `{zen}/models/{model}:generateContent`.
             url: [
                 zenV1,
+                literal("/models/"),
                 model(),
                 literal(":generateContent"),
             ],
             stream_url: [
                 zenV1,
+                literal("/models/"),
                 model(),
                 literal(":streamGenerateContent?alt=sse"),
             ],

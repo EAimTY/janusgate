@@ -15,15 +15,17 @@ import type {
 import { Button, SelectField, Switch, TextField } from "/src/ui/controls";
 import {
     type AccessChoice,
+    type AccessDecisionWords,
     type AccessInventory,
+    accessDecisionLabel,
     accessLabel,
-    isSameOwner,
+    groupRoutesByOwner,
     missingReferences,
     type Owner,
     ownerChoice,
+    ownerKey,
     resolveAccess,
     routeChoice,
-    routeOwner,
     setOwnerChoice,
     setRouteChoice,
     structuralStatus,
@@ -69,6 +71,15 @@ const defaults: ReadonlyArray<{
         },
     },
 ];
+/** The choice words, read lazily so the catalog in force renders. */
+const decisionWords: AccessDecisionWords = {
+    get allow() {
+        return translation()(($) => $.helpers.apiKeyAccess.allow);
+    },
+    get deny() {
+        return translation()(($) => $.helpers.apiKeyAccess.deny);
+    },
+};
 
 /** One policy view shared by complete-state forms and the read-only key detail. */
 export function ApiKeyAccess(props: {
@@ -97,11 +108,13 @@ export function ApiKeyAccess(props: {
     ]);
     const matches = (value: string): boolean =>
         value.toLowerCase().includes(search().toLowerCase());
+    // One grouping sweep per inventory change (`groupRoutesByOwner` indexes
+    // the model rows once), so the per-owner reads below resolve from the
+    // memo instead of walking routes × models per rendered cell — the
+    // indexed-once standard row-index.ts charters.
+    const routesByOwner = createMemo(() => groupRoutesByOwner(props.inventory));
     const routesFor = (owner: Owner): ReadonlyArray<ModelRouteResponse> =>
-        props.inventory.modelRoutes.filter((route) => {
-            const identity = routeOwner(route, props.inventory);
-            return identity !== null && isSameOwner(identity, owner);
-        });
+        routesByOwner().get(ownerKey(owner)) ?? [];
     const visibleRoutes = (owner: Owner, name: string): ReadonlyArray<ModelRouteResponse> =>
         routesFor(owner).filter(
             (route) =>
@@ -136,9 +149,7 @@ export function ApiKeyAccess(props: {
                 fallback={
                     <p class="text-[13px] text-ink">
                         {translation()(($) => $.controls.defaultModelAccessLabel)}{" "}
-                        {props.policy.default_access === "allow"
-                            ? translation()(($) => $.helpers.apiKeyAccess.allow)
-                            : translation()(($) => $.helpers.apiKeyAccess.deny)}
+                        {accessDecisionLabel(props.policy.default_access, decisionWords)}
                     </p>
                 }
             >
@@ -174,10 +185,7 @@ export function ApiKeyAccess(props: {
                 {(missing) => (
                     <div class="flex flex-wrap items-center justify-between gap-2 text-[13px] text-bad">
                         <span>
-                            {missing.label} ·{" "}
-                            {missing.access === "allow"
-                                ? translation()(($) => $.helpers.apiKeyAccess.allow)
-                                : translation()(($) => $.helpers.apiKeyAccess.deny)}
+                            {missing.label} · {accessDecisionLabel(missing.access, decisionWords)}
                         </span>
                         <Show when={props.onChange}>
                             <Button

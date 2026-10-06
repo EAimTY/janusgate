@@ -133,8 +133,8 @@ function parseCompactionOverrideFacts(
 /**
  * One model row: its never-recycled row identifier, its routing string, its
  * own inputs — the nullable mirror column, the serving switch, the
- * discovery state — and its six capability columns: the three
- * discovery-owned base columns beside the three administrator-owned
+ * discovery state — and its eight capability columns: the four
+ * discovery-owned base columns beside the four administrator-owned
  * override mirrors. The effective verdicts are never on the wire (rule 7).
  */
 function parseModelResponse(value: unknown, context: string): ModelResponse {

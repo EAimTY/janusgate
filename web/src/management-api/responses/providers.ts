@@ -2,11 +2,11 @@ import { ContractViolationError } from "../errors";
 import type { ListProvidersResponse, ProviderEnvelope, ProviderResponse } from "../generated/v0";
 import {
     expectBoolean,
-    expectInteger,
     expectNullableSafeInteger,
     expectNullableString,
     expectRecord,
     expectRowId,
+    expectSafeInteger,
     expectString,
     parseEnvelopeResponse,
     parseListResponse,
@@ -39,9 +39,10 @@ function parseSharedProviderFields(
             Reflect.get(record, "provider_definition_name"),
             `${context}.provider_definition_name`,
         ),
-        provider_definition_version: expectInteger(
+        provider_definition_version: expectSafeInteger(
             Reflect.get(record, "provider_definition_version"),
             `${context}.provider_definition_version`,
+            1,
         ),
         format: UPSTREAM_FORMAT.parse(Reflect.get(record, "format"), `${context}.format`),
         base_url: expectNullableString(Reflect.get(record, "base_url"), `${context}.base_url`),

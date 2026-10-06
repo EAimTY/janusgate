@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { EMPTY_USAGE_FILTER_DRAFT } from "./features/usage/filter";
-import { currentLocation, hrefs, isCurrentAddress, matchAppRoute, routeTitle } from "./router";
+import {
+    currentLocation,
+    hrefs,
+    isCurrentAddress,
+    matchAppRoute,
+    navigate,
+    routeTitle,
+} from "./router";
 import { drainWrites } from "./test-support/management-api";
 
 function match(target: string) {
@@ -572,5 +579,26 @@ describe("currentLocation", () => {
         await traverse("/providers/12");
 
         expect(currentLocation()).toBe(before);
+    });
+
+    it("suppresses a navigate that selects the trailing-slash spelling of the address held", async () => {
+        await traverse("/");
+        await traverse("/providers/12");
+        const before = currentLocation();
+        const historyLength = window.history.length;
+
+        // The same-address authority reads the target through the same
+        // normalization the location read applies: both spellings address one
+        // resource (README §6.2), so the slash-ful target is the address
+        // already held — while a slash-ful different address is not.
+        expect(isCurrentAddress("/providers/12/")).toBe(true);
+        expect(isCurrentAddress("/providers/13/")).toBe(false);
+
+        // Selecting it is not a navigation: no duplicate history entry, no
+        // fresh location object, no keyed remount.
+        navigate("/providers/12/");
+
+        expect(currentLocation()).toBe(before);
+        expect(window.history.length).toBe(historyLength);
     });
 });

@@ -1,7 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal } from "solid-js";
 import { readProviderCatalog } from "/src/features/inventory/read";
-import { isSameModelRow, isSameProviderRow } from "/src/features/inventory/row-equality";
+import { isSameModelRow } from "/src/features/inventory/row-equality";
 import {
     CompactionSupportOverrideFields,
     createCapabilityOverrideDraft,
@@ -15,11 +15,11 @@ import { translation } from "/src/i18n";
 import { deleteModelMessage, editIdentifierMessage } from "/src/i18n/rich";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type { ModelResponse } from "/src/management-api/generated/v0";
 import { hrefs, navigate } from "/src/router";
 import { createDeleteAction, createEditForm } from "/src/screen-state/edit-form";
 import { createScreenRead, readOne, type ScreenRead } from "/src/screen-state/read";
-import { createEditRow, createPinnedRow } from "/src/screen-state/row-state";
+import { createEditRow } from "/src/screen-state/row-state";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
@@ -32,7 +32,6 @@ export function ModelEditScreen(props: {
     readonly api: ManagementApi;
     readonly modelId: number;
 }): JSX.Element {
-    const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
 
     const latestModel = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
@@ -50,7 +49,6 @@ export function ModelEditScreen(props: {
         load: async (signal) => {
             const catalog = await readOne(signal, readProviderCatalog(props.api, null));
 
-            setProviders(catalog.providers);
             setModels(catalog.models);
             edit.reportReloaded();
         },
@@ -60,19 +58,6 @@ export function ModelEditScreen(props: {
     // form is not remounted; a row that genuinely changed on the gateway is
     // held back while the hold stands — and the hold is stated.
     const { row: model, isRowHeld } = edit;
-
-    // The owning provider, kept identity-stable for the same reason: the
-    // listing re-parses on every read, so an unpinned lookup would hand the
-    // form a fresh object each refresh and remount it over the operator's
-    // input even when nothing changed.
-    const latestOwningProvider = createMemo(() => {
-        const current = model();
-
-        return current === null
-            ? null
-            : (providers().find((row) => row.id === current.provider_id) ?? null);
-    });
-    const provider = createPinnedRow(latestOwningProvider, isSameProviderRow);
 
     return (
         <ScreenFrame
@@ -119,7 +104,6 @@ export function ModelEditScreen(props: {
 
                     <ModelSettingsForm
                         api={props.api}
-                        provider={provider()}
                         initialModel={row}
                         read={read}
                         onDirtyChange={edit.reportFormDirty}
@@ -138,7 +122,6 @@ export function ModelEditScreen(props: {
 
 function ModelSettingsForm(props: {
     readonly api: ManagementApi;
-    readonly provider: ProviderResponse | null;
     readonly initialModel: ModelResponse;
     readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;

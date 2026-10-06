@@ -127,7 +127,8 @@ export function createEditRow<TRow>(
  * remounts what is mounted on the row; a changed answer adopts the fresh
  * object; a gone answer passes null through. It is for lookups whose subject
  * is not the form's own row and so cannot hold edits — such as the model
- * edit's owning provider, re-parsed on every read like every listing.
+ * detail's owning provider, the lookup beside the model's own pinned row,
+ * re-parsed on every read like every listing.
  */
 export function createPinnedRow<TRow>(
     latest: Accessor<TRow | null>,
