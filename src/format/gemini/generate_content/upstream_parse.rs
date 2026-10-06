@@ -194,6 +194,15 @@ impl UpstreamParser {
 
         let value = body.payload();
 
+        // The veto covers wherever the document carries the member: the Antigravity envelope
+        // wraps the response — and any failure riding it — one level in, so the wrapped
+        // document's own `error` member aborts too instead of parsing as an empty success
+        // (README §6.7). Where the body carries no envelope, this re-reads the outer body's
+        // already-vetoed `None`.
+        if let Some(error) = &value.error {
+            return Err(error.failure());
+        }
+
         let mut events = Vec::new();
 
         if !self.is_started {
@@ -1050,5 +1059,55 @@ mod tests {
             .expect_err("a non-object error value must fail");
 
         assert_eq!(error.to_string(), "quota exhausted");
+    }
+
+    /// The Antigravity envelope carries the response — and any failure riding it — one level
+    /// in, so the veto covers the wrapped document too: a 2xx body shaped
+    /// `{"response": {"error": ...}}` rejects through the shared rejection instead of parsing
+    /// as an empty success, on the JSON body and the SSE frame alike (README §6.7).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a nested-envelope error parses as a success.
+    #[test]
+    fn embedded_error_inside_the_envelope_uses_shared_rejection() {
+        let body = serde_json::json!({
+            "response": {"error": {"code": 429, "message": "resource exhausted"}},
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the nested envelope error is constructed to be rejected"
+        )]
+        let error = parser
+            .parse_json_response(&crate::format::test_json_body(&(body.clone())))
+            .expect_err("a nested-envelope error must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "resource exhausted (upstream error code: 429)"
+        );
+
+        let frame = SseFrame {
+            data: body.to_string(),
+            event: None,
+        };
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the nested envelope error frame is constructed to be rejected"
+        )]
+        let error = parser
+            .ingest_frame(&frame)
+            .expect_err("a nested-envelope error frame must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "resource exhausted (upstream error code: 429)"
+        );
     }
 }

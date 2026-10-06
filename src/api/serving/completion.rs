@@ -172,10 +172,10 @@ where
     // A request carrying compaction controls or compaction state routes
     // through the compaction pipeline: restore, strategy, and the outcome
     // renderings README §6.8 pins. Every other request runs the ordinary
-    // path unchanged.
-    let request_model = parsed.ir.model.clone();
-
-    let outcome = run_compaction_pipeline::<TFormat>(
+    // path unchanged. The pipeline logs its own final failure through
+    // `render.log_context`, keeping this boundary's one-log-per-failure
+    // contract with the resolved provider named.
+    run_compaction_pipeline::<TFormat>(
         context,
         parsed,
         preparation,
@@ -184,16 +184,7 @@ where
         render,
         operation,
     )
-    .await;
-
-    if let Err(error) = &outcome {
-        log_error(
-            &format!("{} for model `{}`", operation.as_str(), request_model),
-            error,
-        );
-    }
-
-    outcome
+    .await
 }
 
 /// Executes and renders an ordinary operation after quota-aware account selection.
@@ -361,6 +352,33 @@ fn compaction_surface(parsed: &crate::format::ParsedRequest) -> CompactionSurfac
     }
 }
 
+/// Whether the request's compaction control is the threshold-shaped Messages
+/// control: the one control whose ordinary outcome renders through the
+/// threshold-aware Messages renderer. Both consults sit inside the compaction
+/// pipeline, which runs only requests that parsed compaction state —
+/// [`run_completion`] routes every other request to the plain path — so the
+/// predicate answers on that entry precondition instead of re-checking it.
+///
+/// # Panics
+///
+/// Panics if the request carries no compaction state: the pipeline's entry
+/// contract guarantees the state, so a violation is a fatal bug.
+fn is_threshold_control(parsed: &ParsedRequest) -> bool {
+    #[expect(
+        clippy::expect_used,
+        reason = "the compaction pipeline runs only requests carrying compaction state"
+    )]
+    let compaction = parsed
+        .compaction
+        .as_ref()
+        .expect("the compaction pipeline runs only requests carrying compaction state");
+
+    matches!(
+        compaction.control,
+        Some(CompactionControl::MessagesThreshold { .. })
+    )
+}
+
 /// The stable per-request render facts of one compaction pipeline request:
 /// decided once at the surface boundary and consumed unchanged by every
 /// outcome rendering.
@@ -423,6 +441,11 @@ struct CheckpointContinuation {
 /// the executor's artifact ahead of the live continuation events, so a
 /// streaming client waits for the compaction to complete before its answer
 /// streams — the gateway-emulated threshold contract (README §6.8).
+///
+/// The pipeline is the one logging site for its final failure: an error outcome
+/// is logged exactly once through `render.log_context` — the operation, model,
+/// and currently resolved provider, kept current across quota advances — after
+/// the accounting guard is finalized. Callers must not log the error again.
 pub(super) async fn run_compaction_pipeline<TFormat>(
     context: &Context,
     parsed: ParsedRequest,
@@ -474,6 +497,7 @@ where
     if let Err(error) = &outcome {
         let (log_outcome, http_status) = error.accounting();
         guard.finalize(log_outcome, Some(http_status)).await;
+        log_error(&render.log_context, error);
     }
     outcome
 }
@@ -543,12 +567,7 @@ where
                     pipeline,
                     &block,
                     &iterations,
-                    parsed.compaction.as_ref().is_some_and(|compaction| {
-                        matches!(
-                            compaction.control,
-                            Some(CompactionControl::MessagesThreshold { .. })
-                        )
-                    }),
+                    is_threshold_control(parsed),
                     affinity,
                 )
             }
@@ -728,12 +747,7 @@ where
     };
 
     if is_streaming {
-        let is_threshold = parsed.compaction.as_ref().is_some_and(|compaction| {
-            matches!(
-                compaction.control,
-                Some(CompactionControl::MessagesThreshold { .. })
-            )
-        });
+        let is_threshold = is_threshold_control(parsed);
         let renderer: Box<dyn ClientSseRenderer + Send> = if is_threshold {
             Box::new(
                 crate::format::anthropic::messages::SseRenderer::new(

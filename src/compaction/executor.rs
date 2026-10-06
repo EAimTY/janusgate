@@ -53,7 +53,7 @@ use crate::{
         ModelRouting,
         definition::{
             compaction::{CompactionSection, CompactionStrategy, UnsupportedClassifier},
-            template::ParamRow,
+            template::{ParamRow, ValueExpr},
         },
     },
     storage::api_logs::ApiLogDraft,
@@ -147,6 +147,44 @@ fn replay_overlay_headers(
     } else {
         Vec::new()
     }
+}
+
+/// Combines two overlay-header declarations into one row set for one dispatch
+/// (README §5.9: the same headers serve the replay of a returned compaction
+/// block, wherever the block later travels). The merge rule: a row whose name
+/// both sides carry joins its two values into one comma-separated row — the
+/// vocabulary multi-valued headers such as `anthropic-beta` define — keeping
+/// the operation's row in place with its own value first and the replayed
+/// state's value appended; a row only one side carries keeps its own row in
+/// its side's order.
+///
+/// The join is deliberate, not list concatenation: the dispatch replaces
+/// same-named rows by name ([`gateway::overlay_header_rows`]) and each header
+/// insert keeps the last value, so two separate `anthropic-beta` rows would
+/// silently reduce to one beta and drop the other mechanism's replay
+/// requirement. When one side carries several same-named rows, the value
+/// appends to the last such row, matching that last-insert-wins evaluation.
+fn combine_overlay_rows(operation: Vec<ParamRow>, replay: Vec<ParamRow>) -> Vec<ParamRow> {
+    let mut rows = operation;
+
+    for row in replay {
+        match rows
+            .iter_mut()
+            .rev()
+            .find(|existing| existing.name.eq_ignore_ascii_case(&row.name))
+        {
+            Some(existing) => {
+                existing.value.0.push(ValueExpr::Literal {
+                    value: ",".to_string(),
+                });
+                existing.value.0.extend(row.value.0);
+            }
+
+            None => rows.push(row),
+        }
+    }
+
+    rows
 }
 
 /// The definition's effective support of one mechanism under the routing's
@@ -1722,7 +1760,12 @@ async fn messages_threshold_flow(
         return Ok(MessagesOuterOutcome::Ordinary {
             ir: ir.clone(),
             threshold_edits: Some(native::threshold_edits(edits)),
-            overlay_headers: threshold_overlay,
+            // The passthrough dispatch rides the threshold declaration's own
+            // overlay, and a restored block replaying beside the control rides
+            // its source mechanism's overlay on the same request — same-named
+            // rows join, so the restored block never travels under the
+            // threshold beta alone (README §5.9, §6.8).
+            overlay_headers: combine_overlay_rows(threshold_overlay, replay_overlay),
         });
     }
 
@@ -1861,7 +1904,7 @@ mod tests {
         },
         format::ParsedInstructionItem,
         gateway::Error as GatewayError,
-        ir::{IrMessage, IrPart, IrRequest, IrRole, StateItem},
+        ir::{IrMessage, IrPart, IrRequest, IrRole, StateFamily, StateItem},
         provider::{
             Model, ModelRouting, Provider, StoredCredentials,
             definition::{
@@ -2252,6 +2295,7 @@ mod tests {
                 item: serde_json::json!({"type": "reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             }],
             preserved_instructions: Vec::new(),
             overlap_identities: Vec::new(),

@@ -80,17 +80,17 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
 
     tokio::spawn(watcher);
 
-    let database = CONFIG.database.clone();
+    let database_configuration = &CONFIG.database;
 
     #[expect(
         clippy::expect_used,
         reason = "opening database at startup is fatal on failure"
     )]
     let database = Database::open(
-        &database.path,
+        &database_configuration.path,
         Registry::Main,
-        database.max_connections,
-        database.pool_timeout,
+        database_configuration.max_connections,
+        database_configuration.pool_timeout,
     )
     .await
     .expect("failed to open database");

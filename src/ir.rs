@@ -300,16 +300,42 @@ pub(crate) enum IrResponseFormat {
     },
 }
 
+/// The producer family of a state item: the protocol whose upstream renders
+/// the item verbatim (README §6.1). Only the two protocols with a compaction
+/// state channel produce state items; every other surface rejects them all,
+/// so the family has no further variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StateFamily {
+    /// OpenAI Responses: a `compaction` input item or a replayed reasoning
+    /// item carrying `encrypted_content`.
+    Responses,
+
+    /// Anthropic Messages: a `compaction` content block.
+    Messages,
+}
+
 /// A vendor-shaped state item riding the request: opaque native compaction
 /// state or a gateway carrier recognized in the inbound history, preserved at
 /// its history position.
 ///
-/// The Responses upstream render splices items into its input at their
-/// offsets; every other upstream render rejects their presence, because opaque
-/// native state another protocol cannot consume is never silently discarded.
-/// Gateway carriers (`is_gateway`) never reach an upstream at all: they are
-/// decoded and removed before rendering, and their presence here after
-/// preparation is an internal invariant violation.
+/// The upstream render of the item's own family splices it into the request at
+/// its offset; every other upstream render rejects its presence, because
+/// opaque native state another protocol cannot consume is never silently
+/// discarded. Gateway carriers (`is_gateway`) never reach an upstream at all:
+/// they are decoded and removed before rendering, and their presence here
+/// after preparation is an internal invariant violation.
+///
+/// The two carried facts are orthogonal and neither is re-derived from the
+/// item's wire shape:
+///
+/// - `family` records which producer family's wire the item speaks. The parsing codecs stamp their
+///   own protocol — for a gateway carrier too, because a carrier is protocol-shaped, minted in the
+///   client protocol's own carrier form — and the internal producers stamp the wrapped native
+///   window's family, the remap filters carrying the fact through unchanged.
+/// - `is_gateway` marks the item a sealed carrier instead of native state. A render therefore
+///   accepts a state item only when it is native and its family is the render's own; a gateway item
+///   fails as the preparation invariant violation, a foreign-family item as inaccessible state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StateItem {
     /// Number of IR messages rendered before this item in the upstream
@@ -330,6 +356,10 @@ pub(crate) struct StateItem {
     /// order by the codecs, so boundary preparation pairs them by this carried
     /// fact instead of re-parsing the vendor JSON.
     pub(crate) is_compaction: bool,
+
+    /// The producer family whose upstream renders the item verbatim (see
+    /// [`StateFamily`]).
+    pub(crate) family: StateFamily,
 }
 
 /// A fully format-independent completion request.

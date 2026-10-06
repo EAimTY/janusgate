@@ -157,13 +157,27 @@ pub(crate) async fn install_recording_configuration() {
         configuration_body(&crate::CONFIG.database.path, Some(&directory)),
     )
     .unwrap_or_else(|error| panic!("the accounting fixture configuration writes: {error}"));
+    await_reload_applies(|| crate::CONFIG.api_logs.is_some()).await;
+}
+
+/// Awaits the debounced reload the shared fixture watcher applies after the shared
+/// configuration file is rewritten: polls `predicate` every 10 milliseconds until it holds,
+/// within a fifteen-second budget — the reload's 500-millisecond debounce window plus a
+/// generous margin. Every caller states what it is waiting for through `predicate`; the
+/// helper owns the single retry discipline of the rewrite-and-await protocol.
+///
+/// # Panics
+///
+/// Panics when `predicate` never holds within the budget — an unapplied fixture reload is the
+/// test's failure report.
+pub(crate) async fn await_reload_applies(predicate: impl Fn() -> bool) {
     tokio::time::timeout(Duration::from_secs(15), async {
-        while crate::CONFIG.api_logs.is_none() {
+        while !predicate() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap_or_else(|error| panic!("the accounting fixture reload applies: {error}"));
+    .unwrap_or_else(|error| panic!("the fixture configuration reload applies: {error}"));
 }
 
 /// The fixed per-process directory the shared test configuration lives in.

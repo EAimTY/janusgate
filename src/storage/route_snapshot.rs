@@ -1,6 +1,6 @@
 //! Credential-bearing route and physical account snapshots for dispatch selection.
 
-use super::{Error, routing::ModelRoute};
+use super::{Error, numbered_placeholders, routing::ModelRoute};
 use crate::{
     database::{Database, Transaction, Value, params},
     provider::{Model, Provider},
@@ -212,16 +212,9 @@ async fn read_members(
         .map(|row| row.get(0))
         .collect::<Result<_, _>>()?;
 
-    // Both batched queries spell one `?N` placeholder per member: the provider read numbers
-    // the member ids from `?1`, the model read from `?2` behind the shared upstream id.
-    let member_placeholders = |start: usize| {
-        member_ids
-            .iter()
-            .enumerate()
-            .map(|(index, _)| format!("?{}", index + start))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    // Both batched queries spell one `?N` placeholder per member through the storage tier's
+    // shared renderer: the provider read numbers the member ids from `?1`, the model read
+    // from `?2` behind the shared upstream id.
     let member_id_params: Vec<Value> = member_ids.iter().map(|id| Value::from(*id)).collect();
 
     let provider_rows = transaction
@@ -230,7 +223,7 @@ async fn read_members(
                 "SELECT {} {} WHERE p.id IN ({})",
                 super::providers::PROVIDER_COLUMNS,
                 super::providers::PROVIDER_JOINED_FROM,
-                member_placeholders(1)
+                numbered_placeholders(member_ids.len(), 1)
             ),
             member_id_params,
         )
@@ -250,7 +243,7 @@ async fn read_members(
                 "SELECT provider_id, {} FROM models \
              WHERE upstream_id = ?1 AND provider_id IN ({})",
                 super::models::MODEL_COLUMNS,
-                member_placeholders(2)
+                numbered_placeholders(member_ids.len(), 2)
             ),
             model_params,
         )

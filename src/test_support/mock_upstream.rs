@@ -158,19 +158,12 @@ impl MockUpstream {
     /// Panics when the mock cannot bind, accept, or serve its fixture — a
     /// broken mock is the failure report.
     pub(crate) async fn start_recording(responses: Vec<String>) -> (Self, RecordedRequests) {
-        let framed = responses
+        let scripted = responses
             .into_iter()
-            .map(|body| {
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-            })
+            .map(MockAction::respond_json)
             .collect();
 
-        Self::start_serving(canned(framed), None).await
+        Self::start_serving(script(scripted), None).await
     }
 
     /// Serves `responses` round-robin as complete HTTP responses — status line, headers, and
@@ -409,17 +402,17 @@ fn record_request(
     )]
     seen.lock().unwrap().push(format!("{method} {target}"));
 
-    let headers = head
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let (name, value) = line.split_once(':')?;
-
-            Some((name.trim().to_string(), value.trim().to_string()))
-        })
-        .collect();
-
     if let Some(bodies) = bodies {
+        let headers = head
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+
+                Some((name.trim().to_string(), value.trim().to_string()))
+            })
+            .collect();
+
         #[expect(
             clippy::unwrap_used,
             reason = "a mutex poisoned by a panicking sibling request is the failure report"

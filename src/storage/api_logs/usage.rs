@@ -22,7 +22,7 @@ use super::{
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     database::{Row, Value},
-    storage::Error,
+    storage::{Error, numbered_placeholders},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, hash_map::Entry};
@@ -487,10 +487,7 @@ fn push_in_condition<T>(
     list: &Vec1<T>,
     to_value: impl Fn(&T) -> Value,
 ) {
-    let placeholders = (1..=list.len())
-        .map(|index| format!("?{}", values.len() + index))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = numbered_placeholders(list.len(), values.len() + 1);
 
     values.extend(list.iter().map(to_value));
     conditions.push(format!("{column} IN ({placeholders})"));

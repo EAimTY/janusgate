@@ -10,13 +10,14 @@
 //!
 //! The module also carries the machine-consumed-text contract every OAuth response fold applies
 //! before storage (README §7): the fold here shares the validators
-//! [`super::exchange::validate_slot_value`] and [`super::exchange::validate_base_url_value`]
-//! with the exchange and refresh-grant folds in [`super::exchange`], so a value an upstream
-//! response extracts is validated identically whichever stage extracted it. They live in
+//! [`super::exchange::validate_slot_value`], [`super::exchange::validate_token_value`], and
+//! [`super::exchange::validate_base_url_value`] with the exchange and refresh-grant folds in
+//! [`super::exchange`], so a value an upstream response extracts is validated identically
+//! whichever stage extracted it. They live in
 //! [`super::exchange`] — the layer's substrate — because every production fold runs inside the
 //! oauth engine: a provisioning sequence only ever executes under this engine's stages.
 
-use super::exchange::{validate_base_url_value, validate_slot_value};
+use super::exchange::{validate_base_url_value, validate_slot_value, validate_token_value};
 use crate::{
     provider::{
         Error,
@@ -359,7 +360,8 @@ fn apply_extractions(
 }
 
 /// Folds one extracted value into the working state per its target, validating the values that
-/// must stay machine-consumed text (slots and base URLs) at the storage boundary.
+/// must stay machine-consumed text (the stored tokens, slots, and base URLs) at the storage
+/// boundary.
 fn apply_target(
     state: &mut WorkingState,
     target: &ResponseTarget,
@@ -377,13 +379,21 @@ fn apply_target(
         }
 
         ResponseTarget::AccessToken => {
-            state.access_token = Some(extracted.as_text());
+            let value = extracted.as_text();
+
+            validate_token_value("access_token", &value)?;
+
+            state.access_token = Some(value);
 
             Ok(())
         }
 
         ResponseTarget::RefreshToken => {
-            state.refresh_token = Some(extracted.as_text());
+            let value = extracted.as_text();
+
+            validate_token_value("refresh_token", &value)?;
+
+            state.refresh_token = Some(value);
 
             Ok(())
         }
@@ -459,15 +469,17 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// The provisioning fold shares the exchange fold's storage boundary (README §7): slot text
-    /// must be routing-safe machine-consumed text, and a mapped `base_url` must additionally
-    /// carry the non-empty `http(s)://` scheme — an upstream value outside the contracts fails
-    /// the step instead of storing an unusable value, and valid values fold in verbatim.
+    /// must be routing-safe machine-consumed text, a mapped `base_url` must additionally
+    /// carry the non-empty `http(s)://` scheme, and the extracted `access_token`/`refresh_token`
+    /// must be HTTP header-value bytes — the strictest destination both tokens face — so an
+    /// upstream value outside the contracts fails the step instead of storing an unusable
+    /// value, and valid values fold in verbatim.
     ///
     /// # Panics
     ///
     /// Panics when a fixture lands on the wrong side of its check.
     #[test]
-    fn the_provisioning_fold_validates_slot_and_base_url_targets() {
+    fn the_provisioning_fold_validates_machine_consumed_targets() {
         let Err(base_url_error) = fold(
             &mut WorkingState::default(),
             &ResponseTarget::BaseUrl,
@@ -531,6 +543,50 @@ mod tests {
             state.slots.get("stage").map(String::as_str),
             Some("clean-value"),
             "valid slot text stores"
+        );
+
+        let Err(access_token_error) = fold(
+            &mut WorkingState::default(),
+            &ResponseTarget::AccessToken,
+            "tok\nen",
+        ) else {
+            panic!("an access token carrying a control byte must fail the provisioning fold");
+        };
+
+        assert!(
+            access_token_error.to_string().contains("access_token"),
+            "{access_token_error}"
+        );
+
+        let Err(refresh_token_error) = fold(
+            &mut WorkingState::default(),
+            &ResponseTarget::RefreshToken,
+            "tok\nen",
+        ) else {
+            panic!("a refresh token carrying a control byte must fail the provisioning fold");
+        };
+
+        assert!(
+            refresh_token_error.to_string().contains("refresh_token"),
+            "{refresh_token_error}"
+        );
+
+        let mut state = WorkingState::default();
+
+        fold(&mut state, &ResponseTarget::AccessToken, "token-value").unwrap();
+
+        fold(&mut state, &ResponseTarget::RefreshToken, "refresh-value").unwrap();
+
+        assert_eq!(
+            state.access_token.as_deref(),
+            Some("token-value"),
+            "a valid access token stores"
+        );
+
+        assert_eq!(
+            state.refresh_token.as_deref(),
+            Some("refresh-value"),
+            "a valid refresh token stores"
         );
     }
 

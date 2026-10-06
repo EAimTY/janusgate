@@ -100,6 +100,7 @@ async fn outcomes_retain_accounting_until_the_boundary_decides() -> Result<(), B
         item: serde_json::json!({}),
         is_gateway: true,
         is_compaction: false,
+        family: crate::ir::StateFamily::Responses,
     });
     #[expect(clippy::panic, reason = "a wrong outcome is the test failure report")]
     let AttemptOutcome::PredispatchFailure { error, attempt } = execute_attempt(

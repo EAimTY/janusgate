@@ -10,7 +10,7 @@ use crate::{
     },
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
-        IrToolChoice, StateItem, compaction::AutomaticEntry,
+        IrToolChoice, StateFamily, StateItem, compaction::AutomaticEntry,
     },
     vocabulary::ReasoningLevel,
 };
@@ -663,6 +663,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
                         item: compaction::reasoning_item_json(&reasoning),
                         is_gateway: false,
                         is_compaction: false,
+                        family: StateFamily::Responses,
                     });
                 }
             }
@@ -682,6 +683,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
                         item,
                         is_gateway: true,
                         is_compaction: true,
+                        family: StateFamily::Responses,
                     });
 
                     conversion.boundaries.push(CompactionBoundary::Gateway {
@@ -695,6 +697,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
                         item,
                         is_gateway: false,
                         is_compaction: true,
+                        family: StateFamily::Responses,
                     });
 
                     conversion.boundaries.push(CompactionBoundary::Native {

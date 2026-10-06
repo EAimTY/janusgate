@@ -325,14 +325,16 @@ fn transport_failure(detail: String, error: &reqwest::Error) -> ControlFailure {
 
 /// Executes one control request and decodes its 2xx response through the declared encoding.
 ///
-/// The bounded error-body policy is the shared one: a non-2xx body is read through
+/// The bounded-body policy is the shared one: a non-2xx body is read through
 /// [`http_body::read_error_body`] and carried untruncated in [`ControlFailure::Rejected`], so the
-/// token-grant classification can inspect error codes before any excerpt is rendered.
+/// token-grant classification can inspect error codes before any excerpt is rendered, and a 2xx
+/// body is read through [`http_body::read_success_body`] — the provisioning poll loop repeats
+/// this read, so a hostile upstream can never grow gateway memory without limit.
 ///
 /// # Errors
 ///
-/// Returns [`ControlFailure`] for transport failures, non-2xx statuses, and bodies that do not
-/// decode through the declared encoding.
+/// Returns [`ControlFailure`] for transport failures, a success body beyond the bounded size,
+/// non-2xx statuses, and bodies that do not decode through the declared encoding.
 pub(crate) async fn execute(
     client: &Client,
     request: &ControlRequest,
@@ -355,23 +357,41 @@ pub(crate) async fn execute(
         });
     }
 
-    let body = response.text().await.map_err(|error| {
-        transport_failure(format!("{what} response read failed: {error}"), &error)
-    })?;
+    let bytes = http_body::read_success_body(response)
+        .await
+        .map_err(|error| match error {
+            http_body::SuccessBodyError::Oversized => ControlFailure::Unavailable {
+                detail: format!("{what} response body exceeds the success-body bound"),
+            },
 
-    decode_body(&body, encoding, what)
+            // `Read` wraps the reqwest error, so the timeout fact stays decidable here and the
+            // device poller's backoff keeps scheduling body-read timeouts as timeouts.
+            http_body::SuccessBodyError::Read(error) => {
+                transport_failure(format!("{what} response read failed: {error}"), &error)
+            }
+        })?;
+
+    decode_body(&bytes, encoding, what)
 }
 
 /// Decodes the response body through an explicit declared encoding.
 ///
+/// Both control encodings — JSON and form — are UTF-8/ASCII by spec, so the body decodes
+/// strictly as UTF-8: the charset negotiation `text()` would apply has no conformant control
+/// stage, and a lossy rendering would only smuggle a malformed body into the decoders.
+///
 /// # Errors
 ///
-/// Returns [`ControlFailure::Unavailable`] when the body does not decode.
+/// Returns [`ControlFailure::Unavailable`] when the body is not UTF-8 or does not decode.
 fn decode_body(
-    body: &str,
+    body: &[u8],
     encoding: ResponseEncoding,
     what: &str,
 ) -> Result<DecodedBody, ControlFailure> {
+    let body = std::str::from_utf8(body).map_err(|error| ControlFailure::Unavailable {
+        detail: format!("malformed {what} response: {error}"),
+    })?;
+
     match encoding {
         ResponseEncoding::Json => {
             let json = serde_json::from_str(body).map_err(|error| ControlFailure::Unavailable {

@@ -36,17 +36,21 @@ pub(crate) struct UpstreamParser {
     open_steps: Vec<OpenStep>,
 
     /// Whether a live step event delivered content: content-bearing delivery silences the
-    /// terminal frame's steps fallback, so content is never delivered twice. An opening — a bare
-    /// `step.start`, an implicit open, a delta without a payload — carries no content (README
-    /// §6.3's content-bearing-event rule, as the Responses parser gates it) and leaves the
-    /// fallback live.
+    /// terminal frame's text and thought copies, so those kinds are never delivered twice. An
+    /// opening — a bare `step.start`, an implicit open, a delta without a payload — carries no
+    /// content (README §6.3's content-bearing-event rule, as the Responses parser gates it) and
+    /// leaves their recovery live. The terminal frame's `function_call` copies answer to
+    /// [`Self::has_delivered_call`] instead, so a delivered text never silences an undelivered
+    /// call.
     is_step_delivered: bool,
 
     /// Whether a function call was already delivered live: a closing done always carries the
     /// complete call — the streamed argument bytes, or the empty object a zero-argument call's
     /// state assembles to — so the terminal frame's `function_call` copies are skipped and the
     /// call is never delivered a second time under a fresh index. An opening and a payload-less
-    /// delta deliver no call and leave the terminal call recovery live.
+    /// delta deliver no call and leave the terminal call recovery live. The record is the call
+    /// kind's own, independent of [`Self::is_step_delivered`]: delivered text never silences
+    /// an undelivered call, and a delivered call never silences undelivered text.
     has_delivered_call: bool,
 }
 
@@ -886,10 +890,12 @@ impl UpstreamParser {
 
     /// Ingests an `interaction.completed` frame: the terminal status, then the usage report when
     /// the frame's partial resource carries one. The official terminal resource carries its steps
-    /// only when the upstream includes them ("if included in this event"), so when no live
-    /// `step.start`/`step.delta` event delivered content, the resource's final `steps` are the
-    /// exactly-once fallback content source, ingested through the same complete-step path as a
-    /// body's steps; a stream whose live events delivered content ignores them, so content is
+    /// only when the upstream includes them ("if included in this event"), so the resource's final
+    /// `steps` are the exactly-once fallback content source for the kinds no live
+    /// `step.start`/`step.delta` event delivered, ingested through the same complete-step path as
+    /// a body's steps: text and thought steps answer to the live content-delivery record, and
+    /// `function_call` steps to the live call-delivery record alone — a stream whose text was
+    /// delivered live still recovers a call it only opened. Content a live event did deliver is
     /// never delivered twice.
     ///
     /// # Errors
@@ -899,20 +905,26 @@ impl UpstreamParser {
     fn ingest_completed(&mut self, frame: CompletedFrame) -> Result<Vec<IrEvent>, PayloadError> {
         let mut events = self.ensure_open();
 
-        // The decision is made once, before the walk, so every recovered step sees the same
-        // pre-walk delivery state.
-        let steps = if self.is_step_delivered {
-            Vec::new()
-        } else {
-            frame.interaction.steps
-        };
+        // The gates read the delivery records, which the complete-step walk below never
+        // mutates, so every recovered step sees the same pre-walk delivery state.
+        for step in frame.interaction.steps {
+            // Text and thought steps are gated as a kind: any live content-bearing delivery
+            // silences their terminal copies, so no text or thought is ever delivered twice.
+            if matches!(
+                step,
+                CompleteStep::ModelOutput(_) | CompleteStep::Thought(_)
+            ) && self.is_step_delivered
+            {
+                continue;
+            }
 
-        for step in steps {
             // A call delivered live silences the terminal copies of calls: the terminal
             // resource echoes the steps a conformant stream already delivered, and re-ingesting
             // an echoed call would deliver it a second time under a fresh index the
-            // aggregator's per-index dedup cannot catch. Steps of the kinds no live event
-            // delivered stay recoverable.
+            // aggregator's per-index dedup cannot catch. The gate is the call kind's own
+            // delivery record, independent of [`Self::is_step_delivered`]: a call only opened,
+            // or one the stream never surfaced at all, stays recoverable even beside delivered
+            // text.
             if matches!(step, CompleteStep::FunctionCall(_)) && self.has_delivered_call {
                 continue;
             }
@@ -2481,6 +2493,99 @@ mod tests {
             ),
             vec![IrEvent::finish(IrFinishReason::ToolCall)],
             "the streamed calls must not be re-delivered from the terminal echo",
+        );
+    }
+
+    /// A mixed stream — a text delta delivered live beside a call that was only opened (a bare
+    /// `step.start`, no argument deltas, no stop) — recovers the undelivered call exactly once
+    /// from the terminal resource's steps: the live text silences only the terminal text and
+    /// thought copies, while the terminal `function_call` copies answer to the call's own
+    /// delivery record, which a bare opening never satisfies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the opened-but-never-delivered call is dropped, delivered twice, or paired
+    /// with the terminal text copy the live delta already silenced.
+    #[test]
+    fn recovers_an_undelivered_call_beside_a_delivered_text() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_13"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 0, "step": {"type": "model_output"}}),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({"index": 0, "delta": {"type": "text", "text": "hi"}}),
+            ),
+            vec![IrEvent::TextDelta("hi".to_string())],
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 0}),
+        );
+
+        // The call is only opened: no argument delta and no stop ever deliver it.
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 1,
+                "step": {"type": "function_call", "id": "call_7", "name": "search"},
+            }),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({
+                    "interaction": {
+                        "id": "int_13",
+                        "status": "requires_action",
+                        "steps": [
+                            {"type": "model_output", "content": [
+                                {"type": "text", "text": "hi"},
+                            ]},
+                            {"type": "function_call", "id": "call_7", "name": "search",
+                             "arguments": {"q": "hi"}},
+                        ],
+                    },
+                }),
+            ),
+            vec![
+                // The terminal text copy stays silenced by the live delta; the bare call start
+                // consumed stable slot 0 for the opening it minted, so the recovered call
+                // carries the next slot — internal only, as every surface renumbers calls into
+                // its own dense outward numbering.
+                IrEvent::ToolCallDelta {
+                    index: 1,
+                    call_id: Some("call_7".to_string()),
+                    name: Some("search".to_string()),
+                    arguments_delta: r#"{"q":"hi"}"#.to_string(),
+                },
+                IrEvent::ToolCallDone {
+                    index: 1,
+                    call_id: "call_7".to_string(),
+                    name: "search".to_string(),
+                    arguments: r#"{"q":"hi"}"#.to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::finish(IrFinishReason::ToolCall),
+            ],
+            "the opened-but-never-delivered call must be recovered exactly once",
         );
     }
 }

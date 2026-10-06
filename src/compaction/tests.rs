@@ -34,7 +34,7 @@ use crate::{
     format::{
         BoundaryPlacement, CompactionBoundary, NativeArtifact, ParsedCompaction, UpstreamFormat,
     },
-    ir::{IrMessage, IrPart, IrRole},
+    ir::{IrMessage, IrPart, IrRole, StateFamily},
     provider::{
         Model, ModelRouting, Provider, StoredCredentials,
         definition::{DefinitionPayload, ProviderDefinition},
@@ -3981,6 +3981,7 @@ async fn review_retained_native_state_survives_sealing() {
 "encrypted_content":"retained-secret"}),
             is_gateway: false,
             is_compaction: false,
+            family: StateFamily::Responses,
         }],
         ..Default::default()
     };
@@ -4476,6 +4477,138 @@ user_item("fresh")]}),
             .contains("signature")
     );
 }
+/// The native threshold passthrough replays a restored gateway-carrier block
+/// under both betas its wire condition requires: the threshold control's own
+/// overlay and the replayed block's source mechanism's overlay join into one
+/// `anthropic-beta` row instead of collapsing to the threshold beta alone
+/// (README §5.9, §6.8).
+///
+/// # Panics
+///
+/// Panics when the producer scenario or the replay diverges from the contract.
+#[tokio::test]
+async fn threshold_passthrough_replays_a_restored_on_demand_block_under_both_betas() {
+    // The producer: threshold support is unknown, so the gateway-emulated
+    // threshold workflow compacts through the on-demand adapter and seals the
+    // native block into a Messages carrier whose visible content is the fixed
+    // description bound into the signature.
+    let producer = scenario(
+        UpstreamFormat::AnthropicMessages,
+        Some(messages_mechanisms_section("supported", "unknown")),
+        None,
+        None,
+        false,
+        vec![
+            anthropic_message(
+                json!([{"type":"compaction",
+"content":"native summary",
+"signature":"signature"}]),
+                "compaction",
+                20,
+                5,
+            ),
+            anthropic_message(
+                json!([{"type":"text",
+"text":"answer"}]),
+                "end_turn",
+                8,
+                3,
+            ),
+        ],
+    )
+    .await;
+
+    let (status, body) = post_messages(
+        &producer,
+        Some("compact-2026-01-12"),
+        json!({"model":MODEL,
+"max_tokens":100,
+"messages":[{"role":"user",
+"content":"old ".repeat(40000)},
+{"role":"user",
+"content":"pending"}],
+"context_management":{"edits":[{"type":"compact_20260112",
+"trigger":{"type":"input_tokens",
+"value":50000}}]}}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The checkpoint came from the on-demand adapter under the on-demand beta.
+    assert_eq!(
+        recorded(&producer)[0].header("anthropic-beta"),
+        Some("compact-2026-09-04")
+    );
+
+    let block = &body["content"][0];
+
+    assert_eq!(block["type"], "compaction");
+
+    let carrier = block["signature"].as_str().expect("the carrier");
+
+    assert!(carrier.starts_with(sealing::CARRIER_NAMESPACE));
+
+    drop(producer);
+
+    // The consumer: the same producer identity (the first provider row, the
+    // same upstream model, the Messages format) now declares the threshold
+    // mechanism supported, so replaying the carrier beside a fresh threshold
+    // control rides the native threshold passthrough.
+    let consumer = scenario(
+        UpstreamFormat::AnthropicMessages,
+        Some(messages_mechanisms_section("supported", "supported")),
+        None,
+        None,
+        false,
+        vec![anthropic_message(
+            json!([{"type":"text",
+"text":"fresh answer"}]),
+            "end_turn",
+            8,
+            3,
+        )],
+    )
+    .await;
+
+    let (status, body) = post_messages(
+        &consumer,
+        Some("compact-2026-01-12"),
+        json!({"model":MODEL,
+"max_tokens":100,
+"messages":[{"role":"user",
+"content":"earlier"},
+{"role":"assistant",
+"content":[{"type":"compaction",
+"content":crate::format::anthropic::messages::GATEWAY_CARRIER_DESCRIPTION,
+"signature":carrier}]},
+{"role":"user",
+"content":"fresh"}],
+"context_management":{"edits":[{"type":"compact_20260112",
+"trigger":{"type":"input_tokens",
+"value":50000}}]}}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // One dispatch: the passthrough. The restored block rides it, and the
+    // request carries both mechanisms' betas in one joined `anthropic-beta`
+    // row — the threshold control's value first, the replayed block's source
+    // mechanism's value appended.
+    let requests = assert_count(&consumer, 1);
+
+    assert_eq!(
+        requests[0].header("anthropic-beta"),
+        Some("compact-2026-01-12,compact-2026-09-04")
+    );
+
+    assert!(
+        recorded_body(&consumer, 0)
+            .to_string()
+            .contains("native summary")
+    );
+}
 /// Readable export preserves pending text and rejects opaque state and damaged older carriers.
 ///
 /// # Panics
@@ -4646,6 +4779,7 @@ fn readable_export_probes_the_boundary_slot_not_any_same_offset_item() {
 "encrypted_content":"covered reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             },
             crate::ir::StateItem {
                 offset: 1,
@@ -4654,6 +4788,7 @@ fn readable_export_probes_the_boundary_slot_not_any_same_offset_item() {
 "signature":"native"}),
                 is_gateway: false,
                 is_compaction: true,
+                family: StateFamily::Messages,
             },
         ],
         ..Default::default()
@@ -4746,6 +4881,7 @@ fn readable_export_rides_same_offset_fresh_state_at_its_recomputed_offset() {
 "encrypted_content":carrier.clone()}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Responses,
             },
             crate::ir::StateItem {
                 offset: 1,
@@ -4753,6 +4889,7 @@ fn readable_export_rides_same_offset_fresh_state_at_its_recomputed_offset() {
 "encrypted_content":"fresh reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             },
         ],
         ..Default::default()

@@ -6,8 +6,8 @@
 //! lives in the definition the flow references; this engine carries the grant mechanics alone.
 //! The control-request executor runs each stage's request, and the stage's response descriptor
 //! maps its product. The exchange and refresh-grant fold applies the shared machine-consumed
-//! text validators (README §7) before any slot or base-URL value reaches storage, and the
-//! identity-token claim absorption applies the slot validator before a claimed value lands.
+//! text validators (README §7) before any token, slot, or base-URL value reaches storage, and
+//! the identity-token claim absorption applies the slot validator before a claimed value lands.
 //! Those validators live in this module — the layer's substrate every stage above imports
 //! from — so one contract guards one storage boundary whichever stage extracted the value.
 
@@ -226,9 +226,9 @@ pub(super) fn absorb_exchange_slots(
 /// The outcome serializes: the device poller persists a completed exchange as the flow row's
 /// checkpoint the moment it completes, so a restart that recovers the claim resumes from the
 /// checkpoint instead of re-presenting the consumed device code (README §3, §7.2). The values
-/// it carries are already validated — the mapping fold validated the machine-consumed slots and
-/// base URL at the storage boundary — and only the gateway writes the checkpoint, so
-/// deserialization re-imposes no validation.
+/// it carries are already validated — the mapping fold validated the stored tokens, the
+/// machine-consumed slots, and the base URL at the storage boundary — and only the gateway
+/// writes the checkpoint, so deserialization re-imposes no validation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ExchangeOutcome {
     /// The access token, when the response mapped it.
@@ -475,8 +475,8 @@ fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct
 /// Maps one executed token stage's response fields into the outcome per the definition's
 /// targets: the exchange and the refresh grant share the same fold, differing only in the
 /// mapping slice and the stage label the failures carry. The fold is a storage boundary — the
-/// machine-consumed targets (`base_url`, `slot:<name>`) validate through the shared contract
-/// (README §7) before any value reaches it.
+/// machine-consumed targets (`access_token`, `refresh_token`, `base_url`, `slot:<name>`)
+/// validate through the shared contract (README §7) before any value reaches it.
 fn map_exchange_fields(
     decoded: &DecodedBody,
     fields: &[ResponseField],
@@ -492,18 +492,30 @@ fn map_exchange_fields(
 }
 
 /// Folds one extracted exchange value into the outcome per its target, validating the values
-/// that must stay machine-consumed text (slots and base URLs) at the storage boundary (README
-/// §7): a hostile token endpoint fails the stage instead of poisoning the persisted routing
-/// state.
+/// that must stay machine-consumed text (the stored tokens, slots, and base URLs) at the
+/// storage boundary (README §7): a hostile token endpoint fails the stage instead of poisoning
+/// the persisted routing state.
 fn apply_exchange_target(
     outcome: &mut ExchangeOutcome,
     target: &Target,
     extracted: Extracted,
 ) -> Result<(), Error> {
     match target {
-        Target::AccessToken => outcome.access_token = Some(extracted.as_text()),
+        Target::AccessToken => {
+            let value = extracted.as_text();
 
-        Target::RefreshToken => outcome.refresh_token = Some(extracted.as_text()),
+            validate_token_value("access_token", &value)?;
+
+            outcome.access_token = Some(value);
+        }
+
+        Target::RefreshToken => {
+            let value = extracted.as_text();
+
+            validate_token_value("refresh_token", &value)?;
+
+            outcome.refresh_token = Some(value);
+        }
 
         // A present lifetime is consumed here or not at all: a non-integer value is a malformed
         // token response (README §7.2), never a silent fall through to the weaker expiry
@@ -593,6 +605,33 @@ pub(super) fn validate_base_url_value(value: &str) -> Result<(), Error> {
             detail: "the upstream reported a `base_url` value outside printable ASCII without \
                      whitespace or without an `http(s)://` scheme"
                 .to_string(),
+        })
+    }
+}
+
+/// Validates one stored token value — the access or refresh token — against the HTTP
+/// header-value byte contract (README §5.1): the header is the strictest destination either
+/// token may face, and the access token's concrete instance is the `Authorization` header
+/// every dispatch renders it into (the provisioning stage's `secret` references alongside).
+/// The refresh token is never rendered into an `Authorization` header — shipped presets send
+/// it only in the refresh-grant request body, and only the refresh-grant stage may reference
+/// it in headers. A control byte — a pasted trailing newline foremost — would therefore fail the
+/// requests carrying the value at runtime as a transport failure misclassified as upstream
+/// unavailability, the same misclassification the recipe's client-credential rule exists for.
+/// Shared by every OAuth response fold — the exchange and refresh-grant folds here and the
+/// provisioning fold in [`super::provisioning`] — so one contract guards one storage boundary.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] when the value falls outside the header-value byte contract.
+pub(super) fn validate_token_value(target: &str, value: &str) -> Result<(), Error> {
+    if http::HeaderValue::from_str(value).is_ok() {
+        Ok(())
+    } else {
+        Err(Error::Unavailable {
+            detail: format!(
+                "the upstream reported a `{target}` value outside HTTP header-value bytes"
+            ),
         })
     }
 }
@@ -746,15 +785,17 @@ mod tests {
     }
 
     /// The exchange fold is a storage boundary (README §7): a mapped `base_url` must carry the
-    /// non-empty `http(s)://` scheme and mapped slot text must be routing-safe machine-consumed
-    /// text, so a hostile token endpoint fails the stage instead of poisoning the persisted
-    /// routing state; valid values fold in verbatim.
+    /// non-empty `http(s)://` scheme, mapped slot text must be routing-safe machine-consumed
+    /// text, and the mapped `access_token`/`refresh_token` must be HTTP header-value bytes —
+    /// the strictest destination either token may face, the `Authorization` header every
+    /// dispatch renders the access token into — so a hostile token endpoint fails the stage
+    /// instead of poisoning the persisted routing state; valid values fold in verbatim.
     ///
     /// # Panics
     ///
     /// Panics when a fixture lands on the wrong side of its check.
     #[test]
-    fn the_exchange_fold_validates_base_url_and_slot_targets() {
+    fn the_exchange_fold_validates_machine_consumed_targets() {
         #[expect(
             clippy::panic,
             reason = "a scheme-less base_url passing the fold is the failure report"
@@ -834,6 +875,60 @@ mod tests {
             outcome.slots.get("stage").map(String::as_str),
             Some("clean-value"),
             "valid slot text stores"
+        );
+
+        #[expect(
+            clippy::panic,
+            reason = "a control byte in the access token passing the fold is the failure report"
+        )]
+        let Err(access_token_error) = fold_target(&Target::AccessToken, "tok\nen") else {
+            panic!("an access token carrying a control byte must fail the fold");
+        };
+
+        assert!(
+            access_token_error.to_string().contains("access_token"),
+            "{access_token_error}"
+        );
+
+        #[expect(
+            clippy::panic,
+            reason = "a control byte in the refresh token passing the fold is the failure report"
+        )]
+        let Err(refresh_token_error) = fold_target(&Target::RefreshToken, "tok\nen") else {
+            panic!("a refresh token carrying a control byte must fail the fold");
+        };
+
+        assert!(
+            refresh_token_error.to_string().contains("refresh_token"),
+            "{refresh_token_error}"
+        );
+
+        let mut outcome = ExchangeOutcome::default();
+
+        apply_exchange_target(
+            &mut outcome,
+            &Target::AccessToken,
+            Extracted::Text("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig".to_string()),
+        )
+        .unwrap();
+
+        apply_exchange_target(
+            &mut outcome,
+            &Target::RefreshToken,
+            Extracted::Text("refresh-value".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.access_token.as_deref(),
+            Some("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig"),
+            "a valid access token stores"
+        );
+
+        assert_eq!(
+            outcome.refresh_token.as_deref(),
+            Some("refresh-value"),
+            "a valid refresh token stores"
         );
     }
 

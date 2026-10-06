@@ -242,8 +242,8 @@ pub(super) struct CreateModelRequest {
     /// Owning provider row identifier.
     pub provider_id: i64,
 
-    /// Exact upstream model identifier; routing-safe: non-empty printable ASCII without
-    /// whitespace.
+    /// Exact upstream model identifier; routing-safe: nonempty printable ASCII without
+    /// whitespace, `/`, or `:`.
     pub upstream_id: String,
 
     /// Serving state.

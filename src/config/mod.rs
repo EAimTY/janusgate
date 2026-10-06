@@ -356,7 +356,7 @@ fn resync_watches(
             Ok(()) => watched.push(directory),
 
             Err(failure) => {
-                error!(
+                warn!(
                     "failed to watch `{}` for configuration changes: {failure}",
                     directory.display()
                 );

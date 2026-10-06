@@ -440,9 +440,11 @@ impl ApiLogStore {
                 continue;
             }
 
-            // A stale `-wal`/`-shm` sibling — from a crash mid-write, say — must not outlive
-            // its api-log file.
-            for suffix in ["-wal", "-shm"] {
+            // A stale `-wal`/`-tshm` sibling — from a crash mid-write, say — must not outlive
+            // its api-log file. The engine's WAL has no `-shm` file; its cross-process
+            // coordination sidecar is `-tshm`, created only under the experimental
+            // multiprocess-WAL mode this gateway never enables.
+            for suffix in ["-wal", "-tshm"] {
                 let mut sibling = entry.file_name().to_os_string();
                 sibling.push(suffix);
                 let sibling = directory.join(sibling);

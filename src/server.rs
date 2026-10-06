@@ -743,18 +743,7 @@ mod tests {
                 ),
             )?;
 
-            for _ in 0..300 {
-                if crate::CONFIG.api_logs.is_some() {
-                    break;
-                }
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-
-            assert!(
-                crate::CONFIG.api_logs.is_some(),
-                "the api-logs reload must apply within fifteen seconds"
-            );
+            crate::test_support::await_reload_applies(|| crate::CONFIG.api_logs.is_some()).await;
         }
 
         #[expect(
@@ -1074,18 +1063,7 @@ mod tests {
             crate::test_support::configuration_body(&database_path, None),
         )?;
 
-        for _ in 0..300 {
-            if crate::CONFIG.api_logs.is_none() {
-                break;
-            }
-
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        assert!(
-            crate::CONFIG.api_logs.is_none(),
-            "the reload must apply within fifteen seconds"
-        );
+        crate::test_support::await_reload_applies(|| crate::CONFIG.api_logs.is_none()).await;
 
         let baseline = rows.len();
 

@@ -40,7 +40,8 @@ pub(crate) enum Error {
     /// Normal credential renewal failed before the quota read.
     #[error(transparent)]
     Renewal(ProviderError),
-    /// A completed response failed JSON decoding without retaining foreign content.
+    /// A response failed to decode as JSON, or its body exceeded the bounded success-body read
+    /// before ending — either way without retaining foreign content.
     #[error("quota response could not be read as JSON")]
     MalformedResponse,
     /// Atomic extraction failed without carrying foreign values.
@@ -137,22 +138,31 @@ async fn query_fenced(
         }
         .into());
     }
-    let body = response
-        .json::<serde_json::Value>()
+    // The success body rides the shared bounded read (README §4), so a hostile quota upstream
+    // cannot grow gateway memory without limit; the bytes then decode as one JSON document.
+    let bytes = crate::http_body::read_success_body(response)
         .await
-        .map_err(|error| {
-            if error.is_timeout() {
+        .map_err(|error| match error {
+            // An oversized body names no readable observation and, like a decode failure,
+            // retains no foreign content.
+            crate::http_body::SuccessBodyError::Oversized => Error::MalformedResponse,
+
+            // `Read` wraps the reqwest error, so a body-read timeout stays a timeout — the
+            // classification the coordinator throttles on — not a malformed observation.
+            crate::http_body::SuccessBodyError::Read(error) if error.is_timeout() => {
                 Error::Provider(ProviderError::Timeout {
                     detail: "quota response read timed out".into(),
                 })
-            } else if error.is_decode() {
-                Error::MalformedResponse
-            } else {
+            }
+
+            crate::http_body::SuccessBodyError::Read(_) => {
                 Error::Provider(ProviderError::Unavailable {
                     detail: "quota response transport failed".into(),
                 })
             }
         })?;
+    let body = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|_| Error::MalformedResponse)?;
     #[expect(
         clippy::expect_used,
         reason = "the gateway clock must satisfy its timestamp contract"

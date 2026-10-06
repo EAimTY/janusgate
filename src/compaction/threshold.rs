@@ -154,7 +154,7 @@ mod tests {
     };
     use crate::{
         compaction::error::CompactionError,
-        ir::{IrImage, IrMessage, IrPart, IrRequest, IrRole, IrTool, StateItem},
+        ir::{IrImage, IrMessage, IrPart, IrRequest, IrRole, IrTool, StateFamily, StateItem},
     };
     use serde_json::json;
 
@@ -290,6 +290,7 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: false,
                 is_compaction: true,
+                family: StateFamily::Messages,
             }],
         );
 

@@ -380,10 +380,11 @@ async fn handle_update(
     };
 
     // A rebind whose target kind differs from the effective credentials is rejected with the
-    // remedy the request can actually take: a supplied replacement key is always an `api_key`
-    // credential, so its mismatch names an `oauth` target this route can never satisfy — only
-    // an OAuth flow mints those — while a keyless rebind can still carry the replacement
-    // credentials in the request it belongs to.
+    // remedy the target's credential kind admits: an `oauth` target's credentials are only ever
+    // minted by a flow, so the message always names the `oauth:reauthorize` remedy against this
+    // definition — a replacement key, the only credential this route writes, can never satisfy
+    // such a target — while an `api_key` target accepts the replacement static key the request
+    // itself can carry.
     if let Some(target) = &rebind_target {
         let credentials_kind = credentials
             .as_ref()
@@ -391,7 +392,7 @@ async fn handle_update(
             .unwrap_or_else(|| existing.credential_kind());
 
         if credentials_kind != target.credential_kind() {
-            let message = if credentials.is_some() {
+            let message = if target.credential_kind() == CredentialKind::OAuth {
                 format!(
                     "Provider definition `{}` version {} carries `{}` credentials, which only \
                      an OAuth flow mints — reauthorize the provider against this definition \
@@ -457,7 +458,12 @@ async fn handle_update(
 #[cfg(test)]
 mod tests {
     use super::{Error, UpdateProviderRequest, handle_update};
-    use crate::{format::UpstreamFormat, provider::StoredCredentials, storage, test_support};
+    use crate::{
+        format::UpstreamFormat,
+        provider::{Provider, StoredCredentials},
+        storage, test_support,
+    };
+    use std::collections::BTreeMap;
 
     /// Verifies the `providers:update` request's strictness: unknown fields are rejected, the
     /// write-only `api_key` and the absent-keeps rebind fields reject an explicit `null`
@@ -648,16 +654,17 @@ mod tests {
         }
     }
 
-    /// A rebind onto differently-kind credentials branches its rejection on the replacement key:
-    /// with one supplied, the mismatch names an `oauth` target no replacement key can satisfy —
-    /// this route never mints OAuth credentials, so the message states the flow remedy; without
-    /// one, the request must carry the replacement credentials itself.
+    /// A rebind onto differently-kind credentials branches its rejection on the target's
+    /// credential kind: an `oauth` target always names the `oauth:reauthorize` flow remedy —
+    /// for the keyed request and the keyless rebind of a static-key provider alike, since no
+    /// replacement key can satisfy an `oauth` target — while an `api_key` target requires the
+    /// replacement credentials the request itself can carry.
     ///
     /// # Panics
     ///
     /// Panics if the fixtures fail to insert or a rejection diverges.
     #[tokio::test]
-    async fn a_rebind_to_differently_kind_credentials_branches_on_the_replacement_key() {
+    async fn a_rebind_to_differently_kind_credentials_branches_on_the_target_kind() {
         let (database, _guard) = test_support::create_test_database().await;
 
         let definition = test_support::insert_static_key_definition(
@@ -667,7 +674,7 @@ mod tests {
         )
         .await;
 
-        test_support::insert_oauth_definition(&database, "oauth-def").await;
+        let oauth_definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
 
         let provider = test_support::insert_provider(
             &database,
@@ -680,16 +687,32 @@ mod tests {
         )
         .await;
 
-        let request = |api_key: Option<&str>| UpdateProviderRequest {
-            model_prefix: String::new(),
-            provider_id: provider.id,
-            name: provider.name.clone(),
-            is_enabled: true,
-            base_url: None,
-            provider_definition_name: Some("oauth-def".to_string()),
-            provider_definition_version: Some(1),
-            api_key: api_key.map(str::to_string),
-        };
+        let oauth_provider = test_support::insert_provider(
+            &database,
+            &oauth_definition,
+            "oauth-provider",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "token".to_string(),
+                refresh_token: None,
+                slots: BTreeMap::new(),
+                expires_at: None,
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let request =
+            |provider: &Provider, target_name: &str, api_key: Option<&str>| UpdateProviderRequest {
+                model_prefix: String::new(),
+                provider_id: provider.id,
+                name: provider.name.clone(),
+                is_enabled: true,
+                base_url: None,
+                provider_definition_name: Some(target_name.to_string()),
+                provider_definition_version: Some(1),
+                api_key: api_key.map(str::to_string),
+            };
 
         #[expect(
             clippy::unwrap_used,
@@ -700,7 +723,7 @@ mod tests {
             reason = "a divergent rejection variant is the failure report"
         )]
         let Error::CredentialKindMismatch { message } =
-            handle_update(&database, request(Some("sk2")))
+            handle_update(&database, request(&provider, "oauth-def", Some("sk2")))
                 .await
                 .unwrap_err()
         else {
@@ -721,14 +744,37 @@ mod tests {
             reason = "a divergent rejection variant is the failure report"
         )]
         let Error::CredentialKindMismatch { message } =
-            handle_update(&database, request(None)).await.unwrap_err()
+            handle_update(&database, request(&provider, "oauth-def", None))
+                .await
+                .unwrap_err()
         else {
             panic!("a keyless rebind onto an OAuth target renders the credential-kind mismatch");
         };
 
         assert!(
+            message.contains("oauth:reauthorize"),
+            "the keyless rebind onto an OAuth target must state the flow remedy: {message}"
+        );
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::CredentialKindMismatch { message } =
+            handle_update(&database, request(&oauth_provider, "static-def", None))
+                .await
+                .unwrap_err()
+        else {
+            panic!("a keyless rebind onto an api_key target renders the credential-kind mismatch");
+        };
+
+        assert!(
             message.contains("replacement credentials are required"),
-            "the keyless rejection must require replacement credentials: {message}"
+            "the rebind onto an api_key target must require replacement credentials: {message}"
         );
     }
 

@@ -21,7 +21,7 @@ use vec1::Vec1;
 /// Gateway API keys live in the database and are managed through the
 /// management API. Every other field carries the default documented on it and
 /// may be omitted. Unknown fields are strictly rejected.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
     /// Minimum severity a log record must carry to be emitted to standard
@@ -74,7 +74,7 @@ pub(crate) struct Config {
 }
 
 /// Positive pool runtime limits, defaulted as a whole and field by field.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PoolingConfig {
     /// Automatic quota check interval, in whole seconds; defaults to 60.
@@ -107,7 +107,7 @@ impl Default for PoolingConfig {
 /// Deserialization enforces the whole key-set contract and decodes every key to its material, so
 /// an invalid set fails the parse with the offending value's line and column — exactly like any
 /// other schema rejection — and a parsed section is valid by construction.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CompactionConfig {
     /// Configured keys in rotation order: the first entry seals, every entry unseals by its
@@ -122,7 +122,7 @@ pub(crate) struct CompactionConfig {
 pub(super) const SEALING_KEY_BYTES: usize = 32;
 
 /// One configured sealing key: its carrier identifier and its decoded material.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CompactionKeyConfig {
     /// The key's carrier identifier, ridden in the clear by every carrier it
@@ -150,7 +150,7 @@ impl fmt::Debug for CompactionKeyConfig {
 /// Inbound TLS termination schema.
 ///
 /// The presence of this section selects HTTPS for the whole listener.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TlsConfig {
     /// File path of the PEM certificate chain served to TLS clients, leaf
@@ -163,7 +163,7 @@ pub(crate) struct TlsConfig {
 }
 
 /// In-process SQLite database configuration.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DatabaseConfig {
     /// File path to the in-process SQLite database file.
@@ -185,7 +185,7 @@ pub(crate) struct DatabaseConfig {
 }
 
 /// Administrative management API configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManagementApiConfig {
     /// Bearer-less administrative authorization token required by
@@ -219,7 +219,7 @@ impl fmt::Debug for ManagementApiConfig {
 /// [`Default`] is the restrictive policy a section falls back to when its
 /// `cors` object is omitted: [`AllowOrigin`]'s own default allows no
 /// origin, and `allow_private_network` defaults to `false`.
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CorsConfig {
     /// Origin(s) permitted for cross-origin requests.
@@ -240,7 +240,7 @@ pub(crate) struct CorsConfig {
 
 /// Outward client protocol configuration: CORS only. Client authorization
 /// secrets are database-managed API keys, not configuration.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiConfig {
     /// Cross-Origin Resource Sharing (CORS) configuration for `/api/*`.
@@ -253,7 +253,7 @@ pub(crate) struct ApiConfig {
 ///
 /// Unknown fields are strictly rejected. The section itself is the recording switch and carries
 /// no further switch field: present, rows are written; absent, none are.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiLogsConfig {
     /// Directory holding the day-partitioned api-log files (`YYYY-MM-DD.db`). Consumed once at

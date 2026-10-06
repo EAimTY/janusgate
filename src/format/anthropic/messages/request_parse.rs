@@ -16,7 +16,7 @@ use crate::{
     },
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
-        IrToolChoice, StateItem,
+        IrToolChoice, StateFamily, StateItem,
     },
     vocabulary::ReasoningLevel,
 };
@@ -669,6 +669,7 @@ impl CollectedCompaction {
                     item,
                     is_gateway: true,
                     is_compaction: true,
+                    family: StateFamily::Messages,
                 });
             }
 
@@ -690,6 +691,7 @@ impl CollectedCompaction {
                     item,
                     is_gateway: false,
                     is_compaction: true,
+                    family: StateFamily::Messages,
                 });
             }
         }

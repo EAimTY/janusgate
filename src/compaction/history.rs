@@ -25,7 +25,7 @@ use crate::{
     },
     format::{NativeArtifact, ParsedCompaction, UpstreamFormat},
     ids,
-    ir::{IrMessage, IrRequest, IrRole, StateItem},
+    ir::{IrMessage, IrRequest, IrRole, StateFamily, StateItem},
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -294,6 +294,7 @@ pub(crate) fn prepare_for_target<'a>(
                     item: item.item.clone(),
                     is_gateway: false,
                     is_compaction: item.is_compaction,
+                    family: item.family,
                 })
                 .collect();
             return Ok((
@@ -438,6 +439,7 @@ fn restore_gateway_summary(
             item: item.item.clone(),
             is_gateway: false,
             is_compaction: item.is_compaction,
+            family: item.family,
         })
         .collect();
 
@@ -547,6 +549,7 @@ fn restore_native_window(
             item: item.item.clone(),
             is_gateway: false,
             is_compaction: item.is_compaction,
+            family: item.family,
         })
         .collect();
 
@@ -562,6 +565,7 @@ fn restore_native_window(
                 item: item.clone(),
                 is_gateway: false,
                 is_compaction: true,
+                family: StateFamily::Responses,
             }));
         }
 
@@ -574,6 +578,7 @@ fn restore_native_window(
                 item: block.clone(),
                 is_gateway: false,
                 is_compaction: true,
+                family: StateFamily::Messages,
             });
         }
     }
@@ -818,6 +823,7 @@ fn plan_checkpoint(
             item: item.item.clone(),
             is_gateway: false,
             is_compaction: item.is_compaction,
+            family: item.family,
         })
         .collect();
 
@@ -1040,7 +1046,7 @@ mod tests {
             identity::{InstructionRole, hex_sha256},
         },
         format::{CompactionControl, NativeArtifact, ParsedCompaction, UpstreamFormat},
-        ir::{IrMessage, IrPart, IrRequest, IrRole, StateItem},
+        ir::{IrMessage, IrPart, IrRequest, IrRole, StateFamily, StateItem},
     };
     use serde_json::json;
 
@@ -1202,6 +1208,7 @@ mod tests {
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             }],
         };
 
@@ -1339,6 +1346,7 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Responses,
             }],
         );
 
@@ -1347,6 +1355,7 @@ mod tests {
             item: json!({"type": "reasoning"}),
             is_gateway: false,
             is_compaction: false,
+            family: StateFamily::Responses,
         });
 
         let parsed = ParsedCompaction {
@@ -1442,12 +1451,14 @@ mod tests {
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             },
             StateItem {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Responses,
             },
         ]);
 
@@ -1467,12 +1478,14 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Responses,
             },
             StateItem {
                 offset: 1,
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             },
         ]);
 
@@ -1503,6 +1516,7 @@ mod tests {
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             }],
         );
 
@@ -1520,6 +1534,7 @@ mod tests {
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
                 is_compaction: false,
+                family: StateFamily::Responses,
             }],
             window: super::NativeReplayWindow::AnthropicOnDemandBlock {
                 block: json!({
@@ -1588,6 +1603,7 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Responses,
             }],
         );
 
@@ -1619,6 +1635,7 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Responses,
             }],
         );
 
@@ -1720,6 +1737,7 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Messages,
             }],
         );
 
@@ -1748,6 +1766,7 @@ mod tests {
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
                 is_compaction: true,
+                family: StateFamily::Messages,
             }],
         );
 
@@ -1785,12 +1804,14 @@ mod tests {
                     item: json!({"type": "compaction", "content": null}),
                     is_gateway: false,
                     is_compaction: true,
+                    family: StateFamily::Messages,
                 },
                 StateItem {
                     offset: 0,
                     item: json!({"type": "compaction"}),
                     is_gateway: true,
                     is_compaction: true,
+                    family: StateFamily::Messages,
                 },
             ],
         );
@@ -1833,6 +1854,7 @@ mod tests {
                 item: json!({"type": "compaction", "content": null}),
                 is_gateway: false,
                 is_compaction: true,
+                family: StateFamily::Messages,
             }],
         );
 

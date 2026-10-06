@@ -15,7 +15,7 @@ use std::{num::NonZeroI64, sync::LazyLock};
 
 /// Column order of definition selects, consumed positionally by
 /// [`definition_from_row_offset`].
-pub(crate) const DEFINITION_COLUMNS: &str = "name, version, format, inference, credential, \
+const DEFINITION_COLUMNS: &str = "name, version, format, inference, credential, \
      provisioning, discovery, compaction, quota, created_at";
 
 /// The insert column list of a definition version and the `RETURNING` projection the insert

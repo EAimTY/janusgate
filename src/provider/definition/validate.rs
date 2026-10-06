@@ -257,8 +257,34 @@ impl DefinitionPayload {
                 }
             }
 
+            // The slot names this one order-folded claim list writes: a repeat inside it is
+            // the intra-stage duplicate target, while a name another stage also writes stays
+            // allowed through `define_target`.
+            let mut claimed_slots: BTreeSet<String> = BTreeSet::new();
+
             for claim in id_token_claims {
+                // The empty chain addresses the whole JWT payload, whose text read is always
+                // `None`: the claim could never land, the same dead configuration the other
+                // root-addressing vocabularies reject, so the chain must name at least one
+                // member.
+                if claim.claim.0.is_empty() {
+                    return Err(ValidationError::new(
+                        "identity-token claim path must not be empty",
+                    ));
+                }
+
                 validate_path(&claim.claim, "identity-token claim")?;
+
+                // The claims apply in order and a later resolved claim silently overwrites
+                // the earlier one, so the earlier mapping is dead configuration.
+                if !claimed_slots.insert(claim.slot.clone()) {
+                    return Err(ValidationError::new(format!(
+                        "identity-token claims store into the slot `{}` twice: the claims apply \
+                         in order and the earlier one is dead configuration",
+                        claim.slot
+                    )));
+                }
+
                 slots.define_target(&claim.slot, "identity-token claim slot")?;
             }
         }
@@ -3679,6 +3705,78 @@ mod tests {
         });
 
         assert!(outcome.unwrap_err().contains("terminal codes"));
+    }
+
+    /// The identity-token claim list is one order-folded storage sequence (README §5.3): a
+    /// claim path must name a non-empty member chain — the empty chain addresses the whole JWT
+    /// payload, whose text read is always `None`, so the claim could never land — and a slot
+    /// repeated inside the list is the intra-stage duplicate target, the claims applying in
+    /// order and a later resolved claim silently overwriting the earlier one. Distinct
+    /// non-empty claims validate, and a claim slot repeating a slot another stage writes stays
+    /// allowed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a malformed claim list validates or a valid one is rejected.
+    #[test]
+    fn rejects_malformed_identity_token_claim_lists() {
+        let empty_claim_path = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["id_token_claims"] = serde_json::json!([
+              { "claim": [], "slot": "account_id" }
+            ]);
+        });
+
+        assert!(
+            empty_claim_path
+                .unwrap_err()
+                .contains("identity-token claim path must not be empty")
+        );
+
+        let empty_claim_member = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["id_token_claims"] = serde_json::json!([
+              { "claim": [""], "slot": "account_id" }
+            ]);
+        });
+
+        assert!(
+            empty_claim_member
+                .unwrap_err()
+                .contains("identity-token claim path carries an empty member")
+        );
+
+        let repeated_claim_slot = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["id_token_claims"] = serde_json::json!([
+              { "claim": ["sub"], "slot": "account_id" },
+              { "claim": ["email"], "slot": "account_id" }
+            ]);
+        });
+
+        assert!(
+            repeated_claim_slot
+                .unwrap_err()
+                .contains("identity-token claims store into the slot `account_id` twice")
+        );
+
+        // Distinct non-empty claims into distinct slots validate.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["id_token_claims"] = serde_json::json!([
+              { "claim": ["sub"], "slot": "account_id" },
+              { "claim": ["email"], "slot": "email" }
+            ]);
+        })
+        .unwrap();
+
+        // A claim slot repeating a slot another stage writes stays allowed: only the
+        // intra-list repeat is the dead-configuration duplicate. This list's single `["sub"]`
+        // claim does write the Antigravity initial slot `device_id`, but the list carries no
+        // intra-list repeat — no second claim rewrites the slot — which is why the
+        // cross-stage repeat of an initial slot stays allowed.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["id_token_claims"] = serde_json::json!([
+              { "claim": ["sub"], "slot": "device_id" }
+            ]);
+        })
+        .unwrap();
     }
 
     /// RFC 7636 §4.6: a grant that sent a code challenge must present the verifier at the token

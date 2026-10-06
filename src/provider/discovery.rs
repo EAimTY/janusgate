@@ -388,8 +388,9 @@ fn extract_capabilities(
             array_at,
             level_field,
         }) => match array_at.resolve(entry) {
-            // The entry carries no level array: the capability is unknown, not empty.
-            None => None,
+            // An absent path or an explicit null at the addressed member is the unknown state:
+            // the entry carries no level array, not an empty one (README §5.5).
+            None | Some(Json::Null) => None,
 
             Some(value) => {
                 let Some(elements) = value.as_array() else {
@@ -425,7 +426,9 @@ fn extract_capabilities(
             object_at,
             flag_field,
         }) => match object_at.resolve(entry) {
-            None => None,
+            // An absent path or an explicit null at the addressed member is the unknown state,
+            // like the member-array arm (README §5.5).
+            None | Some(Json::Null) => None,
 
             Some(value) => {
                 let Some(members) = value.as_object() else {
@@ -539,6 +542,12 @@ fn extract_token_cap(entry: &Json, path: &Option<ResponsePath>) -> Result<Option
     let Some(value) = path.resolve(entry) else {
         return Ok(None);
     };
+
+    // An explicit null at the addressed member reads as the absent member — the unknown
+    // state, the same fold the level-array and compaction extractions give a nulled slot.
+    if value.is_null() {
+        return Ok(None);
+    }
 
     let Some(cap) = value.as_i64() else {
         return Err(Error::Unavailable {
@@ -1289,6 +1298,119 @@ mod tests {
             };
 
             assert!(matches!(error, Error::Unavailable { .. }), "case {index}");
+
+            mock.shutdown.send(()).ok();
+        }
+    }
+
+    /// An explicit `null` at a configured capability path — the addressed member itself, not an
+    /// intermediate chain position — reads as the absent member (README §5.5): the affected
+    /// capability stays unknown while the refresh succeeds and every other configured fact of
+    /// the entry still extracts, the same fold the compaction extraction gives a nulled slot.
+    /// An upstream that nulls a capability slot for one model must not fail every discovery of
+    /// that provider.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse or a nulled slot fails the refresh or shadows the
+    /// entry's other facts.
+    #[tokio::test]
+    async fn null_capability_slots_read_as_unknown() {
+        let client = crate::http_client::control_plane();
+
+        /// The capability facts one nulled-slot case expects: the nulled fact unknown, the
+        /// entry's other configured facts extracted verbatim.
+        struct ExpectedFacts {
+            thinking_levels: Option<Vec<ReasoningLevel>>,
+            max_input_tokens: Option<i64>,
+            max_output_tokens: Option<i64>,
+        }
+
+        // (capabilities descriptor object, one-entry payload with the addressed slot nulled,
+        // the expected capability facts)
+        let cases: [(Json, Json, ExpectedFacts); 3] = [
+            (
+                json!({
+                    "thinking_levels": {
+                        "shape": "member_array",
+                        "array_at": ["supported_reasoning_levels"],
+                        "level_field": ["effort"]
+                    },
+                    "max_input_tokens": ["context_window"]
+                }),
+                json!({
+                    "slug": "nulled-array",
+                    "supported_reasoning_levels": null,
+                    "context_window": 4096
+                }),
+                ExpectedFacts {
+                    thinking_levels: None,
+                    max_input_tokens: Some(4096),
+                    max_output_tokens: None,
+                },
+            ),
+            (
+                json!({
+                    "thinking_levels": {
+                        "shape": "flagged_keys",
+                        "object_at": ["effort"],
+                        "flag_field": ["supported"]
+                    }
+                }),
+                json!({"slug": "nulled-effort", "effort": null}),
+                ExpectedFacts {
+                    thinking_levels: None,
+                    max_input_tokens: None,
+                    max_output_tokens: None,
+                },
+            ),
+            (
+                json!({
+                    "max_input_tokens": ["context_window"],
+                    "max_output_tokens": ["max_output_tokens"]
+                }),
+                json!({
+                    "slug": "nulled-cap",
+                    "context_window": null,
+                    "max_output_tokens": 1024
+                }),
+                ExpectedFacts {
+                    thinking_levels: None,
+                    max_input_tokens: None,
+                    max_output_tokens: Some(1024),
+                },
+            ),
+        ];
+
+        for (index, (capabilities, entry, expected)) in cases.into_iter().enumerate() {
+            let mock = MockUpstream::start(vec![
+                serde_json::to_string(&json!({"items": [entry]})).unwrap(),
+            ])
+            .await;
+
+            let descriptor = capability_discovery(&capabilities.to_string());
+
+            let models = run_discovery(&client, &descriptor, &discovery_env(&mock.base()))
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("case {index}: the nulled slot must read as unknown, not fail: {error}")
+                });
+
+            #[expect(clippy::expect_used, reason = "the fixture lists exactly one model")]
+            let model = models.first().expect("the entry is listed");
+
+            assert_eq!(
+                model.thinking_levels, expected.thinking_levels,
+                "case {index}"
+            );
+            assert_eq!(
+                model.max_input_tokens, expected.max_input_tokens,
+                "case {index}"
+            );
+            assert_eq!(
+                model.max_output_tokens, expected.max_output_tokens,
+                "case {index}"
+            );
 
             mock.shutdown.send(()).ok();
         }

@@ -15,7 +15,7 @@ use crate::{
     format::RoleRun,
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
-        IrToolChoice,
+        IrToolChoice, StateFamily, StateItem,
     },
     vocabulary::ReasoningLevel,
 };
@@ -429,7 +429,7 @@ fn render_messages(ir: &IrRequest) -> Result<Vec<UpstreamMessage>, InvalidReques
         let mut preceding_state = Vec::new();
 
         while let Some(item) = state_items.next_if(|item| item.offset <= message_index) {
-            preceding_state.push(state_item_block(&item.item)?);
+            preceding_state.push(state_item_block(item)?);
         }
 
         let rendered = render_message(message)?;
@@ -464,7 +464,7 @@ fn render_messages(ir: &IrRequest) -> Result<Vec<UpstreamMessage>, InvalidReques
         let mut trailing = Vec::new();
 
         while let Some(item) = state_items.next_if(|_| true) {
-            trailing.push(state_item_block(&item.item)?);
+            trailing.push(state_item_block(item)?);
         }
 
         runs.push(UpstreamRole::Assistant, trailing);
@@ -477,29 +477,18 @@ fn render_messages(ir: &IrRequest) -> Result<Vec<UpstreamMessage>, InvalidReques
         .collect())
 }
 
-/// Validates one opaque state item as an Anthropic compaction block and
-/// renders it verbatim. Anything else is native state this wire cannot
-/// express — inaccessible, and rejected rather than dropped.
+/// Validates one opaque state item as Messages-family state and renders it
+/// verbatim. A foreign family's item — an id-less native Responses compaction
+/// item included — is native state this wire cannot express — inaccessible,
+/// and rejected rather than dropped. Gateway carriers were rejected as the
+/// preparation invariant violation before any item reached this render.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] for an item the Messages wire cannot express.
-fn state_item_block(item: &Value) -> Result<OutBlock, InvalidRequest> {
-    // The family check reads the member vocabulary: an Anthropic compaction
-    // block carries only the block schema's own members, while a foreign
-    // family's compaction item (the Responses item's `id`/
-    // `encrypted_content`-only shape) carries members this wire never
-    // declares. A vendor block may carry vendor extensions, so the check is
-    // the inverse one: a known foreign-family member marks it foreign.
-    const FOREIGN_MEMBERS: [&str; 1] = ["id"];
-
-    if let Some(object) = item.as_object()
-        && object.get("type").and_then(Value::as_str) == Some("compaction")
-        && FOREIGN_MEMBERS
-            .iter()
-            .all(|member| !object.contains_key(*member))
-    {
-        return Ok(OutBlock::Verbatim(item.clone()));
+fn state_item_block(item: &StateItem) -> Result<OutBlock, InvalidRequest> {
+    if item.family == StateFamily::Messages {
+        return Ok(OutBlock::Verbatim(item.item.clone()));
     }
 
     Err(InvalidRequest::request(
@@ -1299,6 +1288,7 @@ mod tests {
             item: block,
             is_gateway: false,
             is_compaction: true,
+            family: crate::ir::StateFamily::Messages,
         });
 
         let body = upstream_body(&ir, false);
@@ -1341,6 +1331,7 @@ mod tests {
             item: block,
             is_gateway: false,
             is_compaction: true,
+            family: crate::ir::StateFamily::Messages,
         });
 
         let body = upstream_body(&ir, false);
@@ -1358,7 +1349,9 @@ mod tests {
     }
 
     /// A state item the Messages wire cannot express is inaccessible state:
-    /// the render rejects it rather than dropping it.
+    /// the render rejects it rather than dropping it. The id-bearing
+    /// Responses shape is the complement of the id-less one: either family
+    /// fact rejects, the wire shape never decides.
     ///
     /// # Panics
     ///
@@ -1372,11 +1365,39 @@ mod tests {
             item: json!({"type": "compaction", "id": "x", "encrypted_content": "opaque"}),
             is_gateway: false,
             is_compaction: true,
+            family: crate::ir::StateFamily::Responses,
         });
 
         assert!(
             render_request_body(&ir, false).is_err(),
             "a Responses-shaped window cannot splice into the Messages wire"
+        );
+    }
+
+    /// An id-less native Responses compaction item is legal inbound state
+    /// (README §6.5: missing inbound Responses compaction IDs remain absent),
+    /// so its wire shape alone cannot tell the families apart: the item is
+    /// inaccessible state here and must be rejected, never forwarded verbatim
+    /// onto the Messages wire.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a foreign-family item renders.
+    #[test]
+    fn rejects_an_id_less_foreign_family_compaction_item() {
+        let mut ir = conversation_ir();
+
+        ir.state_items.push(crate::ir::StateItem {
+            offset: 0,
+            item: json!({"type": "compaction", "encrypted_content": "opaque"}),
+            is_gateway: false,
+            is_compaction: true,
+            family: crate::ir::StateFamily::Responses,
+        });
+
+        assert!(
+            render_request_body(&ir, false).is_err(),
+            "an id-less Responses compaction item cannot splice into the Messages wire"
         );
     }
 

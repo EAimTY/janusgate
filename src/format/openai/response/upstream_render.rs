@@ -9,7 +9,10 @@ use crate::{
         RenderOption,
         openai::{ToolChoice, render_tool_choice},
     },
-    ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, StateItem},
+    ir::{
+        InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, StateFamily,
+        StateItem,
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -413,11 +416,13 @@ fn render_input_items(ir: &IrRequest) -> Result<Vec<InputItem<'_>>, InvalidReque
 }
 
 /// Splices one opaque state item into the rendered input, rejecting gateway
-/// carriers as [`render_input_items`] documents.
+/// carriers as [`render_input_items`] documents and foreign-family native
+/// state — an Anthropic compaction block included — as inaccessible state no
+/// splice can express.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] for a gateway carrier.
+/// Returns [`InvalidRequest`] for a gateway carrier or a foreign-family item.
 fn push_state_item<'a>(
     input: &mut Vec<InputItem<'a>>,
     state: Option<&'a StateItem>,
@@ -429,6 +434,12 @@ fn push_state_item<'a>(
     if state.is_gateway {
         return Err(InvalidRequest::request(
             "a gateway compaction carrier reached the upstream render without preparation",
+        ));
+    }
+
+    if state.family != StateFamily::Responses {
+        return Err(InvalidRequest::request(
+            "the request carries compaction state the Responses upstream cannot replay",
         ));
     }
 
@@ -504,7 +515,7 @@ mod tests {
     };
     use crate::{
         format::RenderOption,
-        ir::{IrRequest, IrRole, IrToolChoice, StateItem},
+        ir::{IrRequest, IrRole, IrToolChoice, StateFamily, StateItem},
         vocabulary::ReasoningLevel,
     };
     use serde_json::{Value, json};
@@ -656,6 +667,7 @@ mod tests {
             item: json!({"type": "reasoning", "id": text, "encrypted_content": text}),
             is_gateway,
             is_compaction: false,
+            family: StateFamily::Responses,
         };
 
         let ir = ir_with_state_items(vec![
@@ -707,6 +719,7 @@ mod tests {
             item: json!({"type": "compaction", "encrypted_content": "sealed"}),
             is_gateway: true,
             is_compaction: true,
+            family: StateFamily::Responses,
         }]);
 
         #[expect(
@@ -717,6 +730,33 @@ mod tests {
             .expect_err("a gateway carrier must fail the render");
 
         assert!(error.to_string().contains("gateway compaction carrier"));
+    }
+
+    /// A foreign-family native item — an Anthropic compaction block — is
+    /// inaccessible state: the render rejects it instead of splicing it into
+    /// the input array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a foreign-family item renders.
+    #[test]
+    fn a_foreign_family_item_fails_the_render() {
+        let ir = ir_with_state_items(vec![StateItem {
+            offset: 0,
+            item: json!({"type": "compaction", "content": "s", "signature": "sig"}),
+            is_gateway: false,
+            is_compaction: true,
+            family: StateFamily::Messages,
+        }]);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the foreign-family item is constructed to be rejected"
+        )]
+        let error = render_request_body_with_extensions(&ir, false, &[], None)
+            .expect_err("a foreign-family item must fail the render");
+
+        assert!(error.to_string().contains("cannot replay"));
     }
 
     /// The compact upstream body carries exactly the compact shape — model,
@@ -733,6 +773,7 @@ mod tests {
             item: json!({"type": "compaction", "id": "cmp_1", "encrypted_content": "state"}),
             is_gateway: false,
             is_compaction: true,
+            family: StateFamily::Responses,
         }]);
 
         let ir = IrRequest {

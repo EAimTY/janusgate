@@ -45,7 +45,7 @@ impl ReasoningLevel {
     /// surfaces' and the IR's conformance tests pin against it. The serde `lowercase` derive is
     /// the one wire spelling the table does not own — it renames the variant names
     /// independently — and the test below pins the derive against the table.
-    pub(crate) const VOCABULARY: [(ReasoningLevel, &'static str); 7] = [
+    pub(crate) const VOCABULARY: [(ReasoningLevel, &'static str); Self::CANONICAL.len()] = [
         (Self::None, "none"),
         (Self::Minimal, "minimal"),
         (Self::Low, "low"),
@@ -85,54 +85,32 @@ impl ReasoningLevel {
     /// through here, so a stored set is always the canonical form (README §3).
     #[must_use]
     pub(crate) fn canonicalize_levels(levels: impl IntoIterator<Item = Self>) -> Vec<Self> {
-        let mut present = [false; 7];
+        let levels: Vec<Self> = levels.into_iter().collect();
 
-        for level in levels {
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "the canonical index of a vocabulary member is within the table by \
-                          construction"
-            )]
-            {
-                present[Self::canonical_index(level)] = true;
-            }
-        }
-
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "every enumerated index of CANONICAL is within the table by construction"
-        )]
         Self::CANONICAL
             .into_iter()
-            .enumerate()
-            .filter(|(index, _)| present[*index])
-            .map(|(_, level)| level)
+            .filter(|canonical| levels.contains(canonical))
             .collect()
-    }
-
-    /// The level's index in [`Self::CANONICAL`].
-    const fn canonical_index(level: Self) -> usize {
-        match level {
-            Self::None => 0,
-            Self::Minimal => 1,
-            Self::Low => 2,
-            Self::Medium => 3,
-            Self::High => 4,
-            Self::XHigh => 5,
-            Self::Max => 6,
-        }
     }
 
     /// Renders the canonical vocabulary string, written verbatim into the target's own level
     /// parameter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a vocabulary member is missing from [`Self::VOCABULARY`] — impossible by
+    /// construction: the table enumerates the whole closed vocabulary.
     #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         #[expect(
-            clippy::indexing_slicing,
-            reason = "the canonical index of a vocabulary member is within the table by \
-                      construction"
+            clippy::unwrap_used,
+            reason = "every vocabulary member is a row of the table by construction"
         )]
-        Self::VOCABULARY[Self::canonical_index(self)].1
+        Self::VOCABULARY
+            .iter()
+            .find(|(member, _)| *member == self)
+            .map(|(_, spelling)| *spelling)
+            .unwrap()
     }
 }
 

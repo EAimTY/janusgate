@@ -262,14 +262,22 @@ impl SqlExecutor for &mut Transaction {
     }
 }
 
+/// Renders a run of `count` numbered SQL placeholders `?first`, `?{first + 1}`, …, one per
+/// binding: the single spelling the storage tier's dynamic clauses bind their value lists
+/// through, so a placeholder's number is always the position of its value in the binding
+/// order.
+fn numbered_placeholders(count: usize, first: usize) -> String {
+    (0..count)
+        .map(|offset| format!("?{}", first + offset))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Renders the IN-list placeholders of a batched existence probe: one `?N` per probed id,
 /// numbered from one — the single spelling the storage tier's batched reference checks bind
 /// their id lists through.
 fn in_placeholders(count: usize) -> String {
-    (1..=count)
-        .map(|index| format!("?{index}"))
-        .collect::<Vec<_>>()
-        .join(", ")
+    numbered_placeholders(count, 1)
 }
 
 /// The documented wire wording for a rejected provider name (README §7.1), owned once here so the
