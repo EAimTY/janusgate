@@ -219,7 +219,7 @@ export function HomeScreen(props: {
             />
 
             <Show when={read.isFirstRead()}>
-                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                     <For
                         each={[
                             0,

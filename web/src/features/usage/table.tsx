@@ -77,7 +77,7 @@ export function BucketCell(props: { readonly value: string }): JSX.Element {
 export function UsageDaysUtcNote(props: { readonly class: string }): JSX.Element {
     return (
         <p class={`${props.class} text-[12.5px] text-ink-faint`}>
-            {translation()(($) => $.screens.usageTable.daysAreUTCTheGatewaysOwnDayBoundaryMessage)}
+            {translation()(($) => $.helpers.usageTable.daysAreUTCTheGatewaysOwnDayBoundaryMessage)}
         </p>
     );
 }

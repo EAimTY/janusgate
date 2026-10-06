@@ -118,16 +118,16 @@ export function EntityUsageCard(props: {
     return (
         <Card>
             <CardHeader
-                title={translation()(($) => $.screens.usageStats.usage)}
+                title={translation()(($) => $.helpers.usageStats.usage)}
                 description={translation()(
-                    ($) => $.screens.usageStats.requestsAndTokensPerDayNumbersOnlyNeverMessage,
+                    ($) => $.helpers.usageStats.requestsAndTokensPerDayNumbersOnlyNeverMessage,
                 )}
             >
                 <ButtonLink href={hrefs.usageQuery(subject)}>
-                    {translation()(($) => $.screens.usageStats.openAggregates)}
+                    {translation()(($) => $.helpers.usageStats.openAggregates)}
                 </ButtonLink>
                 <ButtonLink href={hrefs.usage(streamDraftOf(subjectFilterFields(subject)))}>
-                    {translation()(($) => $.screens.usageStats.viewRequests)}
+                    {translation()(($) => $.helpers.usageStats.viewRequests)}
                 </ButtonLink>
             </CardHeader>
 
@@ -154,21 +154,21 @@ export function EntityUsageCard(props: {
                         <div class="grid gap-3 sm:grid-cols-3">
                             <Stat
                                 value={formatTokenCount(totals().requests)}
-                                label={translation()(($) => $.screens.usageStats.requests)}
-                                hint={translation()(($) => $.screens.usageStats.dispatchedAllDays)}
+                                label={translation()(($) => $.helpers.usageStats.requests)}
+                                hint={translation()(($) => $.helpers.usageStats.dispatchedAllDays)}
                             />
                             <Stat
                                 value={formatTokenCount(totals().input)}
-                                label={translation()(($) => $.screens.usageStats.inputTokens)}
+                                label={translation()(($) => $.helpers.usageStats.inputTokens)}
                                 hint={translation()(
-                                    ($) => $.screens.usageStats.summedUsageReported,
+                                    ($) => $.helpers.usageStats.summedUsageReported,
                                 )}
                             />
                             <Stat
                                 value={formatTokenCount(totals().output)}
-                                label={translation()(($) => $.screens.usageStats.outputTokens)}
+                                label={translation()(($) => $.helpers.usageStats.outputTokens)}
                                 hint={translation()(
-                                    ($) => $.screens.usageStats.summedUsageReported,
+                                    ($) => $.helpers.usageStats.summedUsageReported,
                                 )}
                             />
                         </div>
@@ -180,18 +180,18 @@ export function EntityUsageCard(props: {
                             <thead>
                                 <tr class="text-ink-dim">
                                     <BucketHeader
-                                        label={translation()(($) => $.screens.usageStats.day)}
+                                        label={translation()(($) => $.helpers.usageStats.day)}
                                     />
                                     <BucketHeader
-                                        label={translation()(($) => $.screens.usageStats.requests)}
+                                        label={translation()(($) => $.helpers.usageStats.requests)}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label={translation()(($) => $.screens.usageStats.input)}
+                                        label={translation()(($) => $.helpers.usageStats.input)}
                                         isNumeric
                                     />
                                     <BucketHeader
-                                        label={translation()(($) => $.screens.usageStats.output)}
+                                        label={translation()(($) => $.helpers.usageStats.output)}
                                         isNumeric
                                     />
                                 </tr>

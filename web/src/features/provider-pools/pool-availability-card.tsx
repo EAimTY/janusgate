@@ -26,10 +26,10 @@ function inventoryLabel(value: InventoryAvailability): string {
 
 function refreshText(refresh: LastRefresh | null): JSX.Element {
     if (refresh === null)
-        return translation()(($) => $.screens.poolAvailabilityCard.readingStoredAvailability);
+        return translation()(($) => $.helpers.poolAvailabilityCard.readingStoredAvailability);
     switch (refresh.type) {
         case "not_observed":
-            return translation()(($) => $.screens.poolAvailabilityCard.quotaNotObserved);
+            return translation()(($) => $.helpers.poolAvailabilityCard.quotaNotObserved);
         case "succeeded":
             return quotaFactMessage("quotaObserved", formatTimestamp(refresh.observed_at));
         case "failed":
@@ -37,10 +37,10 @@ function refreshText(refresh: LastRefresh | null): JSX.Element {
                 reason: translation()(($) => $.quotaMessages.failure[refresh.reason]),
             });
         case "unsupported":
-            return translation()(($) => $.screens.poolAvailabilityCard.quotaReadsUnsupported);
+            return translation()(($) => $.helpers.poolAvailabilityCard.quotaReadsUnsupported);
         case "reset":
             return translation()(
-                ($) => $.screens.poolAvailabilityCard.administratorResetRefreshGraceInstalled,
+                ($) => $.helpers.poolAvailabilityCard.administratorResetRefreshGraceInstalled,
             );
     }
 }
@@ -169,7 +169,7 @@ export function AccountAvailabilityRow(props: {
                         )}
                         {props.isAccountInspection &&
                         availability().inventory === "model_not_selected"
-                            ? translation()(($) => $.screens.poolAvailabilityCard.accountEnabled)
+                            ? translation()(($) => $.helpers.poolAvailabilityCard.accountEnabled)
                             : inventoryLabel(availability().inventory)}
                     </p>
                 </div>
@@ -179,14 +179,14 @@ export function AccountAvailabilityRow(props: {
                             isDisabled={isBusy() || props.provider === undefined}
                             onClick={() => void act(false)}
                         >
-                            {translation()(($) => $.screens.poolAvailabilityCard.refreshQuota)}
+                            {translation()(($) => $.helpers.poolAvailabilityCard.refreshQuota)}
                         </Button>
                     </Show>
                     <Button
                         isDisabled={isBusy() || props.provider === undefined}
                         onClick={() => void act(true)}
                     >
-                        {translation()(($) => $.screens.poolAvailabilityCard.resetRestrictions)}
+                        {translation()(($) => $.helpers.poolAvailabilityCard.resetRestrictions)}
                     </Button>
                 </div>
             </div>
@@ -203,12 +203,12 @@ export function AccountAvailabilityRow(props: {
                 class="mt-3 text-[12.5px] text-ink-dim"
             >
                 {isBusy()
-                    ? translation()(($) => $.screens.poolAvailabilityCard.updatingAvailability)
+                    ? translation()(($) => $.helpers.poolAvailabilityCard.updatingAvailability)
                     : refreshText(availability().refresh)}
             </p>
             <Show when={blocks().length > 0}>
                 <p class="mt-3 font-medium">
-                    {translation()(($) => $.screens.poolAvailabilityCard.quotaExhausted)}
+                    {translation()(($) => $.helpers.poolAvailabilityCard.quotaExhausted)}
                 </p>
                 <ul class="mt-2 space-y-2 text-[12.5px] text-ink-dim">
                     <For each={blocks()}>
@@ -216,7 +216,7 @@ export function AccountAvailabilityRow(props: {
                             <li class="break-words">
                                 <bdi dir="ltr">{block.key.join(" / ")}</bdi> ·{" "}
                                 {block.applies_to.type === "all_models"
-                                    ? translation()(($) => $.screens.poolAvailabilityCard.allModels)
+                                    ? translation()(($) => $.helpers.poolAvailabilityCard.allModels)
                                     : quotaFactMessage(
                                           "models",
                                           block.applies_to.upstream_ids.join(", "),
@@ -224,12 +224,12 @@ export function AccountAvailabilityRow(props: {
                                 ·{" "}
                                 {block.blocked_until === null
                                     ? translation()(
-                                          ($) => $.screens.poolAvailabilityCard.resetUnknown,
+                                          ($) => $.helpers.poolAvailabilityCard.resetUnknown,
                                       )
                                     : block.blocked_until <= nowMicros()
                                       ? translation()(
                                             ($) =>
-                                                $.screens.poolAvailabilityCard
+                                                $.helpers.poolAvailabilityCard
                                                     .resetTimePassedRefreshRequired,
                                         )
                                       : quotaFactMessage(
@@ -245,30 +245,42 @@ export function AccountAvailabilityRow(props: {
     );
 }
 
-/** Stored member observations never trigger upstream quota reads on page load. */
+/**
+ * Stored member observations never trigger upstream quota reads on page load.
+ * `inspectionField`, where a caller offers one, is the caller's
+ * exact-upstream-ID lens over the membership: the caller owns the field and
+ * its state, the card places it between its header and the members that lens
+ * narrows, so the control that picks what the card inspects sits on the
+ * surface that does the inspecting.
+ */
 export function PoolAvailabilityCard(props: {
     readonly api: ManagementApi;
     readonly pool: ProviderPoolResponse;
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
     readonly upstreamId: string | null;
+    /** The exact-upstream-ID inspection field, placed above the member list. */
+    readonly inspectionField?: JSX.Element | undefined;
 }): JSX.Element {
     return (
         <Card>
             <CardHeader
-                title={translation()(($) => $.screens.poolAvailabilityCard.poolAvailability)}
+                title={translation()(($) => $.helpers.poolAvailabilityCard.poolAvailability)}
                 description={translation()(
                     ($) =>
-                        $.screens.poolAvailabilityCard
+                        $.helpers.poolAvailabilityCard
                             .storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage,
                 )}
             />
+            <Show when={props.inspectionField !== undefined}>
+                <div class="mt-4 max-w-2xl">{props.inspectionField}</div>
+            </Show>
             <Show
                 when={props.pool.members.length > 0}
                 fallback={
                     <p class="mt-4 text-ink-dim">
                         {translation()(
-                            ($) => $.screens.poolAvailabilityCard.thisPoolHasNoMembersMessage,
+                            ($) => $.helpers.poolAvailabilityCard.thisPoolHasNoMembersMessage,
                         )}
                     </p>
                 }

@@ -3,8 +3,7 @@ import { Show } from "solid-js";
 import { AppLink } from "/src/ui/app-link";
 import { joinClass } from "/src/ui/attributes";
 import { Glyph, type GlyphName } from "/src/ui/glyph";
-
-export type NoticeTone = "ok" | "warn" | "bad" | "info";
+import type { NoticeTone } from "../screen-state/notices";
 
 const NOTICE_CLASS: Record<NoticeTone, string> = {
     ok: "border-ok/30 bg-ok-soft text-ink",

@@ -1,6 +1,8 @@
+import { appConfig } from "/src/config";
 import type { Connection } from "/src/connection/model";
 import { createConnectionService } from "/src/connection/service";
 import { createManagementApi } from "/src/management-api/client";
+import { deadlineController } from "./deadline";
 
 /** A `Storage` implementation, or `null` when the environment offers none. */
 function isStorage(value: unknown): value is Storage {
@@ -28,27 +30,6 @@ function browserStorage(): Storage | null {
     }
 }
 
-/** How long the connection probe may run before it counts as failed. */
-export const PROBE_TIMEOUT_MS = 15_000;
-
-/**
- * A fresh `AbortController` paired with a deadline of `timeoutMs`. One
- * signal reaches the transport: the deadline forwards its abort — reason
- * included — into the controller, and a direct abort of the controller
- * (an operator cancel, a screen going away) ends the request the same
- * way — whichever fires first. The forwarding is what makes an expiry
- * distinguishable at the transport, the fact the diagnosis's "a deadline
- * is never an answer" rule rests on.
- */
-export function deadlineController(timeoutMs: number): AbortController {
-    const controller = new AbortController();
-    const deadline = AbortSignal.timeout(timeoutMs);
-    deadline.addEventListener("abort", () => {
-        controller.abort(deadline.reason);
-    });
-    return controller;
-}
-
 /**
  * Cancels the connect probe in flight, if one is, through the service's own
  * cancel channel: the attempt ends and the machine records a cancellation —
@@ -68,7 +49,7 @@ export function cancelConnectionProbe(): void {
 export const connectionService = createConnectionService({
     storage: browserStorage(),
     probe: async (connection: Connection, signal: AbortSignal) => {
-        const controller = deadlineController(PROBE_TIMEOUT_MS);
+        const controller = deadlineController(appConfig.connectionProbeTimeoutMs);
         // The service's cancel forwards into the probe's own deadline
         // controller, so the transport call ends on whichever fires first.
         // The deadline's expiry rejects like any transport failure and the

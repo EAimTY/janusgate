@@ -376,48 +376,6 @@ const korean = {
             providers: "공급자",
             models: "모델",
         },
-        oauthFlowView: {
-            flowExpires: "흐름 만료",
-            singleuseStateLabel: "일회용 state:",
-            authorizationURL: "인증 URL",
-            openTheAuthorizationPage: "인증 페이지 열기",
-            theURLAbove: "위의 URL",
-            copyTheURL: "URL 복사",
-            theStateIsSingleuseAndTheFlowExpiresMessage:
-                "state는 한 번만 사용할 수 있고 흐름은 곧 만료되므로, 접근을 승인한 뒤 신속히 마무리하세요.",
-            mostLoginsEndOnAPageThatShowsMessage:
-                "대부분의 로그인은 아무 내용도 표시하지 않는 페이지에서 끝납니다. 이는 정상입니다. 브라우저에 표시된 주소 전체를 붙여넣으세요. 페이지가 열리고 코드가 표시되면 그 코드를 대신 붙여넣으세요.",
-            startOver: "다시 시작",
-            callbackURLOrAuthorizationCode: "콜백 URL 또는 인증 코드",
-            pasteTheWholeCallbackURL: "콜백 URL 전체 붙여넣기",
-            verificationCode: "인증 코드",
-            theVerificationCode: "인증 코드",
-            copyTheCode: "코드 복사",
-            openTheVerificationPage: "인증 페이지 열기",
-            theVerificationURL: "인증 URL",
-            approveTheCodeAtTheVerificationPageThisMessage:
-                "인증 페이지에서 코드를 승인하세요. 이 페이지는 게이트웨이에 결과를 계속 질의하며, 흐름이 완료되는 즉시 다음으로 넘어갑니다.",
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "흐름이 완료될 때까지 이 페이지에 머무르세요 — 콘솔 안에서 이동하면 흐름이 폐기됩니다.",
-        },
-        poolAvailabilityCard: {
-            refreshQuota: "할당량 새로 고침",
-            resetRestrictions: "제한 초기화",
-            quotaExhausted: "할당량 소진",
-            poolAvailability: "계정 풀 가용성",
-            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
-                "저장된 관측값입니다. 새로 고침은 업스트림 계정에 직접 질의합니다. 초기화는 제한을 해제하고 새로 고침 유예를 설정하며, 업스트림 할당량은 초기화하지 않습니다.",
-            thisPoolHasNoMembersMessage: "이 계정 풀에는 구성원이 없습니다.",
-            readingStoredAvailability: "저장된 가용성을 읽는 중…",
-            quotaNotObserved: "할당량이 관측되지 않음",
-            quotaReadsUnsupported: "할당량 조회를 지원하지 않음",
-            administratorResetRefreshGraceInstalled: "관리자가 초기화함, 새로 고침 유예 설정됨",
-            accountEnabled: "계정 사용 설정됨",
-            updatingAvailability: "가용성을 업데이트하는 중…",
-            allModels: "모든 모델",
-            resetUnknown: "초기화 시각 알 수 없음",
-            resetTimePassedRefreshRequired: "초기화 시각이 지남, 새로 고침 필요",
-        },
         providerDetailScreen: {
             provider: "공급자",
             editProvider: "공급자 편집",
@@ -670,25 +628,6 @@ const korean = {
                 "읽기 주기가 스트림을 교체하는 중입니다 — 주기가 끝난 뒤 더 불러오세요.",
             loading: "불러오는 중…",
             loadMore: "더 불러오기",
-        },
-        usageStats: {
-            usage: "사용량",
-            requestsAndTokensPerDayNumbersOnlyNeverMessage:
-                "일별 요청 수와 토큰 수입니다. 숫자만 포함하며 내용은 포함하지 않습니다.",
-            openAggregates: "집계 열기",
-            viewRequests: "요청 보기",
-            requests: "요청",
-            dispatchedAllDays: "전체 기간 발송량",
-            inputTokens: "입력 토큰",
-            summedUsageReported: "사용량이 보고된 항목의 합계",
-            outputTokens: "출력 토큰",
-            day: "일",
-            input: "입력",
-            output: "출력",
-        },
-        usageTable: {
-            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
-                "일자는 UTC 기준 — 게이트웨이 자체의 일자 경계입니다.",
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage:
@@ -976,6 +915,67 @@ const korean = {
             last30Days: "최근 30일",
             invalidStatusList:
                 "HTTP 상태는 200, 429 같은 일반 정수를 쉼표로 구분해서 입력해야 하며, 비워 두면 상태로 좁히지 않습니다.",
+        },
+        oauthFlowView: {
+            flowExpires: "흐름 만료",
+            singleuseStateLabel: "일회용 state:",
+            authorizationURL: "인증 URL",
+            openTheAuthorizationPage: "인증 페이지 열기",
+            theURLAbove: "위의 URL",
+            copyTheURL: "URL 복사",
+            theStateIsSingleuseAndTheFlowExpiresMessage:
+                "state는 한 번만 사용할 수 있고 흐름은 곧 만료되므로, 접근을 승인한 뒤 신속히 마무리하세요.",
+            mostLoginsEndOnAPageThatShowsMessage:
+                "대부분의 로그인은 아무 내용도 표시하지 않는 페이지에서 끝납니다. 이는 정상입니다. 브라우저에 표시된 주소 전체를 붙여넣으세요. 페이지가 열리고 코드가 표시되면 그 코드를 대신 붙여넣으세요.",
+            startOver: "다시 시작",
+            callbackURLOrAuthorizationCode: "콜백 URL 또는 인증 코드",
+            pasteTheWholeCallbackURL: "콜백 URL 전체 붙여넣기",
+            verificationCode: "인증 코드",
+            theVerificationCode: "인증 코드",
+            copyTheCode: "코드 복사",
+            openTheVerificationPage: "인증 페이지 열기",
+            theVerificationURL: "인증 URL",
+            approveTheCodeAtTheVerificationPageThisMessage:
+                "인증 페이지에서 코드를 승인하세요. 이 페이지는 게이트웨이에 결과를 계속 질의하며, 흐름이 완료되는 즉시 다음으로 넘어갑니다.",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "흐름이 완료될 때까지 이 페이지에 머무르세요 — 콘솔 안에서 이동하면 흐름이 폐기됩니다.",
+        },
+        poolAvailabilityCard: {
+            refreshQuota: "할당량 새로 고침",
+            resetRestrictions: "제한 초기화",
+            quotaExhausted: "할당량 소진",
+            poolAvailability: "계정 풀 가용성",
+            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
+                "저장된 관측값입니다. 새로 고침은 업스트림 계정에 직접 질의합니다. 초기화는 제한을 해제하고 새로 고침 유예를 설정하며, 업스트림 할당량은 초기화하지 않습니다.",
+            thisPoolHasNoMembersMessage: "이 계정 풀에는 구성원이 없습니다.",
+            readingStoredAvailability: "저장된 가용성을 읽는 중…",
+            quotaNotObserved: "할당량이 관측되지 않음",
+            quotaReadsUnsupported: "할당량 조회를 지원하지 않음",
+            administratorResetRefreshGraceInstalled: "관리자가 초기화함, 새로 고침 유예 설정됨",
+            accountEnabled: "계정 사용 설정됨",
+            updatingAvailability: "가용성을 업데이트하는 중…",
+            allModels: "모든 모델",
+            resetUnknown: "초기화 시각 알 수 없음",
+            resetTimePassedRefreshRequired: "초기화 시각이 지남, 새로 고침 필요",
+        },
+        usageStats: {
+            usage: "사용량",
+            requestsAndTokensPerDayNumbersOnlyNeverMessage:
+                "일별 요청 수와 토큰 수입니다. 숫자만 포함하며 내용은 포함하지 않습니다.",
+            openAggregates: "집계 열기",
+            viewRequests: "요청 보기",
+            requests: "요청",
+            dispatchedAllDays: "전체 기간 발송량",
+            inputTokens: "입력 토큰",
+            summedUsageReported: "사용량이 보고된 항목의 합계",
+            outputTokens: "출력 토큰",
+            day: "일",
+            input: "입력",
+            output: "출력",
+        },
+        usageTable: {
+            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
+                "일자는 UTC 기준 — 게이트웨이 자체의 일자 경계입니다.",
         },
     },
     validation: {

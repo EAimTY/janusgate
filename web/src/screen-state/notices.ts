@@ -2,9 +2,16 @@ import type { JSX } from "@solidjs/web";
 import type { Accessor } from "solid-js";
 import { createSignal } from "solid-js";
 import type { Diagnosis } from "../management-api/diagnosis";
-import type { NoticeTone } from "../ui/feedback";
 import type { FailureCall } from "./failure";
 import { describeCallFailure } from "./failure";
+
+/**
+ * The tone a stated notice carries — `"ok"`, `"warn"`, `"bad"`, or `"info"`
+ * — the notice's state semantics, chosen where the notice is stated: the
+ * diagnosis of a failure, the verdict of an action's outcome. Presentation
+ * renders it, deriving the notice's classes, glyph, and ARIA role from it.
+ */
+export type NoticeTone = "ok" | "warn" | "bad" | "info";
 
 /** What a screen states about its last read or action, rendered as a `Notice`. */
 export type ScreenNotice = {

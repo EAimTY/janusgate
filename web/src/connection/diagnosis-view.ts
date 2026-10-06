@@ -1,7 +1,8 @@
 import { type Accessor, createEffect, createSignal } from "solid-js";
-import { deadlineController, PROBE_TIMEOUT_MS } from "/src/connection/app-service";
+import { appConfig } from "/src/config";
 import type { ConnectionState } from "/src/connection/state";
 import { type Diagnosis, diagnoseFailure, probeReachability } from "/src/management-api/diagnosis";
+import { deadlineController } from "./deadline";
 
 /** The connection state narrowed to its unconnected landing — `null` while verifying or connected. */
 type UnconnectedLanding = Extract<
@@ -92,7 +93,7 @@ export function createConnectionDiagnosis(props: {
             // that outlives this diagnosis, the aborted probe's "unknown"
             // included.
             let isCurrent = true;
-            const refinementController = deadlineController(PROBE_TIMEOUT_MS);
+            const refinementController = deadlineController(appConfig.connectionProbeTimeoutMs);
 
             void probeReachability(attempted, refinementController.signal).then((reachability) => {
                 if (!isCurrent) {

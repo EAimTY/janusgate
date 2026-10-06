@@ -152,29 +152,29 @@ export function ProviderPoolEditorScreen(props: {
                             keyed
                         >
                             {(saved) => (
-                                <>
-                                    <TextField
-                                        label={translation()(
-                                            ($) =>
-                                                $.screens.providerPoolEditorScreen
-                                                    .inspectUpstreamID,
-                                        )}
-                                        value={inspectionId()}
-                                        onInput={setInspectionId}
-                                        hint={translation()(
-                                            ($) =>
-                                                $.screens.providerPoolEditorScreen
-                                                    .inspectsSavedMembershipLeavingThisEmptyShowsAccountwideMessage,
-                                        )}
-                                    />
-                                    <PoolAvailabilityCard
-                                        api={props.api}
-                                        pool={saved}
-                                        providers={providers()}
-                                        models={models()}
-                                        upstreamId={inspectionId() === "" ? null : inspectionId()}
-                                    />
-                                </>
+                                <PoolAvailabilityCard
+                                    api={props.api}
+                                    pool={saved}
+                                    providers={providers()}
+                                    models={models()}
+                                    upstreamId={inspectionId() === "" ? null : inspectionId()}
+                                    inspectionField={
+                                        <TextField
+                                            label={translation()(
+                                                ($) =>
+                                                    $.screens.providerPoolEditorScreen
+                                                        .inspectUpstreamID,
+                                            )}
+                                            value={inspectionId()}
+                                            onInput={setInspectionId}
+                                            hint={translation()(
+                                                ($) =>
+                                                    $.screens.providerPoolEditorScreen
+                                                        .inspectsSavedMembershipLeavingThisEmptyShowsAccountwideMessage,
+                                            )}
+                                        />
+                                    }
+                                />
                             )}
                         </Show>
                         {pool.id !== null && (

@@ -383,49 +383,6 @@ const spanish = {
             providers: "Proveedores",
             models: "Modelos",
         },
-        oauthFlowView: {
-            flowExpires: "El flujo caduca",
-            singleuseStateLabel: "State de un solo uso:",
-            authorizationURL: "URL de autorización",
-            openTheAuthorizationPage: "Abrir la página de autorización",
-            theURLAbove: "la URL de arriba",
-            copyTheURL: "Copiar la URL",
-            theStateIsSingleuseAndTheFlowExpiresMessage:
-                "El state es de un solo uso y el flujo caduca enseguida; termínalo sin demora tras aprobar el acceso.",
-            mostLoginsEndOnAPageThatShowsMessage:
-                "La mayoría de los inicios de sesión terminan en una página que no muestra nada; es lo esperado. Pega la dirección completa que muestra el navegador. Si se abre una página y muestra un código, pega ese código en su lugar.",
-            startOver: "Empezar de nuevo",
-            callbackURLOrAuthorizationCode: "URL de callback o código de autorización",
-            pasteTheWholeCallbackURL: "Pega la URL de callback completa",
-            verificationCode: "Código de verificación",
-            theVerificationCode: "el código de verificación",
-            copyTheCode: "Copiar el código",
-            openTheVerificationPage: "Abrir la página de verificación",
-            theVerificationURL: "la URL de verificación",
-            approveTheCodeAtTheVerificationPageThisMessage:
-                "Aprueba el código en la página de verificación; esta página sigue preguntando a la pasarela por el resultado y continúa en cuanto el flujo termina.",
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "Permanece en esta página hasta que el flujo termine; navegar dentro de la consola descarta el flujo.",
-        },
-        poolAvailabilityCard: {
-            refreshQuota: "Actualizar cuota",
-            resetRestrictions: "Restablecer restricciones",
-            quotaExhausted: "Cuota agotada",
-            poolAvailability: "Disponibilidad del grupo",
-            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
-                "Observaciones almacenadas. Actualizar consulta explícitamente la cuenta upstream. Restablecer borra las restricciones e instala una prórroga de actualización; no restablece la cuota del upstream.",
-            thisPoolHasNoMembersMessage: "Este grupo no tiene miembros.",
-            readingStoredAvailability: "Leyendo la disponibilidad almacenada…",
-            quotaNotObserved: "Cuota no observada",
-            quotaReadsUnsupported: "Lecturas de cuota no compatibles",
-            administratorResetRefreshGraceInstalled:
-                "Restablecido por el administrador; prórroga de actualización instalada",
-            accountEnabled: "Cuenta activada",
-            updatingAvailability: "Actualizando la disponibilidad…",
-            allModels: "Todos los modelos",
-            resetUnknown: "Reinicio desconocido",
-            resetTimePassedRefreshRequired: "Pasó la hora de reinicio; se requiere actualizar",
-        },
         providerDetailScreen: {
             provider: "Proveedor",
             editProvider: "Editar proveedor",
@@ -679,25 +636,6 @@ const spanish = {
                 "Un ciclo de lectura está reemplazando la transmisión; amplíala cuando termine el ciclo.",
             loading: "Cargando…",
             loadMore: "Cargar más",
-        },
-        usageStats: {
-            usage: "Uso",
-            requestsAndTokensPerDayNumbersOnlyNeverMessage:
-                "Solicitudes y tokens por día: solo números, nunca contenido.",
-            openAggregates: "Abrir agregados",
-            viewRequests: "Ver solicitudes",
-            requests: "Solicitudes",
-            dispatchedAllDays: "Despachadas, todos los días",
-            inputTokens: "Tokens de entrada",
-            summedUsageReported: "Sumados, con uso informado",
-            outputTokens: "Tokens de salida",
-            day: "Día",
-            input: "Entrada",
-            output: "Salida",
-        },
-        usageTable: {
-            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
-                "Los días son en UTC: el propio límite diario de la pasarela.",
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage: "El upstream ya no informa de este modelo.",
@@ -1015,6 +953,68 @@ const spanish = {
             last30Days: "Últimos 30 días",
             invalidStatusList:
                 "Los estados HTTP deben ser enteros sencillos separados por comas, como 200, 429, o quedar en blanco para no filtrar por estado.",
+        },
+        oauthFlowView: {
+            flowExpires: "El flujo caduca",
+            singleuseStateLabel: "State de un solo uso:",
+            authorizationURL: "URL de autorización",
+            openTheAuthorizationPage: "Abrir la página de autorización",
+            theURLAbove: "la URL de arriba",
+            copyTheURL: "Copiar la URL",
+            theStateIsSingleuseAndTheFlowExpiresMessage:
+                "El state es de un solo uso y el flujo caduca enseguida; termínalo sin demora tras aprobar el acceso.",
+            mostLoginsEndOnAPageThatShowsMessage:
+                "La mayoría de los inicios de sesión terminan en una página que no muestra nada; es lo esperado. Pega la dirección completa que muestra el navegador. Si se abre una página y muestra un código, pega ese código en su lugar.",
+            startOver: "Empezar de nuevo",
+            callbackURLOrAuthorizationCode: "URL de callback o código de autorización",
+            pasteTheWholeCallbackURL: "Pega la URL de callback completa",
+            verificationCode: "Código de verificación",
+            theVerificationCode: "el código de verificación",
+            copyTheCode: "Copiar el código",
+            openTheVerificationPage: "Abrir la página de verificación",
+            theVerificationURL: "la URL de verificación",
+            approveTheCodeAtTheVerificationPageThisMessage:
+                "Aprueba el código en la página de verificación; esta página sigue preguntando a la pasarela por el resultado y continúa en cuanto el flujo termina.",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "Permanece en esta página hasta que el flujo termine; navegar dentro de la consola descarta el flujo.",
+        },
+        poolAvailabilityCard: {
+            refreshQuota: "Actualizar cuota",
+            resetRestrictions: "Restablecer restricciones",
+            quotaExhausted: "Cuota agotada",
+            poolAvailability: "Disponibilidad del grupo",
+            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
+                "Observaciones almacenadas. Actualizar consulta explícitamente la cuenta upstream. Restablecer borra las restricciones e instala una prórroga de actualización; no restablece la cuota del upstream.",
+            thisPoolHasNoMembersMessage: "Este grupo no tiene miembros.",
+            readingStoredAvailability: "Leyendo la disponibilidad almacenada…",
+            quotaNotObserved: "Cuota no observada",
+            quotaReadsUnsupported: "Lecturas de cuota no compatibles",
+            administratorResetRefreshGraceInstalled:
+                "Restablecido por el administrador; prórroga de actualización instalada",
+            accountEnabled: "Cuenta activada",
+            updatingAvailability: "Actualizando la disponibilidad…",
+            allModels: "Todos los modelos",
+            resetUnknown: "Reinicio desconocido",
+            resetTimePassedRefreshRequired: "Pasó la hora de reinicio; se requiere actualizar",
+        },
+        usageStats: {
+            usage: "Uso",
+            requestsAndTokensPerDayNumbersOnlyNeverMessage:
+                "Solicitudes y tokens por día: solo números, nunca contenido.",
+            openAggregates: "Abrir agregados",
+            viewRequests: "Ver solicitudes",
+            requests: "Solicitudes",
+            dispatchedAllDays: "Despachadas, todos los días",
+            inputTokens: "Tokens de entrada",
+            summedUsageReported: "Sumados, con uso informado",
+            outputTokens: "Tokens de salida",
+            day: "Día",
+            input: "Entrada",
+            output: "Salida",
+        },
+        usageTable: {
+            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
+                "Los días son en UTC: el propio límite diario de la pasarela.",
         },
     },
     validation: {

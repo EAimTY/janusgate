@@ -20,7 +20,7 @@ import type { OauthFlow } from "./oauth-flow";
 const navigationWarning = (): string =>
     translation()(
         ($) =>
-            $.screens.oauthFlowView
+            $.helpers.oauthFlowView
                 .stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe,
     );
 
@@ -37,7 +37,7 @@ function FlowFacts(props: { readonly flow: StartProviderOauthResponse }): JSX.El
             <dl class="flex flex-wrap gap-x-8 gap-y-3">
                 <div>
                     <dt class="text-[12.5px] font-medium text-ink-dim">
-                        {translation()(($) => $.screens.oauthFlowView.flowExpires)}
+                        {translation()(($) => $.helpers.oauthFlowView.flowExpires)}
                     </dt>
                     <dd class="tnum mt-1 text-ink-dim">
                         <bdi dir="ltr">{formatTimestamp(props.flow.expires_at)}</bdi>
@@ -45,7 +45,7 @@ function FlowFacts(props: { readonly flow: StartProviderOauthResponse }): JSX.El
                 </div>
             </dl>
             <p class="text-[12px] text-ink-faint">
-                {translation()(($) => $.screens.oauthFlowView.singleuseStateLabel)}
+                {translation()(($) => $.helpers.oauthFlowView.singleuseStateLabel)}
                 <bdi
                     dir="ltr"
                     class="tnum break-all"
@@ -78,7 +78,7 @@ export function AuthorizeStep(props: {
         <div class="flex flex-col gap-4">
             <div class="rounded-lg border border-rule bg-canvas px-3 py-2.5 dark:bg-muted">
                 <p class="text-[12.5px] font-medium text-ink-dim">
-                    {translation()(($) => $.screens.oauthFlowView.authorizationURL)}
+                    {translation()(($) => $.helpers.oauthFlowView.authorizationURL)}
                 </p>
                 <p
                     dir="ltr"
@@ -98,12 +98,12 @@ export function AuthorizeStep(props: {
                     class={buttonClass("primary")}
                 >
                     <Glyph name="out" />
-                    {translation()(($) => $.screens.oauthFlowView.openTheAuthorizationPage)}
+                    {translation()(($) => $.helpers.oauthFlowView.openTheAuthorizationPage)}
                 </a>
                 <CopyButton
                     value={props.flow.authorize_url}
-                    subject={translation()(($) => $.screens.oauthFlowView.theURLAbove)}
-                    label={translation()(($) => $.screens.oauthFlowView.copyTheURL)}
+                    subject={translation()(($) => $.helpers.oauthFlowView.theURLAbove)}
+                    label={translation()(($) => $.helpers.oauthFlowView.copyTheURL)}
                 />
             </div>
 
@@ -111,13 +111,13 @@ export function AuthorizeStep(props: {
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
                 {translation()(
-                    ($) => $.screens.oauthFlowView.theStateIsSingleuseAndTheFlowExpiresMessage,
+                    ($) => $.helpers.oauthFlowView.theStateIsSingleuseAndTheFlowExpiresMessage,
                 )}
                 {navigationWarning()}
             </p>
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
-                {translation()(($) => $.screens.oauthFlowView.mostLoginsEndOnAPageThatShowsMessage)}
+                {translation()(($) => $.helpers.oauthFlowView.mostLoginsEndOnAPageThatShowsMessage)}
             </p>
 
             <div class="h-px w-full bg-rule" />
@@ -129,7 +129,7 @@ export function AuthorizeStep(props: {
                     tone="ghost"
                     onClick={props.onStartOver}
                 >
-                    {translation()(($) => $.screens.oauthFlowView.startOver)}
+                    {translation()(($) => $.helpers.oauthFlowView.startOver)}
                 </Button>
             </div>
         </div>
@@ -185,12 +185,12 @@ export function CompletionForm(props: {
             >
                 <TextField
                     label={translation()(
-                        ($) => $.screens.oauthFlowView.callbackURLOrAuthorizationCode,
+                        ($) => $.helpers.oauthFlowView.callbackURLOrAuthorizationCode,
                     )}
                     value={props.flow.code()}
                     onInput={props.flow.setCode}
                     placeholder={translation()(
-                        ($) => $.screens.oauthFlowView.pasteTheWholeCallbackURL,
+                        ($) => $.helpers.oauthFlowView.pasteTheWholeCallbackURL,
                     )}
                     isDisabled={props.flow.isCompleting()}
                     error={props.flow.pasteError()}
@@ -268,14 +268,14 @@ export function DeviceStep(props: {
         <div class="flex flex-col gap-4">
             <div class="rounded-lg border border-rule bg-canvas px-3 py-2.5 dark:bg-muted">
                 <p class="text-[12.5px] font-medium text-ink-dim">
-                    {translation()(($) => $.screens.oauthFlowView.verificationCode)}
+                    {translation()(($) => $.helpers.oauthFlowView.verificationCode)}
                 </p>
                 <p class="tnum mt-1.5 flex items-center gap-3 text-[17px] font-semibold tracking-wide">
                     <bdi dir="ltr">{props.flow.user_code}</bdi>
                     <CopyButton
                         value={props.flow.user_code}
-                        subject={translation()(($) => $.screens.oauthFlowView.theVerificationCode)}
-                        label={translation()(($) => $.screens.oauthFlowView.copyTheCode)}
+                        subject={translation()(($) => $.helpers.oauthFlowView.theVerificationCode)}
+                        label={translation()(($) => $.helpers.oauthFlowView.copyTheCode)}
                     />
                 </p>
             </div>
@@ -289,12 +289,12 @@ export function DeviceStep(props: {
                         class={buttonClass("primary")}
                     >
                         <Glyph name="out" />
-                        {translation()(($) => $.screens.oauthFlowView.openTheVerificationPage)}
+                        {translation()(($) => $.helpers.oauthFlowView.openTheVerificationPage)}
                     </a>
                     <CopyButton
                         value={completeUri()}
-                        subject={translation()(($) => $.screens.oauthFlowView.theVerificationURL)}
-                        label={translation()(($) => $.screens.oauthFlowView.copyTheURL)}
+                        subject={translation()(($) => $.helpers.oauthFlowView.theVerificationURL)}
+                        label={translation()(($) => $.helpers.oauthFlowView.copyTheURL)}
                     />
                 </div>
             </Show>
@@ -303,7 +303,7 @@ export function DeviceStep(props: {
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
                 {translation()(
-                    ($) => $.screens.oauthFlowView.approveTheCodeAtTheVerificationPageThisMessage,
+                    ($) => $.helpers.oauthFlowView.approveTheCodeAtTheVerificationPageThisMessage,
                 )}
                 {navigationWarning()}
             </p>
@@ -318,7 +318,7 @@ export function DeviceStep(props: {
                         props.onStartOver();
                     }}
                 >
-                    {translation()(($) => $.screens.oauthFlowView.startOver)}
+                    {translation()(($) => $.helpers.oauthFlowView.startOver)}
                 </Button>
             </div>
         </div>

@@ -381,49 +381,6 @@ const japanese = {
             providers: "プロバイダー",
             models: "モデル",
         },
-        oauthFlowView: {
-            flowExpires: "フローの有効期限",
-            singleuseStateLabel: "使い切り state：",
-            authorizationURL: "認可 URL",
-            openTheAuthorizationPage: "認可ページを開く",
-            theURLAbove: "上記の URL",
-            copyTheURL: "URL をコピー",
-            theStateIsSingleuseAndTheFlowExpiresMessage:
-                "state は使い切りで、フローの有効期限は短めです。アクセスを承認したら、速やかに完了してください。",
-            mostLoginsEndOnAPageThatShowsMessage:
-                "ほとんどのログインは、何も表示しないページで終わりますが、これは想定どおりです。ブラウザーに表示されたアドレス全体を貼り付けてください。コードを表示するページが開いた場合は、代わりにそのコードを貼り付けます。",
-            startOver: "やり直す",
-            callbackURLOrAuthorizationCode: "コールバック URL または認可コード",
-            pasteTheWholeCallbackURL: "コールバック URL を丸ごと貼り付け",
-            verificationCode: "確認コード",
-            theVerificationCode: "確認コード",
-            copyTheCode: "コードをコピー",
-            openTheVerificationPage: "確認ページを開く",
-            theVerificationURL: "確認 URL",
-            approveTheCodeAtTheVerificationPageThisMessage:
-                "確認ページでコードを承認してください。このページはゲートウェイに結果を問い合わせ続け、フローが完了するとすぐに先へ進みます。",
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "フローが完了するまで、このページに留まってください。コンソール内を移動すると、フローは破棄されます。",
-        },
-        poolAvailabilityCard: {
-            refreshQuota: "割り当てを更新",
-            resetRestrictions: "制限をリセット",
-            quotaExhausted: "割り当てを使い切りました",
-            poolAvailability: "アカウントプールの可用性",
-            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
-                "保存済みの観測結果です。更新すると、上流アカウントに明示的に照会します。リセットは制限を解除して更新の猶予を設定しますが、上流の割り当てはリセットしません。",
-            thisPoolHasNoMembersMessage: "このアカウントプールにはメンバーがいません。",
-            readingStoredAvailability: "保存済みの可用性を読み取っています…",
-            quotaNotObserved: "割り当ては未観測",
-            quotaReadsUnsupported: "割り当ての読み取りに非対応",
-            administratorResetRefreshGraceInstalled:
-                "管理者がリセット済み。更新の猶予を設定しました",
-            accountEnabled: "アカウントは有効です",
-            updatingAvailability: "可用性を更新しています…",
-            allModels: "すべてのモデル",
-            resetUnknown: "リセット時刻は不明",
-            resetTimePassedRefreshRequired: "リセット時刻を過ぎました。更新が必要です",
-        },
         providerDetailScreen: {
             provider: "プロバイダー",
             editProvider: "プロバイダーを編集",
@@ -676,25 +633,6 @@ const japanese = {
                 "読み取りサイクルがストリームを置き換えています。サイクルが完了してから、続きを読み込んでください。",
             loading: "読み込んでいます…",
             loadMore: "さらに読み込む",
-        },
-        usageStats: {
-            usage: "使用量",
-            requestsAndTokensPerDayNumbersOnlyNeverMessage:
-                "日別のリクエスト数とトークン数です。数値のみで、内容は含みません。",
-            openAggregates: "集計を開く",
-            viewRequests: "リクエストを表示",
-            requests: "リクエスト",
-            dispatchedAllDays: "送信済み（全日）",
-            inputTokens: "入力トークン",
-            summedUsageReported: "合計（使用量の報告があったもの）",
-            outputTokens: "出力トークン",
-            day: "日付",
-            input: "入力",
-            output: "出力",
-        },
-        usageTable: {
-            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
-                "日付は UTC、すなわちゲートウェイ自身の日付境界です。",
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage: "上流はこのモデルを報告しなくなりました。",
@@ -984,6 +922,68 @@ const japanese = {
             last30Days: "直近 30 日間",
             invalidStatusList:
                 "HTTP ステータスには、200, 429 のようなプレーンな整数をカンマ区切りで指定してください。ステータスで絞り込まない場合は空欄にします。",
+        },
+        oauthFlowView: {
+            flowExpires: "フローの有効期限",
+            singleuseStateLabel: "使い切り state：",
+            authorizationURL: "認可 URL",
+            openTheAuthorizationPage: "認可ページを開く",
+            theURLAbove: "上記の URL",
+            copyTheURL: "URL をコピー",
+            theStateIsSingleuseAndTheFlowExpiresMessage:
+                "state は使い切りで、フローの有効期限は短めです。アクセスを承認したら、速やかに完了してください。",
+            mostLoginsEndOnAPageThatShowsMessage:
+                "ほとんどのログインは、何も表示しないページで終わりますが、これは想定どおりです。ブラウザーに表示されたアドレス全体を貼り付けてください。コードを表示するページが開いた場合は、代わりにそのコードを貼り付けます。",
+            startOver: "やり直す",
+            callbackURLOrAuthorizationCode: "コールバック URL または認可コード",
+            pasteTheWholeCallbackURL: "コールバック URL を丸ごと貼り付け",
+            verificationCode: "確認コード",
+            theVerificationCode: "確認コード",
+            copyTheCode: "コードをコピー",
+            openTheVerificationPage: "確認ページを開く",
+            theVerificationURL: "確認 URL",
+            approveTheCodeAtTheVerificationPageThisMessage:
+                "確認ページでコードを承認してください。このページはゲートウェイに結果を問い合わせ続け、フローが完了するとすぐに先へ進みます。",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "フローが完了するまで、このページに留まってください。コンソール内を移動すると、フローは破棄されます。",
+        },
+        poolAvailabilityCard: {
+            refreshQuota: "割り当てを更新",
+            resetRestrictions: "制限をリセット",
+            quotaExhausted: "割り当てを使い切りました",
+            poolAvailability: "アカウントプールの可用性",
+            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
+                "保存済みの観測結果です。更新すると、上流アカウントに明示的に照会します。リセットは制限を解除して更新の猶予を設定しますが、上流の割り当てはリセットしません。",
+            thisPoolHasNoMembersMessage: "このアカウントプールにはメンバーがいません。",
+            readingStoredAvailability: "保存済みの可用性を読み取っています…",
+            quotaNotObserved: "割り当ては未観測",
+            quotaReadsUnsupported: "割り当ての読み取りに非対応",
+            administratorResetRefreshGraceInstalled:
+                "管理者がリセット済み。更新の猶予を設定しました",
+            accountEnabled: "アカウントは有効です",
+            updatingAvailability: "可用性を更新しています…",
+            allModels: "すべてのモデル",
+            resetUnknown: "リセット時刻は不明",
+            resetTimePassedRefreshRequired: "リセット時刻を過ぎました。更新が必要です",
+        },
+        usageStats: {
+            usage: "使用量",
+            requestsAndTokensPerDayNumbersOnlyNeverMessage:
+                "日別のリクエスト数とトークン数です。数値のみで、内容は含みません。",
+            openAggregates: "集計を開く",
+            viewRequests: "リクエストを表示",
+            requests: "リクエスト",
+            dispatchedAllDays: "送信済み（全日）",
+            inputTokens: "入力トークン",
+            summedUsageReported: "合計（使用量の報告があったもの）",
+            outputTokens: "出力トークン",
+            day: "日付",
+            input: "入力",
+            output: "出力",
+        },
+        usageTable: {
+            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
+                "日付は UTC、すなわちゲートウェイ自身の日付境界です。",
         },
     },
     validation: {

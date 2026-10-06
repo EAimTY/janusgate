@@ -377,48 +377,6 @@ const english = {
             providers: "Providers",
             models: "Models",
         },
-        oauthFlowView: {
-            flowExpires: "Flow expires",
-            singleuseStateLabel: "Single-use state:",
-            authorizationURL: "Authorization URL",
-            openTheAuthorizationPage: "Open the authorization page",
-            theURLAbove: "the URL above",
-            copyTheURL: "Copy the URL",
-            theStateIsSingleuseAndTheFlowExpiresMessage:
-                "The state is single-use and the flow expires quickly — finish promptly after approving access.",
-            mostLoginsEndOnAPageThatShowsMessage:
-                "Most logins end on a page that shows nothing — that is expected. Paste the whole address the browser shows. If a page opens and displays a code, paste that code instead.",
-            startOver: "Start over",
-            callbackURLOrAuthorizationCode: "Callback URL or authorization code",
-            pasteTheWholeCallbackURL: "Paste the whole callback URL",
-            verificationCode: "Verification code",
-            theVerificationCode: "the verification code",
-            copyTheCode: "Copy the code",
-            openTheVerificationPage: "Open the verification page",
-            theVerificationURL: "the verification URL",
-            approveTheCodeAtTheVerificationPageThisMessage:
-                "Approve the code at the verification page; this page keeps asking the gateway for the outcome and moves on as soon as the flow completes.",
-            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
-                "Stay on this page until the flow completes — navigating within the console discards the flow.",
-        },
-        poolAvailabilityCard: {
-            refreshQuota: "Refresh quota",
-            resetRestrictions: "Reset restrictions",
-            quotaExhausted: "Quota exhausted",
-            poolAvailability: "Pool availability",
-            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
-                "Stored observations. Refresh explicitly queries the upstream account. Reset clears restrictions and installs refresh grace; it does not reset upstream quota.",
-            thisPoolHasNoMembersMessage: "This pool has no members.",
-            readingStoredAvailability: "Reading stored availability…",
-            quotaNotObserved: "Quota not observed",
-            quotaReadsUnsupported: "Quota reads unsupported",
-            administratorResetRefreshGraceInstalled: "Administrator reset; refresh grace installed",
-            accountEnabled: "Account enabled",
-            updatingAvailability: "Updating availability…",
-            allModels: "All models",
-            resetUnknown: "Reset unknown",
-            resetTimePassedRefreshRequired: "Reset time passed; refresh required",
-        },
         providerDetailScreen: {
             provider: "Provider",
             editProvider: "Edit provider",
@@ -669,25 +627,6 @@ const english = {
                 "A read cycle is replacing the stream — extend it once the cycle lands.",
             loading: "Loading…",
             loadMore: "Load more",
-        },
-        usageStats: {
-            usage: "Usage",
-            requestsAndTokensPerDayNumbersOnlyNeverMessage:
-                "Requests and tokens per day — numbers only, never content.",
-            openAggregates: "Open aggregates",
-            viewRequests: "View requests",
-            requests: "Requests",
-            dispatchedAllDays: "Dispatched, all days",
-            inputTokens: "Input tokens",
-            summedUsageReported: "Summed, usage reported",
-            outputTokens: "Output tokens",
-            day: "Day",
-            input: "Input",
-            output: "Output",
-        },
-        usageTable: {
-            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
-                "Days are UTC — the gateway's own day boundary.",
         },
         vanishedModelNotice: {
             theUpstreamNoLongerReportsThisModelMessage:
@@ -988,6 +927,67 @@ const english = {
             last30Days: "Last 30 days",
             invalidStatusList:
                 "HTTP statuses must be plain integers, comma-separated — like 200, 429 — or blank for no status filter.",
+        },
+        oauthFlowView: {
+            flowExpires: "Flow expires",
+            singleuseStateLabel: "Single-use state:",
+            authorizationURL: "Authorization URL",
+            openTheAuthorizationPage: "Open the authorization page",
+            theURLAbove: "the URL above",
+            copyTheURL: "Copy the URL",
+            theStateIsSingleuseAndTheFlowExpiresMessage:
+                "The state is single-use and the flow expires quickly — finish promptly after approving access.",
+            mostLoginsEndOnAPageThatShowsMessage:
+                "Most logins end on a page that shows nothing — that is expected. Paste the whole address the browser shows. If a page opens and displays a code, paste that code instead.",
+            startOver: "Start over",
+            callbackURLOrAuthorizationCode: "Callback URL or authorization code",
+            pasteTheWholeCallbackURL: "Paste the whole callback URL",
+            verificationCode: "Verification code",
+            theVerificationCode: "the verification code",
+            copyTheCode: "Copy the code",
+            openTheVerificationPage: "Open the verification page",
+            theVerificationURL: "the verification URL",
+            approveTheCodeAtTheVerificationPageThisMessage:
+                "Approve the code at the verification page; this page keeps asking the gateway for the outcome and moves on as soon as the flow completes.",
+            stayOnThisPageUntilTheFlowCompletesNavigatingWithinTheConsoleDiscardsThe:
+                "Stay on this page until the flow completes — navigating within the console discards the flow.",
+        },
+        poolAvailabilityCard: {
+            refreshQuota: "Refresh quota",
+            resetRestrictions: "Reset restrictions",
+            quotaExhausted: "Quota exhausted",
+            poolAvailability: "Pool availability",
+            storedObservationsRefreshExplicitlyQueriesTheUpstreamAccountMessage:
+                "Stored observations. Refresh explicitly queries the upstream account. Reset clears restrictions and installs refresh grace; it does not reset upstream quota.",
+            thisPoolHasNoMembersMessage: "This pool has no members.",
+            readingStoredAvailability: "Reading stored availability…",
+            quotaNotObserved: "Quota not observed",
+            quotaReadsUnsupported: "Quota reads unsupported",
+            administratorResetRefreshGraceInstalled: "Administrator reset; refresh grace installed",
+            accountEnabled: "Account enabled",
+            updatingAvailability: "Updating availability…",
+            allModels: "All models",
+            resetUnknown: "Reset unknown",
+            resetTimePassedRefreshRequired: "Reset time passed; refresh required",
+        },
+        usageStats: {
+            usage: "Usage",
+            requestsAndTokensPerDayNumbersOnlyNeverMessage:
+                "Requests and tokens per day — numbers only, never content.",
+            openAggregates: "Open aggregates",
+            viewRequests: "View requests",
+            requests: "Requests",
+            dispatchedAllDays: "Dispatched, all days",
+            inputTokens: "Input tokens",
+            summedUsageReported: "Summed, usage reported",
+            outputTokens: "Output tokens",
+            day: "Day",
+            input: "Input",
+            output: "Output",
+        },
+        usageTable: {
+            daysAreUTCTheGatewaysOwnDayBoundaryMessage:
+                "Days are UTC — the gateway's own day boundary.",
         },
     },
     validation: {
