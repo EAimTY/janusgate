@@ -189,11 +189,13 @@ only where the app can be certain of one. Failures are `role="alert"`.
 **One family for everything.** The platform sans carries titles, labels,
 buttons, and body; there is no display face and no pairing to maintain.
 Sizes are fixed, not fluid, each painted where it belongs: 26px stat
-figures, 22px the connection screen's title, 20px page titles, 16px
-empty-state titles, 15px card titles, 14.5px table row names, 13.5px
-controls, 13px supporting copy, 12.5px captions, 12px step numerals — the
-14px body base is set once by the stylesheet, and no utility re-states it.
-Titles track tight; nothing is ever set in all-caps as a voice.
+figures, 22px the connection screen's title, 20px page titles, 17px the
+device flow's verification code — the flow's most prominent figure, the one
+value the operator transcribes — 16px empty-state titles, 15px card titles,
+14.5px table row names, 13.5px controls, 13px supporting copy, 12.5px
+captions, 12px step numerals — the 14px body base is set once by the
+stylesheet, and no utility re-states it. Titles track tight; nothing is
+ever set in all-caps as a voice.
 
 **Data is mono with tabular figures.** Anything that identifies a row —
 public and upstream IDs, prefixes, provider addresses, states, expiries,
