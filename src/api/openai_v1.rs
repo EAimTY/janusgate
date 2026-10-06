@@ -7,7 +7,7 @@
 
 use crate::{
     accounting::ApiLogEndpointType,
-    api::{Error, log_error, serving},
+    api::{Error, serving},
     compaction_model::support_facts::CompactionSupportFacts,
     context::Context,
     database::Database,
@@ -45,11 +45,7 @@ impl serving::Surface for Surface {
             .and_then(|value| value.to_str().ok())
             .and_then(bearer_token)
             .map(str::to_owned)
-            .ok_or_else(|| {
-                log_error("request", &Error::InvalidApiKey);
-
-                serving::AuthRejection::MissingCredential
-            })
+            .ok_or(serving::AuthRejection::MissingCredential)
     }
 }
 

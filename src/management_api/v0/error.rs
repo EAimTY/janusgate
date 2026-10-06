@@ -358,11 +358,12 @@ pub(super) enum Error {
     UpstreamReportedNoModels,
 
     /// Upstream model discovery reported an identifier the gateway cannot route: the refresh fails
-    /// before any row is written instead of storing an unroutable ID (README §7.1). The identifier
-    /// is routing data, never request content, so naming it is safe.
+    /// before any row is written instead of storing an unroutable ID (README §7.1). A routable
+    /// identifier is a routing token — printable ASCII without whitespace, `/`, or `:` — and the
+    /// identifier is routing data, never request content, so naming it is safe.
     #[error(
         "Upstream reported model `{upstream_id}` the gateway cannot route: identifiers must \
-         contain only printable ASCII without whitespace"
+         contain only printable ASCII without whitespace, `/`, or `:`"
     )]
     UpstreamReportedInvalidModelId {
         /// The unroutable upstream identifier.
@@ -559,8 +560,12 @@ impl From<Error> for ErrorResponse {
 
             Error::Storage(StorageError::Constraint { .. }) => CONSTRAINT_MESSAGE.to_string(),
 
-            Error::Storage(
-                StorageError::Busy { .. } | StorageError::Drift { .. } | StorageError::Database(_),
+            Error::Internal { .. }
+            | Error::Storage(
+                StorageError::InactiveApiKey { .. }
+                | StorageError::Busy { .. }
+                | StorageError::Drift { .. }
+                | StorageError::Database(_),
             )
             | Error::Provider(ProviderError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
 
@@ -801,6 +806,10 @@ mod tests {
                 ErrorCode::Internal,
             ),
             (
+                Error::from(StorageError::InactiveApiKey { id: 7 }),
+                ErrorCode::Internal,
+            ),
+            (
                 Error::from(StorageError::Database(DatabaseError::PoolClosed)),
                 ErrorCode::Internal,
             ),
@@ -1020,9 +1029,11 @@ mod tests {
         );
     }
 
-    /// Verifies the split between the failure and the body: an internal cause keeps its detail for
-    /// the log record while the client learns only the category's message, and a constraint's
-    /// engine detail stays internal the same way.
+    /// Verifies the split between the failure and the body: every errno-6 cause — a mid-request
+    /// invariant violation, a busy or drifted or failed database, an inactive authenticated key, an
+    /// internal provider-engine failure — keeps its detail for the log record while the client
+    /// learns only the category's fixed message, and a constraint's engine detail stays internal
+    /// the same way.
     ///
     /// # Panics
     ///
@@ -1037,6 +1048,22 @@ mod tests {
         assert!(busy.to_string().contains("database is locked"));
 
         let body = ErrorResponse::from(busy);
+
+        assert_eq!(body.errno, ErrorCode::Internal);
+        assert_eq!(body.message, INTERNAL_MESSAGE);
+
+        let internal = Error::Internal {
+            message: "the consumed flow's definition vanished".to_string(),
+        };
+
+        assert!(internal.to_string().contains("definition vanished"));
+
+        let body = ErrorResponse::from(internal);
+
+        assert_eq!(body.errno, ErrorCode::Internal);
+        assert_eq!(body.message, INTERNAL_MESSAGE);
+
+        let body = ErrorResponse::from(Error::from(StorageError::InactiveApiKey { id: 7 }));
 
         assert_eq!(body.errno, ErrorCode::Internal);
         assert_eq!(body.message, INTERNAL_MESSAGE);

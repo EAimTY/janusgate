@@ -9,7 +9,7 @@
 //! (Gemini GenerateContent surface) and [`interactions`] (Gemini Interactions surface).
 
 use crate::{
-    api::{Error, log_error, serving},
+    api::{Error, serving},
     context::Context,
     database::Database,
 };
@@ -29,17 +29,12 @@ impl serving::Surface for Surface {
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {
-        let Some(presented) = request
+        request
             .headers()
             .get("x-goog-api-key")
             .and_then(|value| value.to_str().ok())
-        else {
-            log_error("request", &Error::InvalidApiKey);
-
-            return Err(serving::AuthRejection::MissingCredential);
-        };
-
-        Ok(presented.to_owned())
+            .map(str::to_owned)
+            .ok_or(serving::AuthRejection::MissingCredential)
     }
 }
 

@@ -322,6 +322,14 @@ pub(crate) struct StateItem {
     /// Whether the item is a recognized gateway carrier rather than native
     /// state.
     pub(crate) is_gateway: bool,
+
+    /// Whether the item is compaction state — a native compaction block or
+    /// item, or a gateway carrier over one; every other opaque item, such as
+    /// replayable encrypted reasoning, is not. The i-th compaction-typed state
+    /// item is the i-th parsed compaction boundary, both pushed in encounter
+    /// order by the codecs, so boundary preparation pairs them by this carried
+    /// fact instead of re-parsing the vendor JSON.
+    pub(crate) is_compaction: bool,
 }
 
 /// A fully format-independent completion request.
@@ -771,7 +779,7 @@ mod tests {
     /// Pins the request-boundary [`ReasoningLevel::parse`] to the vocabulary table
     /// ([`ReasoningLevel::VOCABULARY`](crate::vocabulary::ReasoningLevel::VOCABULARY)):
     /// `parse(spelling)` returns the table's level again. The `as_str` and
-    /// `from_vocabulary_str` matches are pinned against the same table in
+    /// `from_vocabulary_str` lookups need no pin beside this: they read the same table in
     /// [`crate::vocabulary`].
     ///
     /// # Panics

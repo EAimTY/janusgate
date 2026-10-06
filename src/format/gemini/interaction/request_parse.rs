@@ -309,7 +309,11 @@ fn image_into_ir(
             ));
         }
 
-        return IrImage::from_url(&uri);
+        // The IR helper names its rejections after the OpenAI member `image_url`; this
+        // surface's own member is the block's `content`, so the rejection is re-wrapped here
+        // (README §6.6: every rejection names the field).
+        return IrImage::from_url(&uri)
+            .map_err(|error| InvalidRequest::field("content", error.to_string()));
     }
 
     match (data, mime_type) {
@@ -1158,6 +1162,35 @@ mod tests {
             assert_eq!(message.role, IrRole::User);
             assert_eq!(message.parts, expected_parts);
         }
+    }
+
+    /// An image block `uri` the IR rejects is a 400 naming `content` — the step's own
+    /// member — never the IR helper's OpenAI-shaped `image_url`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rejection lands outside its documented field.
+    #[test]
+    fn names_content_for_a_rejected_image_uri() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the foreign-scheme uri is constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "user_input", "content": [
+                    {"type": "image", "uri": "ftp://example.com/i.png"},
+                ]},
+            ],
+        }))
+        .expect_err("a rejected image uri must fail");
+
+        assert_eq!(
+            error.param.as_deref(),
+            Some("content"),
+            "the rejection must name `content`: {error}",
+        );
     }
 
     /// Consecutive same-role steps coalesce into one message while role changes split them: two

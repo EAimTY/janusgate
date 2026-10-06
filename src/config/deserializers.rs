@@ -1,6 +1,7 @@
 //! Custom deserializers for the configuration schema.
 
 use super::schema::{CompactionKeyConfig, SEALING_KEY_BYTES};
+use crate::compaction_model::sealing::KEY_ID_SEPARATOR;
 use axum::http::HeaderValue;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{
@@ -10,10 +11,6 @@ use serde::{
 use std::fmt::{Error as FmtError, Formatter};
 use tower_http::cors::AllowOrigin;
 use vec1::Vec1;
-
-/// The carrier separator a compaction key id must never carry: it would break the carrier's
-/// `<namespace>.<key id>.<payload>` splitting at the id's end.
-const SEALING_KEY_ID_SEPARATOR: char = '.';
 
 /// Deserializes origin strings into an [`AllowOrigin`].
 ///
@@ -81,8 +78,9 @@ where
     deserializer.deserialize_any(AllowedOriginVisitor)
 }
 
-/// Deserializes a compaction sealing key's carrier identifier: a non-empty string free of
-/// [`SEALING_KEY_ID_SEPARATOR`].
+/// Deserializes a compaction sealing key's carrier identifier: a non-empty string free of the
+/// carrier's key-id separator ([`KEY_ID_SEPARATOR`], whose carrier-format invariant that
+/// constant states).
 ///
 /// # Errors
 ///
@@ -97,9 +95,9 @@ where
         return Err(Error::custom("a compaction key id cannot be empty"));
     }
 
-    if id.contains(SEALING_KEY_ID_SEPARATOR) {
+    if id.contains(KEY_ID_SEPARATOR) {
         return Err(Error::custom(format!(
-            "the compaction key id `{id}` cannot carry the `.` carrier separator"
+            "the compaction key id `{id}` cannot carry the `{KEY_ID_SEPARATOR}` carrier separator"
         )));
     }
 

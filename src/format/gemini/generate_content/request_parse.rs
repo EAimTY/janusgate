@@ -716,7 +716,11 @@ fn parse_shared_payload(part: &PartIn) -> Result<Option<IrPart>, InvalidRequest>
 
     if let Some(file) = part.file_data.as_ref() {
         return Ok(Some(IrPart::Image {
-            image: IrImage::from_url(&file.file_uri)?,
+            // The IR helper names its rejections after the OpenAI member `image_url`; this
+            // surface's own member is `fileData`, so the rejection is re-wrapped here (README
+            // §6.6: every rejection names the field).
+            image: IrImage::from_url(&file.file_uri)
+                .map_err(|error| InvalidRequest::field("fileData", error.to_string()))?,
         }));
     }
 
@@ -1305,6 +1309,35 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// A `fileData` image reference the IR rejects is a 400 naming the surface's own member
+    /// `fileData` — never the IR helper's OpenAI-shaped `image_url` — for the unsupported
+    /// scheme and the malformed data URL alike.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejection lands outside its documented field.
+    #[test]
+    fn names_file_data_for_a_rejected_file_uri() {
+        for file_uri in ["ftp://example.com/i.png", "data:image/png"] {
+            #[expect(
+                clippy::expect_used,
+                reason = "each file URI is constructed to be rejected"
+            )]
+            let error = parse_body(serde_json::json!({
+                "contents": [
+                    {"role": "user", "parts": [{"fileData": {"fileUri": file_uri}}]},
+                ],
+            }))
+            .expect_err("a rejected fileUri must fail");
+
+            assert_eq!(
+                error.param.as_deref(),
+                Some("fileData"),
+                "the rejection must name `fileData`: {error}",
+            );
+        }
     }
 
     /// Verifies the tool-choice mapping: `AUTO`/`NONE` plus `ANY` with zero or one allowed

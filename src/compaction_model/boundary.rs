@@ -26,7 +26,6 @@ use crate::{
     },
     format::{CompactionBoundary, NativeArtifact, ParsedCompaction, UpstreamFormat},
 };
-use serde::Deserialize as _;
 use thiserror::Error;
 
 /// A boundary-preparation failure, raised before account selection. Each
@@ -139,17 +138,6 @@ pub(crate) struct RoutingPreparation {
     pub(crate) artifact: Option<Digest>,
 }
 
-/// State discriminator used only to pair parsed boundary facts with their original state slots.
-#[derive(serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum StateDiscriminator {
-    /// Gateway or native compaction artifact.
-    Compaction,
-    /// Other opaque state, such as replayable encrypted reasoning.
-    #[serde(other)]
-    Other,
-}
-
 /// One validated active boundary, retaining only what subsequent restoration needs.
 #[allow(
     clippy::large_enum_variant,
@@ -195,26 +183,14 @@ pub(crate) enum ActiveBoundary<'a> {
 
 /// The state-item vector indices of the request's compaction artifacts, in
 /// boundary order: the i-th compaction-typed state item is the i-th parsed
-/// boundary, both pushed in encounter order by the codecs.
-///
-/// # Panics
-///
-/// Panics if an accepted state item fails to deserialize its typed
-/// discriminator — impossible, the codecs serialize the first-party shape.
+/// boundary, both pushed in encounter order by the codecs and paired by the
+/// state item's carried `is_compaction` fact — never re-derived from the
+/// vendor JSON.
 fn compaction_state_slots(ir: &crate::ir::IrRequest) -> Vec<usize> {
     ir.state_items
         .iter()
         .enumerate()
-        .filter_map(|(index, state)| {
-            #[expect(
-                clippy::expect_used,
-                reason = "accepted codec state has a typed discriminator"
-            )]
-            let discriminator: StateDiscriminator =
-                StateDiscriminator::deserialize(&state.item).expect("accepted state has a type");
-
-            matches!(discriminator, StateDiscriminator::Compaction).then_some(index)
-        })
+        .filter_map(|(index, state)| state.is_compaction.then_some(index))
         .collect()
 }
 

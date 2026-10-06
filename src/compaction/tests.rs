@@ -21,6 +21,7 @@
 use crate::{
     compaction::{history, summary::DEFAULT_SUMMARY_PROMPT},
     compaction_model::{
+        boundary::BoundaryPreparation,
         envelope::{
             EnvelopePayload, GatewaySummaryPayload, NativeReplayWindow, NativeWindowPayload,
             ReplacementMode,
@@ -30,9 +31,14 @@ use crate::{
         sealing,
     },
     context::Context,
-    format::UpstreamFormat,
+    format::{
+        BoundaryPlacement, CompactionBoundary, NativeArtifact, ParsedCompaction, UpstreamFormat,
+    },
     ir::{IrMessage, IrPart, IrRole},
-    provider::{StoredCredentials, definition::DefinitionPayload},
+    provider::{
+        Model, ModelRouting, Provider, StoredCredentials,
+        definition::{DefinitionPayload, ProviderDefinition},
+    },
     storage::{
         api_keys::{self, ApiKeyFields},
         models::{ModelCreate, insert_model_checked},
@@ -47,6 +53,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serde_json::{Value, json};
+use std::num::NonZeroI64;
 use tower::ServiceExt as _;
 
 /// The gateway API key the scenarios authenticate with.
@@ -772,7 +779,13 @@ fn seal_summary(
         preserved_instructions: instruction_items
             .iter()
             .zip(instruction_overlap.iter())
-            .map(|(item, identity)| (identity.clone(), item.role, item.text.clone()))
+            .map(
+                |(item, identity)| crate::compaction_model::envelope::PreservedInstruction {
+                    identity: identity.clone(),
+                    role: item.role,
+                    text: item.text.clone(),
+                },
+            )
             .collect(),
         overlap_identities: instruction_overlap,
         summary_budget: 4096,
@@ -3967,6 +3980,7 @@ async fn review_retained_native_state_survives_sealing() {
             item: json!({"type":"reasoning",
 "encrypted_content":"retained-secret"}),
             is_gateway: false,
+            is_compaction: false,
         }],
         ..Default::default()
     };
@@ -4555,6 +4569,226 @@ user_item("fresh")]}),
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(recorded(&scenario).len(), 1);
+}
+/// Builds an in-memory direct-route routing fixture whose provider speaks
+/// `format` and whose compaction section permits readable native-summary
+/// export — the policy the `prepare_for_target` export fixtures exercise
+/// without a serving pipeline.
+///
+/// # Panics
+///
+/// Panics if the fixture definition payload fails to parse, which its shape
+/// prevents.
+fn export_routing(format: UpstreamFormat) -> ModelRouting {
+    let mut section = summarize_only_section();
+    section["can_export_native_summary"] = json!(true);
+
+    ModelRouting {
+        model_route_id: 1,
+        public_id: String::from(MODEL),
+        provider: Provider {
+            id: 999,
+            name: String::from("acceptance"),
+            model_prefix: String::new(),
+            base_url: None,
+            credentials: StoredCredentials::ApiKey {
+                api_key: String::from("upstream-secret"),
+            },
+            is_enabled: true,
+            quota_generation: 0,
+            quota_revision: 0,
+            definition: ProviderDefinition {
+                name: String::from("acceptance"),
+                version: NonZeroI64::new(1).expect("one is positive"),
+                payload: definition_payload(format, Some(section), false),
+                created_at: 1,
+            },
+        },
+        model: Model {
+            id: 1,
+            upstream_id: String::from(MODEL),
+            is_enabled: true,
+            discovery_state: crate::provider::DiscoveryState::Manual,
+            thinking_levels: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+            thinking_levels_override: None,
+            max_input_tokens_override: None,
+            max_output_tokens_override: None,
+            compaction_support: None,
+            compaction_support_override: None,
+        },
+    }
+}
+/// The raw-native readable export probes the boundary's own state slot: an
+/// unrelated opaque state item sharing the boundary offset but preceding the
+/// compaction block in encounter order is never mistaken for the block, so an
+/// authorized export of a readable block exports instead of silently replaying
+/// incompatible native state to a non-Anthropic target.
+///
+/// # Panics
+///
+/// Panics if the export contract or the fixture setup fails.
+#[test]
+fn readable_export_probes_the_boundary_slot_not_any_same_offset_item() {
+    // Two opaque items share the boundary offset: the reasoning item precedes
+    // the compaction block in vector order, so an offset-only probe matches
+    // the reasoning item and misses the readable block.
+    let mut request = crate::ir::IrRequest {
+        messages: vec![
+            text_message(IrRole::User, "old"),
+            text_message(IrRole::User, "pending"),
+        ],
+        state_items: vec![
+            crate::ir::StateItem {
+                offset: 1,
+                item: json!({"type":"reasoning",
+"encrypted_content":"covered reasoning"}),
+                is_gateway: false,
+                is_compaction: false,
+            },
+            crate::ir::StateItem {
+                offset: 1,
+                item: json!({"type":"compaction",
+"content":"readable summary",
+"signature":"native"}),
+                is_gateway: false,
+                is_compaction: true,
+            },
+        ],
+        ..Default::default()
+    };
+    let parsed = ParsedCompaction {
+        control: None,
+        boundaries: vec![CompactionBoundary::Native {
+            offset: 1,
+            artifact: NativeArtifact::MessagesCompactionBlock {
+                is_null_no_op: false,
+                placement: BoundaryPlacement::Historical,
+            },
+        }],
+        instruction_items: Vec::new(),
+    };
+    let preparation =
+        BoundaryPreparation::authenticate(&parsed).expect("the native boundary authenticates");
+
+    let (boundary, _) = history::prepare_for_target(
+        &mut request,
+        &parsed,
+        &export_routing(UpstreamFormat::OpenAiResponse),
+        &preparation,
+    )
+    .expect("the readable block exports");
+
+    // The export happened: the readable summary heads the restored window and
+    // no native state rides to the non-Anthropic target. Same-offset state the
+    // boundary's encounter order precedes is covered with the prefix.
+    assert!(
+        boundary.is_none(),
+        "an exported readable block establishes no native boundary"
+    );
+    assert_eq!(request.messages.len(), 2);
+    let IrPart::Text { text } = &request.messages[0].parts[0] else {
+        panic!("the summary message renders text");
+    };
+    assert!(text.contains("readable summary"), "{text}");
+    assert_eq!(request.messages[1], text_message(IrRole::User, "pending"));
+    assert!(
+        request.state_items.is_empty(),
+        "same-offset state the boundary precedes is covered: {:?}",
+        request.state_items
+    );
+}
+/// Fresh-suffix state sharing the boundary offset — state the boundary's
+/// encounter order does not precede — rides the readable export at its
+/// recomputed offset, exactly as the restore paths treat it; it never vanishes
+/// silently from a successful restored window.
+///
+/// # Panics
+///
+/// Panics if the export contract or the fixture setup fails.
+#[test]
+fn readable_export_rides_same_offset_fresh_state_at_its_recomputed_offset() {
+    let _configuration_guard = crate::test_support::configuration_lock();
+    let _configuration = crate::test_support::install_global_configuration();
+
+    let (_, carrier) = history::seal_native_window(
+        NativeWindowPayload {
+            producer_instance_id: "provider:888".into(),
+            upstream_model_id: "foreign-model".into(),
+            mechanism: Mechanism::MessagesOnDemandCompaction,
+            native_format: UpstreamFormat::AnthropicMessages,
+            required_prefix_identity: None,
+            retained_messages: vec![text_message(IrRole::User, "pending")],
+            retained_state_items: vec![],
+            window: NativeReplayWindow::AnthropicOnDemandBlock {
+                block: json!({"type":"compaction",
+"content":"readable summary",
+"signature":"native"}),
+            },
+        },
+        ReplacementMode::HistoricalCheckpoint,
+        None,
+    )
+    .expect("carrier");
+
+    // The carrier precedes the opaque item at the shared offset: the item is
+    // fresh-suffix state, not covered prefix.
+    let mut request = crate::ir::IrRequest {
+        messages: vec![
+            text_message(IrRole::User, "old"),
+            text_message(IrRole::User, "fresh"),
+        ],
+        state_items: vec![
+            crate::ir::StateItem {
+                offset: 1,
+                item: json!({"type":"compaction",
+"encrypted_content":carrier.clone()}),
+                is_gateway: true,
+                is_compaction: true,
+            },
+            crate::ir::StateItem {
+                offset: 1,
+                item: json!({"type":"reasoning",
+"encrypted_content":"fresh reasoning"}),
+                is_gateway: false,
+                is_compaction: false,
+            },
+        ],
+        ..Default::default()
+    };
+    let parsed = ParsedCompaction {
+        control: None,
+        boundaries: vec![CompactionBoundary::Gateway {
+            offset: 1,
+            carrier,
+            visible_content: None,
+        }],
+        instruction_items: Vec::new(),
+    };
+    let preparation =
+        BoundaryPreparation::authenticate(&parsed).expect("the carrier authenticates");
+
+    let (boundary, _) = history::prepare_for_target(
+        &mut request,
+        &parsed,
+        &export_routing(UpstreamFormat::OpenAiResponse),
+        &preparation,
+    )
+    .expect("the readable block exports");
+
+    // The restored window: summary, the payload's retained message, the fresh
+    // turn — and the fresh same-offset state riding at its recomputed offset
+    // (one summary message plus one retained message precede it).
+    assert!(boundary.is_none());
+    assert_eq!(request.messages.len(), 3);
+    assert_eq!(request.state_items.len(), 1);
+    assert!(!request.state_items[0].is_gateway);
+    assert_eq!(request.state_items[0].item["type"], "reasoning");
+    assert_eq!(
+        request.state_items[0].offset, 2,
+        "the fresh state rides at its recomputed offset"
+    );
 }
 /// Threshold and on-demand streaming use their own block framing and retain pause usage.
 ///

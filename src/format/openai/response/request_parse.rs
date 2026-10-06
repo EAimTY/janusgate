@@ -662,6 +662,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
                         offset: conversion.messages.len(),
                         item: compaction::reasoning_item_json(&reasoning),
                         is_gateway: false,
+                        is_compaction: false,
                     });
                 }
             }
@@ -680,6 +681,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
                         offset,
                         item,
                         is_gateway: true,
+                        is_compaction: true,
                     });
 
                     conversion.boundaries.push(CompactionBoundary::Gateway {
@@ -692,6 +694,7 @@ pub(super) fn convert_input(items: Vec<ItemIn>) -> Result<InputConversion, Inval
                         offset,
                         item,
                         is_gateway: false,
+                        is_compaction: true,
                     });
 
                     conversion.boundaries.push(CompactionBoundary::Native {

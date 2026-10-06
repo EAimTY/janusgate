@@ -4,6 +4,7 @@
 use super::{
     context::Context,
     format::{PayloadError, UpstreamEventParser, UpstreamFormat, anthropic, gemini, openai},
+    http_body,
     ir::{Aggregator, InvalidRequest, IrAggregation, IrEvent, IrRequest, IrUsage},
     provider::{
         Error as ProviderError, ModelRouting,
@@ -131,8 +132,8 @@ pub(crate) enum Error {
         restriction: Box<crate::provider::quota_rejection::ClassifiedQuotaRejection>,
     },
 
-    /// The upstream failed without a usable HTTP response: a transport failure, an oversized frame,
-    /// or a malformed payload.
+    /// The upstream failed without a usable HTTP response: a transport failure, an oversized
+    /// frame, an oversized body, or a malformed payload.
     #[error("Upstream request failed: {detail}")]
     Unavailable {
         /// Human-readable failure detail.
@@ -283,9 +284,10 @@ pub(crate) async fn execute(
         ))
     } else {
         let body = async move {
-            response.bytes().await.map_err(|error| Error::Unavailable {
-                detail: format!("upstream read failed: {error}"),
-            })
+            http_body::read_success_body(response)
+                .await
+                .map(axum::body::Bytes::from)
+                .map_err(Error::from)
         };
         Ok(json_event_stream(body, parser, response_unwrap))
     }
@@ -535,8 +537,8 @@ impl UsageTracker {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Unavailable`] for a transport failure, an oversized frame, a
-/// malformed payload, or a 2xx body that is not valid JSON.
+/// Returns [`Error::Unavailable`] for a transport failure, an oversized frame, an oversized
+/// body, a malformed payload, or a 2xx body that is not valid JSON.
 pub(crate) async fn pump_internal_response<P>(
     response: reqwest::Response,
     parser: &mut P,
@@ -613,9 +615,7 @@ where
 
         ingest(parser.finish(), false);
     } else {
-        let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
-            detail: format!("upstream read failed: {error}"),
-        })?;
+        let bytes = http_body::read_success_body(response).await?;
 
         let body = unwrap_response(&bytes, &response_unwrap)?;
 
@@ -679,6 +679,14 @@ fn unwrap_frame(frame: &mut SseFrame, response_unwrap: &Option<String>) {
 
 impl From<PayloadError> for Error {
     fn from(error: PayloadError) -> Self {
+        Self::Unavailable {
+            detail: error.to_string(),
+        }
+    }
+}
+
+impl From<http_body::SuccessBodyError> for Error {
+    fn from(error: http_body::SuccessBodyError) -> Self {
         Self::Unavailable {
             detail: error.to_string(),
         }

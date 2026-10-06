@@ -20,7 +20,7 @@ use crate::{
             NativeWindowPayload, PrefixIdentity, PreservedInstruction, ReplacementMode,
             RetainedUnit, summary_message,
         },
-        identity::{InstructionRole, ItemIdentity, hex_sha256},
+        identity::{ItemIdentity, hex_sha256},
         sealing,
     },
     format::{NativeArtifact, ParsedCompaction, UpstreamFormat},
@@ -76,7 +76,7 @@ pub(crate) enum CheckpointInstructions<'a> {
     /// identities stay matchable by later replays; planning from the request's
     /// parsed items instead would seal one joined identity that can never
     /// overlap-match and would duplicate the instruction context.
-    Restored(Vec<(ItemIdentity, InstructionRole, String)>),
+    Restored(Vec<PreservedInstruction>),
 }
 
 /// Materializes the already authenticated active boundary using the existing replacement rules.
@@ -160,6 +160,13 @@ pub(crate) fn prepare<'a>(
 /// Prepares authenticated state against the selected producer, permitting only explicit
 /// readable-summary export. `preparation` must belong to this same parsed request.
 ///
+/// An authorized export rebuilds the window losslessly: the readable summary
+/// heads it, the payload's retained messages follow, and the fresh suffix —
+/// messages and opaque state alike — rides at its recomputed offset, exactly
+/// as [`restore`] places it. State the boundary's own `(offset, slot)`
+/// position precedes is covered and superseded; unreadable native state fails
+/// the export explicitly.
+///
 /// Returns the restored boundary and the instruction items a checkpoint plan
 /// covers, as [`restore`] documents.
 ///
@@ -182,12 +189,17 @@ pub(crate) fn prepare_for_target<'a>(
         .is_some_and(|section| section.can_export_native_summary);
     let mut exported_retained = Vec::new();
     if let Some(active) = preparation.active() {
+        // The active boundary's own state slot orders it among the state items
+        // sharing its message offset: same-offset state the boundary's
+        // encounter order precedes is covered with the prefix, state that
+        // follows it is the fresh suffix (README §6.8's supersession rule).
+        let slot = preparation.active_state_slot(ir);
         let mut exported = None;
         match active {
             ActiveBoundary::Gateway { envelope, .. } => {
                 if let EnvelopePayload::NativeWindow(payload) = &envelope.payload {
                     let is_compatible = payload.producer_instance_id
-                        == format!("provider:{}", routing.provider.id)
+                        == NativeWindowPayload::producer_instance(routing.provider.id)
                         && payload.upstream_model_id == routing.model.upstream_id
                         && payload.native_format == target_format;
                     if !is_compatible {
@@ -208,14 +220,20 @@ pub(crate) fn prepare_for_target<'a>(
                 }
             }
             ActiveBoundary::Native {
-                offset,
                 artifact: NativeArtifact::MessagesCompactionBlock { .. },
+                ..
             } if target_format != UpstreamFormat::AnthropicMessages && can_export => {
-                exported = ir
-                    .state_items
-                    .iter()
-                    .find(|item| item.offset == offset && !item.is_gateway)
-                    .and_then(|item| readable_native_summary(&item.item));
+                // The boundary's own state item is the compaction block: probe
+                // it by slot. An unrelated state item sharing the offset —
+                // ahead of the boundary in encounter order — is covered state,
+                // never the block.
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "active_state_slot panics unless the parser recorded the boundary's \
+                              own state-item index, so the index is in bounds"
+                )]
+                let block = &ir.state_items[slot].item;
+                exported = readable_native_summary(block);
             }
             _ => {}
         }
@@ -230,13 +248,9 @@ pub(crate) fn prepare_for_target<'a>(
                     .parts
                     .iter()
                     .any(|part| matches!(part, crate::ir::IrPart::Reasoning { .. }))
-            }) || ir
-                .state_items
-                .iter()
-                .any(|item| item.offset > offset && !item.is_gateway)
-            {
+            }) {
                 return Err(CompactionError::inaccessible_native_state(
-                    "readable export cannot preserve opaque retained state",
+                    "readable export cannot preserve signed reasoning",
                 ));
             }
             if offset > ir.messages.len() {
@@ -255,10 +269,33 @@ pub(crate) fn prepare_for_target<'a>(
                 ));
             }
             let fresh = ir.messages.split_off(offset);
+            // The exported window: one summary message, then the payload's
+            // retained messages, then the fresh suffix.
+            let leading_state_offset = 1 + exported_retained.len();
             ir.messages = vec![summary_message(&summary)];
             ir.messages.extend(exported_retained);
             ir.messages.extend(fresh);
-            ir.state_items.clear();
+            // Fresh state rides the export at its recomputed offset — state
+            // strictly after the boundary's own (offset, slot) position,
+            // exactly as the restore paths treat it, so the export stays
+            // lossless for representable state. Same-offset state the boundary
+            // precedes is covered with the prefix and superseded; gateway items
+            // are dropped. The export never clears past the covered prefix.
+            ir.state_items = ir
+                .state_items
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| {
+                    !item.is_gateway
+                        && (item.offset > offset || (item.offset == offset && *index > slot))
+                })
+                .map(|(_index, item)| StateItem {
+                    offset: leading_state_offset + (item.offset - offset),
+                    item: item.item.clone(),
+                    is_gateway: false,
+                    is_compaction: item.is_compaction,
+                })
+                .collect();
             return Ok((
                 None,
                 CheckpointInstructions::Parsed(&parsed.instruction_items),
@@ -302,18 +339,18 @@ fn remove_gateway_state_items(ir: &mut IrRequest) {
 /// boundary's encounter order precedes is covered with the prefix, same-offset
 /// state after it rides the fresh suffix.
 ///
-/// Returns the restored window's instruction items with their identities — the
-/// payload's preserved items under their sealed identities, then the unmatched
-/// current items under their replay identities — so a re-compaction plan over
-/// this window keeps identity continuity instead of collapsing the
-/// instructions into one joined identity no replay could match.
+/// Returns the restored window's instruction items — the payload's preserved
+/// items under their sealed identities, then the unmatched current items under
+/// their replay identities — so a re-compaction plan over this window keeps
+/// identity continuity instead of collapsing the instructions into one joined
+/// identity no replay could match.
 fn restore_gateway_summary(
     ir: &mut IrRequest,
     parsed: &ParsedCompaction,
     offset: usize,
     slot: usize,
     payload: &GatewaySummaryPayload,
-) -> Result<Vec<(ItemIdentity, InstructionRole, String)>, CompactionError> {
+) -> Result<Vec<PreservedInstruction>, CompactionError> {
     if offset > ir.messages.len() {
         return Err(CompactionError::invalid_gateway_state(
             "the gateway checkpoint's boundary sits beyond the request's history",
@@ -346,23 +383,16 @@ fn restore_gateway_summary(
 
     // The restored window's instruction items: the payload's preserved items
     // ride their sealed identities first, then the preserved current items.
-    let mut restored_instructions: Vec<(ItemIdentity, InstructionRole, String)> = payload
-        .preserved_instructions
-        .iter()
-        .map(|instruction| {
-            (
-                instruction.identity.clone(),
-                instruction.role,
-                instruction.text.clone(),
-            )
-        })
-        .collect();
+    let mut restored_instructions: Vec<PreservedInstruction> =
+        payload.preserved_instructions.clone();
 
-    restored_instructions.extend(
-        preserved_current
-            .iter()
-            .map(|(item, identity)| (identity.clone(), item.role, item.text.clone())),
-    );
+    restored_instructions.extend(preserved_current.iter().map(|(item, identity)| {
+        PreservedInstruction {
+            identity: identity.clone(),
+            role: item.role,
+            text: item.text.clone(),
+        }
+    }));
 
     // Rebuild the instruction context: the checkpoint's preserved instructions
     // first, then the current instructions that survived the overlap pass.
@@ -407,6 +437,7 @@ fn restore_gateway_summary(
             offset: 1 + retained_message_count + (item.offset - offset),
             item: item.item.clone(),
             is_gateway: false,
+            is_compaction: item.is_compaction,
         })
         .collect();
 
@@ -515,6 +546,7 @@ fn restore_native_window(
             offset: payload.retained_messages.len() + item.offset - offset,
             item: item.item.clone(),
             is_gateway: false,
+            is_compaction: item.is_compaction,
         })
         .collect();
 
@@ -523,21 +555,25 @@ fn restore_native_window(
     match &payload.window {
         NativeReplayWindow::ResponsesWindow { items } => {
             // The whole window replays as one block at the boundary: the render
-            // splices same-offset state items in their vector order.
+            // splices same-offset state items in their vector order. The
+            // window's items are the producer's own compaction state.
             restored_state_items.extend(items.iter().map(|item| StateItem {
                 offset: 0,
                 item: item.clone(),
                 is_gateway: false,
+                is_compaction: true,
             }));
         }
 
         NativeReplayWindow::AnthropicOnDemandBlock { block } => {
             // Leading placement: the block opens the restored window and the
-            // fresh suffix follows once.
+            // fresh suffix follows once. The block is the producer's own
+            // compaction state.
             restored_state_items.push(StateItem {
                 offset: 0,
                 item: block.clone(),
                 is_gateway: false,
+                is_compaction: true,
             });
         }
     }
@@ -595,8 +631,9 @@ pub(crate) struct GatewayCheckpointPlan {
     /// message, then the retained units' messages).
     pub(crate) retained_state_items: Vec<StateItem>,
 
-    /// The current instruction items with their identities and roles.
-    pub(crate) preserved_instructions: Vec<(ItemIdentity, InstructionRole, String)>,
+    /// The current instruction items with their identities and roles, in the
+    /// envelope payload's own form.
+    pub(crate) preserved_instructions: Vec<PreservedInstruction>,
 
     /// The identities of the preserved instruction items the checkpoint
     /// covers — replay's only matching surface, the covered conversation
@@ -780,6 +817,7 @@ fn plan_checkpoint(
             offset: 1 + (item.offset - first_retained_message),
             item: item.item.clone(),
             is_gateway: false,
+            is_compaction: item.is_compaction,
         })
         .collect();
 
@@ -788,7 +826,7 @@ fn plan_checkpoint(
     // compute fresh occurrence-indexed identities — the codecs join exactly
     // the parsed items into the request's instructions string, so no other
     // divergence between the two exists to reconcile.
-    let preserved_instructions: Vec<(ItemIdentity, InstructionRole, String)> = match instructions {
+    let preserved_instructions: Vec<PreservedInstruction> = match instructions {
         CheckpointInstructions::Restored(items) => items.clone(),
 
         CheckpointInstructions::Parsed(items) => {
@@ -799,7 +837,11 @@ fn plan_checkpoint(
             items
                 .iter()
                 .zip(identities)
-                .map(|(item, identity)| (identity, item.role, item.text.clone()))
+                .map(|(item, identity)| PreservedInstruction {
+                    identity,
+                    role: item.role,
+                    text: item.text.clone(),
+                })
                 .collect()
         }
     };
@@ -812,7 +854,7 @@ fn plan_checkpoint(
     // conversation prefix superseding wholesale at the boundary offset.
     let overlap_identities: Vec<ItemIdentity> = preserved_instructions
         .iter()
-        .map(|(identity, _role, _text)| identity.clone())
+        .map(|instruction| instruction.identity.clone())
         .collect();
 
     Ok(GatewayCheckpointPlan {
@@ -942,15 +984,7 @@ pub(crate) fn seal_gateway_checkpoint(
 ) -> Result<(EnvelopeV1, String), CompactionError> {
     let payload = EnvelopePayload::GatewaySummary(GatewaySummaryPayload {
         summary_text,
-        preserved_instructions: plan
-            .preserved_instructions
-            .iter()
-            .map(|(identity, role, text)| PreservedInstruction {
-                identity: identity.clone(),
-                role: *role,
-                text: text.clone(),
-            })
-            .collect(),
+        preserved_instructions: plan.preserved_instructions.clone(),
         retained_units: plan
             .retained_units
             .iter()
@@ -1167,6 +1201,7 @@ mod tests {
                 offset: 2,
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
+                is_compaction: false,
             }],
         };
 
@@ -1264,16 +1299,16 @@ mod tests {
             summary_input_messages: Vec::new(),
             retained_units: vec![vec![checkpoint_messages[1].clone()]],
             retained_state_items: Vec::new(),
-            preserved_instructions: vec![(
-                super::ItemIdentity::for_instruction(
+            preserved_instructions: vec![super::PreservedInstruction {
+                identity: super::ItemIdentity::for_instruction(
                     InstructionRole::System,
                     0,
                     "old instruction",
                     None,
                 ),
-                InstructionRole::System,
-                String::from("old instruction"),
-            )],
+                role: InstructionRole::System,
+                text: String::from("old instruction"),
+            }],
             overlap_identities: vec![super::ItemIdentity::for_instruction(
                 InstructionRole::System,
                 0,
@@ -1303,6 +1338,7 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             }],
         );
 
@@ -1310,6 +1346,7 @@ mod tests {
             offset: 1,
             item: json!({"type": "reasoning"}),
             is_gateway: false,
+            is_compaction: false,
         });
 
         let parsed = ParsedCompaction {
@@ -1404,11 +1441,13 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
+                is_compaction: false,
             },
             StateItem {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             },
         ]);
 
@@ -1427,11 +1466,13 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             },
             StateItem {
                 offset: 1,
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
+                is_compaction: false,
             },
         ]);
 
@@ -1461,6 +1502,7 @@ mod tests {
                 offset: 2,
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
+                is_compaction: false,
             }],
         );
 
@@ -1477,6 +1519,7 @@ mod tests {
                 offset: 0,
                 item: json!({"type": "reasoning"}),
                 is_gateway: false,
+                is_compaction: false,
             }],
             window: super::NativeReplayWindow::AnthropicOnDemandBlock {
                 block: json!({
@@ -1544,6 +1587,7 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             }],
         );
 
@@ -1574,6 +1618,7 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             }],
         );
 
@@ -1674,6 +1719,7 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             }],
         );
 
@@ -1701,6 +1747,7 @@ mod tests {
                 offset: 1,
                 item: json!({"type": "compaction"}),
                 is_gateway: true,
+                is_compaction: true,
             }],
         );
 
@@ -1737,11 +1784,13 @@ mod tests {
                     offset: 0,
                     item: json!({"type": "compaction", "content": null}),
                     is_gateway: false,
+                    is_compaction: true,
                 },
                 StateItem {
                     offset: 0,
                     item: json!({"type": "compaction"}),
                     is_gateway: true,
+                    is_compaction: true,
                 },
             ],
         );
@@ -1783,6 +1832,7 @@ mod tests {
                 offset: 0,
                 item: json!({"type": "compaction", "content": null}),
                 is_gateway: false,
+                is_compaction: true,
             }],
         );
 

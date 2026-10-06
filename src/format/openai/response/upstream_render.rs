@@ -655,6 +655,7 @@ mod tests {
             offset,
             item: json!({"type": "reasoning", "id": text, "encrypted_content": text}),
             is_gateway,
+            is_compaction: false,
         };
 
         let ir = ir_with_state_items(vec![
@@ -705,6 +706,7 @@ mod tests {
             offset: 0,
             item: json!({"type": "compaction", "encrypted_content": "sealed"}),
             is_gateway: true,
+            is_compaction: true,
         }]);
 
         #[expect(
@@ -730,6 +732,7 @@ mod tests {
             offset: 1,
             item: json!({"type": "compaction", "id": "cmp_1", "encrypted_content": "state"}),
             is_gateway: false,
+            is_compaction: true,
         }]);
 
         let ir = IrRequest {

@@ -238,7 +238,10 @@ impl Selection {
         let member = members
             .iter()
             .find(|member| {
-                requirement.producer_instance_id == format!("provider:{}", member.provider.id)
+                requirement.producer_instance_id
+                    == crate::compaction_model::envelope::NativeWindowPayload::producer_instance(
+                        member.provider.id,
+                    )
             })
             .ok_or_else(incompatible)?;
         if requirement.native_format != member.provider.definition.payload.format {

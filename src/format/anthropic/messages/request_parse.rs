@@ -668,6 +668,7 @@ impl CollectedCompaction {
                     offset,
                     item,
                     is_gateway: true,
+                    is_compaction: true,
                 });
             }
 
@@ -688,6 +689,7 @@ impl CollectedCompaction {
                     offset,
                     item,
                     is_gateway: false,
+                    is_compaction: true,
                 });
             }
         }

@@ -117,14 +117,15 @@ where
         parts: &mut RequestParts,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let rejection = WildcardRejection {
-            method: parts.method.clone(),
-            path: parts.uri.path().to_string(),
-        };
-
         match Path::<String>::from_request_parts(parts, state).await {
             Ok(Path(capture)) => Ok(Self(capture)),
-            Err(_) => Err(rejection),
+            // The rejection is built only here: a matched single-capture wildcard route always
+            // carries its capture, so every successful dispatch would otherwise pay a method
+            // clone and a path allocation for a rejection that never renders.
+            Err(_) => Err(WildcardRejection {
+                method: parts.method.clone(),
+                path: parts.uri.path().to_string(),
+            }),
         }
     }
 }

@@ -47,16 +47,6 @@ pub(crate) struct UpstreamParser {
     /// through [`format::degrade_finish_once`].
     is_finished: bool,
 
-    /// Every compaction item observed verbatim in the upstream's output — a
-    /// streamed `output_item.done` item, a terminal event's output array, or a
-    /// complete JSON body — in observation order. Compaction items are not
-    /// conversation content and map to no IR event; the compaction executor
-    /// integrates them into the outward rendering of the automatic and trigger
-    /// lifecycles, deduplicating by item identity as README §6.8
-    /// requires, since a conformant stream delivers the same item both as a
-    /// done event and inside the terminal array.
-    pub(crate) compaction_output_items: Vec<Value>,
-
     /// Identities of the compaction items already delivered as events, so a
     /// conformant stream's terminal-array copies do not double-deliver.
     delivered_compaction_identities: Vec<String>,
@@ -796,7 +786,19 @@ impl UpstreamEventParser for UpstreamParser {
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
         let event: UpstreamEvent = format::parse_frame(frame)?;
 
-        let mut events = Vec::new();
+        // The opening events precede the compaction pre-pass: a stream whose first frame
+        // carries a compaction item — a streamed `output_item.done` item, or a terminal-only
+        // static-key stream whose sole frame is a terminal response event — must still open
+        // with MessageStart (README §6.2). Only the frame kinds the compaction pre-pass reads
+        // are opened here; every one of them opens the stream in `ingest_event` too, so no
+        // other frame — an unknown type above all — gains a spurious opening, and the
+        // once-only guard turns `ingest_event`'s own opening into a no-op.
+        let mut events = match event.event_type.as_str() {
+            "response.output_item.done" | "response.completed" | "response.incomplete" => {
+                self.message_start_events(event.response.as_ref())
+            }
+            _ => Vec::new(),
+        };
 
         self.record_frame_compaction_items(&event, &mut events);
 
@@ -823,8 +825,9 @@ impl UpstreamEventParser for UpstreamParser {
         let mut events = self.message_start_events(Some(&response));
 
         // The compaction items ride the event stream at the output head (a
-        // native compaction precedes the answer output it precedes upstream)
-        // and are recorded verbatim for the compaction executor besides.
+        // native compaction precedes the answer output it precedes upstream);
+        // the compaction renderers own their outward lifecycle through these
+        // events alone.
         for item in &response.output {
             if let OutputItem::Compaction(item) = item {
                 events.extend(self.record_compaction_item(item, CompactionItemOrigin::Terminal));
@@ -994,7 +997,6 @@ impl UpstreamParser {
             return Vec::new();
         }
 
-        self.compaction_output_items.push(item.clone());
         self.delivered_compaction_identities.push(identity);
 
         vec![IrEvent::CompactionState {
@@ -2075,17 +2077,101 @@ mod tests {
         assert_eq!(error.to_string(), "compaction refused");
     }
 
-    /// The ordinary parser records compaction items verbatim from every
-    /// output source — a complete JSON body, a streamed done item, and the
-    /// terminal event's output array — without mapping them to IR events
-    /// (README §6.8).
+    /// A stream whose first frame is an `output_item.done` carrying a compaction item still
+    /// opens with MessageStart, ahead of the item's `CompactionState` (README §6.2: MessageStart
+    /// is emitted exactly once, first).
     ///
     /// # Panics
     ///
-    /// Panics if a recorded item diverges from its upstream value or an item
-    /// leaks into the IR events.
+    /// Panics if the delivered events diverge from the documented stream shape.
     #[test]
-    fn compaction_items_are_recorded_verbatim_from_every_source() {
+    fn first_frame_carrying_a_compaction_item_still_opens_with_message_start() {
+        let mut parser = UpstreamParser::new();
+
+        let item = serde_json::json!({
+            "type": "compaction",
+            "id": "cmp_1",
+            "encrypted_content": "state",
+        });
+
+        let frame = SseFrame {
+            data: serde_json::json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": item.clone(),
+            })
+            .to_string(),
+            event: None,
+        };
+
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
+        let events = parser.ingest_frame(&frame).expect("a done frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::CompactionState {
+                    payload: item.clone()
+                },
+            ],
+        );
+    }
+
+    /// A terminal-only static-key stream whose sole frame is `response.completed` carrying
+    /// compaction items in the output array still opens with MessageStart, ahead of the items'
+    /// `CompactionState` events (README §6.2, §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delivered events diverge from the documented stream shape.
+    #[test]
+    fn terminal_only_compaction_stream_opens_with_message_start() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_completed(
+            &mut parser,
+            serde_json::json!([
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": "state"},
+                {"type": "compaction", "id": "cmp_2", "encrypted_content": "state-2"},
+            ]),
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::CompactionState {
+                    payload: serde_json::json!({
+                        "type": "compaction",
+                        "id": "cmp_1",
+                        "encrypted_content": "state",
+                    }),
+                },
+                IrEvent::CompactionState {
+                    payload: serde_json::json!({
+                        "type": "compaction",
+                        "id": "cmp_2",
+                        "encrypted_content": "state-2",
+                    }),
+                },
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
+        );
+    }
+
+    /// The compaction items every output source carries — a complete JSON body, a streamed done
+    /// item, and the terminal event's output array — ride the IR as verbatim
+    /// [`IrEvent::CompactionState`] payloads without entering the text channel, and the terminal
+    /// array's copy of an already live-delivered item is deduplicated by the item's identity, so
+    /// every distinct native compaction delivers exactly once (README §6.2, §6.8).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a delivered payload diverges from its upstream value, an item leaks into the
+    /// text channel, or a terminal copy re-delivers a live-delivered item.
+    #[test]
+    fn compaction_items_deliver_verbatim_and_exactly_once() {
         let item = serde_json::json!({
             "type": "compaction",
             "id": "cmp_1",
@@ -2113,73 +2199,70 @@ mod tests {
             ))
             .expect("a completed body parses");
 
-        assert_eq!(parser.compaction_output_items, vec![item.clone()]);
-
-        // The compaction item maps to no IR event: only the message text and
-        // the closing events render.
-        assert!(events.contains(&IrEvent::TextDelta("answer".to_string())));
-
+        // The body's compaction item rides the event stream verbatim at the
+        // output head, and the text channel carries only the message text.
         assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, IrEvent::TextDelta(_)))
-                .count(),
-            1
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "resp_1".to_string(),
+                    model: String::new(),
+                },
+                IrEvent::CompactionState {
+                    payload: item.clone()
+                },
+                IrEvent::TextDelta("answer".to_string()),
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
         );
 
+        // A streamed done item delivers its item live, verbatim.
         #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
-        parser
+        let events = parser
             .ingest_frame(&SseFrame {
                 data: serde_json::json!({
                     "type": "response.output_item.done",
                     "output_index": 0,
-                    "item": item,
+                    "item": item.clone(),
                 })
                 .to_string(),
                 event: None,
             })
             .expect("a done frame parses");
 
-        assert_eq!(parser.compaction_output_items.len(), 2);
+        assert_eq!(
+            events,
+            vec![IrEvent::CompactionState {
+                payload: item.clone()
+            }],
+        );
 
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "the preceding length assertion guarantees two recorded items"
-        )]
-        {
-            assert_eq!(
-                parser.compaction_output_items[1]
-                    .get("id")
-                    .and_then(Value::as_str),
-                Some("cmp_1"),
-            );
-        }
-
-        // Non-compaction items never enter the record.
+        // The terminal array's copies deduplicate against the live delivery by
+        // identity: the same item is skipped, a distinct one delivers.
         #[expect(
             clippy::expect_used,
             reason = "the terminal frame is constructed to parse"
         )]
-        parser
+        let events = parser
             .ingest_frame(&completed_frame(serde_json::json!([
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": "state"},
                 {"type": "reasoning", "summary": []},
                 {"type": "compaction", "id": "cmp_2", "encrypted_content": "state-2"},
             ])))
             .expect("a terminal frame parses");
 
-        assert_eq!(parser.compaction_output_items.len(), 3);
-
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "the preceding length assertion guarantees three recorded items"
-        )]
-        {
-            assert_eq!(
-                parser.compaction_output_items[2]
-                    .get("id")
-                    .and_then(Value::as_str),
-                Some("cmp_2"),
-            );
-        }
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::CompactionState {
+                    payload: serde_json::json!({
+                        "type": "compaction",
+                        "id": "cmp_2",
+                        "encrypted_content": "state-2",
+                    }),
+                },
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
+        );
     }
 }

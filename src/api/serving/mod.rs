@@ -49,17 +49,16 @@ pub(super) trait Surface {
 
     /// Reads the presented credential key from the request per the surface's authentication
     /// convention — the header that carries it and any companion header the convention requires —
-    /// or classifies why the convention cannot accept the request's credential, having logged that
-    /// rejection at the surface's boundary. The returned string is the raw presented secret;
-    /// matching it against the enabled keys and rendering the rejection both stay in the shared
-    /// [`authenticate`].
+    /// or classifies why the convention cannot accept the request's credential. The returned string
+    /// is the raw presented secret; logging the rejection, matching it against the enabled keys,
+    /// and rendering the rejection all stay in the shared [`authenticate`].
     fn extract_credential(request: &Request) -> Result<String, AuthRejection>;
 }
 
 /// Why a request's credential failed the surface's authentication convention before any key
 /// comparison ([`Surface::extract_credential`]): no credential the convention could read, or a
 /// convention requirement beyond the credential header the request failed. The shared
-/// [`authenticate`] renders both through the surface's error envelope.
+/// [`authenticate`] logs and renders both through the surface's error envelope.
 pub(super) enum AuthRejection {
     /// The request presented no credential the surface's convention could read; the shared
     /// pipeline classifies it as the shared invalid-key rejection.
@@ -107,11 +106,14 @@ where
 }
 
 /// Authenticates the request against the enabled gateway API keys, reading the presented
-/// credential through the surface's convention ([`Surface::extract_credential`]). The keys are
-/// read from the live database, so a created, rotated, or disabled key takes effect on the next
-/// request; a database failure renders the surface's internal error instead of an authentication
-/// rejection. A request that passes is stamped with the matching key's row id, which the
-/// completion handlers carry into the request accounting (README §3 *ApiLog*).
+/// credential through the surface's convention ([`Surface::extract_credential`]). Every rejected
+/// credential — one the convention could not read, one failing a convention requirement, or one
+/// matching no enabled key — is logged once at this shared boundary, then rendered through the
+/// surface's error envelope, exactly like every other rejection the pipeline produces. The keys
+/// are read from the live database, so a created, rotated, or disabled key takes effect on the
+/// next request; a database failure renders the surface's internal error instead of an
+/// authentication rejection. A request that passes is stamped with the matching key's row id,
+/// which the completion handlers carry into the request accounting (README §3 *ApiLog*).
 pub(super) async fn authenticate<S>(
     State(database): State<Database>,
     request: Request,
@@ -124,11 +126,15 @@ where
         Ok(presented) => presented,
 
         Err(rejection) => {
+            // Logged once at this shared boundary, like every other rejection the pipeline
+            // renders; the surface's extractor only classifies.
             let error = match rejection {
                 AuthRejection::MissingCredential => Error::InvalidApiKey,
 
                 AuthRejection::Malformed(error) => error,
             };
+
+            log_error("request", &error);
 
             return error_response::<S>(error);
         }

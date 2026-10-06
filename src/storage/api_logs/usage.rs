@@ -15,7 +15,10 @@
 //! needs everything. The reads are never gated by the recording switch: an absent store
 //! answers empty (README §3 *ApiLog*).
 
-use super::store::{ApiLogDay, ApiLogStore};
+use super::{
+    ApiLog,
+    store::{ApiLogDay, ApiLogStore},
+};
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     database::{Row, Value},
@@ -32,15 +35,25 @@ const API_LOG_COLUMNS: &str = "started_at, api_key_id, provider_id, model_id, \
      model_route_id, upstream_http_status";
 
 impl ApiLogStore {
-    /// The retained days a read with `filter` must consider, ascending: the directory
-    /// listing narrowed by the filter's time window — the window's `from` is inclusive and its
-    /// `to` exclusive, so the last candidate day is the day of `to - 1`. The listing runs on
-    /// the blocking thread pool (README §3 *ApiLog Store*).
-    async fn candidate_days(&self, filter: &UsageFilter) -> Result<Vec<ApiLogDay>, Error> {
+    /// The retained days a read must consider, ascending: the directory listing narrowed by
+    /// the read's time bounds — the window's `from` is inclusive and its `to` exclusive, so the
+    /// last candidate day is the day of `to - 1`, and `list`'s pagination cursor is a time
+    /// bound of the same kind (`started_at < before`), so the tighter of the two upper bounds
+    /// applies. A day strictly above the cursor's own day holds only rows at or after the
+    /// cursor, so a deep cursor never re-opens the newer day files it cannot read from. The
+    /// listing runs on the blocking thread pool (README §3 *ApiLog Store*).
+    async fn candidate_days(
+        &self,
+        filter: &UsageFilter,
+        before: Option<i64>,
+    ) -> Result<Vec<ApiLogDay>, Error> {
         let lower = filter.from.map(ApiLogDay::of_started_at);
         let upper = filter
             .to
-            .map(|to| ApiLogDay::of_started_at(to.saturating_sub(1)));
+            .map(|to| ApiLogDay::of_started_at(to.saturating_sub(1)))
+            .into_iter()
+            .chain(before.map(ApiLogDay::of_started_at))
+            .min();
 
         Ok(self
             .retained_days()
@@ -61,7 +74,10 @@ impl ApiLogStore {
     /// filled the page: every row of a newer file outranks every row of an older one — a
     /// row's own stamp selects its file — so the newer files' answers already contain the
     /// whole page and the remaining, strictly older files can contribute nothing to it.
-    /// Within the page, equal stamps never span files, so the stable merge preserves each
+    /// The cursor bounds the walk itself before any file opens: a day strictly above the
+    /// cursor's own day holds only rows at or after the cursor, so the deep cursors normal
+    /// pagination produces never re-open the newer files they cannot read from. Within the
+    /// page, equal stamps never span files, so the stable merge preserves each
     /// file's own `id DESC` tie-break and the result is one global
     /// `ORDER BY started_at DESC, id DESC`.
     ///
@@ -80,7 +96,7 @@ impl ApiLogStore {
 
         let mut page = Vec::new();
 
-        for day in self.candidate_days(filter).await?.into_iter().rev() {
+        for day in self.candidate_days(filter, before).await?.into_iter().rev() {
             let Some(database) = self.open_day_file_for_read(day).await? else {
                 continue;
             };
@@ -168,7 +184,7 @@ impl ApiLogStore {
             merged.insert(UsageBucketKey::default(), UsageAggregate::default());
         }
 
-        for day in self.candidate_days(&selection.filter).await? {
+        for day in self.candidate_days(&selection.filter, None).await? {
             let Some(database) = self.open_day_file_for_read(day).await? else {
                 continue;
             };
@@ -593,58 +609,6 @@ fn text_enum_column<T>(
     }
 }
 
-/// One stored accounting row: the sixteen published columns exactly as stored — the row the
-/// management read surface mirrors (README §3 *ApiLog*). The rowid stays internal: it never
-/// appears here, serving only as the per-file tie-break of the list ordering.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ApiLog {
-    /// Stable requested public route identity.
-    pub(crate) model_route_id: i64,
-    /// First upstream header status; null means no response headers were received.
-    pub(crate) upstream_http_status: Option<i64>,
-    /// Dispatch-start instant in UTC microseconds.
-    pub(crate) started_at: i64,
-
-    /// Row id of the authenticated gateway API key.
-    pub(crate) api_key_id: i64,
-
-    /// Row id of the routed provider.
-    pub(crate) provider_id: i64,
-
-    /// Row id of the routed model.
-    pub(crate) model_id: i64,
-
-    /// Outward completion endpoint the request arrived on.
-    pub(crate) endpoint_type: ApiLogEndpointType,
-
-    /// Whether the client requested a streamed response.
-    pub(crate) is_stream: bool,
-
-    /// HTTP status delivered to the client; `NULL` when no response was ever produced.
-    pub(crate) http_status: Option<i64>,
-
-    /// Recorded outcome of the request.
-    pub(crate) outcome: ApiLogOutcome,
-
-    /// Milliseconds between the dispatch stamp and the accounting instant.
-    pub(crate) duration: i64,
-
-    /// Tokens consumed by the input; `NULL` when the upstream reported no usage.
-    pub(crate) input_tokens: Option<i64>,
-
-    /// Tokens produced by the output, `reasoning_tokens` included; `NULL` without usage.
-    pub(crate) output_tokens: Option<i64>,
-
-    /// Input tokens served from the upstream prompt cache; `NULL` without that breakdown.
-    pub(crate) cached_tokens: Option<i64>,
-
-    /// Input tokens written to the upstream prompt cache; `NULL` without that breakdown.
-    pub(crate) cache_write_tokens: Option<i64>,
-
-    /// Output tokens spent on reasoning; `NULL` without that breakdown.
-    pub(crate) reasoning_tokens: Option<i64>,
-}
-
 /// The bucket key of one aggregation row (README §7.1): a fixed declaration-ordered object
 /// carrying exactly the requested dimensions — `None` for every dimension the aggregation
 /// did not request — while the request order drives only the bucket ordering, never the
@@ -868,9 +832,8 @@ fn compare_bucket_keys(
 mod tests {
     use super::{
         super::{
-            ApiLogWrite,
             store::{FILE_POOL_WAIT, write_pool_connections},
-            test_support::{create_test_store, open_day_file, write},
+            test_support::{api_log, create_test_store, open_day_file},
         },
         *,
     };
@@ -921,19 +884,19 @@ mod tests {
         // Five rows over three files; the two first-day rows share one stamp and are told
         // apart only by their rowids, the second-inserted one carrying the higher rowid.
         store
-            .record(write(first_day + 1_000, 1, 1, 1, [None; 5]))
+            .record(api_log(first_day + 1_000, 1, 1, 1, [None; 5]))
             .await?;
         store
-            .record(write(first_day + 1_000, 1, 1, 3, [None; 5]))
+            .record(api_log(first_day + 1_000, 1, 1, 3, [None; 5]))
             .await?;
         store
-            .record(write(second_day + 1_000, 1, 1, 1, [None; 5]))
+            .record(api_log(second_day + 1_000, 1, 1, 1, [None; 5]))
             .await?;
         store
-            .record(write(third_day + 2_000, 1, 1, 1, [None; 5]))
+            .record(api_log(third_day + 2_000, 1, 1, 1, [None; 5]))
             .await?;
         store
-            .record(write(third_day + 3_000, 1, 1, 2, [None; 5]))
+            .record(api_log(third_day + 3_000, 1, 1, 2, [None; 5]))
             .await?;
 
         let stamps = |logs: &[ApiLog]| logs.iter().map(|log| log.started_at).collect::<Vec<i64>>();
@@ -1032,7 +995,7 @@ mod tests {
             (0, 9, 2, 20, Some(200), 200),
             (1, 8, 1, 10, Some(502), 403),
         ] {
-            let mut row = write(now + offset, 1, provider, model, [None; 5]);
+            let mut row = api_log(now + offset, 1, provider, model, [None; 5]);
             row.model_route_id = route;
             row.http_status = outward;
             row.upstream_http_status = Some(upstream);
@@ -1183,7 +1146,7 @@ mod tests {
             ] = tokens;
 
             store
-                .record(ApiLogWrite {
+                .record(ApiLog {
                     started_at,
                     api_key_id,
                     provider_id,
@@ -1972,6 +1935,63 @@ mod tests {
         assert!(
             matches!(outcome, Err(Error::Drift { .. })),
             "a usage read over a drifted file must fail explicitly, not kill the process"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies that the pagination cursor bounds the day walk itself, not only each file's
+    /// query (README §3 *ApiLog Store*): days strictly above the cursor's own day hold only
+    /// rows at or after the cursor — `started_at < before` excludes them by construction — so
+    /// a page fetched with a deep cursor never even opens the newer day files. The probe
+    /// exploits the read open's drift rejection: a newer day's file stamped for the wrong
+    /// registry would fail the whole page if the walk still reached it, so the page answering
+    /// proves the cursor excluded the file before the open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a store operation or assertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cursor leaves a newer day's file in the walk, or the page diverges from
+    /// the cursor's documented semantics.
+    #[tokio::test]
+    async fn pagination_cursor_bounds_the_day_walk() -> Result<(), Box<dyn StdError>> {
+        let (store, _guard) = create_test_store(90);
+
+        const DAY_MICROS: i64 = 86_400_000_000;
+        let today = unix_time::unix_now_micros();
+        let two_days_ago = today - 2 * DAY_MICROS;
+
+        // One healthy row two days back — the page the cursor targets.
+        store
+            .record(api_log(two_days_ago + 1_000, 1, 1, 1, [None; 5]))
+            .await?;
+
+        // A drifted file at today's day: if the cursor-bounded walk still opened it, the
+        // read would fail with drift instead of answering the page.
+        drop(
+            Database::open(
+                store.day_file_path(ApiLogDay::of_started_at(today)),
+                Registry::Main,
+                write_pool_connections(),
+                FILE_POOL_WAIT,
+            )
+            .await?,
+        );
+
+        let page = list_api_logs(
+            Some(&store),
+            100,
+            Some(two_days_ago + 2_000),
+            &UsageFilter::default(),
+        )
+        .await?;
+
+        assert_eq!(
+            page.iter().map(|log| log.started_at).collect::<Vec<i64>>(),
+            [two_days_ago + 1_000]
         );
 
         Ok(())

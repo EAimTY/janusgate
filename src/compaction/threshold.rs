@@ -289,6 +289,7 @@ mod tests {
                 offset: 0,
                 item: json!({"type": "compaction"}),
                 is_gateway: false,
+                is_compaction: true,
             }],
         );
 

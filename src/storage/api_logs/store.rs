@@ -2,7 +2,7 @@
 //! directory, the hot-file write cache over them, the retention sweep, and the INSERT write
 //! path. The management read engine over the same files lives in [`super::usage`].
 
-use super::ApiLogWrite;
+use super::ApiLog;
 use crate::{
     database::{Database, params, schema::Registry},
     storage::Error,
@@ -196,12 +196,12 @@ impl ApiLogStore {
     /// file, one whose stored schema version or application-id stamp the api_logs registry
     /// cannot interpret, classifies as a recording failure like any other open failure. The
     /// caller logs and swallows every failure: recording never enters any HTTP error domain.
-    pub(super) async fn record(&self, write: ApiLogWrite) -> Result<(), Error> {
+    pub(super) async fn record(&self, row: ApiLog) -> Result<(), Error> {
         let database = self
-            .database_for_write(ApiLogDay::of_started_at(write.started_at))
+            .database_for_write(ApiLogDay::of_started_at(row.started_at))
             .await?;
 
-        insert_api_log(&database, write).await
+        insert_api_log(&database, row).await
     }
 
     /// Returns a pooled connection to `day`'s file, consulting the hot cache and, on a miss,
@@ -547,7 +547,7 @@ impl ApiLogStore {
 ///
 /// Returns [`Error`] when the insert fails — including a schema `CHECK` violation, which
 /// classifies as [`Error::Constraint`].
-async fn insert_api_log(database: &Database, write: ApiLogWrite) -> Result<(), Error> {
+async fn insert_api_log(database: &Database, row: ApiLog) -> Result<(), Error> {
     database
         .execute(
             "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
@@ -556,22 +556,22 @@ async fn insert_api_log(database: &Database, write: ApiLogWrite) -> Result<(), E
              model_route_id, upstream_http_status) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
-                write.started_at,
-                write.api_key_id,
-                write.provider_id,
-                write.model_id,
-                write.endpoint_type.as_str(),
-                i64::from(write.is_stream),
-                write.http_status,
-                write.outcome.as_str(),
-                write.duration,
-                write.input_tokens,
-                write.output_tokens,
-                write.cached_tokens,
-                write.cache_write_tokens,
-                write.reasoning_tokens,
-                write.model_route_id,
-                write.upstream_http_status,
+                row.started_at,
+                row.api_key_id,
+                row.provider_id,
+                row.model_id,
+                row.endpoint_type.as_str(),
+                i64::from(row.is_stream),
+                row.http_status,
+                row.outcome.as_str(),
+                row.duration,
+                row.input_tokens,
+                row.output_tokens,
+                row.cached_tokens,
+                row.cache_write_tokens,
+                row.reasoning_tokens,
+                row.model_route_id,
+                row.upstream_http_status,
             ],
         )
         .await?;
@@ -658,8 +658,8 @@ mod tests {
     /// non-default endpoint, outcome, and stream flag set. The dispatch stamp is caller-chosen,
     /// so a fixture can stay inside the retention window the sweep enforces on every new api-log
     /// file.
-    fn full_write(started_at: i64) -> ApiLogWrite {
-        ApiLogWrite {
+    fn full_write(started_at: i64) -> ApiLog {
+        ApiLog {
             started_at,
             api_key_id: 3,
             provider_id: 5,
@@ -786,7 +786,7 @@ mod tests {
         store.record(full_write(full_stamp)).await?;
 
         let sparse_stamp = unix_time::unix_now_micros();
-        let sparse = ApiLogWrite {
+        let sparse = ApiLog {
             started_at: sparse_stamp,
             api_key_id: 1,
             provider_id: 1,
@@ -1163,7 +1163,7 @@ mod tests {
 
         // The write path reports the drifted open as an ordinary recording failure.
         let outcome = store
-            .record(test_support::write(
+            .record(test_support::api_log(
                 day_start(damaged_day) + 100,
                 1,
                 1,
@@ -1201,7 +1201,7 @@ mod tests {
         // One damaged file must not poison the store: a healthy day's file still records.
         let healthy_day = ApiLogDay::of_started_at(unix_time::unix_now_micros() - MICROS_PER_DAY);
         store
-            .record(test_support::write(
+            .record(test_support::api_log(
                 day_start(healthy_day) + 100,
                 1,
                 1,
@@ -1241,7 +1241,7 @@ mod tests {
 
         // Creating the expired day's file sweeps nothing else and never deletes itself.
         store
-            .record(test_support::write(
+            .record(test_support::api_log(
                 day_start(old_day) + 100,
                 1,
                 1,
@@ -1258,7 +1258,7 @@ mod tests {
         // Creating the fresh day's file sweeps the expired one — now strictly past its
         // retention — leaving the just-created file and the unparseable names alone.
         store
-            .record(test_support::write(
+            .record(test_support::api_log(
                 day_start(fresh_day) + 100,
                 1,
                 1,
@@ -1277,7 +1277,7 @@ mod tests {
         // A late finalization whose file was already retention-deleted recreates the file
         // with that one row — deterministic attribution, accepted.
         store
-            .record(test_support::write(
+            .record(test_support::api_log(
                 day_start(old_day) + 200,
                 1,
                 1,
@@ -1304,7 +1304,7 @@ mod tests {
         assert!(store.day_file_path(planted_day).exists());
 
         store
-            .record(test_support::write(
+            .record(test_support::api_log(
                 day_start(fresh_day) + 200,
                 1,
                 1,

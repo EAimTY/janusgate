@@ -41,6 +41,13 @@ pub(crate) struct UpstreamParser {
     /// §6.3's content-bearing-event rule, as the Responses parser gates it) and leaves the
     /// fallback live.
     is_step_delivered: bool,
+
+    /// Whether a function call was already delivered live: a closing done always carries the
+    /// complete call — the streamed argument bytes, or the empty object a zero-argument call's
+    /// state assembles to — so the terminal frame's `function_call` copies are skipped and the
+    /// call is never delivered a second time under a fresh index. An opening and a payload-less
+    /// delta deliver no call and leave the terminal call recovery live.
+    has_delivered_call: bool,
 }
 
 /// One upstream step tracked across stream frames. The official `step.stop` carries only the index,
@@ -854,12 +861,11 @@ impl UpstreamParser {
                 arguments,
                 ..
             }) => {
-                // The assembled call is content when it carries the streamed argument bytes;
-                // a bare opening closed by a stop delivers nothing and leaves the terminal
-                // fallback live (the thought arm's empty-text done likewise carries none).
-                if !arguments.is_empty() {
-                    self.is_step_delivered = true;
-                }
+                // The done always delivers the complete call — the streamed argument bytes,
+                // or the empty object a zero-argument call's state assembles to — so it marks
+                // the call delivered and silences the terminal resource's `function_call`
+                // copies: recovering the same call there would deliver it twice.
+                self.has_delivered_call = true;
 
                 events.push(IrEvent::ToolCallDone {
                     index: call_index,
@@ -902,6 +908,15 @@ impl UpstreamParser {
         };
 
         for step in steps {
+            // A call delivered live silences the terminal copies of calls: the terminal
+            // resource echoes the steps a conformant stream already delivered, and re-ingesting
+            // an echoed call would deliver it a second time under a fresh index the
+            // aggregator's per-index dedup cannot catch. Steps of the kinds no live event
+            // delivered stay recoverable.
+            if matches!(step, CompleteStep::FunctionCall(_)) && self.has_delivered_call {
+                continue;
+            }
+
             events.extend(self.ingest_complete_step(step)?);
         }
 
@@ -2245,6 +2260,227 @@ mod tests {
                 })
             )
             .is_empty(),
+        );
+    }
+
+    /// A conformant zero-argument call — opened and closed with no streamed argument bytes —
+    /// is delivered exactly once: its stop-time done carries the complete call (the empty
+    /// arguments being the call's full state), so the terminal resource's `function_call`
+    /// echo is skipped while steps of the kinds no live event delivered stay recoverable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the echoed call is delivered a second time or the recovered thought
+    /// diverges from the body-path rendering.
+    #[test]
+    fn delivers_a_zero_argument_call_once_behind_a_steps_echo() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_9", "model": "upstream-model"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 2,
+                "step": {"type": "function_call", "id": "call_7", "name": "search"},
+            }),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 2}),
+            ),
+            vec![IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_7".to_string(),
+                name: "search".to_string(),
+                arguments: String::new(),
+                thought_signature: None,
+            }],
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({
+                    "interaction": {
+                        "id": "int_9",
+                        "status": "completed",
+                        "steps": [
+                            {"type": "thought", "summary": [
+                                {"type": "text", "text": "considered"},
+                            ], "signature": "sig-t"},
+                            {"type": "function_call", "id": "call_7", "name": "search",
+                             "arguments": {"q": "hi"}},
+                        ],
+                    },
+                }),
+            ),
+            vec![
+                IrEvent::ReasoningDone {
+                    text: "considered".to_string(),
+                    signature: Some("sig-t".to_string()),
+                    opaque: serde_json::json!({
+                        "type": "thought",
+                        "summary": [{"type": "text", "text": "considered"}],
+                        "signature": "sig-t",
+                    }),
+                },
+                IrEvent::finish(IrFinishReason::Stop),
+            ],
+            "the echoed call must not be delivered a second time",
+        );
+    }
+
+    /// Without a terminal fallback the zero-argument call's stop-time delivery stands alone:
+    /// the done carries the complete call with its empty arguments, and it is the only
+    /// delivery the call ever gets.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delivery or the step-less terminal diverges from the contract.
+    #[test]
+    fn keeps_the_zero_argument_call_delivery_without_a_terminal_fallback() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_11"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 0,
+                "step": {"type": "function_call", "id": "call_1", "name": "search"},
+            }),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 0}),
+            ),
+            vec![IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_1".to_string(),
+                name: "search".to_string(),
+                arguments: String::new(),
+                thought_signature: None,
+            }],
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({
+                    "interaction": {"id": "int_11", "status": "requires_action"},
+                }),
+            ),
+            vec![IrEvent::finish(IrFinishReason::ToolCall)],
+        );
+    }
+
+    /// A multi-call stream mixing streamed and zero-argument calls delivers each call
+    /// exactly once — the streamed call with its bytes, the zero-argument call with its
+    /// empty object — and the terminal echo of both calls is skipped with the rest of the
+    /// terminal copies, which the streamed bytes already silenced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any call is delivered twice or the terminal frame emits content.
+    #[test]
+    fn delivers_each_call_of_a_mixed_stream_exactly_once() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_12"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 0,
+                "step": {"type": "function_call", "id": "call_a", "name": "search"},
+            }),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_DELTA,
+            serde_json::json!({
+                "index": 0,
+                "delta": {"type": "arguments_delta", "arguments": r#"{"q":"hi"}"#},
+            }),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 0}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({
+                "index": 1,
+                "step": {"type": "function_call", "id": "call_b", "name": "find"},
+            }),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 1}),
+            ),
+            vec![IrEvent::ToolCallDone {
+                index: 1,
+                call_id: "call_b".to_string(),
+                name: "find".to_string(),
+                arguments: String::new(),
+                thought_signature: None,
+            }],
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({
+                    "interaction": {
+                        "id": "int_12",
+                        "status": "requires_action",
+                        "steps": [
+                            {"type": "function_call", "id": "call_a", "name": "search",
+                             "arguments": {"q": "hi"}},
+                            {"type": "function_call", "id": "call_b", "name": "find",
+                             "arguments": {}},
+                            {"type": "model_output", "content": [
+                                {"type": "text", "text": "hi"},
+                            ]},
+                        ],
+                    },
+                }),
+            ),
+            vec![IrEvent::finish(IrFinishReason::ToolCall)],
+            "the streamed calls must not be re-delivered from the terminal echo",
         );
     }
 }

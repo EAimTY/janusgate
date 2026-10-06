@@ -277,7 +277,7 @@ pub(super) async fn aggregated_response_task<TFormat>(
 /// Starts the accepted request's outward codec projection: a checkpoint-continue
 /// lifecycle omits its already rendered checkpoint prefix, an ordinary lifecycle
 /// projects the complete accepted client-visible history.
-pub(super) fn begin_accepted_projection(
+fn begin_accepted_projection(
     accepted: &crate::affinity::Accepted,
     renderer: &mut dyn ClientSseRenderer,
 ) {

@@ -1298,6 +1298,7 @@ mod tests {
             offset: 0,
             item: block,
             is_gateway: false,
+            is_compaction: true,
         });
 
         let body = upstream_body(&ir, false);
@@ -1339,6 +1340,7 @@ mod tests {
             offset: 1,
             item: block,
             is_gateway: false,
+            is_compaction: true,
         });
 
         let body = upstream_body(&ir, false);
@@ -1369,6 +1371,7 @@ mod tests {
             offset: 0,
             item: json!({"type": "compaction", "id": "x", "encrypted_content": "opaque"}),
             is_gateway: false,
+            is_compaction: true,
         });
 
         assert!(

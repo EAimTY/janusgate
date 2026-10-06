@@ -235,7 +235,7 @@ async fn handle_create(
     }
 
     let credentials = StoredCredentials::ApiKey {
-        api_key: request.api_key.clone(),
+        api_key: request.api_key,
     };
 
     let provider = storage::providers::insert_provider(

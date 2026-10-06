@@ -1,8 +1,8 @@
 //! Shared fixtures for the api-log store and read-engine tests: the store constructor, the raw
-//! day-file opener, and the write fixture both test modules place rows with.
+//! day-file opener, and the row fixture both test modules place rows with.
 
 use super::{
-    ApiLogWrite,
+    ApiLog,
     store::{ApiLogDay, ApiLogStore, FILE_POOL_WAIT, write_pool_connections},
 };
 use crate::{
@@ -48,15 +48,15 @@ pub(super) async fn open_day_file(store: &ApiLogStore, day: ApiLogDay) -> Databa
     .unwrap()
 }
 
-/// One read-fixture write: fixed identity and terminal facts, caller-chosen dispatch time and
+/// One read-fixture row: fixed identity and terminal facts, caller-chosen dispatch time and
 /// token columns (`[input, output, cached, cache_write, reasoning]`).
-pub(super) fn write(
+pub(super) fn api_log(
     started_at: i64,
     api_key_id: i64,
     provider_id: i64,
     model_id: i64,
     tokens: [Option<i64>; 5],
-) -> ApiLogWrite {
+) -> ApiLog {
     let [
         input_tokens,
         output_tokens,
@@ -65,7 +65,7 @@ pub(super) fn write(
         reasoning_tokens,
     ] = tokens;
 
-    ApiLogWrite {
+    ApiLog {
         started_at,
         api_key_id,
         provider_id,

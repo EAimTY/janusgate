@@ -270,9 +270,11 @@ pub(crate) fn log_error(operation: &str, error: &Error) {
 
 impl From<InvalidRequest> for Error {
     fn from(error: InvalidRequest) -> Self {
+        let message = error.to_string();
+
         Self::MalformedRequest {
-            param: error.param.clone(),
-            message: error.to_string(),
+            param: error.param,
+            message,
         }
     }
 }
@@ -353,8 +355,10 @@ impl From<GatewayError> for Error {
             // The provider-failure classification lives once, in `From<ProviderError>`.
             GatewayError::Provider(error) => Self::from(error),
 
-            GatewayError::Storage(StorageError::InactiveApiKey { .. }) => Self::InvalidApiKey,
-            GatewayError::Storage(_) | GatewayError::Internal { .. } => Self::Internal,
+            // The storage-failure classification lives once, in `From<StorageError>`.
+            GatewayError::Storage(error) => Self::from(error),
+
+            GatewayError::Internal { .. } => Self::Internal,
         }
     }
 }

@@ -185,7 +185,7 @@ pub(crate) struct DatabaseConfig {
 }
 
 /// Administrative management API configuration.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManagementApiConfig {
     /// Bearer-less administrative authorization token required by
@@ -197,6 +197,21 @@ pub(crate) struct ManagementApiConfig {
     /// Private Network Access.
     #[serde(default)]
     pub(crate) cors: CorsConfig,
+}
+
+impl fmt::Debug for ManagementApiConfig {
+    // The token is a secret: the rendering names the token's presence and length, never its
+    // value.
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagementApiConfig")
+            .field(
+                "token",
+                &format_args!("<secret: {} characters>", self.token.len()),
+            )
+            .field("cors", &self.cors)
+            .finish()
+    }
 }
 
 /// CORS configuration for an HTTP sub-router.

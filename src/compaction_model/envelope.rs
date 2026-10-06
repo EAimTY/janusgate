@@ -79,10 +79,10 @@ pub(crate) struct RetainedUnit {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NativeWindowPayload {
-    /// Stable producer identity: the originating provider instance, spelled
-    /// `provider:{providers.id}`. A credential refresh is not a new producer;
-    /// the endpoint/account/model the row points at is the compatibility
-    /// surface this identifier names.
+    /// Stable producer identity: the originating provider instance, spelled by
+    /// [`NativeWindowPayload::producer_instance`] — `provider:{providers.id}`.
+    /// A credential refresh is not a new producer; the endpoint/account/model
+    /// the row points at is the compatibility surface this identifier names.
     pub(crate) producer_instance_id: String,
 
     /// The originating upstream model identifier the native state was produced
@@ -107,6 +107,17 @@ pub(crate) struct NativeWindowPayload {
 
     /// The exact native replay window.
     pub(crate) window: NativeReplayWindow,
+}
+
+impl NativeWindowPayload {
+    /// The wire spelling of one provider instance's producer identity:
+    /// `provider:{providers.id}`. The one constructor of the spelling every
+    /// producer comparison shares — a hand-derived copy that drifts would
+    /// match no envelope and fail replay as inaccessible state.
+    #[must_use]
+    pub(crate) fn producer_instance(provider_id: i64) -> String {
+        format!("provider:{provider_id}")
+    }
 }
 
 /// Prefix requirements of signed native state: digests of the exact system

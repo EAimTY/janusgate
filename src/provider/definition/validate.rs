@@ -214,6 +214,20 @@ pub fn allowed_render_options(format: UpstreamFormat) -> &'static [RenderOption]
     }
 }
 
+/// The authorize-URL parameter names the authorize-URL builder appends itself — the
+/// counterpart list to `build_authorize_url` in `src/provider/oauth/flow.rs`, carrying the
+/// names spelled exactly as the builder appends them and matched case-sensitively. An
+/// `extra_params` row carrying one would render a duplicate query parameter whose resolution
+/// is the upstream's, so the write boundary rejects the name.
+const BUILDER_OWNED_AUTHORIZE_PARAMS: [&str; 6] = [
+    "response_type",
+    "client_id",
+    "redirect_uri",
+    "code_challenge",
+    "code_challenge_method",
+    "state",
+];
+
 impl DefinitionPayload {
     /// Validates the payload against every write-time rule (README §5), in document order of
     /// the descriptor sections.
@@ -377,6 +391,73 @@ impl DefinitionPayload {
             ));
         }
 
+        // A credential-stage expression referencing the `client_secret` part while the recipe
+        // configures none is guaranteed drift: every stage constructor that admits the part
+        // receives the configured secret, so a secret-less credential leaves the part absent
+        // at every admitting stage and the reference fails every expression evaluation (README
+        // §5.1) — the same stored-drift shape the provisioning `secret` rule at the end of
+        // this method enforces for the flow's token. The check reads every admitting surface
+        // in payload document order.
+        if client_secret.is_none() {
+            let mut stranded: Vec<(&str, ExpressionSurface<'_>)> = Vec::new();
+
+            if let Grant::AuthorizationCode {
+                authorize_url,
+                extra_params,
+                ..
+            } = grant
+            {
+                stranded.push(("authorize URL", ExpressionSurface::String(authorize_url)));
+                stranded.push((
+                    "authorize-URL parameter",
+                    ExpressionSurface::Parameters(extra_params),
+                ));
+            }
+
+            if let Grant::Device { authorization, .. } = grant {
+                stranded.push((
+                    "device authorization",
+                    ExpressionSurface::Control(&authorization.request),
+                ));
+            }
+
+            stranded.push((
+                "token exchange",
+                ExpressionSurface::Control(&exchange.request),
+            ));
+
+            if let TokenRefresh::Grant { request, .. } = refresh {
+                stranded.push(("token refresh", ExpressionSurface::Control(request)));
+            }
+
+            if let Some(steps) = &self.provisioning {
+                for step in steps {
+                    stranded.push((
+                        "provisioning step",
+                        ExpressionSurface::Control(&step.request),
+                    ));
+
+                    if let Some(poll) = &step.poll {
+                        stranded.push((
+                            "provisioning poll",
+                            ExpressionSurface::Control(&poll.request),
+                        ));
+                    }
+                }
+            }
+
+            for (what, surface) in stranded {
+                if surface.references(&ValueExpr::ClientSecret) {
+                    return Err(ValidationError::new(format!(
+                        "{what} references the `client_secret` value part, but the credential \
+                         configures no client secret: every stage that admits the part \
+                         receives the configured secret, so the reference is unsatisfiable \
+                         and fails every evaluation"
+                    )));
+                }
+            }
+        }
+
         match grant {
             Grant::AuthorizationCode {
                 authorize_url,
@@ -388,6 +469,21 @@ impl DefinitionPayload {
 
                 if redirect_uri.is_empty() {
                     return Err(ValidationError::new("OAuth redirect URI must not be empty"));
+                }
+
+                for row in extra_params {
+                    if BUILDER_OWNED_AUTHORIZE_PARAMS.contains(&row.name.as_str()) {
+                        return Err(ValidationError::new(format!(
+                            "authorize-URL parameter `{}` duplicates a parameter the \
+                             authorize-URL builder appends itself: the duplicate row renders \
+                             two same-named query parameters whose resolution is the \
+                             upstream's — a duplicated `redirect_uri` breaks RFC 6749 §4.1.3's \
+                             identical-redirect_uri requirement on every exchange, and a \
+                             duplicated `state` makes the flow's completion depend on which \
+                             spelling the upstream echoes back",
+                            row.name
+                        )));
+                    }
                 }
 
                 let mut walk = ExpressionWalk::new(Stage::AuthorizeUrl, slots);
@@ -520,6 +616,25 @@ impl DefinitionPayload {
             ));
         }
 
+        // The converse of the s256 rule: the begin mints the verifier exactly when the grant
+        // declares PKCE S256 — its presence is the challenge pair's marker (RFC 7636 §4.2) —
+        // so an exchange under `pkce: none` referencing the `code_verifier` part references a
+        // value the stage environment never carries: stored drift failing every exchange's
+        // evaluation (README §5.1), the same guaranteed-absent shape the client-secret rule
+        // above enforces.
+        if let Grant::AuthorizationCode {
+            pkce: Pkce::None, ..
+        } = grant
+            && ExpressionSurface::Control(&exchange.request).references(&ValueExpr::CodeVerifier)
+        {
+            return Err(ValidationError::new(
+                "authorization-code grant with `pkce: none` must not reference the \
+                 `code_verifier` value part in its token exchange request: the begin mints \
+                 the verifier exactly when the grant declares `s256`, so the reference is \
+                 unsatisfiable and fails every exchange",
+            ));
+        }
+
         // RFC 6749 §4.1.3: the token request repeats the `redirect_uri`, identically, whenever
         // the authorization request included it — and the builder appends the definition's
         // `redirect_uri` to every authorize URL — so an exchange request that never references
@@ -646,16 +761,35 @@ impl DefinitionPayload {
             ));
         }
 
-        // The refresh token must be produced before the refresh grant presents it.
-        let produces_refresh_token = exchange
+        // The refresh token must have a guaranteed source before the refresh grant presents
+        // it: a required exchange mapping, or a required extraction in an unconditional
+        // provisioning step. The grant's request references the part mandatorily (the rule
+        // below), so an optional-only source would let an upstream legitimately omit the
+        // token — RFC 6749 §5.1 leaves it optional in a success response — and strand every
+        // renewal on the absent stored value, while a required source fails the producing
+        // flow outright and keeps the stored token's presence guaranteed: the same
+        // guaranteed-source shape the device grant's expiry rule above enforces. A
+        // conditional step's extraction cannot guarantee the token — the step runs only
+        // while its guard slot is absent, which may coincide with the optional mapping's
+        // omission.
+        let produces_required_refresh_token = exchange
             .response
             .fields
             .iter()
-            .any(|field| matches!(field.target, Target::RefreshToken))
-            || self
-                .provisioning
-                .as_ref()
-                .is_some_and(|steps| extractions_target(steps, &Target::RefreshToken));
+            .any(|field| matches!(field.target, Target::RefreshToken) && field.required)
+            || self.provisioning.as_ref().is_some_and(|steps| {
+                steps.iter().any(|step| {
+                    step.skip_if.is_none()
+                        && (step.extract.iter().any(|extraction| {
+                            matches!(extraction.target, Target::RefreshToken) && extraction.required
+                        }) || step.poll.as_ref().is_some_and(|poll| {
+                            poll.result_extract.iter().any(|extraction| {
+                                matches!(extraction.target, Target::RefreshToken)
+                                    && extraction.required
+                            })
+                        }))
+                })
+            });
 
         match refresh {
             TokenRefresh::Grant {
@@ -663,11 +797,15 @@ impl DefinitionPayload {
                 response,
                 terminal_codes,
             } => {
-                if !produces_refresh_token {
+                if !produces_required_refresh_token {
                     return Err(ValidationError::new(
-                        "refresh grant requires the credential to carry a refresh token: map \
-                         the `refresh_token` target in the exchange response or extract it in a \
-                         provisioning step",
+                        "refresh grant requires the credential's refresh token to have a \
+                         guaranteed source: map the `refresh_token` target `required` in the \
+                         exchange response or extract it through a `required` extraction in an \
+                         unconditional provisioning step — an optional-only source admits an \
+                         upstream that omits the token (RFC 6749 §5.1 leaves it optional in a \
+                         success response), and the grant's mandatory `refresh_token` \
+                         reference then fails every renewal on the absent stored token",
                     ));
                 }
 
@@ -3291,6 +3429,58 @@ mod tests {
         );
     }
 
+    /// The authorize-URL builder appends the standard parameters itself — `response_type`,
+    /// `client_id`, `redirect_uri`, the S256 challenge pair when PKCE is configured, and
+    /// `state` last — so an extra parameter carrying one of those names renders a duplicate
+    /// query row whose resolution is the upstream's: a duplicated `redirect_uri` breaks RFC
+    /// 6749 §4.1.3's identical-redirect_uri requirement on every exchange, and a duplicated
+    /// `state` makes the flow's completion depend on which spelling the upstream echoes back.
+    /// The write boundary rejects the shadowing names, matched case-sensitively exactly as the
+    /// builder spells them; the researched shapes' own parameters — scopes, provider flags,
+    /// markers — stay valid.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a builder-owned extra parameter name validates.
+    #[test]
+    fn rejects_extra_params_shadowing_the_builder_owned_names() {
+        for name in [
+            "response_type",
+            "client_id",
+            "redirect_uri",
+            "code_challenge",
+            "code_challenge_method",
+            "state",
+        ] {
+            let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+                payload["credential"]["grant"]["extra_params"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({
+                      "name": name,
+                      "value": [{ "type": "literal", "value": "shadow" }]
+                    }));
+            });
+
+            let error = outcome.unwrap_err();
+
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains("builder appends itself"), "{error}");
+        }
+
+        // A different case is an ordinary parameter: the match is the builder's own spelling.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["grant"]["extra_params"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "name": "State",
+                  "value": [{ "type": "literal", "value": "shadow" }]
+                }));
+        })
+        .unwrap();
+    }
+
     /// The configured client credentials ride exactly the stages whose evaluation environments
     /// carry them: provisioning runs after the token exchange, so like the OAuth flow stages it
     /// receives the credentials and its requests may reference both parts.
@@ -3423,8 +3613,8 @@ mod tests {
     }
 
     /// The OAuth sections must agree (README §5.3): the access token is mapped by the exchange
-    /// or a provisioning step, a refresh grant requires a produced refresh token, reprovisioning
-    /// requires provisioning steps, and terminal-code lists are non-empty.
+    /// or a provisioning step, a refresh grant requires a guaranteed refresh-token source,
+    /// reprovisioning requires provisioning steps, and terminal-code lists are non-empty.
     ///
     /// # Panics
     ///
@@ -3558,6 +3748,42 @@ mod tests {
         });
 
         outcome.unwrap();
+    }
+
+    /// The converse of the `s256` rule: the begin mints the verifier exactly when the grant
+    /// declares PKCE S256 — its presence is the challenge pair's marker — so an exchange under
+    /// `pkce: none` referencing the `code_verifier` value part references a value the stage
+    /// environment never carries and is rejected at the write boundary — stored drift failing
+    /// every exchange (README §5.1) — instead of failing at the first flow's exchange.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a verifier reference under `pkce: none` validates.
+    #[test]
+    fn rejects_a_code_verifier_reference_without_pkce() {
+        // The Antigravity shape is PKCE-free; pointing one of its exchange fields at the
+        // verifier strands the reference.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"][3]["value"] =
+                serde_json::json!([{ "type": "code_verifier" }]);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("code_verifier") && error.contains("pkce"),
+            "{error}"
+        );
+
+        // Declaring `s256` gives the same exchange its verifier: the reference becomes the
+        // s256 rule's required carry.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"][3]["value"] =
+                serde_json::json!([{ "type": "code_verifier" }]);
+        })
+        .unwrap();
     }
 
     /// RFC 6749 §4.1.3: the token request repeats the redirect URI whenever the authorization
@@ -3699,8 +3925,8 @@ mod tests {
     fn requires_a_secret_less_exchange_to_reference_the_client_id() {
         // The Antigravity shape's exchange presents the client ID as its third form field;
         // dropping it — and the credential's secret, which is the RFC's not-authenticating
-        // condition, together with the secret field presenting it — leaves the token endpoint
-        // with no client identification at all.
+        // condition, together with the secret field presenting it and the refresh request's
+        // own stranded one — leaves the token endpoint with no client identification at all.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
 
@@ -3710,6 +3936,11 @@ mod tests {
 
             fields.remove(3);
             fields.remove(2);
+
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
         });
 
         let error = outcome.unwrap_err();
@@ -3732,8 +3963,8 @@ mod tests {
     /// Panics if a client-ID-carrying secret-less exchange is rejected.
     #[test]
     fn accepts_a_secret_less_exchange_referencing_the_client_id() {
-        // The fixture's own form field, once the credential's secret is gone together with the
-        // exchange's secret field presenting it.
+        // The fixture's own form field, once the credential's secret is gone together with
+        // the exchange's and refresh request's secret fields presenting it.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
 
@@ -3742,6 +3973,11 @@ mod tests {
                 .unwrap();
 
             fields.remove(3);
+
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
         });
 
         outcome.unwrap();
@@ -3757,6 +3993,11 @@ mod tests {
             fields.remove(3);
             fields.remove(2);
 
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+
             satisfy_via_query_row(payload, ControlStage::Exchange, "client_id");
         });
 
@@ -3767,6 +4008,11 @@ mod tests {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
 
             payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
                 .as_array_mut()
                 .unwrap()
                 .remove(3);
@@ -3985,6 +4231,72 @@ mod tests {
         outcome.unwrap();
     }
 
+    /// The refresh grant's mandatory `refresh_token` reference meets the stored token, so the
+    /// token's source must be guaranteed: a required exchange mapping, or a required
+    /// extraction in an unconditional provisioning step. An optional-only producer admits an
+    /// upstream that legitimately omits the token — RFC 6749 §5.1 leaves it optional in a
+    /// success response — and leaves every renewal failing on the absent stored token: the
+    /// same guaranteed-source shape the device grant's expiry rule enforces. A conditional
+    /// step's extraction cannot guarantee the token either — the step runs only while its
+    /// guard slot is absent, which may coincide with the optional mapping's omission.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an optional-only refresh-token source validates.
+    #[test]
+    fn rejects_a_refresh_grant_whose_refresh_token_source_is_optional() {
+        // Softening the Antigravity exchange's `refresh_token` mapping to optional.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["response"]["fields"][1]["required"] =
+                serde_json::json!(false);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("refresh_token"), "{error}");
+        assert!(error.contains("required"), "{error}");
+
+        // Moving the token's sole source into a conditional provisioning step is the same
+        // rejection: the guard slot may hold precisely when the upstream omitted the token.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["response"]["fields"][1]["target"] =
+                serde_json::json!({ "type": "id_token" });
+
+            payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "path": ["refresh_token"],
+                  "target": {"type": "refresh_token"},
+                  "shape": {"type": "string"},
+                  "required": true
+                }));
+
+            payload["provisioning"][0]["skip_if"] = serde_json::json!("project");
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("refresh_token"), "{error}");
+
+        // A required extraction in an unconditional step is a guaranteed source.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["response"]["fields"][1]["target"] =
+                serde_json::json!({ "type": "id_token" });
+
+            payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "path": ["refresh_token"],
+                  "target": {"type": "refresh_token"},
+                  "shape": {"type": "string"},
+                  "required": true
+                }));
+        })
+        .unwrap();
+    }
+
     /// RFC 6749 §6: a refresh-token grant request re-authenticates the client the same way the
     /// token endpoint requires (RFC 6749 §4.1.3's §3.2.1 rule), so a secret-less credential
     /// whose refresh grant never references the `client_id` value part is rejected at the write
@@ -3999,10 +4311,16 @@ mod tests {
     fn requires_a_secret_less_refresh_grant_to_reference_the_client_id() {
         // The Antigravity shape's refresh request presents the client ID as its third form
         // field; dropping it — and the credential's secret, which is the RFC's
-        // not-authenticating condition, together with the secret field presenting it — leaves
-        // every renewal with no client identification at all.
+        // not-authenticating condition, together with the secret fields presenting it in the
+        // refresh request and the exchange besides — leaves every renewal with no client
+        // identification at all.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
 
             let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
                 .as_array_mut()
@@ -4032,16 +4350,20 @@ mod tests {
     /// Panics if a client-ID-carrying secret-less refresh grant is rejected.
     #[test]
     fn accepts_a_secret_less_refresh_grant_referencing_the_client_id() {
-        // The fixture's own form field, once the credential's secret is gone together with the
-        // refresh request's secret field presenting it.
+        // The fixture's own form field, once the credential's secret is gone together with
+        // the refresh request's and the exchange's secret fields presenting it.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
 
-            let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
                 .as_array_mut()
-                .unwrap();
+                .unwrap()
+                .remove(3);
 
-            fields.remove(3);
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
         });
 
         outcome.unwrap();
@@ -4049,6 +4371,11 @@ mod tests {
         // As a query row on the refresh request.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
 
             let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
                 .as_array_mut()
@@ -4065,6 +4392,11 @@ mod tests {
         // Inside a coalesce's arguments.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
 
             payload["credential"]["refresh"]["request"]["body"]["fields"]
                 .as_array_mut()
@@ -4086,6 +4418,129 @@ mod tests {
         });
 
         outcome.unwrap();
+    }
+
+    /// A credential-stage expression referencing the `client_secret` value part while the
+    /// recipe configures none is rejected at the write boundary: every stage that admits the
+    /// part receives the configured secret, so a secret-less credential leaves it absent at
+    /// every admitting stage and the reference fails every expression evaluation as stored
+    /// drift (README §5.1) — the same guaranteed-absent shape the provisioning `secret` rule
+    /// enforces. The rule reads every admitting surface in payload document order: the
+    /// authorize URL and its extra parameters, the device authorization request, the token
+    /// exchange, the refresh grant, and provisioning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a secret-less credential's stranded `client_secret` reference validates.
+    #[test]
+    fn rejects_client_secret_references_without_a_configured_secret() {
+        // The exchange stage: dropping the recipe's secret strands the exchange's
+        // `client_secret` form field.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("token exchange") && error.contains("client_secret"),
+            "{error}"
+        );
+
+        // The refresh grant stage: with the exchange's stranded field gone, the refresh
+        // request's own surfaces the drift.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("token refresh") && error.contains("client_secret"),
+            "{error}"
+        );
+
+        // The authorize-URL stage: the secret rides no expression there either.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+
+            payload["credential"]["grant"]["authorize_url"] = json!([
+              { "type": "literal", "value": "https://accounts.example/auth?secret=" },
+              { "type": "client_secret" }
+            ]);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("authorize URL") && error.contains("client_secret"),
+            "{error}"
+        );
+
+        // The device-authorization stage: the secret-less Copilot shape's authorization
+        // request gains a stranded reference.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["authorization"]["request"]["headers"] = json!([
+              { "name": "X-Client-Secret", "value": [{ "type": "client_secret" }] }
+            ]);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("device authorization") && error.contains("client_secret"),
+            "{error}"
+        );
+
+        // The provisioning stage: the secret-less Copilot shape's step header gains one too.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["provisioning"][0]["request"]["headers"][0]["value"] = json!([
+              { "type": "literal", "value": "Basic " },
+              { "type": "client_id" },
+              { "type": "literal", "value": ":" },
+              { "type": "client_secret" }
+            ]);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains("provisioning") && error.contains("client_secret"),
+            "{error}"
+        );
+
+        // The honest secret-less spelling carries no `client_secret` reference anywhere: the
+        // Antigravity shape with its secret and every stranded presentation field dropped
+        // validates.
+        mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(3);
+        })
+        .unwrap();
     }
 
     /// RFC 6749 §6: the refresh response carries the access token — REQUIRED — and a declared

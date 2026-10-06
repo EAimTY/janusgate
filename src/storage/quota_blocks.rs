@@ -196,11 +196,24 @@ pub(crate) async fn record_rejection(
         if current.generation != captured_generation {
             return Ok::<bool, Error>(false);
         }
-        let blocks = read_blocks(&mut transaction, provider_id).await?;
-        let blocked_until = blocks
-            .iter()
-            .find(|block| block.key == key)
-            .and_then(|block| block.blocked_until)
+        // The preserved reset of this one restriction is a primary-key point lookup — the
+        // account's other blocks never matter here, so none are loaded or decoded.
+        let rows = transaction
+            .query(
+                "SELECT blocked_until FROM provider_quota_blocks \
+                 WHERE provider_id = ?1 AND restriction_key = ?2",
+                params![provider_id, encoded(key)],
+            )
+            .await?;
+
+        // A preserved reset survives only while it stays strictly future against the NEW
+        // observation — the stamp this rejection then writes, so the schema CHECK
+        // `blocked_until > observed_at` holds on the upserted row by construction.
+        let blocked_until = rows
+            .first()
+            .map(|row| row.get::<Option<i64>>(0))
+            .transpose()?
+            .flatten()
             .filter(|reset| *reset > observed_at);
         upsert_block(
             &mut transaction,

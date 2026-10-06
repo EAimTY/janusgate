@@ -17,7 +17,7 @@
 
 use crate::{
     accounting::ApiLogEndpointType,
-    api::{Error, log_error, serving},
+    api::{Error, serving},
     compaction_model::support_facts::CompactionSupportFacts,
     context::Context,
     database::Database,
@@ -49,20 +49,14 @@ impl serving::Surface for Surface {
             .get("x-api-key")
             .and_then(|value| value.to_str().ok())
         else {
-            log_error("request", &Error::InvalidApiKey);
-
             return Err(serving::AuthRejection::MissingCredential);
         };
 
         if !request.headers().contains_key("anthropic-version") {
-            let error = Error::MalformedRequest {
+            return Err(serving::AuthRejection::Malformed(Error::MalformedRequest {
                 param: Some("anthropic-version".to_string()),
                 message: "The anthropic-version header is required".to_string(),
-            };
-
-            log_error("request", &error);
-
-            return Err(serving::AuthRejection::Malformed(error));
+            }));
         }
 
         Ok(presented.to_owned())

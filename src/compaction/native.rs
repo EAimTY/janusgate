@@ -262,12 +262,9 @@ pub(crate) async fn responses_standalone(
         }
     };
 
-    let bytes = response
-        .bytes()
+    let bytes = crate::http_body::read_success_body(response)
         .await
-        .map_err(|error| GatewayError::Unavailable {
-            detail: format!("upstream read failed: {error}"),
-        })?;
+        .map_err(GatewayError::from)?;
 
     let body = gateway::unwrap_response(&bytes, &operation.response_unwrap)?;
 
@@ -350,12 +347,9 @@ pub(crate) async fn count_tokens(
     .await?
     .into_accepted()?;
 
-    let bytes = response
-        .bytes()
+    let bytes = crate::http_body::read_success_body(response)
         .await
-        .map_err(|error| GatewayError::Unavailable {
-            detail: format!("upstream read failed: {error}"),
-        })?;
+        .map_err(GatewayError::from)?;
 
     let body = gateway::unwrap_response(&bytes, &operation.response_unwrap)?;
 

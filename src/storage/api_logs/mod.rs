@@ -11,7 +11,9 @@
 //! The module splits by direction: [`store`] is the api-log store itself — the day mapping,
 //! the hot connection cache, file creation, the retention sweep, and the INSERT write path — and
 //! [`usage`] is the management read engine — the shared filter, the per-file queries, and the
-//! aggregation merge. This module carries the write contract the pipeline sees: the draft
+//! aggregation merge. This module carries the write contract the pipeline sees: the one shared
+//! row type ([`ApiLog`]) — there is a single physical record, so the finalization constructs it
+//! and the read engine decodes it back — the draft
 //! lifecycle ([`ApiLogDraft`]) with its predispatch construction, the cancellation-safe draft
 //! owner ([`ApiLogGuard`]) that carries one attempt to its single finalization or transfer, and
 //! finalization, either by an existing response owner ([`finalize_api_log`]) or a
@@ -40,8 +42,7 @@ mod usage;
 pub(crate) use self::{
     store::ApiLogStore,
     usage::{
-        ApiLog, UsageAggregate, UsageBucketKey, UsageFilter, UsageSelection, list_api_logs,
-        query_usage,
+        UsageAggregate, UsageBucketKey, UsageFilter, UsageSelection, list_api_logs, query_usage,
     },
 };
 use crate::{
@@ -69,55 +70,60 @@ pub(crate) enum AttemptProgress {
     },
 }
 
-/// One accounting row about to be inserted: every column but the server-assigned `id`.
-#[derive(Debug, Clone)]
-struct ApiLogWrite {
+/// One stored accounting row: the sixteen published columns exactly as stored, every column
+/// but the server-assigned `id` rowid — the record both the write path inserts and the
+/// management read surface mirrors (README §3 *ApiLog*). There is one physical record, so
+/// there is one type: [`finalize_api_log`] constructs it, [`ApiLogStore::record`] inserts it,
+/// and the read engine decodes it back. The rowid stays internal: it never appears here,
+/// serving only as the per-file tie-break of the list ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApiLog {
     /// Stable requested route identity, independent of the current physical target.
-    model_route_id: i64,
+    pub(crate) model_route_id: i64,
     /// First data-plane header status; null means no response headers were received.
-    upstream_http_status: Option<i64>,
+    pub(crate) upstream_http_status: Option<i64>,
     /// Dispatch-start instant in UTC microseconds; stamped the moment `send()` is called.
-    started_at: i64,
+    pub(crate) started_at: i64,
 
     /// Row id of the authenticated gateway API key.
-    api_key_id: i64,
+    pub(crate) api_key_id: i64,
 
     /// Row id of the routed provider.
-    provider_id: i64,
+    pub(crate) provider_id: i64,
 
     /// Row id of the routed model.
-    model_id: i64,
+    pub(crate) model_id: i64,
 
     /// Outward completion endpoint the request arrived on.
-    endpoint_type: ApiLogEndpointType,
+    pub(crate) endpoint_type: ApiLogEndpointType,
 
     /// Whether the client requested a streamed response.
-    is_stream: bool,
+    pub(crate) is_stream: bool,
 
     /// HTTP status delivered to the client; `NULL` exactly when no response was ever produced
     /// (README §3 *ApiLog*).
-    http_status: Option<i64>,
+    pub(crate) http_status: Option<i64>,
 
     /// Recorded outcome of the request.
-    outcome: ApiLogOutcome,
+    pub(crate) outcome: ApiLogOutcome,
 
     /// Milliseconds between the dispatch stamp and the accounting instant.
-    duration: i64,
+    pub(crate) duration: i64,
 
     /// Tokens consumed by the input; `NULL` when the upstream reported no usage.
-    input_tokens: Option<i64>,
+    pub(crate) input_tokens: Option<i64>,
 
     /// Tokens produced by the output, `reasoning_tokens` included; `NULL` without usage.
-    output_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
 
     /// Input tokens served from the upstream prompt cache; `NULL` without that breakdown.
-    cached_tokens: Option<i64>,
+    pub(crate) cached_tokens: Option<i64>,
 
     /// Input tokens written to the upstream prompt cache; `NULL` without that breakdown.
-    cache_write_tokens: Option<i64>,
+    pub(crate) cache_write_tokens: Option<i64>,
 
     /// Output tokens spent on reasoning; `NULL` without that breakdown.
-    reasoning_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
 }
 
 /// One dispatched request's accounting draft: every fact known before dispatch, carried through
@@ -409,7 +415,7 @@ pub(crate) async fn finalize_api_log(
     let (input_tokens, output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens) =
         token_columns(usage);
 
-    let write = ApiLogWrite {
+    let write = ApiLog {
         model_route_id: draft.model_route_id,
         upstream_http_status: draft.upstream_http_status,
         started_at,

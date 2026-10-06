@@ -204,7 +204,7 @@ fn native_window_payload(
     NativeWindowPayload {
         retained_messages: Vec::new(),
         retained_state_items: Vec::new(),
-        producer_instance_id: format!("provider:{}", routing.provider.id),
+        producer_instance_id: NativeWindowPayload::producer_instance(routing.provider.id),
         upstream_model_id: routing.model.upstream_id.clone(),
         mechanism,
         native_format: routing.provider.definition.payload.format,
@@ -1855,6 +1855,7 @@ mod tests {
             summary::SUMMARY_CLOSING_INSTRUCTION,
         },
         compaction_model::{
+            envelope::PreservedInstruction,
             identity::{InstructionRole, ItemIdentity},
             mechanism::Mechanism,
         },
@@ -2250,6 +2251,7 @@ mod tests {
                 offset: 1,
                 item: serde_json::json!({"type": "reasoning"}),
                 is_gateway: false,
+                is_compaction: false,
             }],
             preserved_instructions: Vec::new(),
             overlap_identities: Vec::new(),
@@ -2306,11 +2308,16 @@ mod tests {
             summary_input_messages: Vec::new(),
             retained_units: Vec::new(),
             retained_state_items: Vec::new(),
-            preserved_instructions: vec![(
-                ItemIdentity::for_instruction(InstructionRole::System, 0, "be terse", None),
-                InstructionRole::System,
-                String::from("be terse"),
-            )],
+            preserved_instructions: vec![PreservedInstruction {
+                identity: ItemIdentity::for_instruction(
+                    InstructionRole::System,
+                    0,
+                    "be terse",
+                    None,
+                ),
+                role: InstructionRole::System,
+                text: String::from("be terse"),
+            }],
             overlap_identities: vec![ItemIdentity::for_instruction(
                 InstructionRole::System,
                 0,

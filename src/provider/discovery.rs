@@ -85,8 +85,10 @@ pub(crate) async fn run_discovery(
 
     let models = match &discovery.pagination {
         None | Some(Pagination::None) => {
+            // Discovery responses are JSON documents in every researched shape; the request
+            // carries no response declaration of its own, so the encoding is fixed here.
             let body =
-                control::execute(http, &request, env, encoding_of(discovery), "upstream").await?;
+                control::execute(http, &request, env, ResponseEncoding::Json, "upstream").await?;
 
             extract_models(&body, &discovery.extract)?
         }
@@ -202,8 +204,6 @@ async fn walk_pages(
     max_pages: NonZeroU64,
     mut continuation_of: impl FnMut(&control::DecodedBody) -> Result<Option<String>, Error>,
 ) -> Result<Vec<DiscoveredModel>, Error> {
-    let encoding = encoding_of(discovery);
-
     let mut models = Vec::new();
 
     // `Some` while the last fetched page still reports a continuation: a budget that ends on
@@ -211,7 +211,9 @@ async fn walk_pages(
     let mut continuation = None;
 
     for _ in 0..max_pages.get() {
-        let body = control::execute(http, request, env, encoding, "upstream").await?;
+        // Discovery responses are JSON documents in every researched shape; the request
+        // carries no response declaration of its own, so the encoding is fixed here.
+        let body = control::execute(http, request, env, ResponseEncoding::Json, "upstream").await?;
 
         models.extend(extract_models(&body, &discovery.extract)?);
 
@@ -239,19 +241,6 @@ fn discovery_env(provider: &Provider) -> ValueEnv<'_> {
         provider.base_url.as_deref(),
         provider.credentials.secret(),
     )
-}
-
-/// The response encoding a discovery's responses arrive in: the descriptor declares one encoding
-/// for the whole paginated exchange.
-fn encoding_of(discovery: &Discovery) -> ResponseEncoding {
-    match discovery.extract {
-        DiscoveryExtract::Array { .. } | DiscoveryExtract::MapKeys { .. } => {
-            // The extraction is JSON-shaped or form-flat per the request's response declaration;
-            // discovery responses are JSON documents in every researched shape, and the form
-            // encoding is only meaningful for token endpoints.
-            ResponseEncoding::Json
-        }
-    }
 }
 
 /// The failure for a page budget that ended while the upstream still reported more data: a

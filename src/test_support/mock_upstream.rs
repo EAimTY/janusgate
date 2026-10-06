@@ -198,29 +198,10 @@ impl MockUpstream {
     pub(crate) async fn start_scripted_recording_bodies(
         actions: Vec<MockAction>,
     ) -> (Self, RecordedHttpRequests) {
-        let actions = Arc::new(Mutex::new(actions));
-
-        let respond = Arc::new(move || {
-            #[expect(
-                clippy::unwrap_used,
-                reason = "a mutex poisoned by a panicking sibling request is the failure report"
-            )]
-            let mut guard = actions.lock().unwrap();
-
-            if guard.len() > 1 {
-                guard.remove(0)
-            } else {
-                #[expect(
-                    clippy::indexing_slicing,
-                    reason = "an empty script is a test bug the panic reports"
-                )]
-                guard[0].clone()
-            }
-        });
-
         let recorded = Arc::new(Mutex::new(Vec::new()));
 
-        let (mock, _lines) = Self::start_serving(respond, Some(Arc::clone(&recorded))).await;
+        let (mock, _lines) =
+            Self::start_serving(script(actions), Some(Arc::clone(&recorded))).await;
 
         (mock, recorded)
     }
@@ -290,12 +271,9 @@ impl MockUpstream {
                         return;
                     };
 
-                    let request =
-                        record_request(&request_head, request_body, &seen, bodies.as_ref());
+                    record_request(&request_head, request_body, &seen, bodies.as_ref());
 
                     serve_action(&mut socket, respond()).await;
-
-                    drop(request);
                 });
             }
         });
@@ -304,35 +282,41 @@ impl MockUpstream {
     }
 }
 
-/// The round-robin canned response source: a single entry serves every request, a multi-entry
-/// fixture walks its entries in order, and an empty fixture is the test bug the panic reports.
+/// The scripted action source: one action per request in order, and the last action repeats
+/// once the script is exhausted — so a test seeing the last action again has dispatched past
+/// the script's end, the signal its dispatch-count pins read. An empty script is the test bug
+/// the panic reports.
 ///
 /// # Panics
 ///
 /// Panics if the mutex is poisoned — a prior holder panicked while holding the lock — or if the
-/// fixture is empty.
-fn canned(responses: Vec<String>) -> Arc<dyn Fn() -> MockAction + Send + Sync> {
-    let responses = Arc::new(Mutex::new(responses));
+/// script is empty.
+fn script(actions: Vec<MockAction>) -> Arc<dyn Fn() -> MockAction + Send + Sync> {
+    let actions = Arc::new(Mutex::new(actions));
 
     Arc::new(move || {
         #[expect(
             clippy::unwrap_used,
             reason = "a mutex poisoned by a panicking sibling request is the failure report"
         )]
-        let mut guard = responses.lock().unwrap();
+        let mut guard = actions.lock().unwrap();
 
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "an empty fixture is a test bug the panic reports"
-        )]
-        let next = if guard.len() > 1 {
+        if guard.len() > 1 {
             guard.remove(0)
         } else {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "an empty script is a test bug the panic reports"
+            )]
             guard[0].clone()
-        };
-
-        MockAction::Respond(next)
+        }
     })
+}
+
+/// The round-robin canned response source: every entry — already a complete HTTP response —
+/// served verbatim through [`script`]'s advance rule.
+fn canned(responses: Vec<String>) -> Arc<dyn Fn() -> MockAction + Send + Sync> {
+    script(responses.into_iter().map(MockAction::Respond).collect())
 }
 
 /// Reads one HTTP/1.1 request head — through its blank line — plus the `Content-Length` body
@@ -398,8 +382,7 @@ async fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
 
 /// Records the request line's `METHOD /target` pair, and the full request — method, target,
 /// headers, and body — when a body recorder is present. A head without a well-formed request
-/// line is answered but not recorded. Returns the recorded full entry, so the caller keeps the
-/// request alive until its response has been served.
+/// line is answered but not recorded.
 ///
 /// # Panics
 ///
@@ -409,12 +392,16 @@ fn record_request(
     body: String,
     seen: &RecordedRequests,
     bodies: Option<&RecordedHttpRequests>,
-) -> Option<RecordedHttpRequest> {
-    let request_line = head.lines().next()?;
+) {
+    let Some(request_line) = head.lines().next() else {
+        return;
+    };
 
     let mut parts = request_line.split_whitespace();
 
-    let (method, target) = parts.next().zip(parts.next())?;
+    let Some((method, target)) = parts.next().zip(parts.next()) else {
+        return;
+    };
 
     #[expect(
         clippy::unwrap_used,
@@ -432,22 +419,18 @@ fn record_request(
         })
         .collect();
 
-    let request = RecordedHttpRequest {
-        method: method.to_string(),
-        target: target.to_string(),
-        headers,
-        body,
-    };
-
     if let Some(bodies) = bodies {
         #[expect(
             clippy::unwrap_used,
             reason = "a mutex poisoned by a panicking sibling request is the failure report"
         )]
-        bodies.lock().unwrap().push(request.clone());
+        bodies.lock().unwrap().push(RecordedHttpRequest {
+            method: method.to_string(),
+            target: target.to_string(),
+            headers,
+            body,
+        });
     }
-
-    Some(request)
 }
 
 /// Carries one connection's [`MockAction`] out against `socket`: write failures — a client that

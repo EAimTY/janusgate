@@ -39,10 +39,12 @@ pub(crate) enum ReasoningLevel {
 }
 
 impl ReasoningLevel {
-    /// The one (level, wire-spelling) table of the closed vocabulary (README §6.4): the
-    /// [`Self::parse`] and [`Self::as_str`] matches and every format surface's conformance test
-    /// pin derive from it, so a spelling change is a single edit here.
-    #[cfg(test)]
+    /// The one (level, wire-spelling) table of the closed vocabulary (README §6.4), in
+    /// [`Self::CANONICAL`] order. [`Self::as_str`] and [`Self::from_vocabulary_str`] are
+    /// lookups into this table, so a spelling change is a single edit here, and the format
+    /// surfaces' and the IR's conformance tests pin against it. The serde `lowercase` derive is
+    /// the one wire spelling the table does not own — it renames the variant names
+    /// independently — and the test below pins the derive against the table.
     pub(crate) const VOCABULARY: [(ReasoningLevel, &'static str); 7] = [
         (Self::None, "none"),
         (Self::Minimal, "minimal"),
@@ -72,16 +74,10 @@ impl ReasoningLevel {
     /// each naming the vocabulary in its own error domain.
     #[must_use]
     pub(crate) fn from_vocabulary_str(value: &str) -> Option<Self> {
-        match value {
-            "none" => Some(Self::None),
-            "minimal" => Some(Self::Minimal),
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            "xhigh" => Some(Self::XHigh),
-            "max" => Some(Self::Max),
-            _ => None,
-        }
+        Self::VOCABULARY
+            .iter()
+            .find(|(_, spelling)| *spelling == value)
+            .map(|(level, _)| *level)
     }
 
     /// Canonicalizes a set of levels: deduplicated, in [`Self::CANONICAL`] order. Both write
@@ -131,40 +127,44 @@ impl ReasoningLevel {
     /// parameter.
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-            Self::Max => "max",
-        }
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the canonical index of a vocabulary member is within the table by \
+                      construction"
+        )]
+        Self::VOCABULARY[Self::canonical_index(self)].1
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "the serde boundary is exercised on members constructed to succeed"
+    )]
+
     use super::ReasoningLevel;
 
-    /// Pins the [`ReasoningLevel::as_str`] match to [`ReasoningLevel::VOCABULARY`]: every
-    /// entry's wire spelling is exactly what `as_str` renders, and the spelling parses back
-    /// domain-neutrally to the same level. The request-boundary `parse` wrapper is pinned
-    /// against the same table beside its rejection type in [`crate::ir`].
+    /// Pins the serde `lowercase` derive — the one wire-spelling enumeration
+    /// [`ReasoningLevel::VOCABULARY`] does not own — against the table: every level's serde
+    /// spelling is exactly its table spelling, in both directions. `as_str` and
+    /// [`ReasoningLevel::from_vocabulary_str`] need no pin beside this: they are lookups into
+    /// the table itself.
     ///
     /// # Panics
     ///
-    /// Panics if a table entry diverges from either match.
+    /// Panics if a variant's serde spelling diverges from the table.
     #[test]
-    fn vocabulary_round_trips_through_as_str_and_from_vocabulary_str() {
+    fn serde_derive_matches_the_vocabulary_table() {
         for (level, spelling) in ReasoningLevel::VOCABULARY {
-            assert_eq!(level.as_str(), spelling);
+            let rendered = serde_json::to_string(&level).expect("a vocabulary member serializes");
 
-            assert_eq!(
-                ReasoningLevel::from_vocabulary_str(spelling),
-                Some(level),
-                "the vocabulary spelling must parse domain-neutrally",
-            );
+            assert_eq!(rendered, format!("\"{spelling}\""));
+
+            let parsed: ReasoningLevel =
+                serde_json::from_str(&rendered).expect("the rendered spelling parses back");
+
+            assert_eq!(parsed, level);
         }
     }
 }

@@ -43,8 +43,12 @@ const AAD_DOMAIN: &[u8] = b"janusgate.compaction.v1";
 const NONCE_BYTES: usize = 24;
 
 /// The separator between the key id and the encoded payload inside a carrier.
-/// Key ids never contain it; the configuration contract rejects one that does.
-const KEY_ID_SEPARATOR: char = '.';
+/// Key ids never contain it — the configuration contract enforces exactly that
+/// by rejecting a key id carrying this constant — so [`unseal`]'s first
+/// separator split always ends the id. The configuration's key-id deserializer
+/// imports this constant rather than restating the value, keeping the carrier
+/// format the single owner of the fact.
+pub(crate) const KEY_ID_SEPARATOR: char = '.';
 
 /// Errors of unsealing a gateway carrier.
 #[derive(Debug, Clone, Error)]
