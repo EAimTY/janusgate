@@ -49,7 +49,7 @@ colors:
   dark-scroll-thumb: "#33443c"
   dark-scroll-thumb-hover: "#43564d"
 typography:
-  family: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif'
+  family: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Sans Arabic", Tahoma, sans-serif'
   data: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace with tabular-nums'
   page-title: '20px, 600, tight tracking'
   section-title: '15px, 600, tight tracking'
