@@ -483,14 +483,6 @@ export type UsageQuerySubject = {
     readonly id: number;
 };
 
-/** The subject dimensions, in the order the subject derivations walk them. */
-const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
-    "provider",
-    "model",
-    "model_route",
-    "api_key",
-];
-
 /**
  * The names one subject dimension's row rides under: the draft field the usage
  * forms hold it as, the route parameter the usage routes address it under —
@@ -574,20 +566,29 @@ export function streamDraftOf(fields: UsageFilterFields): UsageFilterDraft {
 }
 
 /**
- * The subject candidates one walk over [`USAGE_QUERY_SUBJECT_DIMENSIONS`]
- * collects, in the walk's order: one entry per dimension whose read names an
- * id. The callback answers the one id `dimension` names — its wire field's
- * single value, its route parameter's row identifier — or `null` when it
- * names none. One id per dimension is this walk's contract, stated here once
+ * The subject candidates one walk over the pairing table's dimensions
+ * collects: one entry per dimension whose read names an id. The dimensions
+ * are [`USAGE_QUERY_SUBJECT_FIELDS`]'s own keys, read back as the dimension
+ * union the table's `satisfies` bound exhausts — the table is the one place
+ * the pairings live, so a dimension added to it is walked here with no edit,
+ * and the walk can never name a dimension the table cannot pair. The
+ * callback answers the one id `dimension` names — its wire field's single
+ * value, its route parameter's row identifier — or `null` when it names
+ * none. One id per dimension is this walk's contract, stated here once
  * instead of proven at each caller; [`soleSubject`] answers the exactly-one
- * rule over the list.
+ * rule over the list, and since that rule discards every walk but the
+ * sole-named one, no caller can observe the table's key order.
  */
 export function namedSubjects(
     readId: (dimension: UsageQuerySubjectDimension) => number | null,
 ): UsageQuerySubject[] {
     const named: UsageQuerySubject[] = [];
 
-    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+    // `Object.keys` loses key literal types, so the table's `satisfies`-exhausted
+    // keys are read back as the dimension union they provably are.
+    for (const dimension of Object.keys(
+        USAGE_QUERY_SUBJECT_FIELDS,
+    ) as ReadonlyArray<UsageQuerySubjectDimension>) {
         const id = readId(dimension);
 
         if (id !== null) {
@@ -670,12 +671,12 @@ type UsageSubjectFilterValues = Readonly<Partial<Record<UsageSubjectWireField, n
 /**
  * The aggregates subject one [`UsageSubjectFilter`] names: the dimension
  * whose wire field it carries, and the id under it. The walk is
- * [`namedSubjects`] over [`USAGE_QUERY_SUBJECT_DIMENSIONS`] through
- * [`USAGE_QUERY_SUBJECT_FIELDS`] — the one walk the aggregates route's
- * parameters and the stream's subject narrow share, ending in the same
- * [`soleSubject`] rule — so a dimension added to the table is answered here
- * with no edit. The filter's type holds exactly one dimension's field; one
- * naming none cannot exist, and reads as the contract violation it is.
+ * [`namedSubjects`] over [`USAGE_QUERY_SUBJECT_FIELDS`]'s own dimensions —
+ * the one walk the aggregates route's parameters and the stream's subject
+ * narrow share, ending in the same [`soleSubject`] rule — so a dimension
+ * added to the table is answered here with no edit. The filter's type holds
+ * exactly one dimension's field; one naming none cannot exist, and reads as
+ * the contract violation it is.
  */
 export function usageQuerySubjectOfFilter(filter: UsageSubjectFilter): UsageQuerySubject {
     const values: UsageSubjectFilterValues = filter;

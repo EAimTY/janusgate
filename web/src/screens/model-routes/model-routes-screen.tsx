@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { readModelRoutes, readModels, readProviderPools } from "/src/features/inventory/read";
 import { translation } from "/src/i18n";
 import { directTargetMessage, missingDirectTargetMessage, poolTargetMessage } from "/src/i18n/rich";
@@ -10,6 +10,7 @@ import type {
     ProviderPoolResponse,
 } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
+import { indexRowsById } from "/src/row-index";
 import { createScreenRead, readAll } from "/src/screen-state/read";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState } from "/src/ui/feedback";
@@ -36,16 +37,20 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
             setPools(poolRows.provider_pools);
         },
     });
+    // O(1) target lookups: the shared id index over each listing, rebuilt
+    // once per read, instead of a linear find per rendered route row.
+    const modelsById = createMemo(() => indexRowsById(models()));
+    const poolsById = createMemo(() => indexRowsById(pools()));
     const targetLabel = (route: ModelRouteResponse): JSX.Element => {
         const target = route.target;
         if (target.type === "direct") {
-            const model = models().find((row) => row.id === target.model_id);
+            const model = modelsById().get(target.model_id);
             return model === undefined
                 ? missingDirectTargetMessage(target.model_id)
                 : directTargetMessage(model.provider, model.upstream_id);
         }
         return poolTargetMessage(
-            pools().find((pool) => pool.id === target.pool_id)?.name ?? `#${target.pool_id}`,
+            poolsById().get(target.pool_id)?.name ?? `#${target.pool_id}`,
             target.upstream_id,
         );
     };

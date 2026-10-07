@@ -68,7 +68,9 @@ function expectDefaultSupport(value: unknown, context: string): MechanismSupport
 
 /**
  * One typed positive unsupported-response classifier (README §5): the
- * statuses stay bare integers — the upstream HTTP statuses — and the code
+ * statuses are non-success HTTP statuses only — the classifier inspects
+ * rejected native calls alone, so a success status or a value outside the
+ * HTTP status range is a criterion no response can ever carry — and the code
  * and parameter rows must be non-empty strings; an empty row never
  * positively classifies, it is a typo the write names instead of storing.
  */
@@ -92,9 +94,9 @@ function expectUnsupportedClassifier(value: unknown, context: string): Unsupport
         classifier.statuses = expectArray(statuses, `${context}.statuses`).map((status, index) => {
             const parsed = expectInteger(status, `${context}.statuses[${index}]`);
 
-            if (parsed < 0 || parsed > 65_535) {
+            if (parsed < 100 || parsed > 999 || (parsed >= 200 && parsed < 300)) {
                 throw new ContractViolationError(
-                    `${context}.statuses[${index}] is not an HTTP status: ${String(status)}`,
+                    `${context}.statuses[${index}] is not a non-success HTTP status: ${String(status)}`,
                 );
             }
 

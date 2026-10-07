@@ -1,7 +1,7 @@
 import { render } from "@solidjs/web";
 import { describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type { ModelResponse } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import {
     bodyText,
@@ -14,22 +14,12 @@ import {
     linkTo,
     modelRow,
     paragraphWithText,
-    providerRow,
     settle,
     stubManagementApi,
     switchWithLabel,
     typeInto,
 } from "/src/test-support/management-api";
 import { ModelEditScreen } from "./model-edit-screen";
-
-const provider = providerRow({
-    model_prefix: "",
-    provider_definition_name: "generic-openai-responses",
-    format: "openai_response",
-    id: 3,
-    name: "alpha",
-    base_url: "https://alpha.example",
-});
 
 const model = modelRow({
     id: 11,
@@ -45,19 +35,8 @@ const model = modelRow({
  * held row, so a reload after a save answers the saved physical inventory row
  * the way the real gateway would.
  */
-function screenApi(holder: {
-    providers: ReadonlyArray<ProviderResponse>;
-    models: ReadonlyArray<ModelResponse>;
-}): ManagementApi {
+function screenApi(holder: { models: ReadonlyArray<ModelResponse> }): ManagementApi {
     return stubManagementApi({
-        listProviders: (signal) => {
-            signal?.throwIfAborted();
-            return Promise.resolve({
-                providers: holder.providers.map((row) => ({
-                    ...row,
-                })),
-            });
-        },
         listModels: (_request, signal) => {
             signal?.throwIfAborted();
             return Promise.resolve({
@@ -110,10 +89,7 @@ async function overrideInputLimit(): Promise<HTMLInputElement> {
 describe("ModelEditScreen refresh against an open form", () => {
     const disposes = createDisposals();
 
-    function mount(holder: {
-        providers: ReadonlyArray<ProviderResponse>;
-        models: ReadonlyArray<ModelResponse>;
-    }): void {
+    function mount(holder: { models: ReadonlyArray<ModelResponse> }): void {
         disposes.push(
             render(
                 () => (
@@ -129,9 +105,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("keeps a dirty form across a refresh whose listings re-answer the same rows", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -152,9 +125,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("keeps a dirty form across a refresh that answers a changed row, and says so", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -179,9 +149,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("re-baselines a clean form across a refresh that answers a changed row", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -206,9 +173,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("picks the gateway's version up once the operator reverts a held form", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -238,9 +202,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("lands a save over a held row on the values the form sent", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -279,9 +240,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("saves capability overrides beside the inventory switch", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -331,9 +289,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("saves the compaction-facts override wholesale, the unstated mechanisms left out", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -371,9 +326,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("clears the compaction-facts override back to discovery when the switch goes off", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 modelRow({
                     id: 11,
@@ -417,9 +369,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -455,9 +404,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("arms deletion with the true consequence and recoveries, never a same-ID claim", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -476,9 +422,6 @@ describe("ModelEditScreen refresh against an open form", () => {
 
     it("reloads the listing when a delete answers gone", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 model,
             ],
@@ -528,10 +471,7 @@ describe("ModelEditScreen vanished model", () => {
         discovery_state: "vanished",
     });
 
-    function mount(holder: {
-        providers: ReadonlyArray<ProviderResponse>;
-        models: ReadonlyArray<ModelResponse>;
-    }): void {
+    function mount(holder: { models: ReadonlyArray<ModelResponse> }): void {
         disposes.push(
             render(
                 () => (
@@ -550,9 +490,6 @@ describe("ModelEditScreen vanished model", () => {
         // lands here — the suspension the detail page states cannot be left
         // to that page alone.
         mount({
-            providers: [
-                provider,
-            ],
             models: [
                 vanished,
             ],
@@ -568,9 +505,6 @@ describe("ModelEditScreen vanished model", () => {
 
     it("keeps the routing line off a vanished row's save notice", async () => {
         const holder = {
-            providers: [
-                provider,
-            ],
             models: [
                 vanished,
             ],

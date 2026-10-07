@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { readModelRoutes, readModels } from "/src/features/inventory/read";
 import { isSameModelRow } from "/src/features/inventory/row-equality";
 import { translation } from "/src/i18n";
@@ -110,19 +110,25 @@ export function BulkPublicationScreen(props: {
             return changed;
         });
     };
-    const fieldError = (id: number): string | null => {
-        const value = draft(id);
-        if (!value.isSelected) return null;
-        if (value.publicId === "")
+    // One accumulation per drafts change: the count of selected rows per
+    // public id. Both the per-row duplicate error and the publish gate read
+    // this map, so a keystroke walks the drafts once and answers each row's
+    // check from it, instead of rescanning the whole inventory per row.
+    const selectedPublicIdCounts = createMemo(() => {
+        const counts = new Map<string, number>();
+        for (const state of drafts().values()) {
+            if (!state.isSelected) continue;
+            counts.set(state.publicId, (counts.get(state.publicId) ?? 0) + 1);
+        }
+        return counts;
+    });
+    const draftError = (state: PublicationDraft): string | null => {
+        if (!state.isSelected) return null;
+        if (state.publicId === "")
             return translation()(($) => $.screens.bulkPublicationScreen.publicIDIsRequiredMessage);
-        const tokenError = routingTokenError(value.publicId, "publicId");
+        const tokenError = routingTokenError(state.publicId, "publicId");
         if (tokenError !== null) return tokenError;
-        return models().some(
-            (other) =>
-                other.id !== id &&
-                draft(other.id).isSelected &&
-                draft(other.id).publicId === value.publicId,
-        )
+        return (selectedPublicIdCounts().get(state.publicId) ?? 0) > 1
             ? translation()(
                   ($) =>
                       $.screens.bulkPublicationScreen
@@ -130,6 +136,7 @@ export function BulkPublicationScreen(props: {
               )
             : null;
     };
+    const fieldError = (id: number): string | null => draftError(draft(id));
     const seat = registerLeaveGuardSubject();
     createEffect(
         () =>
@@ -148,7 +155,7 @@ export function BulkPublicationScreen(props: {
     const canPublish = (): boolean =>
         !isPublishing() &&
         selectedCount() > 0 &&
-        models().every((model) => fieldError(model.id) === null);
+        models().every((model) => draftError(draft(model.id)) === null);
     const publish = async (): Promise<void> => {
         if (!canPublish()) return;
         const selected = models()

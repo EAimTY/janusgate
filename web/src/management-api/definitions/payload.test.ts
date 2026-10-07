@@ -1051,7 +1051,36 @@ describe("definition compaction validation", () => {
                         },
                     },
                 },
-                /statuses\[0\] is not an HTTP status/,
+                /statuses\[0\] is not a non-success HTTP status/,
+            ],
+            [
+                {
+                    responses_standalone_compact: {
+                        default: "unknown",
+                        unsupported: {
+                            statuses: [
+                                99,
+                            ],
+                        },
+                    },
+                },
+                /statuses\[0\] is not a non-success HTTP status/,
+            ],
+            [
+                {
+                    responses_standalone_compact: {
+                        default: "supported",
+                        operation: {
+                            url: compactUrl(),
+                            unsupported: {
+                                statuses: [
+                                    200,
+                                ],
+                            },
+                        },
+                    },
+                },
+                /operation\.unsupported\.statuses\[0\] is not a non-success HTTP status/,
             ],
             [
                 {

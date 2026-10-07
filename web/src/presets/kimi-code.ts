@@ -1,14 +1,13 @@
 import { translation } from "../i18n";
 import {
     bearerAuthorization,
-    clientId,
     deviceAuthorizationBody,
     deviceAuthorizationResponse,
     deviceExchangeBody,
+    formRefreshGrantBody,
     literal,
     openAiModelsDiscovery,
     paramRow,
-    refreshToken,
     slot,
     tokenExchangeResponse,
 } from "./expressions";
@@ -221,20 +220,7 @@ export const kimiCodePreset: ProviderPreset = {
                     headers: [
                         ...mshHeaders,
                     ],
-                    body: {
-                        kind: "form",
-                        fields: [
-                            paramRow("grant_type", [
-                                literal("refresh_token"),
-                            ]),
-                            paramRow("refresh_token", [
-                                refreshToken(),
-                            ]),
-                            paramRow("client_id", [
-                                clientId(),
-                            ]),
-                        ],
-                    },
+                    body: formRefreshGrantBody(false),
                 },
                 terminal_codes: [
                     "invalid_grant",

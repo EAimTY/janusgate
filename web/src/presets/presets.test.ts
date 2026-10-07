@@ -722,6 +722,46 @@ describe("kimi-code preset", () => {
         expect(JSON.stringify(headerNames(refresh.request))).toContain("device_id");
     });
 
+    it("sends the form-encoded refresh grant of a public client — no secret row", () => {
+        const credential = payloadOf(kimi)["credential"] as Record<string, unknown>;
+        const refresh = credential["refresh"] as {
+            request: {
+                body: unknown;
+            };
+        };
+
+        expect(refresh.request.body).toEqual({
+            kind: "form",
+            fields: [
+                {
+                    name: "grant_type",
+                    value: [
+                        {
+                            type: "literal",
+                            value: "refresh_token",
+                        },
+                    ],
+                },
+                {
+                    name: "refresh_token",
+                    value: [
+                        {
+                            type: "refresh_token",
+                        },
+                    ],
+                },
+                {
+                    name: "client_id",
+                    value: [
+                        {
+                            type: "client_id",
+                        },
+                    ],
+                },
+            ],
+        });
+    });
+
     it("maps the device response including the complete verification URI", () => {
         const grant = (payloadOf(kimi)["credential"] as Record<string, unknown>)["grant"] as Record<
             string,
@@ -742,6 +782,58 @@ describe("kimi-code preset", () => {
         expect(targets).toContain("device_code");
         expect(targets).toContain("user_code");
         expect(targets).toContain("verification_uri_complete");
+    });
+});
+
+describe("antigravity preset", () => {
+    const antigravity = findPreset("antigravity");
+
+    it("sends the form-encoded refresh grant with the confidential client's secret last", () => {
+        const credential = payloadOf(antigravity)["credential"] as Record<string, unknown>;
+        const refresh = credential["refresh"] as {
+            request: {
+                body: unknown;
+            };
+        };
+
+        expect(refresh.request.body).toEqual({
+            kind: "form",
+            fields: [
+                {
+                    name: "grant_type",
+                    value: [
+                        {
+                            type: "literal",
+                            value: "refresh_token",
+                        },
+                    ],
+                },
+                {
+                    name: "refresh_token",
+                    value: [
+                        {
+                            type: "refresh_token",
+                        },
+                    ],
+                },
+                {
+                    name: "client_id",
+                    value: [
+                        {
+                            type: "client_id",
+                        },
+                    ],
+                },
+                {
+                    name: "client_secret",
+                    value: [
+                        {
+                            type: "client_secret",
+                        },
+                    ],
+                },
+            ],
+        });
     });
 });
 

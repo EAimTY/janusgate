@@ -5,11 +5,11 @@ import {
     clientId,
     clientSecret,
     coalesce,
+    formRefreshGrantBody,
     literal,
     model,
     paramRow,
     redirectUri,
-    refreshToken,
     requestUuid,
     slot,
     tokenExchangeResponse,
@@ -224,23 +224,7 @@ export const antigravityPreset: ProviderPreset = {
                     url: [
                         literal("https://oauth2.googleapis.com/token"),
                     ],
-                    body: {
-                        kind: "form",
-                        fields: [
-                            paramRow("grant_type", [
-                                literal("refresh_token"),
-                            ]),
-                            paramRow("refresh_token", [
-                                refreshToken(),
-                            ]),
-                            paramRow("client_id", [
-                                clientId(),
-                            ]),
-                            paramRow("client_secret", [
-                                clientSecret(),
-                            ]),
-                        ],
-                    },
+                    body: formRefreshGrantBody(true),
                 },
                 terminal_codes: [
                     "invalid_grant",

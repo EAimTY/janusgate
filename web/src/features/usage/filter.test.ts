@@ -230,8 +230,8 @@ describe("hasUsageFilter", () => {
  * The dimensions the round-trips below must each cover, read through the
  * public table: its `satisfies Record<UsageQuerySubjectDimension, ...>` bound
  * makes its keys exhaustive over the dimension union, so a dimension added to
- * the module is answered here with no edit — the same auto-coverage the
- * module-private walk enumeration (`USAGE_QUERY_SUBJECT_DIMENSIONS`) gave.
+ * the module is answered here with no edit — the same derivation the module's
+ * own subject walk ([`namedSubjects`]) takes from the table's keys.
  */
 const SUBJECT_DIMENSIONS = Object.keys(USAGE_QUERY_SUBJECT_FIELDS) as UsageQuerySubjectDimension[];
 

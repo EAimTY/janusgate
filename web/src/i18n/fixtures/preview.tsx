@@ -152,7 +152,6 @@ const model = "gpt-5/العربية-01";
 const url = "https://gateway.example.com:8443";
 function Preview(): JSX.Element {
     const copy = () => previewCopy[controller.activeLocale()];
-    const t = controller.translation();
     const number = (value: number): string =>
         new Intl.NumberFormat(controller.activeLocale()).format(value);
     const [isEnabled, setIsEnabled] = createSignal(true);
@@ -222,7 +221,7 @@ function Preview(): JSX.Element {
                         />
                         <p class="text-[13px] text-ink-dim">
                             {previewRich(
-                                t(($) => $.rich.connected),
+                                controller.translation()(($) => $.rich.connected),
                                 {
                                     baseUrl: (
                                         <bdi
@@ -271,7 +270,7 @@ function Preview(): JSX.Element {
                         <Notice
                             tone="bad"
                             title={previewRich(
-                                t(($) => $.diagnosis.noAnswerFromBaseUrl),
+                                controller.translation()(($) => $.diagnosis.noAnswerFromBaseUrl),
                                 {
                                     baseUrl: <bdi dir="ltr">{url}</bdi>,
                                 },
@@ -287,7 +286,7 @@ function Preview(): JSX.Element {
                     <div class="mt-4 flex flex-col gap-3">
                         <InlineConfirmQuestion
                             question={previewRich(
-                                t(($) => $.entityMessages.deleteKey),
+                                controller.translation()(($) => $.entityMessages.deleteKey),
                                 {
                                     name: <bdi dir="auto">{name}</bdi>,
                                 },
@@ -312,9 +311,12 @@ function Preview(): JSX.Element {
                                 value,
                             }))}
                             describePoint={(point) => {
-                                const template = t(($) => $.linkedMessages.chartPoint, {
-                                    count: point.value,
-                                });
+                                const template = controller.translation()(
+                                    ($) => $.linkedMessages.chartPoint,
+                                    {
+                                        count: point.value,
+                                    },
+                                );
                                 return {
                                     accessibleName: previewRichText(template, {
                                         day: point.label,

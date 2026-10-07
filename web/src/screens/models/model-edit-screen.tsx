@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal } from "solid-js";
-import { readProviderCatalog } from "/src/features/inventory/read";
+import { readModels } from "/src/features/inventory/read";
 import { isSameModelRow } from "/src/features/inventory/row-equality";
 import {
     CompactionSupportOverrideFields,
@@ -47,9 +47,9 @@ export function ModelEditScreen(props: {
     const read = createScreenRead({
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
-            const catalog = await readOne(signal, readProviderCatalog(props.api, null));
+            const inventory = await readOne(signal, readModels(props.api, {}));
 
-            setModels(catalog.models);
+            setModels(inventory.models);
             edit.reportReloaded();
         },
     });

@@ -440,3 +440,33 @@ export function jsonRefreshGrantBody(): ControlBody {
         },
     };
 }
+
+/**
+ * The form-encoded refresh-grant body: the standard grant type, the stored
+ * refresh token, and the client identity. `hasClientSecret` adds the
+ * confidential-client `client_secret` row after the identity — the delta of
+ * the endpoints that authenticate the client on the refresh too.
+ */
+export function formRefreshGrantBody(hasClientSecret: boolean): ControlBody {
+    return {
+        kind: "form",
+        fields: [
+            paramRow("grant_type", [
+                literal("refresh_token"),
+            ]),
+            paramRow("refresh_token", [
+                refreshToken(),
+            ]),
+            paramRow("client_id", [
+                clientId(),
+            ]),
+            ...(hasClientSecret
+                ? [
+                      paramRow("client_secret", [
+                          clientSecret(),
+                      ]),
+                  ]
+                : []),
+        ],
+    };
+}
