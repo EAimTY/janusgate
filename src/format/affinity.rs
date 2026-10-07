@@ -2,7 +2,7 @@
 
 use super::UpstreamFormat;
 use crate::{
-    affinity::fingerprint::{Identity, Projector, ResultContent, Role, StateFamily, StateKind},
+    affinity::fingerprint::{Identity, Projector, ReplayFamily, ResultContent, Role, StateKind},
     ir::{IrImage, IrMessage, IrPart, IrRole, StateItem},
 };
 use std::fmt;
@@ -215,17 +215,6 @@ impl Sources {
         }
     }
 
-    /// The retained reasoning/state family's wire semantics; Chat discards reasoning on replay.
-    fn family(&self) -> Option<StateFamily> {
-        match self.client_format {
-            UpstreamFormat::OpenAiChatCompletion => None,
-            UpstreamFormat::OpenAiResponse => Some(StateFamily::Responses),
-            UpstreamFormat::AnthropicMessages => Some(StateFamily::Messages),
-            UpstreamFormat::GeminiGenerateContent => Some(StateFamily::GenerateContent),
-            UpstreamFormat::GeminiInteraction => Some(StateFamily::Interactions),
-        }
-    }
-
     /// Projects ordinary accepted conversation messages using explicit typed parts, never
     /// serializing arbitrary IR or envelope controls. Stateful requests need the authenticated
     /// boundary planner to feed their active message/state window separately before selection.
@@ -377,7 +366,7 @@ impl Sources {
                     signature,
                     opaque,
                 } => {
-                    if let Some(family) = self.family() {
+                    if let Some(family) = replay_family(self.client_format) {
                         projector.reasoning(
                             role,
                             family,
@@ -404,13 +393,25 @@ impl Sources {
             clippy::expect_used,
             reason = "state-bearing codecs have a replay family"
         )]
-        let family = self.family().expect("accepted state has a replay family");
+        let family = replay_family(self.client_format).expect("accepted state has a replay family");
         let kind = if state.is_gateway {
             StateKind::Gateway
         } else {
             StateKind::Native
         };
         projector.state(family, kind, &state.item);
+    }
+}
+
+/// The retained reasoning/state replay family of a client codec's wire semantics; Chat
+/// Completions discards reasoning and state on replay.
+pub(crate) fn replay_family(format: UpstreamFormat) -> Option<ReplayFamily> {
+    match format {
+        UpstreamFormat::OpenAiChatCompletion => None,
+        UpstreamFormat::OpenAiResponse => Some(ReplayFamily::Responses),
+        UpstreamFormat::AnthropicMessages => Some(ReplayFamily::Messages),
+        UpstreamFormat::GeminiGenerateContent => Some(ReplayFamily::GenerateContent),
+        UpstreamFormat::GeminiInteraction => Some(ReplayFamily::Interactions),
     }
 }
 

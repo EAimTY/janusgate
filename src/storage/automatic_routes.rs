@@ -1,7 +1,7 @@
 //! Automatic model exposure owned by standalone providers and pools.
 
 use super::{
-    Error,
+    Error, in_placeholders,
     routing::{route_from_row, target_columns},
 };
 use crate::{
@@ -107,15 +107,12 @@ pub(super) async fn synchronize(transaction: &mut Transaction) -> Result<(), Err
     let taken = if distinct.is_empty() {
         BTreeSet::new()
     } else {
-        let placeholders = (1..=distinct.len())
-            .map(|index| format!("?{index}"))
-            .collect::<Vec<_>>()
-            .join(", ");
         transaction
             .query(
                 format!(
                     "SELECT public_id FROM model_routes \
-                     WHERE is_automatic = 0 AND public_id IN ({placeholders})"
+                     WHERE is_automatic = 0 AND public_id IN ({})",
+                    in_placeholders(distinct.len())
                 ),
                 distinct
                     .iter()

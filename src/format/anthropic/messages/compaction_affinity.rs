@@ -2,7 +2,7 @@
 
 use crate::affinity::{
     Anchor,
-    fingerprint::{BorrowedJson, Projector, StateFamily, StateKind},
+    fingerprint::{BorrowedJson, Projector, ReplayFamily, StateKind},
 };
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
@@ -58,7 +58,7 @@ pub(crate) fn checkpoint_projection(
         crate::format::compaction_wire::Checkpoint::Messages(block) => {
             let artifact_id = artifact_id?;
             let mut projector = Projector::new();
-            projector.gateway_state(StateFamily::Messages, &block.signature);
+            projector.gateway_state(ReplayFamily::Messages, &block.signature);
             let mut anchors = projector.completed_anchors();
             anchors.push(Anchor::Artifact(projector.gateway_artifact(artifact_id)));
             Some((projector, anchors))
@@ -91,7 +91,7 @@ pub(crate) fn completed_projection(
         let carrier = block
             .signature
             .expect("a sealed gateway block has its signature");
-        projector.gateway_state(StateFamily::Messages, carrier);
+        projector.gateway_state(ReplayFamily::Messages, carrier);
         projector.gateway_artifact(artifact_id)
     } else {
         if block.content.is_none()
@@ -101,7 +101,7 @@ pub(crate) fn completed_projection(
         {
             return None;
         }
-        projector.state_canonical(StateFamily::Messages, StateKind::Native, &block);
+        projector.state_canonical(ReplayFamily::Messages, StateKind::Native, &block);
         projector.canonical_artifact(&block)
     };
     let mut anchors = projector.completed_anchors();

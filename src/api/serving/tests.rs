@@ -511,17 +511,17 @@ async fn finalizes_the_usage_a_failed_stream_delivered_before_its_failure() {
     }
 }
 
-/// Builds one static-key provider of the Responses format with an enabled
-/// model whose public id equals `upstream_id`, over a fresh test database.
+/// Builds one static-key provider of the given upstream format with an
+/// enabled model whose public id equals `upstream_id`, over a fresh test
+/// database.
 ///
 /// # Panics
 ///
 /// Panics if a fixture insert fails, which the fixture prevents.
-async fn routed_model_database() -> (crate::database::Database, TempDbGuard) {
+async fn routed_model_database(format: UpstreamFormat) -> (crate::database::Database, TempDbGuard) {
     let (database, guard) = create_test_database().await;
 
-    let definition =
-        insert_static_key_definition(&database, "static-key", UpstreamFormat::OpenAiResponse).await;
+    let definition = insert_static_key_definition(&database, "static-key", format).await;
 
     let provider = insert_provider(
         &database,
@@ -631,7 +631,7 @@ async fn compact_rejections_classify_through_the_shared_taxonomy() {
 /// Panics if the outcome diverges from the documented rejection.
 #[tokio::test]
 async fn a_routed_compact_request_reaches_the_executor() {
-    let (database, _guard) = routed_model_database().await;
+    let (database, _guard) = routed_model_database(UpstreamFormat::OpenAiResponse).await;
 
     let context = context(database);
 
@@ -655,41 +655,34 @@ async fn a_routed_compact_request_reaches_the_executor() {
 
 /// A routed compact request whose model routes through a non-Responses
 /// definition still reaches the executor: routing is format-agnostic, and
-/// the compact parse never inspects the definition.
+/// the compact parse never inspects the definition. The executor's own
+/// budget-exceeded client fault — the same planner rejection the
+/// Responses-format fixture produces, raised by the IR-level checkpoint
+/// planner after parse and routing both succeeded — proves the request
+/// traversed the whole pipeline over the Anthropic-Messages definition.
 ///
 /// # Panics
 ///
-/// Panics if the outcome diverges from the placeholder contract.
+/// Panics if the outcome diverges from the documented rejection.
 #[tokio::test]
 async fn compact_request_routing_is_format_agnostic() {
-    let (database, _guard) = routed_model_database().await;
+    let (database, _guard) = routed_model_database(UpstreamFormat::AnthropicMessages).await;
 
     let context = context(database);
 
-    // An item-array input with state parses exactly as on the ordinary
-    // endpoint before routing: the state vocabulary is shared.
-    let body = serde_json::json!({
-        "model": "test-model",
-        "input": [
-            {"type": "message", "role": "user", "content": "hi"},
-            {"type": "compaction_trigger"},
-        ],
-    });
+    let body = serde_json::json!({"model": "test-model", "input": "hi"});
 
-    // The trigger is valid on the ordinary endpoint, but the compact
-    // endpoint rejects it before routing — an ambiguity beside the route's
-    // own standalone control.
-    #[expect(
-        clippy::expect_used,
-        reason = "the trigger body is constructed to be rejected"
-    )]
+    #[expect(clippy::expect_used, reason = "the fixture is constructed to fail")]
     let error = run_compact(&context, body.to_string().as_bytes(), 1)
         .await
-        .expect_err("a trigger on the compact endpoint must be rejected");
-
-    assert!(matches!(error, Error::MalformedRequest { .. }));
+        .expect_err("the planner must reject a window with nothing to summarize");
 
     assert_eq!(error.http_status(), StatusCode::BAD_REQUEST);
+
+    assert!(
+        error.to_string().contains("compaction_budget_exceeded"),
+        "the stable code rides the rendered message: {error}"
+    );
 }
 /// Cancellation during internal compaction finalizes one row with the latest billed usage.
 ///
@@ -805,7 +798,8 @@ async fn native_compaction_iterations_are_accounted_once_on_both_response_paths(
 #[tokio::test]
 async fn compaction_failures_finalize_once_before_and_after_response_transfer() {
     for should_continue in [false, true] {
-        let (database, _database_guard) = routed_model_database().await;
+        let (database, _database_guard) =
+            routed_model_database(UpstreamFormat::OpenAiResponse).await;
         let (store, _directory) = test_store();
         let content = if should_continue { "summary" } else { "" };
         let body = serde_json::json!({"id":"native",
@@ -863,12 +857,23 @@ async fn compaction_failures_finalize_once_before_and_after_response_transfer() 
             &RouteContext::empty(),
         )
         .expect("request");
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture's request carries compaction state by construction"
+        )]
+        let compaction = parsed
+            .compaction
+            .as_ref()
+            .expect("the fixture request carries compaction state");
         #[expect(clippy::expect_used, reason = "the fixture's state authenticates")]
-        let preparation = prepare_compaction_boundaries(&parsed, "completion")
+        let preparation = prepare_compaction_boundaries(compaction, "completion")
             .expect("authenticated compaction state");
         let outcome = run_compaction_pipeline::<crate::format::openai::response::Format>(
             &context,
-            parsed,
+            CompactionRequest {
+                parsed: &parsed,
+                compaction,
+            },
             preparation,
             gateway::CompactionSelection::direct(routing),
             stamped_draft(),

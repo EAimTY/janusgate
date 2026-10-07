@@ -86,8 +86,8 @@ pub(crate) struct EnabledModel {
     /// Public routing ID.
     pub(crate) public_id: String,
 
-    /// Owning provider's current name.
-    pub(crate) provider_name: String,
+    /// Owning provider's or pool's current name.
+    pub(crate) owner_name: String,
 
     /// Effective thinking levels; `None` when unknown.
     pub(crate) thinking_levels: Option<Vec<ReasoningLevel>>,
@@ -413,22 +413,7 @@ pub(crate) async fn update_model_overrides_checked(
     update: ModelUpdate<'_>,
 ) -> Result<ModelEntry, Error> {
     in_retryable_transaction!(database, transaction, async {
-        // A bare existence gate: the write touches only the model row, so the full
-        // provider-and-definition join would be read and parsed only to be thrown away.
-        if transaction
-            .query(
-                "SELECT id FROM models WHERE id = ?1",
-                params![update.model_id],
-            )
-            .await?
-            .is_empty()
-        {
-            return Err(Error::NotFound {
-                message: super::model_not_found_message(update.model_id),
-            });
-        }
-
-        transaction
+        let changes = transaction
             .execute(
                 "UPDATE models SET is_enabled = ?1, \
                  thinking_levels_override = ?2, max_input_tokens_override = ?3, \
@@ -444,6 +429,14 @@ pub(crate) async fn update_model_overrides_checked(
                 ],
             )
             .await?;
+
+        // The affected-row count is the existence gate — an UPDATE addressing no row changes
+        // nothing — the identical 404-before-write `delete_model_checked` derives.
+        if changes == 0 {
+            return Err(Error::NotFound {
+                message: super::model_not_found_message(update.model_id),
+            });
+        }
 
         // The read-back entry carries the provider facts the response renders, observed on the
         // write's own snapshot.

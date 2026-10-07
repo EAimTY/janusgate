@@ -119,7 +119,11 @@ where
 {
     let encoded = String::deserialize(deserializer)?;
 
-    let decoded = STANDARD.decode(encoded.as_bytes()).map_err(Error::custom)?;
+    let decoded = STANDARD.decode(encoded.as_bytes()).map_err(|failure| {
+        Error::custom(format!(
+            "a compaction sealing key is not standard base64: {failure}"
+        ))
+    })?;
 
     <[u8; SEALING_KEY_BYTES]>::try_from(decoded.as_slice()).map_err(|_mismatch| {
         Error::custom(format!(

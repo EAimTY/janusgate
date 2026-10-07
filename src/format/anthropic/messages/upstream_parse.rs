@@ -71,8 +71,9 @@ pub(crate) struct UpstreamParser {
     /// Whether the upstream reported the `compaction` stop reason. The canonical finish
     /// vocabulary has no compaction member, so the parser emits the ordinary `Stop` finish and
     /// records the fact beside it; the compaction outward render overrides the stop reason for
-    /// compaction lifecycles.
-    pub(crate) compaction_stop: bool,
+    /// compaction lifecycles. Module-private: the fact reaches the outward render exclusively
+    /// through the [`IrEvent::CompactionMetadata`] emission gated beside it.
+    compaction_stop: bool,
 }
 
 /// One upstream content block tracked across its start/delta/stop lifetime.

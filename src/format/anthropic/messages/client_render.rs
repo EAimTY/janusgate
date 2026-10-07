@@ -322,7 +322,7 @@ fn compaction_block_content(block: &crate::format::compaction_wire::Checkpoint) 
 }
 
 /// A compaction opening block, with a null-content threshold form when the summary follows.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum CompactionStart {
     /// An on-demand or no-op block delivered complete at the start.
@@ -334,7 +334,7 @@ enum CompactionStart {
 }
 
 /// The concrete gateway threshold block opening, before its complete summary delta.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename = "compaction")]
 struct ThresholdStart {
     /// Always null: the subsequent delta carries the summary once.

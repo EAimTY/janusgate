@@ -158,7 +158,7 @@ fn capability_entry(public_id: &str, owner: &str, candidates: &[ListingCandidate
         }));
     EnabledModel {
         public_id: public_id.to_string(),
-        provider_name: owner.to_string(),
+        owner_name: owner.to_string(),
         thinking_levels,
         max_input_tokens: input.and_then(|values| values.into_iter().min()),
         max_output_tokens: output.and_then(|values| values.into_iter().min()),

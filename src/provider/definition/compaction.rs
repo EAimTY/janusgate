@@ -9,7 +9,10 @@
 //! The write-time validation enforces the per-format gating and the supported-requires-operation
 //! shape once, at the management boundary ([`super::validate`]).
 
-use super::template::{ParamRow, StringExpr, TemplateNode};
+use super::{
+    quota_exhaustion::RejectedStatus,
+    template::{ParamRow, StringExpr, TemplateNode},
+};
 use crate::compaction_model::mechanism::{Mechanism, MechanismSupport};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
@@ -352,9 +355,11 @@ pub struct CountTokensOperation {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct UnsupportedClassifier {
-    /// The upstream HTTP statuses matching the boundary.
+    /// The upstream HTTP statuses matching the boundary: [`RejectedStatus`] admits only
+    /// non-success statuses, so the classifier can never list a criterion a success response
+    /// carries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub statuses: Vec<u16>,
+    pub statuses: Vec<RejectedStatus>,
 
     /// The upstream error `code` members matching the boundary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -511,7 +516,11 @@ mod tests {
                 .unsupported
                 .as_ref()
                 .expect("classifier present")
-                .statuses,
+                .statuses
+                .iter()
+                .copied()
+                .map(u16::from)
+                .collect::<Vec<_>>(),
             vec![404, 422]
         );
 

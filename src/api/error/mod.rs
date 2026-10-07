@@ -341,9 +341,11 @@ impl From<GatewayError> for Error {
             }
             GatewayError::RoutingStateConflict { model } => Self::RoutingStateConflict { model },
 
+            // The gateway error carries the complete bounded upstream body as classification
+            // evidence; this outward boundary renders its truncated excerpt (README §6.7).
             GatewayError::Upstream { status, detail } => Self::Upstream {
                 status,
-                message: detail,
+                message: crate::http_body::truncate_excerpt(&detail),
             },
             GatewayError::QuotaRejected { status, detail, .. } => Self::QuotaRejected {
                 status,

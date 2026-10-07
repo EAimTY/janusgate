@@ -6,11 +6,11 @@
 //! entries beside them are the IR's compaction facts, living in
 //! [`crate::ir::compaction`](crate::ir::compaction).
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 /// A completed checkpoint rendered before an answer or as a compact-only result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum Checkpoint {
     /// A gateway-generated Responses carrier.
@@ -28,8 +28,8 @@ impl From<Value> for Checkpoint {
 }
 
 /// The gateway-generated Responses compaction item.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename = "compaction", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename = "compaction")]
 pub(crate) struct ResponsesCheckpoint {
     /// Gateway-issued item identifier.
     pub(crate) id: String,
@@ -41,8 +41,8 @@ pub(crate) struct ResponsesCheckpoint {
 }
 
 /// The gateway-generated Messages compaction block.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename = "compaction", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename = "compaction")]
 pub(crate) struct MessagesCheckpoint {
     /// Readable summary or the fixed encrypted-state transport description.
     pub(crate) content: String,

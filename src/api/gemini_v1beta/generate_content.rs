@@ -8,8 +8,10 @@
 //! `/models/{model}:generateContent` — constructing such a route panics with "Only one
 //! parameter is allowed per path segment" (verified with a build-time probe against axum
 //! 0.8.9; see [`router`] tests). The endpoints therefore share one wildcard route,
-//! `/models/{*rest}`, whose capture [`WildcardCapture`] extracts through the router's own
-//! route parameter and [`parse_model_action`] parses; malformed paths return the same
+//! `/models/{*rest}`, whose capture [`WildcardCapture`] extractor resolves every
+//! URL-determined request fact — the capture parsed by [`parse_model_action`], and the
+//! streaming action's `alt=sse` query convention — ahead of the body extractor, so a
+//! URL-determined rejection never uploads the body first; malformed paths return the same
 //! Gemini 404 the prefix fallback renders, so the observable behavior matches a native
 //! partial-segment router.
 //!
@@ -99,13 +101,15 @@ async fn models(
     .await
 }
 
-/// The router's own `{*rest}` capture: everything after `/models/`, extracted
-/// through the route parameter so no mount prefix is spelled in the handler. A
-/// matched single-capture wildcard route always carries its capture, so the
-/// rejection — the surface's unmapped-path 404 over the request's own path —
-/// is unrepresentable in practice and exists only to keep the surface's error
-/// wire should that contract change.
-struct WildcardCapture(String);
+/// The router's own `{*rest}` capture, resolved into the URL-determined request facts: the
+/// public model plus its action's streaming mode. The extractor runs ahead of the body
+/// extractor, so every URL-determined rejection — an unrouteable capture, or a streaming
+/// action missing its `alt=sse` query — is decided before any body byte is buffered (the
+/// outward body cap is 64 MiB, README §4). A matched single-capture wildcard route always
+/// carries its capture, so the capture arm of the rejection — the surface's unmapped-path
+/// 404 over the request's own path — is unrepresentable in practice and exists only to keep
+/// the surface's error wire should that contract change.
+struct WildcardCapture(ModelAction);
 
 impl<S> FromRequestParts<S> for WildcardCapture
 where
@@ -117,83 +121,55 @@ where
         parts: &mut RequestParts,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
+        // The original URI, not the router-stripped one: the invalid-URL
+        // classification names the request's own full path.
+        let OriginalUri(uri) = OriginalUri::from_request_parts(parts, state)
+            .await
+            .unwrap_or_else(|error| match error {});
+
         match Path::<String>::from_request_parts(parts, state).await {
-            Ok(Path(capture)) => Ok(Self(capture)),
             // The rejection is built only here: a matched single-capture wildcard route always
             // carries its capture, so every successful dispatch would otherwise pay a method
             // clone and a path allocation for a rejection that never renders.
-            Err(_) => Err(WildcardRejection {
-                method: parts.method.clone(),
-                path: parts.uri.path().to_string(),
-            }),
+            Err(_) => Err(WildcardRejection(Error::InvalidUrl {
+                method: parts.method.as_str().to_string(),
+                path: uri.path().to_string(),
+            })),
+
+            Ok(Path(capture)) => resolve_url_facts(Some(&capture), uri.query(), uri.path())
+                .map(Self)
+                .map_err(WildcardRejection),
         }
     }
 }
 
-/// Why [`WildcardCapture`] could not extract: the router failed to hand the
-/// handler its own route's capture. Rendered as the surface's unmapped-path
-/// 404 — the same body the prefix fallback renders.
+/// Why the URL-determined facts could not extract: the router failed to hand
+/// the handler its own route's capture, the capture parsed to no model action,
+/// or a streaming action lacked its `alt=sse` query. Rendered through the
+/// surface's error envelope — the capture and action arms as the unmapped-path
+/// 404 the prefix fallback also renders, the query arm as the streaming
+/// convention's 400.
 #[derive(Debug)]
-struct WildcardRejection {
-    /// The request method, for the invalid-URL classification.
-    method: Method,
-
-    /// The request path, for the invalid-URL classification.
-    path: String,
-}
+struct WildcardRejection(Error);
 
 impl IntoResponse for WildcardRejection {
     fn into_response(self) -> Response {
-        let error = Error::InvalidUrl {
-            method: self.method.as_str().to_string(),
-            path: self.path,
-        };
+        log_error("request", &self.0);
 
-        log_error("request", &error);
-
-        serving::error_response::<super::Surface>(error)
+        serving::error_response::<super::Surface>(self.0)
     }
 }
 
-/// Handles both completion actions behind the wildcard route: parses the route
-/// capture into its model plus action, enforces the streaming query
-/// convention, then runs the shared completion pipeline.
+/// Handles both completion actions behind the wildcard route: every
+/// URL-determined fact was already resolved by the [`WildcardCapture`]
+/// extractor ahead of the body, so the handler only runs the shared
+/// completion pipeline over the buffered body.
 async fn dispatch(
     State(context): State<Context>,
     api_key: serving::AuthenticatedApiKeyRow,
-    OriginalUri(uri): OriginalUri,
-    WildcardCapture(capture): WildcardCapture,
+    WildcardCapture(action): WildcardCapture,
     WithRejection(body, _): WithRejection<Bytes, serving::BodyError<super::Surface>>,
 ) -> Response {
-    // Malformed captures stay in this handler's 404 domain: the same surface
-    // 404 the prefix fallback renders for unmapped paths.
-    let action = match parse_model_action(&capture, uri.path()) {
-        Ok(action) => action,
-
-        Err(error) => {
-            log_error("request", &error);
-
-            return serving::error_response::<super::Surface>(error);
-        }
-    };
-
-    if action.is_streaming {
-        // Streaming requires the `alt=sse` query form; the query is parsed manually from the
-        // request URI ([`super::has_alt_sse`]), so no axum `query` extractor is declared.
-        let is_sse = super::has_alt_sse(uri.query());
-
-        if !is_sse {
-            let error = Error::MalformedRequest {
-                param: Some("alt".to_string()),
-                message: "streamGenerateContent requires `?alt=sse`".to_string(),
-            };
-
-            log_error("request", &error);
-
-            return serving::error_response::<super::Surface>(error);
-        }
-    }
-
     serving::outcome_response::<super::Surface>(
         serving::run_completion::<InboundFormat>(
             &context,
@@ -267,6 +243,46 @@ fn parse_model_action(capture: &str, request_path: &str) -> Result<ModelAction, 
     }
 }
 
+/// Resolves the URL-determined request facts of the wildcard route: the
+/// capture parsed into its model plus action ([`parse_model_action`]), then
+/// the streaming action's query convention — streaming requires the `?alt=sse`
+/// form, parsed manually from the request URI ([`super::has_alt_sse`]), so no
+/// axum `query` extractor is declared. The capture is `None` when the router
+/// failed to hand it over; the convention's 400 and every capture 404 here are
+/// the rejections the [`WildcardCapture`] extractor renders ahead of body
+/// extraction.
+///
+/// `request_path` is the request's raw path, carried verbatim into the
+/// invalid-URL classification.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidUrl`] for a missing capture or captures outside the
+/// two action shapes, and [`Error::MalformedRequest`] naming `alt` for a
+/// streaming action without its `alt=sse` query.
+fn resolve_url_facts(
+    capture: Option<&str>,
+    query: Option<&str>,
+    request_path: &str,
+) -> Result<ModelAction, Error> {
+    let action = parse_model_action(
+        capture.ok_or_else(|| Error::InvalidUrl {
+            method: Method::POST.as_str().to_string(),
+            path: request_path.to_string(),
+        })?,
+        request_path,
+    )?;
+
+    if action.is_streaming && !super::has_alt_sse(query) {
+        return Err(Error::MalformedRequest {
+            param: Some(String::from("alt")),
+            message: String::from("streamGenerateContent requires `?alt=sse`"),
+        });
+    }
+
+    Ok(action)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +342,90 @@ mod tests {
             );
             assert_eq!(error.http_status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    /// Verifies the URL-facts resolution the capture extractor performs ahead
+    /// of the body extractor: both action shapes resolve with their streaming
+    /// modes whatever the query, a non-streaming action needs no query, a
+    /// streaming action demands exactly the `alt=sse` form — the convention's
+    /// 400 — and a capture the router never handed over is the unmapped-path
+    /// 404.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a resolution outcome diverges from the documented shapes.
+    #[test]
+    fn resolves_url_facts_and_enforces_the_streaming_query_convention() {
+        let request_path = |rest: &str| format!("/api/gemini-v1beta/models/{rest}");
+
+        for (rest, query, model, is_streaming) in [
+            ("gemini-2.0:generateContent", None, "gemini-2.0", false),
+            (
+                "gemini-2.0:generateContent",
+                Some("other=1"),
+                "gemini-2.0",
+                false,
+            ),
+            (
+                "gemini-2.0:streamGenerateContent",
+                Some("alt=sse"),
+                "gemini-2.0",
+                true,
+            ),
+            (
+                "gemini-2.0:streamGenerateContent",
+                Some("other=1&alt=sse"),
+                "gemini-2.0",
+                true,
+            ),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "each accepted capture is constructed to resolve"
+            )]
+            let action = resolve_url_facts(Some(rest), query, &request_path(rest))
+                .expect("an accepted capture resolves");
+
+            assert_eq!(
+                action,
+                ModelAction {
+                    model: model.to_string(),
+                    is_streaming,
+                },
+                "unexpected action resolved from `{rest}`",
+            );
+        }
+
+        for (rest, query) in [
+            ("gemini-2.0:streamGenerateContent", None),
+            ("gemini-2.0:streamGenerateContent", Some("alt=stream")),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "each queryless stream capture is constructed to reject"
+            )]
+            let error = resolve_url_facts(Some(rest), query, &request_path(rest))
+                .expect_err("a streaming capture without alt=sse rejects");
+
+            assert!(
+                matches!(error, Error::MalformedRequest { .. }),
+                "unexpected error for `{rest}`: {error}"
+            );
+            assert_eq!(error.http_status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the routerless capture is constructed to reject"
+        )]
+        let error = resolve_url_facts(None, None, &request_path("gemini-2.0:generateContent"))
+            .expect_err("a capture the router never handed over rejects");
+
+        assert!(
+            matches!(error, Error::InvalidUrl { .. }),
+            "unexpected error for the missing capture: {error}"
+        );
+        assert_eq!(error.http_status(), StatusCode::NOT_FOUND);
     }
 
     /// Verifies the router builds without panicking: axum 0.8 rejects partial-segment

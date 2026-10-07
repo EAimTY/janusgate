@@ -94,8 +94,9 @@ pub(super) struct CreateProviderRequest {
 /// one provider row. The write-only `api_key` is the absent-keeps exception — absent keeps the
 /// stored key, present replaces it. An explicit definition rebind names both parts of the
 /// target reference; the write validates the target version's existence and the credential-kind
-/// agreement atomically, and a different credential kind requires the replacement `api_key` in
-/// the same request.
+/// agreement atomically. A rebind onto an api_key-target definition requires the replacement
+/// `api_key` in the same request, whatever the row's current kind, while an OAuth-target
+/// definition is reachable only through `oauth:reauthorize`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -357,18 +358,6 @@ async fn handle_update(
         });
     };
 
-    // An API key is the only hand-replaceable credential: an OAuth row's credentials are
-    // minted by flows, so a replacement key on one is a client fault.
-    if credentials.is_some() && existing.credential_kind() != CredentialKind::ApiKey {
-        return Err(Error::CredentialKindMismatch {
-            message: format!(
-                "Provider `{}` carries `{}` credentials, which only an OAuth flow replaces",
-                existing.name,
-                existing.credential_kind().as_str(),
-            ),
-        });
-    }
-
     // The rebind target, resolved for the clean rejections; an unknown target defers to the
     // transactional write's 404.
     let rebind_target = match rebind {
@@ -379,12 +368,45 @@ async fn handle_update(
         None => None,
     };
 
+    // The effective definition both pre-checks judge: the named rebind target when a rebind is
+    // present, the stored definition otherwise. A named rebind whose target does not exist
+    // defers both entirely — the transactional write's unknown-definition 404 is the real
+    // answer, and judging the stored definition here would reject a request whose actual fault
+    // is the target.
+    let effective_definition = if rebind.is_some() {
+        rebind_target.as_ref()
+    } else {
+        Some(&existing.definition)
+    };
+
+    // A replacement key serves an api_key-target definition alone (README §3): an OAuth
+    // definition's credentials are minted by flows, so a keyed write aimed at one — the stored
+    // definition on the no-rebind path, the named target on a rebind — is a client fault. A keyed
+    // write against an api_key target is accepted regardless of the row's current kind — the
+    // documented static-key write that converts an OAuth provider onto a static-key definition —
+    // with the storage write's transactional kind check as the backstop.
+    if let Some(definition) = effective_definition
+        && credentials.is_some()
+        && definition.credential_kind() != CredentialKind::ApiKey
+    {
+        return Err(Error::CredentialKindMismatch {
+            message: format!(
+                "Provider definition `{}` version {} carries `{}` credentials, which only an \
+                 OAuth flow mints — reauthorize the provider with `oauth:reauthorize` instead \
+                 of writing a replacement key",
+                definition.name,
+                definition.version.get(),
+                definition.credential_kind().as_str(),
+            ),
+        });
+    }
+
     // A rebind whose target kind differs from the effective credentials is rejected with the
-    // remedy the target's credential kind admits: an `oauth` target's credentials are only ever
-    // minted by a flow, so the message always names the `oauth:reauthorize` remedy against this
-    // definition — a replacement key, the only credential this route writes, can never satisfy
-    // such a target — while an `api_key` target accepts the replacement static key the request
-    // itself can carry.
+    // remedy the target's credential kind admits. Only a keyless rebind arrives here: a keyed
+    // write was already judged against the target's kind above. An `oauth` target's credentials
+    // are only ever minted by a flow, so the message names the `oauth:reauthorize` remedy
+    // against this definition, while an `api_key` target's remedy — the replacement static key
+    // the request itself can carry — is satisfiable, so the message asks for it.
     if let Some(target) = &rebind_target {
         let credentials_kind = credentials
             .as_ref()
@@ -419,17 +441,8 @@ async fn handle_update(
     // The base-URL requirement's pre-check mirrors the write's transactional one with the
     // cleaner 400: on the no-rebind path it holds against the stored definition, so a full-state
     // write can never null out the base URL a base-addressing provider's every dispatch
-    // evaluates; on a named rebind it holds against the resolved target (README §3, §7.1). A
-    // named rebind whose target does not exist defers the check entirely — the transactional
-    // write's unknown-definition 404 is the real answer, and judging the stored definition here
-    // would reject a request whose actual fault is the target.
-    let precheck_definition = if rebind.is_some() {
-        rebind_target.as_ref()
-    } else {
-        Some(&existing.definition)
-    };
-
-    if let Some(definition) = precheck_definition
+    // evaluates; on a named rebind it holds against the resolved target (README §3, §7.1).
+    if let Some(definition) = effective_definition
         && definition.payload.references_base()
         && request.base_url.is_none()
     {
@@ -654,15 +667,19 @@ mod tests {
         }
     }
 
-    /// A rebind onto differently-kind credentials branches its rejection on the target's
-    /// credential kind: an `oauth` target always names the `oauth:reauthorize` flow remedy —
-    /// for the keyed request and the keyless rebind of a static-key provider alike, since no
-    /// replacement key can satisfy an `oauth` target — while an `api_key` target requires the
-    /// replacement credentials the request itself can carry.
+    /// A rebind onto differently-kind credentials branches its judgment on the target's
+    /// credential kind, and the keyed conversion works in the documented direction (README §3):
+    /// an `oauth` target rejects a supplied key and a keyless rebind alike with the
+    /// `oauth:reauthorize` remedy — no replacement key can satisfy an OAuth definition — while
+    /// an `api_key` target rejects the keyless rebind asking for replacement credentials and,
+    /// supplied with them, converts the OAuth provider onto the static-key definition. A keyed
+    /// write without a rebind against an OAuth row stays a client fault — that replacement is
+    /// what `oauth:reauthorize` itself performs.
     ///
     /// # Panics
     ///
-    /// Panics if the fixtures fail to insert or a rejection diverges.
+    /// Panics if the fixtures fail to insert, a rejection diverges, or the conversion's stored
+    /// row diverges.
     #[tokio::test]
     async fn a_rebind_to_differently_kind_credentials_branches_on_the_target_kind() {
         let (database, _guard) = test_support::create_test_database().await;
@@ -702,17 +719,19 @@ mod tests {
         )
         .await;
 
-        let request =
-            |provider: &Provider, target_name: &str, api_key: Option<&str>| UpdateProviderRequest {
-                model_prefix: String::new(),
-                provider_id: provider.id,
-                name: provider.name.clone(),
-                is_enabled: true,
-                base_url: None,
-                provider_definition_name: Some(target_name.to_string()),
-                provider_definition_version: Some(1),
-                api_key: api_key.map(str::to_string),
-            };
+        let request = |provider: &Provider,
+                       target_name: Option<&str>,
+                       api_key: Option<&str>,
+                       base_url: Option<&str>| UpdateProviderRequest {
+            model_prefix: String::new(),
+            provider_id: provider.id,
+            name: provider.name.clone(),
+            is_enabled: true,
+            base_url: base_url.map(str::to_string),
+            provider_definition_name: target_name.map(str::to_string),
+            provider_definition_version: target_name.map(|_| 1),
+            api_key: api_key.map(str::to_string),
+        };
 
         #[expect(
             clippy::unwrap_used,
@@ -722,11 +741,12 @@ mod tests {
             clippy::panic,
             reason = "a divergent rejection variant is the failure report"
         )]
-        let Error::CredentialKindMismatch { message } =
-            handle_update(&database, request(&provider, "oauth-def", Some("sk2")))
-                .await
-                .unwrap_err()
-        else {
+        let Error::CredentialKindMismatch { message } = handle_update(
+            &database,
+            request(&provider, Some("oauth-def"), Some("sk2"), None),
+        )
+        .await
+        .unwrap_err() else {
             panic!("a supplied key against an OAuth target renders the credential-kind mismatch");
         };
 
@@ -744,7 +764,7 @@ mod tests {
             reason = "a divergent rejection variant is the failure report"
         )]
         let Error::CredentialKindMismatch { message } =
-            handle_update(&database, request(&provider, "oauth-def", None))
+            handle_update(&database, request(&provider, Some("oauth-def"), None, None))
                 .await
                 .unwrap_err()
         else {
@@ -764,17 +784,92 @@ mod tests {
             clippy::panic,
             reason = "a divergent rejection variant is the failure report"
         )]
-        let Error::CredentialKindMismatch { message } =
-            handle_update(&database, request(&oauth_provider, "static-def", None))
-                .await
-                .unwrap_err()
-        else {
+        let Error::CredentialKindMismatch { message } = handle_update(
+            &database,
+            request(&oauth_provider, Some("static-def"), None, None),
+        )
+        .await
+        .unwrap_err() else {
             panic!("a keyless rebind onto an api_key target renders the credential-kind mismatch");
         };
 
         assert!(
             message.contains("replacement credentials are required"),
             "the rebind onto an api_key target must require replacement credentials: {message}"
+        );
+
+        // The retained guard scope: a replacement key without a rebind aims at the stored
+        // OAuth definition, whose credentials only `oauth:reauthorize` replaces.
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::CredentialKindMismatch { message } = handle_update(
+            &database,
+            UpdateProviderRequest {
+                model_prefix: String::new(),
+                provider_id: oauth_provider.id,
+                name: oauth_provider.name.clone(),
+                is_enabled: true,
+                base_url: None,
+                provider_definition_name: None,
+                provider_definition_version: None,
+                api_key: Some("sk2".to_string()),
+            },
+        )
+        .await
+        .unwrap_err() else {
+            panic!("a replacement key without a rebind on an OAuth row renders the mismatch");
+        };
+
+        assert!(
+            message.contains("oauth:reauthorize"),
+            "the no-rebind keyed rejection must state the flow remedy: {message}"
+        );
+
+        // The keyed conversion, last because it mutates the row: the remedy the rejection names
+        // is satisfiable, and the rebind lands — the row serves the static-key definition with
+        // the written credentials.
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the conversion is the documented success side of this call"
+        )]
+        handle_update(
+            &database,
+            request(
+                &oauth_provider,
+                Some("static-def"),
+                Some("sk2"),
+                Some("https://upstream.example"),
+            ),
+        )
+        .await
+        .unwrap();
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the stored row is the documented success side of this call"
+        )]
+        #[expect(
+            clippy::expect_used,
+            reason = "the row's presence is the documented success side of this call"
+        )]
+        let rebound = storage::providers::find_provider_by_id(&database, oauth_provider.id)
+            .await
+            .unwrap()
+            .expect("the converted provider row survives the write");
+
+        assert_eq!(rebound.definition.name, "static-def");
+        assert_eq!(rebound.definition.version.get(), 1);
+        assert_eq!(
+            rebound.credentials,
+            StoredCredentials::ApiKey {
+                api_key: "sk2".to_string(),
+            }
         );
     }
 

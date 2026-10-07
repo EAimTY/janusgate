@@ -10,7 +10,10 @@
 //! dispatched native operation's arbitrary failure passes through unchanged with
 //! its existing upstream semantics. Boundary failures compose losslessly: the
 //! executor elevates a [`BoundaryError`] raised before account selection onto the
-//! matching variant. Refusal and documented native no-summary outcomes are not
+//! matching variant, and the three stable codes shared with the boundary leaf are
+//! declared once as [`BoundaryError`]'s code constants and consumed by this
+//! module's rendering, so both failure paths spell each shared code identically.
+//! Refusal and documented native no-summary outcomes are not
 //! errors at all — they are protocol outcomes the executor models separately.
 
 use crate::{compaction_model::boundary::BoundaryError, gateway::Error as GatewayError};
@@ -32,7 +35,7 @@ pub(crate) enum CompactionError {
     /// producing format differs from the target, opaque state a restoration
     /// would silently lose, or a native result that failed its completion
     /// validation. Inaccessible state is never silently discarded.
-    #[error("compaction_inaccessible_state: {message}")]
+    #[error("{}: {message}", BoundaryError::INACCESSIBLE_STATE_CODE)]
     InaccessibleNativeState {
         /// Human-readable failure detail.
         message: String,
@@ -42,7 +45,7 @@ pub(crate) enum CompactionError {
     /// failed authentication, or a mismatched visible-content binding. A
     /// recognizable but damaged marker is an explicit client-state error, never
     /// reclassified as native state and never summarized.
-    #[error("compaction_invalid_gateway_state: {message}")]
+    #[error("{}: {message}", BoundaryError::INVALID_GATEWAY_STATE_CODE)]
     InvalidGatewayState {
         /// Human-readable failure detail.
         message: String,
@@ -90,7 +93,7 @@ pub(crate) enum CompactionError {
 
     /// No sealing keys are configured, so no gateway artifact can be produced
     /// or consumed. A server configuration gap, not a client fault.
-    #[error("compaction_configuration_missing: {message}")]
+    #[error("{}: {message}", BoundaryError::CONFIGURATION_MISSING_CODE)]
     ConfigurationMissing {
         /// Human-readable failure detail.
         message: String,

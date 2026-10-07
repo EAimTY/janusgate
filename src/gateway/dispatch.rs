@@ -32,17 +32,18 @@ pub(crate) enum DispatchOutcome {
 }
 
 impl DispatchOutcome {
-    /// Converts an ordinary rejection to its outward upstream error.
+    /// Converts an ordinary rejection to its outward upstream error, carrying the complete
+    /// bounded body as the classification evidence; the outward boundary renders its excerpt.
     ///
     /// # Errors
     ///
-    /// Returns the upstream status and bounded excerpt on rejected headers.
+    /// Returns the upstream status and the complete bounded body on rejected headers.
     pub(crate) fn into_accepted(self) -> Result<reqwest::Response, Error> {
         match self {
             Self::Accepted(response) => Ok(response),
             Self::Rejected { status, body } => Err(Error::Upstream {
                 status,
-                detail: http_body::truncate_excerpt(&body.lossy_text()),
+                detail: body.lossy_text(),
             }),
         }
     }

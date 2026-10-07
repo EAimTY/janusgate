@@ -75,7 +75,7 @@ struct ModelObject {
     /// it renders the epoch.
     created: u64,
 
-    /// Name of the provider serving the model.
+    /// Name of the provider or pool serving the model.
     owned_by: String,
 
     /// Effective maximum input tokens; omitted when unknown.
@@ -104,7 +104,7 @@ fn model_object(entry: crate::storage::models::EnabledModel) -> ModelObject {
         id: entry.public_id,
         object: "model",
         created: 0,
-        owned_by: entry.provider_name,
+        owned_by: entry.owner_name,
         max_input_tokens: entry.max_input_tokens,
         max_output_tokens: entry.max_output_tokens,
         reasoning_levels: entry
@@ -229,7 +229,7 @@ mod tests {
     ) -> EnabledModel {
         EnabledModel {
             public_id: public_id.to_string(),
-            provider_name: "acme".to_string(),
+            owner_name: "acme".to_string(),
             thinking_levels,
             max_input_tokens,
             max_output_tokens,

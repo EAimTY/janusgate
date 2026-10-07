@@ -538,5 +538,20 @@ mod tests {
 
         assert!(rendered.contains("repeated"), "{rendered}");
         assert!(rendered.contains("line"), "{rendered}");
+
+        #[expect(
+            clippy::panic,
+            reason = "the non-base64 set is rejected above, which is what the test asserts"
+        )]
+        let Err(failure) =
+            parse_result(sealing_keys_body(r#"[{"id": "a", "key": "!!!"}]"#).as_bytes())
+        else {
+            panic!("a non-base64 key parses but must be rejected");
+        };
+
+        let rendered = failure.to_string();
+
+        assert!(rendered.contains("not standard base64"), "{rendered}");
+        assert!(rendered.contains("line"), "{rendered}");
     }
 }

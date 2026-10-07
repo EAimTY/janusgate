@@ -395,6 +395,7 @@ mod tests {
                     UnsupportedClassifier,
                 },
                 credential::CredentialAcquisition,
+                quota_exhaustion::RejectedStatus,
                 template::StringExpr,
             },
         },
@@ -632,7 +633,10 @@ mod tests {
                         envelope: None,
                         response_unwrap: Some("result".to_string()),
                         unsupported: Some(UnsupportedClassifier {
-                            statuses: vec![404],
+                            statuses: vec![
+                                RejectedStatus::try_from(404)
+                                    .expect("the fixture status is a rejected HTTP status"),
+                            ],
                             codes: vec!["model_compaction_unsupported".to_string()],
                             parameters: Vec::new(),
                         }),

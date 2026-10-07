@@ -227,8 +227,6 @@ pub(crate) fn install_test_configuration(
     let config_path = test_configuration_file_path();
 
     if let Some(config) = crate::CONFIG.get() {
-        let config: &'static crate::config::schema::Config = config;
-
         return config;
     }
 

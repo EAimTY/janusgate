@@ -297,7 +297,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
         .iter()
         .find(|route| route.public_id == "coding-M")
         .unwrap();
-    assert_eq!(pooled.provider_name, "coding");
+    assert_eq!(pooled.owner_name, "coding");
     assert_eq!(pooled.max_input_tokens, Some(800));
     assert_eq!(pooled.max_output_tokens, None);
     assert_eq!(pooled.thinking_levels, Some(vec![]));
@@ -435,7 +435,7 @@ async fn public_listings_expose_direct_models_and_combine_structural_candidates(
             .collect::<Vec<_>>(),
         vec!["alias-N", "future-N", "pool-coding-N"]
     );
-    assert!(listed.iter().all(|entry| entry.provider_name == "coding"
+    assert!(listed.iter().all(|entry| entry.owner_name == "coding"
         && entry.max_input_tokens == Some(2400)
         && entry.max_output_tokens == Some(600)
         && entry.thinking_levels == Some(vec![crate::vocabulary::ReasoningLevel::Low])));

@@ -12,7 +12,7 @@ use crate::{
     context::Context,
     format::{
         ClientFormat, ClientSseRenderer, CompactionBoundary, CompactionControl, NativeArtifact,
-        ParsedRequest, RouteContext, aggregation_events,
+        ParsedCompaction, ParsedRequest, RouteContext, aggregation_events,
         anthropic::messages::{CompactionOnlyUsage, render_compaction_only_response},
         openai::response::{parse_compact_request, render_trigger_stream_frames},
     },
@@ -109,7 +109,11 @@ where
         }
     };
 
-    if parsed.compaction.is_none() {
+    // The compaction pipeline's single entry guard: the pipeline below runs
+    // only requests carrying compaction state, so the Option is unwrapped
+    // here — once — and the facts are threaded as a reference through every
+    // pipeline stage. Any other request stays on the plain path.
+    let Some(compaction) = parsed.compaction.as_ref() else {
         return run_plain_completion::<TFormat>(
             context,
             parsed,
@@ -118,9 +122,9 @@ where
             endpoint_type,
         )
         .await;
-    }
+    };
 
-    let preparation = prepare_compaction_boundaries(&parsed, operation.as_str())?;
+    let preparation = prepare_compaction_boundaries(compaction, operation.as_str())?;
 
     let selection =
         match gateway::resolve_compaction_routing(context, &parsed, &preparation, api_key_id).await
@@ -177,7 +181,10 @@ where
     // contract with the resolved provider named.
     run_compaction_pipeline::<TFormat>(
         context,
-        parsed,
+        CompactionRequest {
+            parsed: &parsed,
+            compaction,
+        },
         preparation,
         selection,
         log,
@@ -276,27 +283,23 @@ where
     outcome
 }
 
-/// Authenticates the request's carriers before route selection, with no upstream or storage I/O.
-/// The returned proof is retained through compatibility, restoration, and same-account fallback.
+/// Authenticates the request's compaction carriers before route selection, with no upstream or
+/// storage I/O. The facts arrive threaded from the caller's own entry guard, so the
+/// authenticate step never re-derives their presence. The returned proof is retained through
+/// compatibility, restoration, and same-account fallback.
 ///
 /// # Errors
 ///
 /// Returns and logs a carrier authentication or visible-content binding failure.
 pub(super) fn prepare_compaction_boundaries(
-    parsed: &ParsedRequest,
+    compaction: &ParsedCompaction,
     operation: &str,
 ) -> Result<BoundaryPreparation, Error> {
-    parsed
-        .compaction
-        .as_ref()
-        .map(BoundaryPreparation::authenticate)
-        .transpose()
-        .map(|preparation| preparation.unwrap_or_default())
-        .map_err(|error| {
-            let error = Error::from(gateway::Error::from(error));
-            log_error(&format!("{operation} request"), &error);
-            error
-        })
+    BoundaryPreparation::authenticate(compaction).map_err(|error| {
+        let error = Error::from(gateway::Error::from(error));
+        log_error(&format!("{operation} request"), &error);
+        error
+    })
 }
 
 /// The kind of outward surface a compaction-carrying request renders through:
@@ -310,16 +313,12 @@ enum CompactionSurface {
     Messages,
 }
 
-/// Decides the compaction surface from the parsed request: the control names
-/// it when one is present, and a control-less replay resolves through the
-/// native artifacts it carries — a native Messages block rides the Messages
-/// surface, everything else renders Responses-side (a pure gateway-carrier
-/// replay is Ordinary on either).
-fn compaction_surface(parsed: &crate::format::ParsedRequest) -> CompactionSurface {
-    let Some(compaction) = parsed.compaction.as_ref() else {
-        return CompactionSurface::Responses;
-    };
-
+/// Decides the compaction surface from the request's parsed compaction facts:
+/// the control names it when one is present, and a control-less replay
+/// resolves through the native artifacts it carries — a native Messages block
+/// rides the Messages surface, everything else renders Responses-side (a pure
+/// gateway-carrier replay is Ordinary on either).
+fn compaction_surface(compaction: &ParsedCompaction) -> CompactionSurface {
     match &compaction.control {
         Some(
             CompactionControl::MessagesOnDemand { .. }
@@ -354,29 +353,26 @@ fn compaction_surface(parsed: &crate::format::ParsedRequest) -> CompactionSurfac
 
 /// Whether the request's compaction control is the threshold-shaped Messages
 /// control: the one control whose ordinary outcome renders through the
-/// threshold-aware Messages renderer. Both consults sit inside the compaction
-/// pipeline, which runs only requests that parsed compaction state —
-/// [`run_completion`] routes every other request to the plain path — so the
-/// predicate answers on that entry precondition instead of re-checking it.
-///
-/// # Panics
-///
-/// Panics if the request carries no compaction state: the pipeline's entry
-/// contract guarantees the state, so a violation is a fatal bug.
-fn is_threshold_control(parsed: &ParsedRequest) -> bool {
-    #[expect(
-        clippy::expect_used,
-        reason = "the compaction pipeline runs only requests carrying compaction state"
-    )]
-    let compaction = parsed
-        .compaction
-        .as_ref()
-        .expect("the compaction pipeline runs only requests carrying compaction state");
-
+/// threshold-aware Messages renderer. The compaction facts arrive threaded
+/// from the pipeline's entry guard, so the predicate answers on them without
+/// re-deriving the pipeline's precondition.
+fn is_threshold_control(compaction: &ParsedCompaction) -> bool {
     matches!(
         compaction.control,
         Some(CompactionControl::MessagesThreshold { .. })
     )
+}
+
+/// One compaction pipeline's parsed request with its already-unwrapped
+/// compaction facts: the pair resolved once at the caller's entry guard and
+/// threaded through the pipeline unchanged, so no stage re-derives the Option.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CompactionRequest<'a> {
+    /// The parsed request.
+    pub(super) parsed: &'a ParsedRequest,
+
+    /// The request's compaction facts — `parsed.compaction`, unwrapped.
+    pub(super) compaction: &'a ParsedCompaction,
 }
 
 /// The stable per-request render facts of one compaction pipeline request:
@@ -437,6 +433,11 @@ struct CheckpointContinuation {
 /// the ordinary path for replays and below-threshold generations, the
 /// codec-shaped compaction lifecycles for everything else.
 ///
+/// The request's compaction facts arrive threaded in already unwrapped —
+/// resolved once at [`run_completion`]'s entry guard, which routes every
+/// compaction-less request to the plain path — instead of re-derived from the
+/// Option inside the pipeline.
+///
 /// Streaming note: a checkpoint-continue lifecycle renders the checkpoint from
 /// the executor's artifact ahead of the live continuation events, so a
 /// streaming client waits for the compaction to complete before its answer
@@ -448,7 +449,7 @@ struct CheckpointContinuation {
 /// the accounting guard is finalized. Callers must not log the error again.
 pub(super) async fn run_compaction_pipeline<TFormat>(
     context: &Context,
-    parsed: ParsedRequest,
+    request: CompactionRequest<'_>,
     preparation: BoundaryPreparation,
     mut selection: gateway::CompactionSelection,
     log: ApiLogDraft,
@@ -470,7 +471,7 @@ where
                 accounting: &mut guard,
                 render: &mut render,
             },
-            &parsed,
+            request,
             routing,
         )
         .await;
@@ -505,14 +506,14 @@ where
 /// Resolves and renders one compaction attempt, with errors owned by the outer accounting guard.
 async fn run_compaction_pipeline_inner<TFormat>(
     pipeline: &mut Pipeline<'_>,
-    parsed: &crate::format::ParsedRequest,
+    request: CompactionRequest<'_>,
     routing: crate::provider::ModelRouting,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
     TFormat::JsonResponse: Serialize,
 {
-    let surface = compaction_surface(parsed);
+    let surface = compaction_surface(request.compaction);
 
     // The ledger's billed totals stamp the accounting row for every outcome
     // that carries one; the executor has already recorded each dispatch into
@@ -525,7 +526,7 @@ where
         let outcome = executor::execute_messages_request(
             pipeline.context,
             &routing,
-            parsed,
+            request.parsed,
             pipeline.preparation,
             pipeline.accounting.draft_mut(),
             Some(&mut pipeline.selection.ownership),
@@ -544,7 +545,7 @@ where
                     ..CompactionDispatch::default()
                 };
 
-                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed).await
+                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, request).await
             }
 
             MessagesOuterOutcome::CompactionOnly {
@@ -567,7 +568,7 @@ where
                     pipeline,
                     &block,
                     &iterations,
-                    is_threshold_control(parsed),
+                    is_threshold_control(request.compaction),
                     affinity,
                 )
             }
@@ -609,7 +610,7 @@ where
         let outcome = executor::execute_responses_request(
             pipeline.context,
             &routing,
-            parsed,
+            request.parsed,
             pipeline.preparation,
             pipeline.accounting.draft_mut(),
             Some(&mut pipeline.selection.ownership),
@@ -628,7 +629,7 @@ where
                     ..CompactionDispatch::default()
                 };
 
-                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, parsed).await
+                ordinary_completion::<TFormat>(pipeline, routing, ir, dispatch, request).await
             }
 
             ResponsesOuterOutcome::CompactionOnly {
@@ -691,7 +692,7 @@ async fn ordinary_completion<TFormat>(
     routing: crate::provider::ModelRouting,
     ir: crate::ir::IrRequest,
     dispatch: CompactionDispatch,
-    parsed: &ParsedRequest,
+    request: CompactionRequest<'_>,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat + 'static,
@@ -713,7 +714,7 @@ where
         Ok(events) => events,
         Err(gateway::Error::Upstream {
             status,
-            detail: message,
+            detail: body,
         }) => {
             let section = routing.provider.definition.payload.compaction.as_ref();
             let classifier = if dispatch.context_management.is_some() {
@@ -727,7 +728,9 @@ where
             } else {
                 None
             };
-            if crate::compaction::native::classify_failure(classifier, status, &message).is_some() {
+            // The carried body is the complete bounded error text the classification probes;
+            // the outward render below truncates it through the taxonomy conversion.
+            if crate::compaction::native::classify_failure(classifier, status, &body).is_some() {
                 let mut fallback_routing = routing;
                 if let Some(section) = &mut fallback_routing.provider.definition.payload.compaction
                 {
@@ -736,18 +739,22 @@ where
                 }
                 return Box::pin(run_compaction_pipeline_inner::<TFormat>(
                     pipeline,
-                    parsed,
+                    request,
                     fallback_routing,
                 ))
                 .await;
             }
-            return Err(Error::Upstream { status, message });
+            return Err(gateway::Error::Upstream {
+                status,
+                detail: body,
+            }
+            .into());
         }
         Err(error) => return Err(error.into()),
     };
 
     if is_streaming {
-        let is_threshold = is_threshold_control(parsed);
+        let is_threshold = is_threshold_control(request.compaction);
         let renderer: Box<dyn ClientSseRenderer + Send> = if is_threshold {
             Box::new(
                 crate::format::anthropic::messages::SseRenderer::new(
@@ -1087,6 +1094,11 @@ where
 /// # Errors
 ///
 /// Returns [`Error`] for request, routing, and executor failures.
+///
+/// # Panics
+///
+/// Panics if the compact parse produced no compaction facts: the parse always
+/// records the route's own standalone control, so a violation is a fatal bug.
 pub(in crate::api) async fn run_compact(
     context: &Context,
     body: &[u8],
@@ -1104,7 +1116,19 @@ pub(in crate::api) async fn run_compact(
         }
     };
 
-    let preparation = prepare_compaction_boundaries(&parsed, "compact")?;
+    // The compact parse records the route's own standalone control — the
+    // route is the control — so the compaction facts are present by
+    // construction: this path's entry guarantee, unwrapped once here.
+    #[expect(
+        clippy::expect_used,
+        reason = "the compact parse always records its standalone control"
+    )]
+    let compaction = parsed
+        .compaction
+        .as_ref()
+        .expect("the compact parse always records its standalone control");
+
+    let preparation = prepare_compaction_boundaries(compaction, "compact")?;
 
     let mut selection =
         match gateway::resolve_compaction_routing(context, &parsed, &preparation, api_key_id).await

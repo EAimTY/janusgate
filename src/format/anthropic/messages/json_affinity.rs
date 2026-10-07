@@ -4,7 +4,7 @@ use super::{OutBlock, TypedBlock};
 use crate::affinity::{
     Digest,
     fingerprint::{
-        BorrowedJson, Identity, PreparedReasoning, PreparedText, Projector, Role, StateFamily,
+        BorrowedJson, Identity, PreparedReasoning, PreparedText, Projector, ReplayFamily, Role,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -123,7 +123,7 @@ fn project_thinking(projector: &mut Projector, thinking: &str, signature: Option
     };
     projector.reasoning_canonical(
         Role::Assistant,
-        StateFamily::Messages,
+        ReplayFamily::Messages,
         thinking,
         signature,
         &opaque,
@@ -144,7 +144,7 @@ pub(super) fn prepare_stream_thinking(
         thinking: field.digest(),
         kind: ReasoningKind::Thinking,
     };
-    projector.prepare_reasoning_fields(StateFamily::Messages, field, signature, &opaque)
+    projector.prepare_reasoning_fields(ReplayFamily::Messages, field, signature, &opaque)
 }
 
 /// Projects redacted data without adding visible text or a synthesized signature.
@@ -153,5 +153,5 @@ fn project_redacted(projector: &mut Projector, data: BorrowedJson<'_>) {
         data,
         kind: ReasoningKind::RedactedThinking,
     };
-    projector.reasoning_canonical(Role::Assistant, StateFamily::Messages, "", None, &opaque);
+    projector.reasoning_canonical(Role::Assistant, ReplayFamily::Messages, "", None, &opaque);
 }

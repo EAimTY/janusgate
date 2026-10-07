@@ -198,6 +198,33 @@ async fn require_free_name(
     Ok::<_, Error>(())
 }
 
+/// Gates an authored-route mutation on a single row lookup: an absent id is not found and an
+/// automatic route — owned by its provider's or pool's lifecycle — is a conflict, preserving
+/// the 404-before-409 precedence the separate existence probe and automatic check produced.
+///
+/// # Errors
+///
+/// Returns not-found, automatic-ownership-conflict, or database errors.
+async fn require_authored_route(transaction: &mut Transaction, id: i64) -> Result<(), Error> {
+    let rows = transaction
+        .query(
+            "SELECT is_automatic FROM model_routes WHERE id = ?1",
+            params![id],
+        )
+        .await?;
+    let Some(row) = rows.first() else {
+        return Err(Error::NotFound {
+            message: format!("Model route {id} does not exist"),
+        });
+    };
+    if row.get::<i64>(0)? != 0 {
+        return Err(Error::Conflict {
+            message: "Automatic routes are managed through their provider or pool".into(),
+        });
+    }
+    Ok::<_, Error>(())
+}
+
 /// Validates desired account references before deleting any existing membership: one
 /// `WHERE id IN` probe covers every desired member, and the first member — in authored order —
 /// whose account is absent is reported, the identical outcome one probe per member produced.
@@ -460,19 +487,7 @@ pub(crate) async fn update_route(
     target: &ModelRouteTarget,
 ) -> Result<(), Error> {
     in_retryable_transaction!(database, transaction, async {
-        require_entity(&mut transaction, "model_routes", "Model route", id).await?;
-        if !transaction
-            .query(
-                "SELECT id FROM model_routes WHERE id = ?1 AND is_automatic = 1",
-                params![id],
-            )
-            .await?
-            .is_empty()
-        {
-            return Err(Error::Conflict {
-                message: "Automatic routes are managed through their provider or pool".into(),
-            });
-        }
+        require_authored_route(&mut transaction, id).await?;
         require_free_name(
             &mut transaction,
             "model_routes",
@@ -508,19 +523,7 @@ pub(crate) async fn update_route(
 /// Returns not-found or database errors.
 pub(crate) async fn delete_route(database: &Database, id: i64) -> Result<(), Error> {
     in_retryable_transaction!(database, transaction, async {
-        require_entity(&mut transaction, "model_routes", "Model route", id).await?;
-        if !transaction
-            .query(
-                "SELECT id FROM model_routes WHERE id = ?1 AND is_automatic = 1",
-                params![id],
-            )
-            .await?
-            .is_empty()
-        {
-            return Err(Error::Conflict {
-                message: "Automatic routes are managed through their provider or pool".into(),
-            });
-        }
+        require_authored_route(&mut transaction, id).await?;
         transaction
             .execute("DELETE FROM model_routes WHERE id = ?1", params![id])
             .await?;

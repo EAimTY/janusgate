@@ -51,7 +51,7 @@ fn role_runs_and_streamed_input_tail_share_canonical_prefixes() {
     interrupted.text(Role::User, b"question");
     interrupted.text(Role::Assistant, b"old");
     interrupted.state(
-        StateFamily::Responses,
+        ReplayFamily::Responses,
         StateKind::Native,
         &json!({"token":"x"}),
     );
@@ -121,7 +121,7 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
     let mut reasoning = projector();
     reasoning.reasoning(
         Role::Assistant,
-        StateFamily::Messages,
+        ReplayFamily::Messages,
         "thought",
         Some("signature"),
         Some(&json!({"b":2,"a":1})),
@@ -129,7 +129,7 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
     let mut same_reasoning = projector();
     same_reasoning.reasoning(
         Role::Assistant,
-        StateFamily::Messages,
+        ReplayFamily::Messages,
         "thought",
         Some("signature"),
         Some(&json!({"a":1,"b":2})),
@@ -138,7 +138,7 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
     let mut foreign_reasoning = projector();
     foreign_reasoning.reasoning(
         Role::Assistant,
-        StateFamily::Interactions,
+        ReplayFamily::Interactions,
         "thought",
         Some("signature"),
         Some(&json!({"a":1,"b":2})),
@@ -148,7 +148,7 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
     let mut changed_foreign = projector();
     changed_foreign.reasoning(
         Role::Assistant,
-        StateFamily::Messages,
+        ReplayFamily::Messages,
         "thought",
         Some("signature"),
         Some(&json!({"a":1,"b":2,"signature":"foreign"})),
@@ -158,7 +158,7 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
     let mut known = projector();
     known.reasoning(
         Role::Assistant,
-        StateFamily::Messages,
+        ReplayFamily::Messages,
         "thought",
         Some("signature"),
         Some(&json!({"type":"thinking","thinking":"thought","signature":"signature"})),
@@ -167,7 +167,7 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
         let mut changed = projector();
         changed.reasoning(
             Role::Assistant,
-            StateFamily::Messages,
+            ReplayFamily::Messages,
             text,
             Some(signature),
             Some(&json!({"type":"thinking","thinking":text,"signature":signature})),
@@ -176,20 +176,20 @@ fn foreign_json_and_typed_parts_preserve_meaningful_distinctions() {
     }
     let mut native = projector();
     native.state(
-        StateFamily::Responses,
+        ReplayFamily::Responses,
         StateKind::Native,
         &json!({"x":[1,2]}),
     );
     let mut reordered_array = projector();
     reordered_array.state(
-        StateFamily::Responses,
+        ReplayFamily::Responses,
         StateKind::Native,
         &json!({"x":[2,1]}),
     );
     assert!(retry(&native) != retry(&reordered_array));
     let mut gateway = projector();
     gateway.state(
-        StateFamily::Responses,
+        ReplayFamily::Responses,
         StateKind::Gateway,
         &json!({"x":[1,2]}),
     );

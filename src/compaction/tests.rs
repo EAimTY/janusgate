@@ -3658,6 +3658,162 @@ async fn classified_unsupported_trigger_keeps_the_standalone_adapter_eligible() 
     drop(scenario);
 }
 
+/// Review regression: `code` classification reads the bounded error body, not
+/// the outward excerpt. An error body longer than the 400-character outward
+/// excerpt truncates into an unterminated, non-JSON excerpt, so classifying on
+/// the excerpt can never positively match a listed `code` — the one runtime
+/// evidence permitting the single summary fallback is silently lost (README
+/// §5.9, §6.8). The complete body stays far inside the error-body read cap, so
+/// the exact trigger's rejection must still classify and fall through to the
+/// summary.
+///
+/// # Panics
+///
+/// Panics when the pipeline diverges from the scenario's contract.
+#[tokio::test]
+async fn classified_unsupported_trigger_reads_the_bounded_body_not_the_excerpt() {
+    // The message alone pushes the body past the outward excerpt's reach, so
+    // the excerpt truncates mid-member and never parses as JSON.
+    let message = "m".repeat(430);
+
+    let rejected = raw_json_response(
+        "400 Bad Request",
+        json!({"error": {"message": message, "code": "compaction_unsupported"}}),
+    );
+
+    let scenario = scenario(
+        UpstreamFormat::OpenAiResponse,
+        Some(json!({
+            "retention_budget": 1,
+            "mechanisms": {
+                "responses_explicit_trigger": {
+                    "default": "supported",
+                    "unsupported": {"codes": ["compaction_unsupported"]},
+                },
+            },
+        })),
+        None,
+        None,
+        false,
+        vec![
+            rejected,
+            responses_completed(json!([responses_message_item("summary")]), 20, 5),
+        ],
+    )
+    .await;
+
+    let (status, body) = post_openai(
+        &scenario,
+        "/api/openai-v1/responses",
+        json!({
+            "model": MODEL,
+            "input": [user_item("old question"), {"type": "compaction_trigger"}],
+            "store": false,
+        }),
+    )
+    .await;
+
+    // The positive classification lands: the trigger's rejection falls through
+    // to the single summary fallback instead of mirroring the upstream error.
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Two dispatches in order: the classified trigger attempt, then the
+    // summary fallback — both on the inference connection.
+    let requests = assert_count(&scenario, 2);
+    assert_eq!(requests[0].line(), "POST /responses");
+    assert_eq!(requests[1].line(), "POST /responses");
+
+    // The compact-only carrier is the summary fallback's artifact, carrying
+    // the summary call's usage; the failed trigger reported none.
+    assert_eq!(body["status"], "completed", "{body}");
+
+    let item = body["output"][0].clone();
+    assert_eq!(item["type"], "compaction");
+
+    let carrier = item["encrypted_content"].as_str().expect("the carrier");
+    assert!(carrier.starts_with(sealing::CARRIER_NAMESPACE));
+
+    assert_eq!(body["usage"]["input_tokens"], 20);
+    assert_eq!(body["usage"]["output_tokens"], 5);
+
+    drop(scenario);
+}
+
+/// Review regression: the ordinary passthrough's unsupported classification
+/// reads the bounded error body too. A native automatic passthrough whose
+/// upstream rejection body truncates into a non-JSON outward excerpt still
+/// classifies and re-runs the pipeline under the gateway-summary strategy,
+/// where the below-threshold window dispatches as ordinary generation.
+///
+/// # Panics
+///
+/// Panics when the pipeline diverges from the scenario's contract.
+#[tokio::test]
+async fn classified_unsupported_passthrough_reads_the_bounded_body_not_the_excerpt() {
+    let message = "m".repeat(430);
+
+    let rejected = raw_json_response(
+        "400 Bad Request",
+        json!({"error": {"message": message, "code": "compaction_unsupported"}}),
+    );
+
+    let scenario = scenario(
+        UpstreamFormat::OpenAiResponse,
+        Some(json!({
+            "mechanisms": {
+                "responses_automatic_compaction": {
+                    "default": "supported",
+                    "unsupported": {"codes": ["compaction_unsupported"]},
+                },
+            },
+        })),
+        None,
+        None,
+        false,
+        vec![
+            rejected,
+            responses_completed(json!([responses_message_item("answered")]), 30, 4),
+        ],
+    )
+    .await;
+
+    let (status, body) = post_openai(
+        &scenario,
+        "/api/openai-v1/responses",
+        json!({
+            "model": MODEL,
+            "input": [user_item("old question"), user_item("pending turn")],
+            "context_management": [{"type": "compaction", "compact_threshold": 90_000}],
+            "store": false,
+        }),
+    )
+    .await;
+
+    // The positive classification lands: the pipeline re-runs under the
+    // gateway-summary strategy and the below-threshold window generates
+    // ordinarily instead of mirroring the upstream error.
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Two dispatches in order: the rejected native passthrough, then the
+    // re-run generation.
+    let requests = assert_count(&scenario, 2);
+    assert_eq!(requests[0].line(), "POST /responses");
+    assert_eq!(requests[1].line(), "POST /responses");
+
+    // The re-run strips the compaction controls: the fallback generation is
+    // ordinary, never a second passthrough of the rejected controls.
+    assert!(
+        recorded_body(&scenario, 1)
+            .get("context_management")
+            .is_none()
+    );
+
+    assert_eq!(body["status"], "completed", "{body}");
+    assert_eq!(body["output"][0]["content"][0]["text"], "answered");
+
+    drop(scenario);
+}
+
 /// Scenario — re-compaction preserves instruction identity continuity: a
 /// client that drops one covered instruction and re-compacts receives a new
 /// checkpoint whose coverage identities still match the surviving instruction,

@@ -192,10 +192,10 @@ enum ReasoningJsonMode {
 
 impl ReasoningJsonMode {
     /// Recognizes only the replayable codec-owned payload family; unknown fragments stay foreign.
-    fn root(family: StateFamily, value: &Value) -> Self {
+    fn root(family: ReplayFamily, value: &Value) -> Self {
         match (family, value.get("type").and_then(Value::as_str)) {
-            (StateFamily::Messages, Some("thinking")) => Self::Messages,
-            (StateFamily::Interactions, Some("thought")) => Self::Interactions,
+            (ReplayFamily::Messages, Some("thinking")) => Self::Messages,
+            (ReplayFamily::Interactions, Some("thought")) => Self::Interactions,
             _ => Self::Foreign,
         }
     }
@@ -334,7 +334,7 @@ pub(crate) enum Role {
 /// Replay family of an opaque signature/state payload.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum StateFamily {
+pub(crate) enum ReplayFamily {
     /// OpenAI Responses state and reasoning.
     Responses,
     /// Anthropic Messages state and reasoning.
@@ -359,7 +359,7 @@ pub(crate) enum StateKind {
 #[derive(Clone, Copy)]
 pub(crate) struct PreparedState {
     /// Actual replay protocol family.
-    family: StateFamily,
+    family: ReplayFamily,
     /// Native state or authenticated gateway token.
     kind: StateKind,
     /// Canonical field digest; no state text survives preparation.
@@ -462,7 +462,7 @@ enum Part {
         /// Canonical foreign replay payload identity.
         opaque: Option<Digest>,
         /// Replay family when the block contains a family-bound payload.
-        family: Option<StateFamily>,
+        family: Option<ReplayFamily>,
     },
 }
 
@@ -480,7 +480,7 @@ enum Unit {
     /// An opaque state boundary; same-role messages cannot merge across it.
     State {
         /// Codec replay family.
-        family: StateFamily,
+        family: ReplayFamily,
         /// Native state or sealed gateway carrier.
         kind: StateKind,
         /// Exact canonical replay payload identity.
@@ -795,7 +795,7 @@ impl Projector {
     pub(crate) fn reasoning(
         &mut self,
         role: Role,
-        family: StateFamily,
+        family: ReplayFamily,
         text: &str,
         signature: Option<&str>,
         opaque: Option<&Value>,
@@ -822,7 +822,7 @@ impl Projector {
     pub(crate) fn reasoning_canonical(
         &mut self,
         role: Role,
-        family: StateFamily,
+        family: ReplayFamily,
         text: &str,
         signature: Option<&str>,
         opaque: &impl Serialize,
@@ -838,7 +838,7 @@ impl Projector {
     pub(crate) fn reasoning_canonical_parts<'a>(
         &mut self,
         role: Role,
-        family: StateFamily,
+        family: ReplayFamily,
         text: impl IntoIterator<Item = &'a str>,
         signature: Option<&str>,
         opaque: &impl Serialize,
@@ -864,7 +864,7 @@ impl Projector {
     /// Panics if accepted canonical fields cannot serialize to the infallible hashing sink.
     pub(crate) fn prepare_reasoning_canonical(
         &self,
-        family: StateFamily,
+        family: ReplayFamily,
         text: &str,
         signature: Option<&str>,
         opaque: &impl Serialize,
@@ -889,7 +889,7 @@ impl Projector {
     /// Panics if the codec's digest-only payload cannot serialize to the infallible hash sink.
     pub(crate) fn prepare_reasoning_fields(
         &self,
-        family: StateFamily,
+        family: ReplayFamily,
         text: &PreparedText,
         signature: Option<&str>,
         opaque: &impl Serialize,
@@ -911,7 +911,7 @@ impl Projector {
     fn reasoning_digest(
         &mut self,
         role: Role,
-        family: StateFamily,
+        family: ReplayFamily,
         text: Digest,
         signature: Option<&str>,
         opaque: Option<Digest>,
@@ -923,7 +923,7 @@ impl Projector {
     /// Replaces variable reasoning fields with their identities without appending a role unit.
     fn prepare_reasoning_digest(
         &self,
-        family: StateFamily,
+        family: ReplayFamily,
         text: Digest,
         signature: Option<&str>,
         opaque: Option<Digest>,
@@ -942,7 +942,7 @@ impl Projector {
     }
 
     /// Preserves a replayable state boundary's kind, family, payload, and history position.
-    pub(crate) fn state(&mut self, family: StateFamily, kind: StateKind, payload: &Value) {
+    pub(crate) fn state(&mut self, family: ReplayFamily, kind: StateKind, payload: &Value) {
         let payload = self.key.json(FieldDomain::OpaqueState, payload);
         self.state_digest(family, kind, payload);
     }
@@ -955,7 +955,7 @@ impl Projector {
     /// Panics if the accepted canonical view cannot serialize to the infallible hashing writer.
     pub(crate) fn state_canonical(
         &mut self,
-        family: StateFamily,
+        family: ReplayFamily,
         kind: StateKind,
         payload: &impl Serialize,
     ) {
@@ -970,7 +970,7 @@ impl Projector {
     /// Panics if the accepted view cannot serialize to the infallible hashing writer.
     pub(crate) fn prepare_state_canonical(
         &self,
-        family: StateFamily,
+        family: ReplayFamily,
         kind: StateKind,
         payload: &impl Serialize,
     ) -> PreparedState {
@@ -991,7 +991,7 @@ impl Projector {
     /// # Panics
     ///
     /// Panics if the accepted string cannot serialize to the infallible hash sink.
-    pub(crate) fn gateway_state(&mut self, family: StateFamily, carrier: &str) {
+    pub(crate) fn gateway_state(&mut self, family: ReplayFamily, carrier: &str) {
         let payload = self.key.json_string(FieldDomain::OpaqueState, carrier);
         self.state_digest(family, StateKind::Gateway, payload);
     }
@@ -1021,7 +1021,7 @@ impl Projector {
     }
 
     /// Frames an already hashed state field onto both history projections.
-    fn state_digest(&mut self, family: StateFamily, kind: StateKind, payload: Digest) {
+    fn state_digest(&mut self, family: ReplayFamily, kind: StateKind, payload: Digest) {
         for path in [&mut self.exact, &mut self.relational] {
             if path.is_complete {
                 path.flush(&self.key);

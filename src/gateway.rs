@@ -117,7 +117,10 @@ pub(crate) enum Error {
         /// Upstream status code, mirrored by the surface.
         status: StatusCode,
 
-        /// Truncated upstream body excerpt.
+        /// The complete lossy text of the bounded error body the rejection read retained, at
+        /// most the error-body read cap (`crate::http_body`). It is the classification evidence
+        /// the unsupported-classification consumers probe whole; the outward boundary truncates
+        /// it to the excerpt it renders.
         detail: String,
     },
 

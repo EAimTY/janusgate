@@ -12,8 +12,9 @@ use super::IrUsage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The kind of billed sampling iteration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The kind of billed sampling iteration. Render-only: it rides the outward
+/// usage rendering and is never parsed back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SamplingKind {
     /// Work producing a compaction checkpoint.
@@ -22,9 +23,10 @@ pub(crate) enum SamplingKind {
     Message,
 }
 
-/// Usage generated from one actual dispatch in the gateway ledger.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Usage generated from one actual dispatch in the gateway ledger. Render-only: the gateway
+/// constructs the report and serializes it outward (the native producer reports ride
+/// [`UsageIteration::Native`] verbatim), never parsing it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct IterationReport {
     /// Sampling operation kind.
     #[serde(rename = "type")]

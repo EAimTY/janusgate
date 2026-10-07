@@ -109,7 +109,7 @@ pub(crate) fn classify_failure(
     if classifier
         .statuses
         .iter()
-        .any(|listed| reqwest::StatusCode::from_u16(*listed).is_ok_and(|listed| listed == status))
+        .any(|listed| u16::from(*listed) == status.as_u16())
     {
         return Some(detail);
     }
@@ -227,7 +227,6 @@ pub(crate) async fn responses_standalone(
         gateway::DispatchOutcome::Accepted(response) => response,
         gateway::DispatchOutcome::Rejected { status, body } => {
             let detail = body.lossy_text();
-            let excerpt = crate::http_body::truncate_excerpt(&detail);
 
             // The operation's own classifier decides first; the compaction
             // section's declaration classifier backs it up.
@@ -257,7 +256,7 @@ pub(crate) async fn responses_standalone(
 
             return Err(NativeAttemptFailure::Failed(GatewayError::Upstream {
                 status,
-                detail: excerpt,
+                detail,
             }));
         }
     };
@@ -484,7 +483,6 @@ pub(crate) async fn messages_on_demand(
         gateway::DispatchOutcome::Accepted(response) => response,
         gateway::DispatchOutcome::Rejected { status, body } => {
             let detail = body.lossy_text();
-            let excerpt = crate::http_body::truncate_excerpt(&detail);
 
             if let Some(classification) = classify_failure(classifier, status, &detail) {
                 return Err(NativeAttemptFailure::ClassifiedUnsupported(classification));
@@ -492,7 +490,7 @@ pub(crate) async fn messages_on_demand(
 
             return Err(NativeAttemptFailure::Failed(GatewayError::Upstream {
                 status,
-                detail: excerpt,
+                detail,
             }));
         }
     };

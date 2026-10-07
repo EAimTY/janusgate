@@ -4,7 +4,7 @@ use super::{ContentBlock, RenderStep, TypedStep, client_render::JsonResponse};
 use crate::affinity::{
     Digest,
     fingerprint::{
-        BorrowedJson, Identity, PreparedReasoning, PreparedText, Projector, Role, StateFamily,
+        BorrowedJson, Identity, PreparedReasoning, PreparedText, Projector, ReplayFamily, Role,
     },
 };
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap as _};
@@ -216,7 +216,7 @@ pub(super) fn prepare_signature_thought(
         summary: None,
         kind: ThoughtKind::Thought,
     };
-    projector.prepare_reasoning_canonical(StateFamily::Interactions, "", signature, &opaque)
+    projector.prepare_reasoning_canonical(ReplayFamily::Interactions, "", signature, &opaque)
 }
 
 /// Completes a coalesced summary from actual text state and independently emitted signature.
@@ -236,7 +236,7 @@ pub(super) fn prepare_stream_thought(
         }]),
         kind: ThoughtKind::Thought,
     };
-    projector.prepare_reasoning_fields(StateFamily::Interactions, field, signature, &opaque)
+    projector.prepare_reasoning_fields(ReplayFamily::Interactions, field, signature, &opaque)
 }
 
 /// Hashes normalized summary fragments and their canonical opaque payload without joining text.
@@ -267,6 +267,6 @@ fn project_thought(
         field.update(text.as_bytes());
     }
     let reasoning =
-        projector.prepare_reasoning_fields(StateFamily::Interactions, &field, signature, &opaque);
+        projector.prepare_reasoning_fields(ReplayFamily::Interactions, &field, signature, &opaque);
     projector.reasoning_prepared(Role::Assistant, reasoning);
 }

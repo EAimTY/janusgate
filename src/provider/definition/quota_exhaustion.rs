@@ -16,7 +16,7 @@ impl TryFrom<u16> for RejectedStatus {
     type Error = &'static str;
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         if !(100..=999).contains(&value) || (200..300).contains(&value) {
-            return Err("quota rejection status must be a non-success HTTP status");
+            return Err("status must be a non-success HTTP status");
         }
         Ok(Self(value))
     }

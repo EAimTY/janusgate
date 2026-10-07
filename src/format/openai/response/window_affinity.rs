@@ -1,7 +1,7 @@
 //! Borrowed replay projection of the actual standalone compact response's canonical window.
 
 use crate::affinity::fingerprint::{
-    BorrowedJson as Foreign, Identity, Projector, ResultContent, Role, StateFamily, StateKind,
+    BorrowedJson as Foreign, Identity, Projector, ReplayFamily, ResultContent, Role, StateKind,
 };
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
@@ -306,7 +306,7 @@ pub(super) fn project(
             Item::Reasoning(reasoning) => {
                 if reasoning.encrypted_content.is_some() {
                     projector.state_canonical(
-                        StateFamily::Responses,
+                        ReplayFamily::Responses,
                         StateKind::Native,
                         &Tagged {
                             fields: &reasoning,
@@ -321,10 +321,10 @@ pub(super) fn project(
                     if !has_gateway_provenance {
                         return None;
                     }
-                    projector.gateway_state(StateFamily::Responses, compaction.encrypted_content);
+                    projector.gateway_state(ReplayFamily::Responses, compaction.encrypted_content);
                 } else {
                     projector.state_canonical(
-                        StateFamily::Responses,
+                        ReplayFamily::Responses,
                         StateKind::Native,
                         &Tagged {
                             fields: &compaction,
@@ -361,7 +361,7 @@ pub(super) fn prepare_native_state(
     match Item::deserialize(value).ok()? {
         Item::Reasoning(reasoning) if reasoning.encrypted_content.is_some() => {
             Some(projector.prepare_state_canonical(
-                StateFamily::Responses,
+                ReplayFamily::Responses,
                 StateKind::Native,
                 &Tagged {
                     fields: &reasoning,
@@ -375,7 +375,7 @@ pub(super) fn prepare_native_state(
             ) =>
         {
             Some(projector.prepare_state_canonical(
-                StateFamily::Responses,
+                ReplayFamily::Responses,
                 StateKind::Native,
                 &Tagged {
                     fields: &compaction,

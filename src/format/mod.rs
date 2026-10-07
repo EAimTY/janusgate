@@ -50,9 +50,9 @@ pub(crate) mod compaction_wire;
 pub(crate) mod gemini;
 pub(crate) mod openai;
 
-/// A JSON object whose declared protocol shape has no members.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A JSON object whose declared protocol shape has no members. Render-only: the gateway
+/// constructs and serializes it outward, never parsing it back.
+#[derive(Debug, Clone, Serialize)]
 pub(in crate::format) struct EmptyObject {}
 
 /// Wire formats an upstream provider may speak: the closed vocabulary from which a

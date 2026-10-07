@@ -766,6 +766,21 @@ impl DefinitionPayload {
         }
 
         validate_response_descriptor(&exchange.response, "token exchange")?;
+
+        // The runtime fold consumes exactly the exchange stage's target set (README §5.3): a
+        // device-authorization or provisioning target in an exchange mapping is stored drift
+        // the fold misclassifies as an internal error on every flow, so the boundary rejects
+        // the spelling. The defaulted refresh mapping reuses this descriptor, so the check
+        // covers the renewal's fold input too.
+        for field in &exchange.response.fields {
+            if !is_exchange_stage_target(&field.target) {
+                return Err(ValidationError::new(format!(
+                    "token exchange response carries the `{}` target its stage does not produce",
+                    target_name(&field.target)
+                )));
+            }
+        }
+
         validate_terminal_codes(&exchange.terminal_codes, "token exchange")?;
 
         // The access token must exist before the provider write: the exchange maps it, or a
@@ -839,6 +854,20 @@ impl DefinitionPayload {
 
                 if let Some(response) = response {
                     validate_response_descriptor(response, "token refresh")?;
+
+                    // The declared mapping wholly replaces the exchange's as the renewal's
+                    // fold input, so its targets are held to the same stage vocabulary: a
+                    // target outside the set is stored drift the runtime fold misclassifies
+                    // as an internal error on every renewal.
+                    for field in &response.fields {
+                        if !is_exchange_stage_target(&field.target) {
+                            return Err(ValidationError::new(format!(
+                                "token refresh response carries the `{}` target its stage \
+                                 does not produce",
+                                target_name(&field.target)
+                            )));
+                        }
+                    }
 
                     // RFC 6749 §6: the refresh response carries the access token — REQUIRED —
                     // and a declared mapping wholly replaces the exchange's default as the
@@ -1221,8 +1250,8 @@ fn required_format(mechanism: Mechanism) -> UpstreamFormat {
 }
 
 /// Validates one standalone compact operation: the stage-available expressions of its URL,
-/// header rows, and envelope, the envelope's exactly-one-`Body` shape, and the response-unwrap
-/// member.
+/// header rows, and envelope, the envelope's exactly-one-`Body` shape, the response-unwrap
+/// member, and the operation's own unsupported classifier.
 fn validate_compaction_operation(
     operation: &StandaloneCompactOperation,
     slots: &SlotNamespace,
@@ -1237,7 +1266,9 @@ fn validate_compaction_operation(
         what,
         Stage::CompactionOperation,
         slots,
-    )
+    )?;
+
+    validate_unsupported_classifier(operation.unsupported.as_ref(), what)
 }
 
 /// Validates the token-count operation: the stage-available expressions of its URL, header
@@ -1335,8 +1366,10 @@ fn validate_overlay_headers(
     walk.headers(headers, "compaction overlay header")
 }
 
-/// Validates one unsupported-response classifier: the code and parameter rows non-empty; the
-/// status rows carry no constraint beyond the type.
+/// Validates one unsupported-response classifier: the code and parameter rows non-empty. The
+/// statuses are [`super::quota_exhaustion::RejectedStatus`] values at parse, so a success
+/// status — or a value outside the HTTP status range — is unrepresentable and needs no check
+/// here.
 fn validate_unsupported_classifier(
     classifier: Option<&super::compaction::UnsupportedClassifier>,
     what: &str,
@@ -1583,6 +1616,39 @@ fn validate_control_request(
     Ok(())
 }
 
+/// Whether one response target is one the exchange and refresh folds consume (README §5.3):
+/// the tokens, the lifetime, the identity token, the base URL, and the named slots.
+/// [`crate::provider::oauth::exchange::apply_exchange_target`] holds the runtime half of this
+/// table — a target outside the set is stored drift its catch-all arm fails fast on — so the
+/// two must move together.
+fn is_exchange_stage_target(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::AccessToken
+            | Target::RefreshToken
+            | Target::ExpiresInSeconds
+            | Target::IdToken
+            | Target::BaseUrl
+            | Target::Slot { .. }
+    )
+}
+
+/// Whether one response target is one the provisioning fold consumes (README §5.4): the
+/// tokens, the base URL, the absolute expiry, and the named slots.
+/// [`crate::provider::oauth::provisioning::apply_target`] holds the runtime half of this
+/// table — a target outside the set is stored drift its catch-all arm fails fast on — so the
+/// two must move together.
+fn is_provision_stage_target(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::AccessToken
+            | Target::RefreshToken
+            | Target::BaseUrl
+            | Target::ExpiresAtUnixSeconds
+            | Target::Slot { .. }
+    )
+}
+
 /// Validates one response descriptor: non-empty paths, no target stored into twice, and — for
 /// a form-encoded response, whose fields are flat — exactly one path member. The
 /// duplicate-target rule covers every stage-level descriptor (README §5.1): the fold applies
@@ -1649,11 +1715,22 @@ fn target_name(target: &Target) -> String {
     }
 }
 
-/// Validates one provisioning extraction: its path, shape, and the form-encoding rule.
+/// Validates one provisioning extraction: its target, path, shape, and the form-encoding rule.
 fn validate_provision_extraction(
     extraction: &ProvisionExtraction,
     encoding: &ResponseEncoding,
 ) -> Result<(), ValidationError> {
+    // The runtime fold consumes exactly the provisioning stage's target set (README §5.4): an
+    // exchange- or device-stage target in an extraction is stored drift the fold fails the
+    // step on. The check covers the steps' own extractions and the polls' result extractions
+    // alike, every caller routing through here.
+    if !is_provision_stage_target(&extraction.target) {
+        return Err(ValidationError::new(format!(
+            "provisioning extraction carries the `{}` target its stage does not produce",
+            target_name(&extraction.target)
+        )));
+    }
+
     validate_path(&extraction.path, "provisioning extraction")?;
 
     if *encoding == ResponseEncoding::Form && extraction.path.0.len() != 1 {
@@ -4959,6 +5036,163 @@ mod tests {
         );
     }
 
+    /// An exchange response mapping holds its targets to the exchange stage's vocabulary
+    /// (README §5.3): the tokens, the lifetime, the identity token, the base URL, and the
+    /// named slots. A device-authorization or provisioning target is stored drift — the
+    /// runtime fold misclassifies it as an internal error on every flow — so the boundary
+    /// rejects the spelling, naming the target, while the stage's own targets keep validating.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an out-of-vocabulary exchange mapping validates or a conforming one is
+    /// rejected.
+    #[test]
+    fn rejects_an_exchange_response_mapping_a_target_its_stage_does_not_produce() {
+        // The device-authorization stage's `device_code` target, retargeted onto the fixture's
+        // optional `expires_in` row.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["response"]["fields"][2]["target"] =
+                json!({"type": "device_code"});
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains(
+                "token exchange response carries the `device_code` target its \
+                            stage does not produce"
+            ),
+            "{error}"
+        );
+
+        // The same row at the stage's own `id_token` target stays legal: the identity token
+        // is one of the exchange fold's targets.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["response"]["fields"][2]["target"] =
+                json!({"type": "id_token"});
+        });
+
+        outcome.unwrap();
+    }
+
+    /// A declared refresh response mapping holds its targets to the renewal fold's vocabulary:
+    /// the same set the exchange fold consumes, because the declared mapping wholly replaces
+    /// the exchange's as the renewal's fold input. A device-stage or provisioning target is
+    /// stored drift the runtime fold misclassifies as an internal error on every renewal, so
+    /// the boundary rejects the spelling, naming the target, while the stage's own targets
+    /// keep validating.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an out-of-vocabulary refresh mapping validates or a conforming one is
+    /// rejected.
+    #[test]
+    fn rejects_a_declared_refresh_response_mapping_a_target_its_stage_does_not_produce() {
+        // The device stage's `interval_seconds` target beside the required `access_token` row:
+        // the token row is present, so the only defect is the out-of-vocabulary one.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["response"] = json!({
+              "encoding": "json",
+              "fields": [
+                {
+                  "path": ["access_token"],
+                  "target": {"type": "access_token"},
+                  "required": true
+                },
+                {
+                  "path": ["interval"],
+                  "target": {"type": "interval_seconds"},
+                  "required": false
+                }
+              ]
+            });
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains(
+                "token refresh response carries the `interval_seconds` target its \
+                            stage does not produce"
+            ),
+            "{error}"
+        );
+
+        // The stage's own targets stay legal: the token row joined by an optional lifetime.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["response"] = json!({
+              "encoding": "json",
+              "fields": [
+                {
+                  "path": ["access_token"],
+                  "target": {"type": "access_token"},
+                  "required": true
+                },
+                {
+                  "path": ["expires_in"],
+                  "target": {"type": "expires_in_seconds"},
+                  "required": false
+                }
+              ]
+            });
+        });
+
+        outcome.unwrap();
+    }
+
+    /// A provisioning extraction holds its target to the provisioning fold's vocabulary
+    /// (README §5.4): the tokens, the base URL, the absolute expiry, and the named slots. An
+    /// exchange- or device-stage target is stored drift the runtime fold fails the step on,
+    /// so the boundary rejects the spelling, naming the target, while the stage's own targets
+    /// keep validating.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an out-of-vocabulary extraction validates or a conforming one is rejected.
+    #[test]
+    fn rejects_a_provisioning_extraction_targeting_a_value_its_stage_does_not_produce() {
+        // The exchange stage's `id_token` target, appended to the Copilot sequence: the
+        // sequence's own extractions stay, so the reprovision expiry rule is not the defect
+        // under test.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "path": ["id_token"],
+                  "target": {"type": "id_token"},
+                  "shape": {"type": "string"},
+                  "required": false
+                }));
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(
+            error.contains(
+                "provisioning extraction carries the `id_token` target its stage \
+                            does not produce"
+            ),
+            "{error}"
+        );
+
+        // The provisioning stage's own `refresh_token` target stays legal beside the
+        // fixture's token, expiry, and base-URL extractions.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["provisioning"][0]["extract"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                  "path": ["refresh_token"],
+                  "target": {"type": "refresh_token"},
+                  "shape": {"type": "string"},
+                  "required": false
+                }));
+        });
+
+        outcome.unwrap();
+    }
+
     /// Render options outside the definition format's closed set are rejected; the accepted
     /// option on its own format stays.
     ///
@@ -7017,7 +7251,10 @@ mod tests {
     }
 
     /// The unsupported classifier's rows: empty code and parameter entries are rejected, and
-    /// any status value is legal.
+    /// the status rows admit only non-success HTTP statuses — the
+    /// [`crate::provider::definition::quota_exhaustion::RejectedStatus`] wire type rejects
+    /// every success status and every value outside the HTTP status range at parse, since the
+    /// executor consults the classifier on rejected native calls alone.
     ///
     /// # Panics
     ///
@@ -7048,8 +7285,26 @@ mod tests {
 
         assert!(error.contains("empty parameter"), "{error}");
 
-        // Every status value is legal, and the empty classifier never positively classifies.
-        mutate_and_validate(with_classifier(json!({"statuses": [0, 65535]})), |_| {}).unwrap();
+        // A success status, or a value outside the HTTP status range, is a criterion no
+        // rejected response can ever carry: each spelling is a parse rejection naming the
+        // non-success boundary.
+        for status in [0, 99, 200, 204, 299, 1000, 65535] {
+            let error =
+                mutate_and_validate(with_classifier(json!({ "statuses": [status] })), |_| {})
+                    .unwrap_err();
+
+            assert!(error.contains("non-success HTTP status"), "{error}");
+        }
+
+        // The boundary's own edges stay legal: every 1xx and every non-2xx status through
+        // 999, the classifier's observable range.
+        mutate_and_validate(
+            with_classifier(json!({"statuses": [100, 199, 300, 404, 599, 999]})),
+            |_| {},
+        )
+        .unwrap();
+
+        // The empty classifier never positively classifies and stays legal.
         mutate_and_validate(with_classifier(json!({})), |_| {}).unwrap();
     }
 
@@ -7077,7 +7332,7 @@ mod tests {
             )
         };
 
-        let probes: [(serde_json::Value, &str); 8] = [
+        let probes: [(serde_json::Value, &str); 9] = [
             // Zero body placeholders.
             (
                 standalone_operation(|operation| {
@@ -7134,6 +7389,14 @@ mod tests {
                     ]);
                 }),
                 "compaction operation stage does not carry",
+            ),
+            // The operation's own classifier is held to the declaration classifiers' status
+            // boundary at parse: a success status can never fire on a rejected native call.
+            (
+                standalone_operation(|operation| {
+                    operation["unsupported"] = json!({"statuses": [200]});
+                }),
+                "non-success HTTP status",
             ),
             // An undefined slot reference.
             (

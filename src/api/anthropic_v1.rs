@@ -261,10 +261,10 @@ mod tests {
     }
 
     /// One unknown-capability listing entry: every declaration `None` (README §3).
-    fn unknown_entry(public_id: &str, provider_name: &str) -> EnabledModel {
+    fn unknown_entry(public_id: &str, owner_name: &str) -> EnabledModel {
         EnabledModel {
             public_id: public_id.to_string(),
-            provider_name: provider_name.to_string(),
+            owner_name: owner_name.to_string(),
             thinking_levels: None,
             max_input_tokens: None,
             max_output_tokens: None,

@@ -342,6 +342,9 @@ async fn dispatch_native_trigger(
         Ok(aggregation) => Ok(aggregation),
 
         Err(GatewayError::Upstream { status, detail }) => {
+            // The error carries the complete bounded error body the ordinary dispatch boundary
+            // retained, so the classifier probes the same whole-body evidence the native
+            // operations classify on; the excerpt is a render-side concern only.
             if let Some(reason) = native::classify_failure(classifier, status, &detail) {
                 return Err(native::NativeAttemptFailure::ClassifiedUnsupported(reason));
             }
@@ -1915,6 +1918,7 @@ mod tests {
                 },
                 credential::CredentialAcquisition,
                 inference::Inference,
+                quota_exhaustion::RejectedStatus,
                 template::StringExpr,
             },
         },
@@ -2063,9 +2067,9 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if a fixture budget fails to construct, which the positive
-    /// literals prevent.
-    fn standalone_section(url: String, statuses: Vec<u16>) -> CompactionSection {
+    /// Panics if a fixture budget or rejected status fails to construct, which
+    /// the positive literals prevent.
+    fn standalone_section(url: String, statuses: Vec<RejectedStatus>) -> CompactionSection {
         CompactionSection {
             strategy: crate::provider::definition::compaction::CompactionStrategy::NativePreferred,
             summary_budget: std::num::NonZeroU64::new(4096).expect("positive"),
@@ -2669,7 +2673,10 @@ mod tests {
             &base,
             Some(standalone_section(
                 format!("{base}/responses/compact"),
-                vec![404],
+                vec![
+                    RejectedStatus::try_from(404)
+                        .expect("the fixture status is a rejected HTTP status"),
+                ],
             )),
         );
 

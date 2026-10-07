@@ -15,29 +15,27 @@
 //! never forwarded upstream as native state and never summarized.
 
 use crate::{
-    affinity::{
-        Digest,
-        fingerprint::{Projector, StateFamily},
-    },
+    affinity::{Digest, fingerprint::Projector},
     compaction_model::{
         envelope::{EnvelopePayload, EnvelopeV1, NativeWindowPayload},
         identity::hex_sha256,
         sealing,
     },
-    format::{CompactionBoundary, NativeArtifact, ParsedCompaction, UpstreamFormat},
+    format::{CompactionBoundary, NativeArtifact, ParsedCompaction},
 };
 use thiserror::Error;
 
 /// A boundary-preparation failure, raised before account selection. Each
 /// variant carries the same stable message code as the executor-level failure
-/// it feeds, and the mapping onto every outward error taxonomy preserves the
-/// variant semantics: client-state failures render as invalid requests, the
-/// configuration gap as an internal failure.
+/// it feeds — declared once as this type's code constants and consumed by the
+/// executor-level variants' rendering too — and the mapping onto every outward
+/// error taxonomy preserves the variant semantics: client-state failures render
+/// as invalid requests, the configuration gap as an internal failure.
 #[derive(Debug, Error)]
 pub(crate) enum BoundaryError {
     /// No sealing keys are configured, so no gateway artifact can be produced
     /// or consumed. A server configuration gap, not a client fault.
-    #[error("compaction_configuration_missing: {message}")]
+    #[error("{}: {message}", Self::CONFIGURATION_MISSING_CODE)]
     ConfigurationMissing {
         /// Human-readable failure detail.
         message: String,
@@ -49,7 +47,7 @@ pub(crate) enum BoundaryError {
     /// request's history. A recognizable but damaged marker is an explicit
     /// client-state error, never reclassified as native state and never
     /// summarized.
-    #[error("compaction_invalid_gateway_state: {message}")]
+    #[error("{}: {message}", Self::INVALID_GATEWAY_STATE_CODE)]
     InvalidGatewayState {
         /// Human-readable failure detail.
         message: String,
@@ -58,7 +56,7 @@ pub(crate) enum BoundaryError {
     /// Native state no candidate target can access: the authenticated native
     /// window's producer requirement matches no available producer. Inaccessible
     /// state is never silently discarded.
-    #[error("compaction_inaccessible_state: {message}")]
+    #[error("{}: {message}", Self::INACCESSIBLE_STATE_CODE)]
     InaccessibleNativeState {
         /// Human-readable failure detail.
         message: String,
@@ -66,6 +64,18 @@ pub(crate) enum BoundaryError {
 }
 
 impl BoundaryError {
+    /// Stable failure code of the missing sealing configuration (README §6.8), shared with the
+    /// executor-level failure vocabulary.
+    pub(crate) const CONFIGURATION_MISSING_CODE: &'static str = "compaction_configuration_missing";
+
+    /// Stable failure code of a failed gateway-carrier verification or an impossible boundary
+    /// (README §6.8), shared with the executor-level failure vocabulary.
+    pub(crate) const INVALID_GATEWAY_STATE_CODE: &'static str = "compaction_invalid_gateway_state";
+
+    /// Stable failure code of native state no candidate target can access (README §6.8), shared
+    /// with the executor-level failure vocabulary.
+    pub(crate) const INACCESSIBLE_STATE_CODE: &'static str = "compaction_inaccessible_state";
+
     /// Builds the invalid-gateway-state failure.
     pub(crate) fn invalid_gateway_state(message: impl Into<String>) -> Self {
         Self::InvalidGatewayState {
@@ -297,15 +307,14 @@ impl BoundaryPreparation {
                 let CompactionBoundary::Gateway { carrier, .. } = boundary else {
                     unreachable!("the active gateway preparation has a gateway carrier");
                 };
-                let family = match parsed.affinity.client_format() {
-                    UpstreamFormat::AnthropicMessages => StateFamily::Messages,
-                    UpstreamFormat::OpenAiResponse => StateFamily::Responses,
-                    #[expect(
-                        clippy::unreachable,
-                        reason = "only Responses and Messages parse gateway carriers"
-                    )]
-                    _ => unreachable!("gateway carriers belong to a state-bearing client codec"),
-                };
+                #[expect(
+                    clippy::expect_used,
+                    reason = "only Responses and Messages parse gateway carriers"
+                )]
+                let family =
+                    crate::format::affinity::replay_family(parsed.affinity.client_format())
+                        .expect("gateway carriers belong to a state-bearing client codec");
+
                 projector.gateway_state(family, carrier);
                 Some(projector.gateway_artifact(&envelope.artifact_id))
             }

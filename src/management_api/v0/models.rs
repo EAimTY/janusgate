@@ -560,9 +560,12 @@ async fn handle_discover(
         discovery::discover_upstream_models(database, control_plane, &provider).await?,
     )?;
 
-    // Validate the complete report before any lifecycle or capability write can apply.
+    // Validate the complete report before any lifecycle or capability write can apply. The
+    // upstream-reported ids are not request fields, so the boundary tests the shared token
+    // predicate directly and maps a failure to the report rejection — there is no request
+    // parameter for a client-facing identifier rejection to name.
     for model in &unique_models {
-        if super::validate_routing_token("upstream_id", &model.upstream_id).is_err() {
+        if !crate::routing_text::is_routing_safe_token(&model.upstream_id) {
             return Err(Error::UpstreamReportedInvalidModelId {
                 upstream_id: model.upstream_id.clone(),
             });
