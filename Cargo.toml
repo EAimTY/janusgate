@@ -58,17 +58,17 @@ socket2 = { version = "0.6.5", default-features = false }
 subtle = { version = "2.6.1", default-features = false }
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 time = { version = "0.3.55", default-features = false, features = ["parsing", "macros"] }
-tokio = { version = "1.53.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.53.2", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1.19", default-features = false }
 tower = { version = "0.5.3", default-features = false }
 tower-http = { version = "0.7.1", default-features = false, features = ["cors"] }
 ts-rs = { version = "12.0.1", default-features = false, features = ["no-serde-warnings", "serde-compat", "serde-json-impl"], optional = true }
-turso = { version = "0.8.1", default-features = false }
-uuid = { version = "1.26.1", default-features = false, features = ["v4"] }
+turso = { version = "0.8.2", default-features = false }
+uuid = { version = "1.27.0", default-features = false, features = ["v4"] }
 vec1 = { version = "1.12.1", default-features = false, features = ["std", "serde"] }
 
 [dev-dependencies]
-turso_parser = { version = "0.8.1", default-features = false }
+turso_parser = { version = "0.8.2", default-features = false }
 
 [lints.rust]
 missing_docs = "deny"
