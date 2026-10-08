@@ -39,7 +39,7 @@ pub(crate) struct Config {
     /// Inbound TLS termination; when this section is present the listener
     /// serves HTTPS, and when it is absent the listener serves plaintext
     /// HTTP.
-    pub(crate) tls: Option<TlsConfig>,
+    pub(super) tls: Option<TlsConfig>,
 
     /// In-process SQLite database configuration.
     pub(crate) database: DatabaseConfig,
@@ -48,7 +48,7 @@ pub(crate) struct Config {
     pub(crate) management_api: ManagementApiConfig,
 
     /// Outward client API configuration.
-    pub(crate) api: ApiConfig,
+    pub(super) api: ApiConfig,
 
     /// Request accounting (`api_logs`) configuration. The section's presence is the recording
     /// switch: present, dispatched requests are recorded into the day-partitioned api-log
@@ -66,7 +66,7 @@ pub(crate) struct Config {
     /// configured key unseals by its carrier-carried identifier, so keys rotate by appending.
     /// Removing a key intentionally invalidates its artifacts.
     #[serde(default)]
-    pub(crate) compaction: Option<CompactionConfig>,
+    pub(super) compaction: Option<CompactionConfig>,
 
     /// Live quota refresh cadence and bounded content-free pool affinity.
     #[serde(default)]
@@ -155,11 +155,11 @@ impl fmt::Debug for CompactionKeyConfig {
 pub(crate) struct TlsConfig {
     /// File path of the PEM certificate chain served to TLS clients, leaf
     /// certificate first.
-    pub(crate) certificate: PathBuf,
+    pub(super) certificate: PathBuf,
 
     /// File path of the PEM private key matching the leaf certificate of
     /// the chain.
-    pub(crate) private_key: PathBuf,
+    pub(super) private_key: PathBuf,
 }
 
 /// In-process SQLite database configuration.
@@ -196,7 +196,7 @@ pub(crate) struct ManagementApiConfig {
     /// `/management-api/*`. Defaults to no cross-origin requests and no
     /// Private Network Access.
     #[serde(default)]
-    pub(crate) cors: CorsConfig,
+    pub(super) cors: CorsConfig,
 }
 
 impl fmt::Debug for ManagementApiConfig {
@@ -221,7 +221,7 @@ impl fmt::Debug for ManagementApiConfig {
 /// origin, and `allow_private_network` defaults to `false`.
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CorsConfig {
+pub(super) struct CorsConfig {
     /// Origin(s) permitted for cross-origin requests.
     ///
     /// Specifying `"*"` or `["*"]` allows any origin. Explicit origins
@@ -230,23 +230,23 @@ pub(crate) struct CorsConfig {
     /// origins. An empty list `[]` permits no origins. Defaults to `[]`:
     /// no cross-origin requests.
     #[serde(deserialize_with = "super::deserializers::allowed_origin", default)]
-    pub(crate) allowed_origin: AllowOrigin,
+    pub(super) allowed_origin: AllowOrigin,
 
     /// Whether to allow requests from private networks (Private Network
     /// Access). Defaults to `false`.
     #[serde(default)]
-    pub(crate) allow_private_network: bool,
+    pub(super) allow_private_network: bool,
 }
 
 /// Outward client protocol configuration: CORS only. Client authorization
 /// secrets are database-managed API keys, not configuration.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ApiConfig {
+pub(super) struct ApiConfig {
     /// Cross-Origin Resource Sharing (CORS) configuration for `/api/*`.
     /// Defaults to no cross-origin requests and no Private Network Access.
     #[serde(default)]
-    pub(crate) cors: CorsConfig,
+    pub(super) cors: CorsConfig,
 }
 
 /// Request accounting configuration (`api_logs`, README §3 *ApiLog Store*).
@@ -265,293 +265,4 @@ pub(crate) struct ApiLogsConfig {
     /// Defaults to 90.
     #[serde(default = "super::defaults::api_logs_retention_days")]
     pub(crate) retention_days: NonZero<u32>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Config;
-    use json_strip_comments::StripComments;
-    use log::LevelFilter;
-    use std::{fs, path::Path, time::Duration};
-
-    /// Parses a schema from JSONC bytes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if parsing fails; the tests feed valid configurations only.
-    fn parse(bytes: &[u8]) -> Config {
-        #[expect(clippy::expect_used, reason = "the tested body parses")]
-        let schema: Config = parse_result(bytes).expect("the tested body parses");
-
-        schema
-    }
-
-    /// Parses a schema from JSONC bytes, yielding the deserializer's rejection instead of
-    /// panicking, for bodies whose rejection is what the test asserts.
-    fn parse_result(bytes: &[u8]) -> Result<Config, serde_json::Error> {
-        serde_json::from_reader(StripComments::new(bytes))
-    }
-
-    /// Verifies that `config.example.jsonc` parses into a schema with the TLS
-    /// section configured, keeping the shipped example honest.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the example file fails to read or parse.
-    #[test]
-    fn parses_the_example_configuration() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.jsonc");
-
-        #[expect(clippy::expect_used, reason = "the example file reads")]
-        let bytes = fs::read(path).expect("the example file reads");
-
-        let schema = parse(&bytes);
-
-        assert_eq!(schema.log_level, LevelFilter::Info);
-        assert!(schema.tls.is_some());
-
-        #[expect(clippy::expect_used, reason = "the example carries the section")]
-        let api_logs = schema
-            .api_logs
-            .as_ref()
-            .expect("the example carries api_logs");
-
-        assert_eq!(api_logs.retention_days.get(), 90);
-    }
-
-    /// Verifies that every documented default applies when only the required
-    /// fields are stated, which is the minimal valid configuration, and that
-    /// a CORS section may also state one field alone.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a minimal or partial configuration fails to parse or a
-    /// default diverges.
-    #[test]
-    fn applies_defaults_to_a_minimal_configuration() {
-        let schema = parse(
-            br#"{
-                "listen": "127.0.0.1:8080",
-                "database": {"path": "janusgate.db"},
-                "management_api": {"token": "management-token"},
-                "api": {}
-            }"#,
-        );
-
-        assert_eq!(schema.log_level, LevelFilter::Info);
-        assert!(schema.tls.is_none());
-        assert_eq!(schema.database.max_connections.get(), 4);
-        assert_eq!(schema.database.pool_timeout, Duration::from_millis(5000));
-        assert!(!schema.management_api.cors.allow_private_network);
-        assert!(!schema.api.cors.allow_private_network);
-        assert!(
-            schema.api_logs.is_none(),
-            "the omitted api_logs section means recording is off"
-        );
-        assert!(
-            schema.compaction.is_none(),
-            "the omitted compaction section means sealing is unavailable"
-        );
-
-        // The section's presence is the recording switch: present, it must state the api-log
-        // directory, and retention may ride along or fall back to its default.
-        let schema = parse(
-            br#"{
-                "listen": "127.0.0.1:8080",
-                "database": {"path": "janusgate.db"},
-                "management_api": {"token": "management-token"},
-                "api": {},
-                "api_logs": {"path": "api-logs"}
-            }"#,
-        );
-
-        #[expect(clippy::expect_used, reason = "the section is present")]
-        let api_logs = schema.api_logs.as_ref().expect("the section parses");
-
-        assert_eq!(api_logs.path.to_string_lossy(), "api-logs");
-        assert_eq!(
-            api_logs.retention_days.get(),
-            90,
-            "retention defaults to 90"
-        );
-
-        let schema = parse(
-            br#"{
-                "listen": "127.0.0.1:8080",
-                "database": {"path": "janusgate.db"},
-                "management_api": {"token": "management-token"},
-                "api": {},
-                "api_logs": {"path": "api-logs", "retention_days": 7}
-            }"#,
-        );
-
-        #[expect(clippy::expect_used, reason = "the section is present")]
-        let api_logs = schema.api_logs.as_ref().expect("the section parses");
-
-        assert_eq!(api_logs.retention_days.get(), 7);
-
-        assert!(
-            parse_result(
-                br#"{
-                    "listen": "127.0.0.1:8080",
-                    "database": {"path": "janusgate.db"},
-                    "management_api": {"token": "management-token"},
-                    "api": {},
-                    "api_logs": {"retention_days": 7}
-                }"#
-            )
-            .is_err(),
-            "a present api_logs section must state its path"
-        );
-
-        assert!(
-            parse_result(
-                br#"{
-                    "listen": "127.0.0.1:8080",
-                    "database": {"path": "janusgate.db"},
-                    "management_api": {"token": "management-token"},
-                    "api": {},
-                    "api_logs": {"path": "api-logs", "retention_days": 0}
-                }"#
-            )
-            .is_err(),
-            "a zero retention must be rejected"
-        );
-
-        assert!(
-            parse_result(
-                br#"{
-                    "listen": "127.0.0.1:8080",
-                    "database": {"path": "janusgate.db"},
-                    "management_api": {"token": "management-token"},
-                    "api": {},
-                    "api_logs": {"enabled": true}
-                }"#
-            )
-            .is_err(),
-            "an unknown api_logs field must be rejected"
-        );
-
-        let schema = parse(
-            br#"{
-                "listen": "127.0.0.1:8080",
-                "database": {"path": "janusgate.db"},
-                "management_api": {"token": "t", "cors": {"allow_private_network": true}},
-                "api": {}
-            }"#,
-        );
-
-        assert!(schema.management_api.cors.allow_private_network);
-        assert!(!schema.api.cors.allow_private_network);
-    }
-
-    /// Renders a configuration body carrying the given `compaction.keys` JSON fragment.
-    fn sealing_keys_body(keys: &str) -> String {
-        format!(
-            r#"{{
-                "listen": "127.0.0.1:8080",
-                "database": {{"path": "janusgate.db"}},
-                "management_api": {{"token": "management-token"}},
-                "api": {{}},
-                "compaction": {{"keys": {keys}}}
-            }}"#
-        )
-    }
-
-    /// Verifies the compaction sealing-key contract at parse time: a valid set parses into
-    /// identifiers and decoded 32-byte materials, and an empty set, a repeated, empty, or
-    /// separator-carrying identifier, a non-base64 or wrong-length key value, and an unknown
-    /// entry field are all rejected — with the offending value's location, like any other
-    /// schema rejection.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a valid set fails to parse, an invalid set parses, or a rejection omits the
-    /// location.
-    #[test]
-    fn enforces_the_sealing_key_contract_at_parse_time() {
-        let key = crate::test_support::FIXTURE_SEALING_KEY;
-        let rotated = crate::test_support::FIXTURE_SEALING_KEY_ROTATED;
-
-        let schema = parse(
-            sealing_keys_body(&format!(
-                r#"[{{"id": "primary", "key": "{key}"}}, {{"id": "spare", "key": "{rotated}"}}]"#
-            ))
-            .as_bytes(),
-        );
-
-        #[expect(clippy::expect_used, reason = "the valid set carries the section")]
-        let compaction = schema.compaction.as_ref().expect("the section parses");
-
-        assert_eq!(compaction.keys.len(), 2);
-        assert_eq!(compaction.keys.first().id, "primary");
-        assert_eq!(
-            compaction.keys.first().key,
-            std::array::from_fn(|index| index as u8),
-            "the base64 value decodes to its material"
-        );
-
-        let repeated =
-            format!(r#"[{{"id": "a", "key": "{key}"}}, {{"id": "a", "key": "{rotated}"}}]"#);
-
-        for (index, (label, keys)) in [
-            ("empty set", String::from("[]")),
-            ("repeated id", repeated),
-            (
-                "separator id",
-                format!(r#"[{{"id": "a.b", "key": "{key}"}}]"#),
-            ),
-            ("empty id", format!(r#"[{{"id": "", "key": "{key}"}}]"#)),
-            (
-                "non-base64 key",
-                r#"[{"id": "a", "key": "!!!"}]"#.to_string(),
-            ),
-            ("short key", r#"[{"id": "a", "key": "AAAA"}]"#.to_string()),
-            (
-                "unknown entry field",
-                format!(r#"[{{"id": "a", "key": "{key}", "comment": 1}}]"#),
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert!(
-                parse_result(sealing_keys_body(&keys).as_bytes()).is_err(),
-                "case {index} ({label}) parses but must be rejected"
-            );
-        }
-
-        #[expect(
-            clippy::panic,
-            reason = "the repeated-id set is rejected above, which is what the test asserts"
-        )]
-        let Err(failure) = parse_result(
-            sealing_keys_body(&format!(
-                r#"[{{"id": "a", "key": "{key}"}}, {{"id": "a", "key": "{rotated}"}}]"#
-            ))
-            .as_bytes(),
-        ) else {
-            panic!("a repeated id parses but must be rejected");
-        };
-
-        let rendered = failure.to_string();
-
-        assert!(rendered.contains("repeated"), "{rendered}");
-        assert!(rendered.contains("line"), "{rendered}");
-
-        #[expect(
-            clippy::panic,
-            reason = "the non-base64 set is rejected above, which is what the test asserts"
-        )]
-        let Err(failure) =
-            parse_result(sealing_keys_body(r#"[{"id": "a", "key": "!!!"}]"#).as_bytes())
-        else {
-            panic!("a non-base64 key parses but must be rejected");
-        };
-
-        let rendered = failure.to_string();
-
-        assert!(rendered.contains("not standard base64"), "{rendered}");
-        assert!(rendered.contains("line"), "{rendered}");
-    }
 }

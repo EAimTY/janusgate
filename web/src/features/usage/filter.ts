@@ -339,7 +339,7 @@ export function hasUsageFilter(draft: UsageFilterDraft): boolean {
  * here only whole; a route-carried one still narrows to the statuses it does
  * name.
  */
-export function parseStatusList(input: string): number[] {
+function parseStatusList(input: string): number[] {
     return splitListEntries(input)
         .map((entry) => parseRowIdentifier(entry))
         .filter((entry): entry is number => entry !== null);
@@ -472,7 +472,7 @@ export function draftUsageFilter(draft: UsageFilterDraft, nowMicros: number): Us
  * The entity dimensions an aggregates subject can name: the `usage:query`
  * grouping dimensions that have a filter field of their own.
  */
-export type UsageQuerySubjectDimension = Extract<
+type UsageQuerySubjectDimension = Extract<
     UsageGroupBy,
     "provider" | "model" | "model_route" | "api_key"
 >;

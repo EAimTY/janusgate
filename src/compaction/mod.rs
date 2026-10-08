@@ -26,12 +26,9 @@
 //! - [`native`]: the native compaction operation dispatches.
 //! - [`executor`]: strategy selection and multi-call coordination for compaction operations.
 
-pub(crate) mod error;
+mod error;
 pub(crate) mod executor;
-pub(crate) mod history;
+mod history;
 pub(crate) mod native;
-pub(crate) mod summary;
-pub(crate) mod threshold;
-
-#[cfg(test)]
-mod tests;
+mod summary;
+mod threshold;

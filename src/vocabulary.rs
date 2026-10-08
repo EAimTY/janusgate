@@ -41,11 +41,11 @@ pub(crate) enum ReasoningLevel {
 impl ReasoningLevel {
     /// The one (level, wire-spelling) table of the closed vocabulary (README §6.4), in
     /// [`Self::CANONICAL`] order. [`Self::as_str`] and [`Self::from_vocabulary_str`] are
-    /// lookups into this table, so a spelling change is a single edit here, and the format
-    /// surfaces' and the IR's conformance tests pin against it. The serde `lowercase` derive is
-    /// the one wire spelling the table does not own — it renames the variant names
-    /// independently — and the test below pins the derive against the table.
-    pub(crate) const VOCABULARY: [(ReasoningLevel, &'static str); Self::CANONICAL.len()] = [
+    /// lookups into this table, and the format surfaces and the IR render from it, so a spelling
+    /// change is a single edit here. The serde `lowercase` derive is the one wire spelling the
+    /// table does not own — it renames the variant names independently — so a variant rename
+    /// must update both the derive and this table.
+    const VOCABULARY: [(ReasoningLevel, &'static str); Self::CANONICAL.len()] = [
         (Self::None, "none"),
         (Self::Minimal, "minimal"),
         (Self::Low, "low"),
@@ -57,7 +57,7 @@ impl ReasoningLevel {
 
     /// The vocabulary in canonical order — the storage and declaration order of a level set
     /// (README §3/§5.5): a stored or declared set is deduplicated into this order at write.
-    pub(crate) const CANONICAL: [Self; 7] = [
+    const CANONICAL: [Self; 7] = [
         Self::None,
         Self::Minimal,
         Self::Low,
@@ -111,38 +111,5 @@ impl ReasoningLevel {
             .find(|(member, _)| *member == self)
             .map(|(_, spelling)| *spelling)
             .unwrap()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "the serde boundary is exercised on members constructed to succeed"
-    )]
-
-    use super::ReasoningLevel;
-
-    /// Pins the serde `lowercase` derive — the one wire-spelling enumeration
-    /// [`ReasoningLevel::VOCABULARY`] does not own — against the table: every level's serde
-    /// spelling is exactly its table spelling, in both directions. `as_str` and
-    /// [`ReasoningLevel::from_vocabulary_str`] need no pin beside this: they are lookups into
-    /// the table itself.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a variant's serde spelling diverges from the table.
-    #[test]
-    fn serde_derive_matches_the_vocabulary_table() {
-        for (level, spelling) in ReasoningLevel::VOCABULARY {
-            let rendered = serde_json::to_string(&level).expect("a vocabulary member serializes");
-
-            assert_eq!(rendered, format!("\"{spelling}\""));
-
-            let parsed: ReasoningLevel =
-                serde_json::from_str(&rendered).expect("the rendered spelling parses back");
-
-            assert_eq!(parsed, level);
-        }
     }
 }

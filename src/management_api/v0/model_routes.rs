@@ -47,17 +47,17 @@ route! {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct ModelRouteResponse {
+struct ModelRouteResponse {
     /// Automatic direct entries follow provider prefixes and physical model switches.
-    pub is_automatic: bool,
+    is_automatic: bool,
     /// Never-recycled row identifier.
-    pub id: i64,
+    id: i64,
     /// Explicit public model identifier.
-    pub public_id: String,
+    public_id: String,
     /// Administrator serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
     /// One physical model or a pool and exact upstream identifier.
-    pub target: ModelRouteTarget,
+    target: ModelRouteTarget,
 }
 
 /// Empty request for the complete inventory.
@@ -72,7 +72,7 @@ pub(super) struct ListModelRoutesRequest {}
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListModelRoutesResponse {
     /// Rows ordered by public identifier.
-    pub model_routes: Vec<ModelRouteResponse>,
+    model_routes: Vec<ModelRouteResponse>,
 }
 
 /// Complete initial authored state.
@@ -81,11 +81,11 @@ pub(super) struct ListModelRoutesResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateModelRouteRequest {
     /// Explicit public model identifier.
-    pub public_id: String,
+    public_id: String,
     /// Administrator serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
     /// One physical model or a pool and exact upstream identifier.
-    pub target: ModelRouteTarget,
+    target: ModelRouteTarget,
 }
 
 /// New identity assigned by the server.
@@ -94,7 +94,7 @@ pub(super) struct CreateModelRouteRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateModelRouteResponse {
     /// Created row identifier.
-    pub model_route_id: i64,
+    model_route_id: i64,
 }
 
 /// Complete replacement state; preserves the row identity.
@@ -103,13 +103,13 @@ pub(super) struct CreateModelRouteResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UpdateModelRouteRequest {
     /// Addressed row identifier.
-    pub model_route_id: i64,
+    model_route_id: i64,
     /// Explicit public model identifier.
-    pub public_id: String,
+    public_id: String,
     /// Administrator serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
     /// One physical model or a pool and exact upstream identifier.
-    pub target: ModelRouteTarget,
+    target: ModelRouteTarget,
 }
 
 /// Delete one stored entity by identity.
@@ -118,7 +118,7 @@ pub(super) struct UpdateModelRouteRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DeleteModelRouteRequest {
     /// Addressed row identifier.
-    pub model_route_id: i64,
+    model_route_id: i64,
 }
 
 /// Lists the complete authored inventory without upstream I/O.

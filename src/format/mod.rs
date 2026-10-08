@@ -53,7 +53,7 @@ pub(crate) mod openai;
 /// A JSON object whose declared protocol shape has no members. Render-only: the gateway
 /// constructs and serializes it outward, never parsing it back.
 #[derive(Debug, Clone, Serialize)]
-pub(in crate::format) struct EmptyObject {}
+struct EmptyObject {}
 
 /// Wire formats an upstream provider may speak: the closed vocabulary from which a
 /// provider definition pins the one format every inference of the definition speaks
@@ -62,7 +62,7 @@ pub(in crate::format) struct EmptyObject {}
 /// The serde and TypeScript names are the management wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum UpstreamFormat {
+pub(crate) enum UpstreamFormat {
     /// OpenAI Responses protocol.
     #[serde(rename = "openai_response")]
     OpenAiResponse,
@@ -123,7 +123,7 @@ impl UpstreamFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RenderOption {
+pub(crate) enum RenderOption {
     /// Never render `max_output_tokens`: the upstream rejects the parameter as unsupported, and
     /// the model's own output bound applies instead of the client-requested cap (`openai_response`
     /// only).
@@ -405,7 +405,7 @@ impl RouteContext {
 /// renderers coalesce consecutive same-role messages into one content entry or input step per run,
 /// as their protocols' role-alternation rules require, taking the closed runs from
 /// [`RoleRun::into_runs`].
-pub(in crate::format) struct RoleRun<R, P> {
+struct RoleRun<R, P> {
     /// Runs flushed so far, in order.
     runs: Vec<(R, Vec<P>)>,
 
@@ -427,7 +427,7 @@ impl<R, P> Default for RoleRun<R, P> {
 impl<R: PartialEq, P> RoleRun<R, P> {
     /// Extends the open run when it carries `role`, else flushes it and opens a new one. A
     /// `parts` vector carrying no parts is transparent: it neither extends nor splits a run.
-    pub(in crate::format) fn push(&mut self, role: R, parts: Vec<P>) {
+    fn push(&mut self, role: R, parts: Vec<P>) {
         if parts.is_empty() {
             return;
         }
@@ -444,7 +444,7 @@ impl<R: PartialEq, P> RoleRun<R, P> {
 
     /// Closes the accumulator, flushing the open run and returning every run — its role and its
     /// parts — in order.
-    pub(in crate::format) fn into_runs(mut self) -> Vec<(R, Vec<P>)> {
+    fn into_runs(mut self) -> Vec<(R, Vec<P>)> {
         self.flush_open();
         self.runs
     }
@@ -461,7 +461,7 @@ impl RoleRun<IrRole, IrPart> {
     /// Closes the accumulator, flushing the open run and returning every coalesced message in
     /// order — the IR form the request parsers consume, pairing each run [`RoleRun::into_runs`]
     /// returns into an [`IrMessage`].
-    pub(in crate::format) fn finish(self) -> Vec<IrMessage> {
+    fn finish(self) -> Vec<IrMessage> {
         self.into_runs()
             .into_iter()
             .map(|(role, parts)| IrMessage { role, parts })
@@ -507,7 +507,7 @@ pub(crate) trait UpstreamEventParser {
 /// [`UpstreamEventParser::finish`] hook delegates here: the first call on an unfinished parser
 /// marks the flag and returns the single [`IrEvent::Finish`] carrying [`IrFinishReason::Stop`], and
 /// a parser that already finished emits nothing.
-pub(in crate::format) fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEvent> {
+fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEvent> {
     if *is_finished {
         return Vec::new();
     }
@@ -524,11 +524,7 @@ pub(in crate::format) fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEv
 /// stream — the stream-head announcement and the recovery paths that never saw it. The first
 /// call on an unstarted parser marks the flag and returns the single [`IrEvent::MessageStart`]
 /// carrying `id` and `model`; a parser that already started emits nothing.
-pub(in crate::format) fn message_start_once(
-    is_started: &mut bool,
-    id: String,
-    model: String,
-) -> Vec<IrEvent> {
+fn message_start_once(is_started: &mut bool, id: String, model: String) -> Vec<IrEvent> {
     if *is_started {
         return Vec::new();
     }
@@ -544,7 +540,7 @@ pub(in crate::format) fn message_start_once(
 /// codecs deliver a whole call at once and share this pair so the streaming renderers open and
 /// complete the call exactly as a streamed one; each parser keeps its own delivery and
 /// completion bookkeeping beside it.
-pub(in crate::format) fn complete_call_events(
+fn complete_call_events(
     index: usize,
     call_id: String,
     name: String,
@@ -753,7 +749,7 @@ pub(crate) fn aggregation_events(aggregation: &IrAggregation, model: &str) -> Ve
 /// its variants and reports every inner failure as "data did not match any variant", which would
 /// lose the member name a rejection has to name (README §6.6).
 #[derive(Debug)]
-pub(in crate::format) enum StringOrArray<T> {
+enum StringOrArray<T> {
     /// The plain-string form.
     Text(String),
 
@@ -773,7 +769,7 @@ pub(in crate::format) enum StringOrArray<T> {
 /// that distinction — JSON `null` deserializes to [`None`].
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub(in crate::format) enum UpstreamError {
+enum UpstreamError {
     /// The plain-string form.
     Text(String),
 
@@ -796,7 +792,7 @@ pub(in crate::format) enum UpstreamError {
 impl UpstreamError {
     /// The human-readable text of the error, when it carries one: the string form's text or the
     /// object form's `message`.
-    pub(in crate::format) fn message(&self) -> Option<&str> {
+    fn message(&self) -> Option<&str> {
         match self {
             Self::Text(text) => Some(text),
 
@@ -808,7 +804,7 @@ impl UpstreamError {
 
     /// Renders the failure carrying the embedded text, with the upstream code beside it when the
     /// error carries one.
-    pub(in crate::format) fn failure(&self) -> PayloadError {
+    fn failure(&self) -> PayloadError {
         let detail = match self {
             Self::Text(text) => text.clone(),
 
@@ -826,7 +822,7 @@ impl UpstreamError {
 
 impl PayloadError {
     /// Builds a payload parse failure from its detail.
-    pub(crate) fn new(message: impl Into<String>) -> Self {
+    fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -901,7 +897,7 @@ where
 ///
 /// Returns [`InvalidRequest`] for a body that is not valid JSON and for a body whose shape the
 /// protocol does not allow.
-pub(in crate::format) fn parse_client_request<T>(body: &[u8]) -> Result<T, InvalidRequest>
+fn parse_client_request<T>(body: &[u8]) -> Result<T, InvalidRequest>
 where
     T: DeserializeOwned,
 {
@@ -923,9 +919,7 @@ where
 /// # Errors
 ///
 /// Returns an error when the arguments are not a JSON object.
-pub(in crate::format) fn arguments_as_object(
-    arguments: &str,
-) -> Result<Map<String, Value>, InvalidRequest> {
+fn arguments_as_object(arguments: &str) -> Result<Map<String, Value>, InvalidRequest> {
     if arguments.trim().is_empty() {
         return Ok(Map::new());
     }
@@ -952,20 +946,20 @@ pub(in crate::format) fn arguments_as_object(
 /// This is the degrade policy, the render-time counterpart of [`arguments_as_object`]: client
 /// renderers never fail a healthy stream over malformed arguments text, so every non-object
 /// falls back to the empty object instead of erroring.
-pub(in crate::format) fn arguments_to_object_or_empty(arguments: &str) -> Map<String, Value> {
+fn arguments_to_object_or_empty(arguments: &str) -> Map<String, Value> {
     arguments_as_object(arguments).unwrap_or_default()
 }
 
 /// The blank-line separator between flattened text parts (README §6.6): one cross-codec contract,
 /// shared by every surface that flattens a string-or-text-parts shape into one string and by the
 /// affinity projection that hashes the same flattened bytes.
-pub(in crate::format) const TEXT_PART_SEPARATOR: &str = "\n\n";
+const TEXT_PART_SEPARATOR: &str = "\n\n";
 
 /// Flattens text parts into one string under the shared wire contract (README §6.6): the parts
 /// join with [`TEXT_PART_SEPARATOR`], and a leading run of empty parts is skipped — the separator
 /// only ever separates text the accumulator already holds, so leading empties carry none and an
 /// all-empty input flattens to the empty string.
-pub(in crate::format) fn join_text_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+fn join_text_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     parts
         .into_iter()
         .skip_while(|text| text.is_empty())
@@ -980,7 +974,7 @@ pub(in crate::format) fn join_text_parts<'a>(parts: impl IntoIterator<Item = &'a
 ///
 /// Returns [`PayloadError`] when the frame data is not valid JSON or does not match the codec's
 /// upstream shape.
-pub(in crate::format) fn parse_frame<'de, T>(frame: &'de SseFrame) -> Result<T, PayloadError>
+fn parse_frame<'de, T>(frame: &'de SseFrame) -> Result<T, PayloadError>
 where
     T: Deserialize<'de>,
 {
@@ -993,7 +987,7 @@ where
 /// # Errors
 ///
 /// Returns a payload failure for malformed JSON or a mismatched protocol shape.
-pub(in crate::format) fn parse_body<T>(body: &[u8]) -> Result<T, PayloadError>
+fn parse_body<T>(body: &[u8]) -> Result<T, PayloadError>
 where
     T: DeserializeOwned,
 {
@@ -1005,7 +999,7 @@ where
 /// accepts (each codec passes "the entry whose index is 0"), tolerating index-less upstreams by
 /// taking the first entry instead. Parallel entries beyond the primary are not supported and the
 /// remainder is ignored.
-pub(in crate::format) fn primary<T>(entries: &[T], is_primary: impl Fn(&T) -> bool) -> Option<&T> {
+fn primary<T>(entries: &[T], is_primary: impl Fn(&T) -> bool) -> Option<&T> {
     entries
         .iter()
         .find(|entry| is_primary(entry))
@@ -1020,10 +1014,7 @@ pub(in crate::format) fn primary<T>(entries: &[T], is_primary: impl Fn(&T) -> bo
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `type` for any non-function tag.
-pub(in crate::format) fn reject_non_function_type(
-    tool_type: &str,
-    context: &str,
-) -> Result<(), InvalidRequest> {
+fn reject_non_function_type(tool_type: &str, context: &str) -> Result<(), InvalidRequest> {
     if tool_type == "function" {
         return Ok(());
     }
@@ -1039,9 +1030,7 @@ pub(in crate::format) fn reject_non_function_type(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `tool_choice`.
-pub(in crate::format) fn reject_tool_choice_without_tools(
-    is_tools_empty: bool,
-) -> Result<(), InvalidRequest> {
+fn reject_tool_choice_without_tools(is_tools_empty: bool) -> Result<(), InvalidRequest> {
     if is_tools_empty {
         return Err(InvalidRequest::field(
             "tool_choice",
@@ -1058,7 +1047,7 @@ pub(in crate::format) fn reject_tool_choice_without_tools(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming the offending parameter.
-pub(in crate::format) fn validate_sampling_ranges(
+fn validate_sampling_ranges(
     temperature: Option<f64>,
     top_p: Option<f64>,
 ) -> Result<(), InvalidRequest> {
@@ -1087,7 +1076,7 @@ pub(in crate::format) fn validate_sampling_ranges(
 /// # Panics
 ///
 /// Panics if `value` fails to serialize, which cannot occur for the rendered wire types.
-pub(in crate::format) fn render_json<T>(value: &T) -> String
+fn render_json<T>(value: &T) -> String
 where
     T: Serialize + ?Sized,
 {
@@ -1096,113 +1085,4 @@ where
         reason = "rendered wire types are first-party and serialize totally"
     )]
     serde_json::to_string(value).expect("rendered wire payloads serialize")
-}
-
-/// Encodes a JSON fixture for the upstream parser's byte-oriented document boundary.
-///
-/// # Panics
-///
-/// Panics when a first-party test fixture fails to serialize.
-#[cfg(test)]
-pub(crate) fn test_json_body(body: &impl Serialize) -> Vec<u8> {
-    #[expect(clippy::expect_used, reason = "test fixtures serialize totally")]
-    serde_json::to_vec(body).expect("JSON fixture serializes")
-}
-
-/// Serializes an aggregated outward response body into the JSON value the codec test suites assert
-/// against.
-///
-/// The render-is-total invariant: every aggregated body a [`ClientFormat::render_json_response`]
-/// implementation returns is a first-party wire type whose serialization is total — the same
-/// invariant [`render_json`] states for the streaming frames — so the suites share this one
-/// serialization failure path instead of repeating the escape hatch beside every assertion.
-///
-/// # Panics
-///
-/// Panics if `response` fails to serialize, which cannot occur for a rendered wire type.
-#[cfg(test)]
-pub(in crate::format) fn aggregated_body_json<T: Serialize>(response: &T) -> Value {
-    #[expect(
-        clippy::expect_used,
-        reason = "rendered wire types are first-party and serialize totally"
-    )]
-    serde_json::to_value(response).expect("the aggregated body serializes")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RoleRun, UpstreamFormat};
-
-    /// A zero-part contribution is transparent: it neither extends nor splits the open run, so a
-    /// foreign-role contribution carrying no parts leaves a same-role run unbroken, and a
-    /// same-role one leaves it continuous.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the closed runs diverge from the transparency rule.
-    #[test]
-    fn zero_part_contributions_are_transparent() {
-        let mut runs = RoleRun::default();
-
-        runs.push('a', vec![1]);
-        runs.push('b', vec![]);
-        runs.push('a', vec![2, 3]);
-        runs.push('a', vec![]);
-        runs.push('b', vec![4]);
-
-        assert_eq!(runs.into_runs(), vec![('a', vec![1, 2, 3]), ('b', vec![4])]);
-    }
-
-    /// The derived parse stays one vocabulary with the literal `as_str` home for every word of
-    /// the closed set, and a spelling outside it parses to nothing. Only the two formats the
-    /// storage fixtures round-trip are pinned elsewhere; this pins the whole table at once.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a word fails to round-trip or an unknown spelling parses.
-    #[test]
-    fn upstream_format_parses_its_whole_vocabulary() {
-        for format in UpstreamFormat::ALL {
-            assert_eq!(UpstreamFormat::parse(format.as_str()), Some(format));
-        }
-
-        assert_eq!(UpstreamFormat::parse("openai_responses"), None);
-    }
-
-    /// The shared text-part flattening carries the README §6.6 contract at its single home: a
-    /// leading run of empty parts is skipped (the separator only ever separates held text),
-    /// remaining parts join on the blank-line separator, and an all-empty input flattens to the
-    /// empty string.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the flattened text diverges from the pinned rule.
-    #[test]
-    fn join_text_parts_skips_leading_empties_and_joins_the_blank_line_separator() {
-        // Only the leading run is skipped; a mid-array empty part keeps its separators.
-        assert_eq!(
-            super::join_text_parts(["", "", "a", "", "b"]),
-            format!("a{0}{0}b", super::TEXT_PART_SEPARATOR)
-        );
-
-        assert_eq!(super::join_text_parts(["", ""]), "");
-    }
-
-    /// Primary-entry selection follows the declared index, not array position: an entry whose
-    /// index the predicate accepts wins even when a parallel entry precedes it, and an array of
-    /// index-less entries degrades to the first.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the selection diverges from the index-first rule.
-    #[test]
-    fn primary_prefers_the_declared_index_over_array_position() {
-        let indexed = [7, 0, 9];
-
-        assert_eq!(super::primary(&indexed, |entry| *entry == 0), Some(&0));
-
-        assert_eq!(super::primary(&[7, 9], |_| false), Some(&7));
-
-        assert_eq!(super::primary::<i32>(&[], |_| true), None);
-    }
 }

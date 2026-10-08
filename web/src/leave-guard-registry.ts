@@ -9,7 +9,7 @@ import { createSignal } from "solid-js";
  * exactly as long as its flow stands live — mirrored here so the shell's
  * leave guard can read both without knowing any screen.
  */
-export type LeaveGuardSeat = {
+type LeaveGuardSeat = {
     /** Reports whether this seat's subject currently stands guarded. */
     readonly reportGuarded: (isGuarded: boolean) => void;
     /**

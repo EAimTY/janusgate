@@ -159,7 +159,7 @@ enum ThoughtKind {
 ///
 /// Panics if accepted canonical fields cannot serialize to the infallible hashing sink or a
 /// resident history exhausts its invocation ordinal domain.
-pub(super) fn project_step(step: &RenderStep, projector: &mut Projector) -> bool {
+fn project_step(step: &RenderStep, projector: &mut Projector) -> bool {
     match step {
         RenderStep::Typed(TypedStep::ModelOutput { content }) => {
             for ContentBlock::Text { text } in content {

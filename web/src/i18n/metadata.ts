@@ -11,7 +11,7 @@ type SemanticKey<T> = T extends string
                     : K
               : `${K}.${SemanticKey<T[K]>}`;
       }[keyof T & string];
-export type MessagePath = SemanticKey<typeof english>;
+type MessagePath = SemanticKey<typeof english>;
 export type PluralContract = {
     readonly path: string;
     readonly kind: "cardinal" | "ordinal";

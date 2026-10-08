@@ -14,7 +14,7 @@ import { ErrorCode } from "/src/management-api/generated/v0";
  * - `unknown` — no probe ran, or it was cancelled or timed out; a deadline is
  *   never read as an answer about the network.
  */
-export type Reachability = "reached" | "unreached" | "unknown";
+type Reachability = "reached" | "unreached" | "unknown";
 
 /** The management action whose failure is being explained. */
 export type ActionName =
@@ -42,7 +42,7 @@ export type ActionName =
     | "complete-oauth"
     | "reauthorize";
 
-export type ActionContext = {
+type ActionContext = {
     /** The connection's base URL, as the operator entered it. */
     readonly baseUrl: string;
     /** The origin this app is served from — the value a CORS allowlist needs. */

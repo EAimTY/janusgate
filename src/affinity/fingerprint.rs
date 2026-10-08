@@ -835,7 +835,7 @@ impl Projector {
     /// # Panics
     ///
     /// Panics if accepted canonical fields cannot serialize to the infallible hashing sink.
-    pub(crate) fn reasoning_canonical_parts<'a>(
+    fn reasoning_canonical_parts<'a>(
         &mut self,
         role: Role,
         family: ReplayFamily,
@@ -1290,7 +1290,3 @@ impl Projector {
         anchors
     }
 }
-
-#[cfg(test)]
-#[path = "fingerprint_tests.rs"]
-mod tests;

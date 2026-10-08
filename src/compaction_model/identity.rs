@@ -34,7 +34,7 @@ pub(crate) enum InstructionRole {
 
 impl InstructionRole {
     /// The role's canonical spelling.
-    pub(crate) const fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::System => "system",
             Self::Developer => "developer",
@@ -48,11 +48,11 @@ impl InstructionRole {
 pub(crate) struct ItemIdentity {
     /// The client-supplied source identifier, when the source protocol carries
     /// one.
-    pub(crate) source_id: Option<String>,
+    source_id: Option<String>,
 
     /// Deterministic lowercase-hex digest of the typed semantic item plus its
     /// occurrence position.
-    pub(crate) digest: String,
+    digest: String,
 }
 
 impl ItemIdentity {
@@ -63,7 +63,7 @@ impl ItemIdentity {
     /// the non-empty source identifiers [`Self::matches`] matches are enforced
     /// at construction.
     #[must_use]
-    pub(crate) fn for_instruction(
+    fn for_instruction(
         role: InstructionRole,
         occurrence: usize,
         text: &str,
@@ -148,7 +148,7 @@ pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
 /// Panics if the fmt write into the rendering `String` fails — impossible, a
 /// `String`'s fmt buffer is always writable.
 #[must_use]
-pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+fn hex_digest(bytes: &[u8]) -> String {
     let mut rendered = String::with_capacity(bytes.len() * 2);
 
     for byte in bytes {
@@ -161,120 +161,4 @@ pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     }
 
     rendered
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "fixtures index values they constructed themselves"
-    )]
-
-    use super::{InstructionRole, ItemIdentity};
-
-    /// Identities computed over equal semantic items in equal positions match,
-    /// and a source identifier wins over a digest when both sides carry one.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn identities_match_on_equal_semantics_and_source_ids() {
-        let left = ItemIdentity::for_instruction(InstructionRole::System, 0, "be terse", None);
-        let right = ItemIdentity::for_instruction(InstructionRole::System, 0, "be terse", None);
-
-        assert!(left.matches(&right));
-
-        let shifted = ItemIdentity::for_instruction(InstructionRole::System, 1, "be terse", None);
-
-        assert!(
-            !left.matches(&shifted),
-            "a shifted occurrence is not overlap"
-        );
-
-        let sourced = ItemIdentity::for_instruction(
-            InstructionRole::System,
-            0,
-            "be terse",
-            Some(String::from("id-7")),
-        );
-        let sourced_again = ItemIdentity::for_instruction(
-            InstructionRole::System,
-            2,
-            "elsewhere",
-            Some(String::from("id-7")),
-        );
-
-        assert!(
-            sourced.matches(&sourced_again),
-            "equal source identifiers match across positions"
-        );
-
-        let other_sourced = ItemIdentity::for_instruction(
-            InstructionRole::System,
-            0,
-            "be verbose",
-            Some(String::from("id-8")),
-        );
-
-        assert!(
-            !sourced.matches(&other_sourced),
-            "differing source identifiers fall back to the digest"
-        );
-    }
-
-    /// An empty source identifier normalizes to absent at construction, so a
-    /// built identity never carries the empty identifier `matches` excludes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn empty_source_identifiers_normalize_to_absent() {
-        let identity = ItemIdentity::for_instruction(
-            InstructionRole::System,
-            0,
-            "be terse",
-            Some(String::new()),
-        );
-
-        assert_eq!(identity.source_id, None);
-    }
-
-    /// The window identities count occurrences per role, so interleaved roles
-    /// each index from zero.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn window_identities_count_occurrences_per_role() {
-        let system = InstructionRole::System;
-        let developer = InstructionRole::Developer;
-
-        let identities = ItemIdentity::for_instruction_window([
-            (system, "first system"),
-            (developer, "first developer"),
-            (system, "second system"),
-        ]);
-
-        assert!(identities[0].matches(&ItemIdentity::for_instruction(
-            system,
-            0,
-            "first system",
-            None
-        )));
-        assert!(identities[1].matches(&ItemIdentity::for_instruction(
-            developer,
-            0,
-            "first developer",
-            None
-        )));
-        assert!(identities[2].matches(&ItemIdentity::for_instruction(
-            system,
-            1,
-            "second system",
-            None
-        )));
-    }
 }

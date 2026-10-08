@@ -291,7 +291,7 @@ where
 /// # Errors
 ///
 /// Returns and logs a carrier authentication or visible-content binding failure.
-pub(super) fn prepare_compaction_boundaries(
+fn prepare_compaction_boundaries(
     compaction: &ParsedCompaction,
     operation: &str,
 ) -> Result<BoundaryPreparation, Error> {
@@ -367,30 +367,30 @@ fn is_threshold_control(compaction: &ParsedCompaction) -> bool {
 /// compaction facts: the pair resolved once at the caller's entry guard and
 /// threaded through the pipeline unchanged, so no stage re-derives the Option.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct CompactionRequest<'a> {
+struct CompactionRequest<'a> {
     /// The parsed request.
-    pub(super) parsed: &'a ParsedRequest,
+    parsed: &'a ParsedRequest,
 
     /// The request's compaction facts — `parsed.compaction`, unwrapped.
-    pub(super) compaction: &'a ParsedCompaction,
+    compaction: &'a ParsedCompaction,
 }
 
 /// The stable per-request render facts of one compaction pipeline request:
 /// decided once at the surface boundary and consumed unchanged by every
 /// outcome rendering.
-pub(super) struct RenderContext {
+struct RenderContext {
     /// Whether the client requested a streaming response.
-    pub(super) is_streaming: bool,
+    is_streaming: bool,
 
     /// Whether the client requested the trailing usage chunk; the renderers of
     /// formats that always include usage ignore it.
-    pub(super) should_include_usage: bool,
+    should_include_usage: bool,
 
     /// The public model id the client addressed.
-    pub(super) public_id: String,
+    public_id: String,
 
     /// The log-line context naming the operation, model, and provider.
-    pub(super) log_context: String,
+    log_context: String,
 }
 
 /// One compaction pipeline attempt's shared state: the facts every executor
@@ -447,7 +447,7 @@ struct CheckpointContinuation {
 /// is logged exactly once through `render.log_context` — the operation, model,
 /// and currently resolved provider, kept current across quota advances — after
 /// the accounting guard is finalized. Callers must not log the error again.
-pub(super) async fn run_compaction_pipeline<TFormat>(
+async fn run_compaction_pipeline<TFormat>(
     context: &Context,
     request: CompactionRequest<'_>,
     preparation: BoundaryPreparation,

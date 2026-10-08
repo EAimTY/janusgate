@@ -131,7 +131,7 @@ export function ModelsScreen(props: {
     // empty filtered list cannot prove.
     const emptyNoticeTitle = createMemo(() => {
         // The title quotes the query as typed, so it reads the trimmed raw
-        // value, not the case-folded `listingNeedle` the emptiness test uses.
+        // value, not the case-folded `listingNeedle` the emptiness check uses.
         const query = search().trim();
 
         if (listingNeedle(search()).length !== 0) {

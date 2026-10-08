@@ -15,7 +15,7 @@ use vec1::Vec1;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CredentialAcquisition {
+pub(crate) enum CredentialAcquisition {
     /// A static API key the instance carries; no secret and no OAuth settings live on the
     /// definition.
     ApiKey,
@@ -34,43 +34,43 @@ pub enum CredentialAcquisition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct OAuthRecipe {
+pub(crate) struct OAuthRecipe {
     /// The OAuth client identifier presented at authorization, exchange, and refresh.
-    pub client_id: String,
+    pub(crate) client_id: String,
 
     /// The OAuth client secret, when the grant authenticates with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<String>,
+    pub(crate) client_secret: Option<String>,
 
     /// The lifetime of the access token in seconds, configured only when the upstream contract
     /// guarantees it; the expiry fallback after a reported `expires_in` and an `exp` claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_token_lifetime_seconds: Option<NonZeroU64>,
+    pub(in crate::provider) access_token_lifetime_seconds: Option<NonZeroU64>,
 
     /// The durable slots initialized once for a new flow, before its first external request;
     /// reauthorization starts from the target provider's stored slots and initializes only the
     /// missing names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub initial_slots: Vec<SlotInitializer>,
+    pub(in crate::provider) initial_slots: Vec<SlotInitializer>,
 
     /// The authorization grant the flow runs.
-    pub grant: Grant,
+    pub(crate) grant: Grant,
 
     /// The token exchange redeeming the grant's product.
-    pub exchange: Exchange,
+    pub(crate) exchange: Exchange,
 
     /// The JWT payload claims copied into slots at exchange time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub id_token_claims: Vec<IdTokenClaim>,
+    pub(in crate::provider) id_token_claims: Vec<IdTokenClaim>,
 
     /// How an acquired credential renews.
-    pub refresh: TokenRefresh,
+    pub(in crate::provider) refresh: TokenRefresh,
 }
 
 impl CredentialAcquisition {
     /// Whether this acquisition describes an OAuth recipe.
     #[must_use]
-    pub const fn is_oauth(&self) -> bool {
+    pub(super) const fn is_oauth(&self) -> bool {
         matches!(self, Self::OAuth(_))
     }
 }
@@ -81,19 +81,19 @@ impl CredentialAcquisition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct SlotInitializer {
+pub(in crate::provider) struct SlotInitializer {
     /// The slot's name.
-    pub name: String,
+    pub(in crate::provider) name: String,
 
     /// The generator producing the slot's value.
-    pub generator: SlotGenerator,
+    pub(in crate::provider) generator: SlotGenerator,
 }
 
 /// The closed generator vocabulary of a slot initializer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum SlotGenerator {
+pub(in crate::provider) enum SlotGenerator {
     /// A random UUID v4 in its canonical lowercase hyphenated form.
     Uuid,
 
@@ -105,7 +105,7 @@ pub enum SlotGenerator {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Grant {
+pub(crate) enum Grant {
     /// The OAuth authorization-code grant: the administrator opens the built authorize URL, the
     /// provider redirects back with a single-use code, and the code is pasted back into the
     /// management API.
@@ -146,7 +146,7 @@ pub enum Grant {
 impl Grant {
     /// Whether this grant is the device grant.
     #[must_use]
-    pub const fn is_device(&self) -> bool {
+    pub(super) const fn is_device(&self) -> bool {
         matches!(self, Self::Device { .. })
     }
 }
@@ -155,7 +155,7 @@ impl Grant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum Pkce {
+pub(crate) enum Pkce {
     /// No PKCE: the grant authenticates without a code verifier — with a client secret, or with a
     /// public client that does not use PKCE.
     None,
@@ -170,12 +170,12 @@ pub enum Pkce {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct DeviceAuthorization {
+pub(crate) struct DeviceAuthorization {
     /// The control request executing the device authorization.
-    pub request: ControlRequest,
+    pub(in crate::provider) request: ControlRequest,
 
     /// The response mapping decoding the device authorization response.
-    pub response: ResponseDescriptor,
+    pub(in crate::provider) response: ResponseDescriptor,
 }
 
 /// The token exchange redeeming a grant's product for tokens (README §5.3). Under a device
@@ -185,30 +185,30 @@ pub struct DeviceAuthorization {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct Exchange {
+pub(crate) struct Exchange {
     /// The control request executing the exchange.
-    pub request: ControlRequest,
+    pub(in crate::provider) request: ControlRequest,
 
     /// The response mapping decoding the exchange response.
-    pub response: ResponseDescriptor,
+    pub(in crate::provider) response: ResponseDescriptor,
 
     /// The full list of terminal failure codes — the codes whose retry is futile — compared
     /// case-insensitively; no engine defaults apply. The `Vec1` type rejects an empty list at
     /// parse.
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(as = "Vec<String>"))]
-    pub terminal_codes: Vec1<String>,
+    pub(in crate::provider) terminal_codes: Vec1<String>,
 }
 
 /// One JWT payload claim copied into a slot at exchange time (README §5.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct IdTokenClaim {
+pub(in crate::provider) struct IdTokenClaim {
     /// The closed member path of the claim inside the JWT payload.
-    pub claim: ResponsePath,
+    pub(in crate::provider) claim: ResponsePath,
 
     /// The slot the claim value is stored into.
-    pub slot: String,
+    pub(in crate::provider) slot: String,
 }
 
 /// How an OAuth-acquired credential renews (README §5.3). Even the no-refresh mode is the
@@ -216,7 +216,7 @@ pub struct IdTokenClaim {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum TokenRefresh {
+pub(in crate::provider) enum TokenRefresh {
     /// A refresh grant against the token endpoint, run under the existing database lease.
     Grant {
         /// The control request executing the refresh grant.

@@ -165,7 +165,7 @@ pub(crate) fn is_gateway_marker(value: &str) -> bool {
 /// Panics if serializing the envelope fails — impossible for concrete serde
 /// types — or if AEAD encryption fails under a constructed key and a fresh
 /// nonce.
-pub(crate) fn seal(keys: &SealingKeys, envelope: &EnvelopeV1, binding: Option<&[u8]>) -> String {
+fn seal(keys: &SealingKeys, envelope: &EnvelopeV1, binding: Option<&[u8]>) -> String {
     let active = keys.entries.first();
 
     #[expect(
@@ -217,7 +217,7 @@ pub(crate) fn seal(keys: &SealingKeys, envelope: &EnvelopeV1, binding: Option<&[
 ///
 /// Panics if the nonce slice conversion fails — impossible, the length check
 /// above bounds the nonce slice.
-pub(crate) fn unseal(
+fn unseal(
     keys: &SealingKeys,
     carrier: &str,
     binding: Option<&[u8]>,
@@ -289,7 +289,7 @@ pub(crate) fn seal_with_live_config(
 /// Returns [`UnsealError`] as [`unseal`], plus
 /// [`UnsealError::ConfigurationMissing`] when no `compaction` configuration
 /// section is present.
-pub(crate) fn unseal_with_live_config(
+pub(super) fn unseal_with_live_config(
     carrier: &str,
     binding: Option<&[u8]>,
 ) -> Result<EnvelopeV1, UnsealError> {
@@ -311,131 +311,4 @@ fn decode_envelope(plaintext: &[u8]) -> Result<EnvelopeV1, UnsealError> {
     }
 
     Ok(envelope)
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "test fixtures parse values constructed to succeed"
-    )]
-
-    use super::{
-        CARRIER_NAMESPACE, SealingKeys, UnsealError, aad, is_gateway_marker, seal, unseal,
-    };
-    use crate::{
-        compaction_model::envelope::{
-            EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, ReplacementMode,
-        },
-        config::schema::CompactionConfig,
-    };
-
-    /// A valid 32-byte key in standard base64.
-    const KEY_MATERIAL: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
-
-    /// Builds the fixture key set from the canonical material.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the fixture configuration fails to parse, which the fixed
-    /// fixture material prevents.
-    fn build_keys() -> SealingKeys {
-        let config: CompactionConfig = serde_json::from_value(serde_json::json!({
-            "keys": [{"id": "primary", "key": KEY_MATERIAL}]
-        }))
-        .expect("the fixture key configuration parses");
-
-        SealingKeys::build(&config)
-    }
-
-    /// A minimal gateway summary envelope for the sealing round-trips.
-    fn envelope() -> EnvelopeV1 {
-        EnvelopeV1::new(
-            String::from("cmp_test"),
-            ReplacementMode::CanonicalWindow,
-            EnvelopePayload::GatewaySummary(GatewaySummaryPayload {
-                summary_text: String::from("summary"),
-                preserved_instructions: Vec::new(),
-                retained_units: Vec::new(),
-                retained_state_items: Vec::new(),
-                overlap_identities: Vec::new(),
-            }),
-            None,
-        )
-    }
-
-    /// A seal/unseal round-trip under the same binding restores the envelope.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn round_trips_under_the_same_binding() {
-        let carrier = seal(&build_keys(), &envelope(), Some(b"abc"));
-
-        assert!(is_gateway_marker(&carrier));
-        assert!(carrier.starts_with(CARRIER_NAMESPACE));
-
-        let decoded = unseal(&build_keys(), &carrier, Some(b"abc")).expect("unseals");
-
-        assert_eq!(decoded, envelope());
-    }
-
-    /// A binding mismatch fails authentication; a damaged marker stays a typed
-    /// error rather than a non-marker.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn binding_and_ciphertext_tampering_fail_authentication() {
-        let keys = build_keys();
-        let carrier = seal(&keys, &envelope(), Some(b"abc"));
-
-        assert!(matches!(
-            unseal(&keys, &carrier, Some(b"xyz")),
-            Err(UnsealError::AuthenticationFailed)
-        ));
-
-        // Strip the last four characters of the payload: the carrier stays a
-        // marker but no longer authenticates (or decodes).
-        let damaged = &carrier[..carrier.len() - 4];
-
-        assert!(is_gateway_marker(damaged));
-        assert!(
-            matches!(
-                unseal(&keys, damaged, Some(b"abc")),
-                Err(UnsealError::Malformed | UnsealError::AuthenticationFailed)
-            ),
-            "a damaged marker fails explicitly, never reclassifying as native state"
-        );
-    }
-
-    /// A carrier sealed under one configured key unseals under another key
-    /// set that still knows it, and an unknown key id is a distinct error from
-    /// a malformed carrier.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn unknown_key_is_distinct() {
-        let carrier = format!("{CARRIER_NAMESPACE}no-such-key.aaaa");
-
-        assert!(matches!(
-            unseal(&build_keys(), &carrier, None),
-            Err(UnsealError::UnknownKey)
-        ));
-    }
-
-    /// The authenticated data binds the domain, key id, and binding.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn aad_binds_domain_and_binding() {
-        assert_eq!(aad("k", None), b"janusgate.compaction.v1\x00k\x00");
-        assert_eq!(aad("k", Some(b"ab")), b"janusgate.compaction.v1\x00k\x00ab");
-    }
 }

@@ -17,9 +17,9 @@ use vec1::Vec1;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct QuotaDescriptor {
+pub(crate) struct QuotaDescriptor {
     /// The authenticated control request.
-    pub request: ControlRequest,
+    pub(in crate::provider) request: ControlRequest,
     /// Nonempty ordered sources; the carrying `Vec1` type rejects an empty list at parse.
     /// Result order follows the declared source order; an empty collection inside an otherwise
     /// well-formed response extracts no observations, while a present malformed value fails the
@@ -28,46 +28,46 @@ pub struct QuotaDescriptor {
         feature = "management-api-typescript-bindings",
         ts(as = "Vec<QuotaSource>")
     )]
-    pub sources: Vec1<QuotaSource>,
+    pub(in crate::provider) sources: Vec1<QuotaSource>,
 }
 
 /// One independently identified allowance within a source item.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct QuotaEntryExtraction {
+pub(in crate::provider) struct QuotaEntryExtraction {
     /// Stable entry identity segment, unique among the source's entries and carried verbatim
     /// into the restriction key tuple.
-    pub key: String,
+    pub(in crate::provider) key: String,
     /// Human-readable restriction name; presentation only — it never selects models or implies
     /// account-wide applicability.
-    pub label: String,
+    pub(in crate::provider) label: String,
     /// Object path relative to the selected item; the object it addresses becomes the entry
     /// context for the entry's own field selections.
-    pub at: ResponsePath,
+    pub(in crate::provider) at: ResponsePath,
     /// Whether an absent entry fails extraction; an absent optional entry is omitted.
-    pub is_required: bool,
+    pub(in crate::provider) is_required: bool,
     /// Allowance period mapping.
-    pub window: QuotaWindowSource,
+    pub(in crate::provider) window: QuotaWindowSource,
     /// Active measurement mapping.
-    pub measurement: QuotaMeasurementSource,
+    pub(in crate::provider) measurement: QuotaMeasurementSource,
     /// Reset metadata mapping.
-    pub reset: QuotaResetSource,
+    pub(in crate::provider) reset: QuotaResetSource,
     /// Authored dispatch applicability, independent of presentation scope and labels.
     #[serde(default)]
-    pub routing: QuotaRoutingSource,
+    pub(in crate::provider) routing: QuotaRoutingSource,
     /// Optional explicit boolean that bypasses numeric measurement extraction: a present `true`
     /// yields the unlimited measurement without reading the numeric fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub is_unlimited: Option<QuotaField>,
+    pub(in crate::provider) is_unlimited: Option<QuotaField>,
 }
 
 /// Authored dispatch applicability of one independently identified restriction.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaRoutingSource {
+pub(in crate::provider) enum QuotaRoutingSource {
     /// Informational only; never blocks dispatch.
     #[default]
     MonitoringOnly,
@@ -90,13 +90,13 @@ pub enum QuotaRoutingSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct QuotaField {
+pub(in crate::provider) struct QuotaField {
     /// The context from which the path resolves.
-    pub base: QuotaFieldBase,
+    pub(in crate::provider) base: QuotaFieldBase,
     /// Object-member chain; empty selects the context itself.
-    pub path: ResponsePath,
+    pub(in crate::provider) path: ResponsePath,
     /// Whether absence fails extraction; absence of an optional field yields the unknown fact.
-    pub is_required: bool,
+    pub(in crate::provider) is_required: bool,
 }
 
 /// A numeric field with an explicit wire encoding: the encoding names the accepted JSON
@@ -104,11 +104,11 @@ pub struct QuotaField {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct QuotaNumberField {
+pub(in crate::provider) struct QuotaNumberField {
     /// The scalar selection.
-    pub field: QuotaField,
+    pub(in crate::provider) field: QuotaField,
     /// Accepted numeric representation.
-    pub encoding: QuotaNumberEncoding,
+    pub(in crate::provider) encoding: QuotaNumberEncoding,
 }
 
 /// One source collection; its order and identity determine result order. Every source carries a
@@ -117,7 +117,7 @@ pub struct QuotaNumberField {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaSource {
+pub(in crate::provider) enum QuotaSource {
     /// A single whole object: the value `at` addresses is the one item, carrying no identity
     /// segment beyond the source key. A non-object value fails the reading.
     Object {
@@ -199,7 +199,7 @@ pub enum QuotaSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaTextSource {
+pub(in crate::provider) enum QuotaTextSource {
     /// Author-configured constant text.
     Literal {
         /// The exact text.
@@ -221,7 +221,7 @@ pub enum QuotaTextSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaWindowSource {
+pub(in crate::provider) enum QuotaWindowSource {
     /// The period is unknown; a fixed-seconds, calendar-month, or duration-field mapping that
     /// never resolves becomes this unknown window.
     Unknown,
@@ -251,7 +251,7 @@ pub enum QuotaWindowSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaMeasurementSource {
+pub(in crate::provider) enum QuotaMeasurementSource {
     /// The measurement is unknown; a mapping whose optional numeric fields are absent becomes
     /// this unknown measurement only after the present fields validate.
     Unknown,
@@ -289,7 +289,7 @@ pub enum QuotaMeasurementSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaResetSource {
+pub(in crate::provider) enum QuotaResetSource {
     /// The reset instant is unknown.
     Unknown,
     /// The reset instant read from a field in one exact representation.
@@ -305,7 +305,7 @@ pub enum QuotaResetSource {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaFieldBase {
+pub(in crate::provider) enum QuotaFieldBase {
     /// The complete decoded response root.
     Root,
     /// The item the enclosing source selected.
@@ -319,7 +319,7 @@ pub enum QuotaFieldBase {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaTextEncoding {
+pub(in crate::provider) enum QuotaTextEncoding {
     /// A JSON string.
     String,
     /// A JSON integer, read by its exact spelling — never through floating-point conversion.
@@ -331,7 +331,7 @@ pub enum QuotaTextEncoding {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaNumberEncoding {
+pub(in crate::provider) enum QuotaNumberEncoding {
     /// A JSON number only.
     Number,
     /// A strict JSON numeric string only.
@@ -344,7 +344,7 @@ pub enum QuotaNumberEncoding {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaCalendarUnit {
+pub(in crate::provider) enum QuotaCalendarUnit {
     /// One calendar month, carrying no guessed alignment.
     Month,
 }
@@ -353,7 +353,7 @@ pub enum QuotaCalendarUnit {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaDurationUnit {
+pub(in crate::provider) enum QuotaDurationUnit {
     /// Seconds.
     Seconds,
     /// Minutes.
@@ -370,7 +370,7 @@ pub enum QuotaDurationUnit {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaRatioScale {
+pub(in crate::provider) enum QuotaRatioScale {
     /// A magnitude within `[0, 1]`.
     Fraction,
     /// A magnitude within `[0, 100]`.
@@ -381,7 +381,7 @@ pub enum QuotaRatioScale {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaDirection {
+pub(in crate::provider) enum QuotaDirection {
     /// The magnitude reports consumed allowance.
     Used,
     /// The magnitude reports remaining allowance.
@@ -392,7 +392,7 @@ pub enum QuotaDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaResetEncoding {
+pub(in crate::provider) enum QuotaResetEncoding {
     /// Whole Unix seconds; the instant keeps its exact value.
     UnixSeconds,
     /// Whole Unix milliseconds; the instant keeps its exact value.

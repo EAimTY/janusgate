@@ -77,7 +77,7 @@ impl BoundaryError {
     pub(crate) const INACCESSIBLE_STATE_CODE: &'static str = "compaction_inaccessible_state";
 
     /// Builds the invalid-gateway-state failure.
-    pub(crate) fn invalid_gateway_state(message: impl Into<String>) -> Self {
+    fn invalid_gateway_state(message: impl Into<String>) -> Self {
         Self::InvalidGatewayState {
             message: message.into(),
         }

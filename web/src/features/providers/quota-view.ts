@@ -5,7 +5,7 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { type ScreenNotice, screenFailureNotice } from "/src/screen-state/notices";
 
 /** One mounted identity's whole observation and independently owned failure. */
-export type QuotaViewState =
+type QuotaViewState =
     | {
           readonly type: "checking";
       }
@@ -130,7 +130,8 @@ export function createProviderQuotaView(props: {
             );
         });
 
-        // Cancellation is also enforced here for transports that cannot abort or test doubles that ignore it.
+        // Cancellation is also enforced here for transports that cannot abort or that ignore the
+        // signal.
         if (isDisposed || call.signal.aborted || generation !== currentGeneration) return;
         isBusy = false;
         if (outcome.status === "aborted") return;

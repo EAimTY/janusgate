@@ -61,7 +61,7 @@ export function themePreference(): ThemePreference {
  * a fresh visit — which starts there — moves to an explicit choice, and the
  * third click returns to following the OS.
  */
-export function nextThemePreference(current: ThemePreference): ThemePreference {
+function nextThemePreference(current: ThemePreference): ThemePreference {
     switch (current) {
         case "light":
             return "dark";

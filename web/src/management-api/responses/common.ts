@@ -35,7 +35,7 @@ export function parseErrorResponse(value: unknown): ErrorResponse | null {
         return null;
     }
 
-    // `ErrorCode`'s members are their own numbers, and the membership test above
+    // `ErrorCode`'s members are their own numbers, and the membership check above
     // is against the set built from those members.
     return {
         errno: errno as ErrorCode,

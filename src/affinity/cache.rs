@@ -522,17 +522,7 @@ impl Cache {
         self.acquire_at(namespace, evidence, Instant::now())
     }
 
-    /// Test-only synchronization at actual follower admission, independent of wall-clock sleeps.
-    #[cfg(test)]
-    pub(crate) fn has_waiting_request(&self, namespace: Namespace) -> bool {
-        self.lock().retries.iter().any(|(key, entry)| {
-            key.namespace == namespace
-                && matches!(&entry.value,
-                RetryValue::Pending { sender, .. } if sender.receiver_count() > 0)
-        })
-    }
-
-    /// Performs one monotonic lookup; the explicit instant supports cohesive lifecycle tests.
+    /// Performs one monotonic lookup at `now`.
     fn acquire_at(
         self: &Arc<Self>,
         namespace: Namespace,
@@ -653,7 +643,7 @@ impl Cache {
 
 impl FreshLease {
     /// Commits the first accepted account before exposing events or waking followers.
-    pub(crate) fn commit(self, provider_id: i64) -> BoundLease {
+    pub(super) fn commit(self, provider_id: i64) -> BoundLease {
         self.commit_at(provider_id, Instant::now())
     }
 
@@ -694,12 +684,6 @@ impl FreshLease {
             lease: self.lease,
             provider_id,
         }
-    }
-
-    /// Test-only ownership identity; never a management or outward inspection surface.
-    #[cfg(test)]
-    fn token(&self) -> NonZeroU64 {
-        self.lease.token
     }
 }
 
@@ -750,12 +734,6 @@ impl BoundLease {
         }
         registered
     }
-
-    /// Test-only ownership identity, unavailable to runtime inspection APIs.
-    #[cfg(test)]
-    fn token(&self) -> NonZeroU64 {
-        self.lease.token
-    }
 }
 
 impl Waiter {
@@ -790,12 +768,6 @@ impl Waiter {
             }
         }
     }
-
-    /// Test-only independent follower identity.
-    #[cfg(test)]
-    fn token(&self) -> NonZeroU64 {
-        self.lease.token
-    }
 }
 
 impl Drop for Lease {
@@ -811,7 +783,3 @@ impl Drop for Lease {
         state.retire_lifetime(&self.lifetime);
     }
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

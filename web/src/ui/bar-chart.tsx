@@ -3,7 +3,7 @@ import { createMemo, createSignal, For } from "solid-js";
 import { joinClass } from "/src/ui/attributes";
 
 /** One bar: what it is called and what it measures. */
-export type BarChartPoint = {
+type BarChartPoint = {
     readonly label: string;
     readonly value: number;
 };

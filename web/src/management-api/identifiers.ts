@@ -68,14 +68,14 @@ export function isBaseUrl(value: string): boolean {
  * Human wording for a composition rejection of the named field, shown where
  * the value was typed.
  */
-export type CompositionField = "upstreamId" | "publicId" | "modelPrefix" | "apiKey" | "key";
+type CompositionField = "upstreamId" | "publicId" | "modelPrefix" | "apiKey" | "key";
 
-export function compositionMessage(field: CompositionField): string {
+function compositionMessage(field: CompositionField): string {
     return translation()(($) => $.validation.composition[field]);
 }
 
 /** Human wording for a routing-token rejection, shown where the value was typed. */
-export function routingTokenMessage(field: CompositionField): string {
+function routingTokenMessage(field: CompositionField): string {
     return translation()(($) => $.validation.routing[field]);
 }
 

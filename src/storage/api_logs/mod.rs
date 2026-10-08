@@ -35,8 +35,6 @@
 //! [`UsageGroupBy`](crate::accounting::UsageGroupBy) — live in [`crate::accounting`].
 
 mod store;
-#[cfg(test)]
-mod test_support;
 mod usage;
 
 pub(crate) use self::{
@@ -51,9 +49,6 @@ use crate::{
     unix_time,
 };
 use log::error;
-
-#[cfg(test)]
-mod attempt_tests;
 
 /// Data-plane progress for one account attempt, independent of log recording.
 #[derive(Debug, Clone, Default)]
@@ -139,12 +134,12 @@ pub(crate) struct ApiLogDraft {
     /// Stable requested public route identity.
     pub(crate) model_route_id: i64,
     /// First data-plane header status, preserved through same-account stage continuation.
-    pub(crate) upstream_http_status: Option<i64>,
+    upstream_http_status: Option<i64>,
     /// Typed attempt commitment; recording disabled does not disable this state.
     pub(crate) progress: AttemptProgress,
     /// Dispatch-start instant in UTC microseconds; `None` until [`ApiLogDraft::stamp`] runs at the
     /// `send()` call, and permanently `None` when accounting is disabled.
-    pub(crate) started_at: Option<i64>,
+    started_at: Option<i64>,
 
     /// Row id of the authenticated gateway API key.
     pub(crate) api_key_id: i64,

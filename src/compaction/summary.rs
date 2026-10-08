@@ -23,7 +23,7 @@ use crate::ir::{
 /// contract is to preserve the objective, the active instructions, the
 /// decisions made, the constraints in force, the completed work, the unresolved
 /// work, the references, the tool facts, and the next actions, as text only.
-pub(crate) const DEFAULT_SUMMARY_PROMPT: &str = "You are summarizing the earlier part of a \
+const DEFAULT_SUMMARY_PROMPT: &str = "You are summarizing the earlier part of a \
 conversation so it can be replaced by your summary. Produce the summary as plain prose text and \
 nothing else: no preamble, no headings markup beyond plain lines, no tool calls. Preserve, to the \
 extent the conversation supplies them: the user's objective; the instructions currently in force; \
@@ -34,7 +34,7 @@ and what they returned; and the concrete next actions. Keep every fact needed to
 work without the replaced history, and invent nothing.";
 
 /// The fixed trailing user instruction that closes the summarizer's input.
-pub(crate) const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
+const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
 
 /// Builds the internal summarizer request from the restored window and the
 /// gateway checkpoint plan (README §6.8).
@@ -55,7 +55,7 @@ pub(crate) const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
 /// Consumes the plan's summary input messages: they become the summarizer's
 /// input history, and no later consumer of the plan reads them.
 #[must_use]
-pub(crate) fn plan_summary_request(
+pub(super) fn plan_summary_request(
     restored: &IrRequest,
     plan: &mut GatewayCheckpointPlan,
     instructions: Option<&str>,
@@ -110,7 +110,7 @@ pub(crate) fn plan_summary_request(
 /// # Errors
 ///
 /// Returns [`CompactionError::UnusableSummary`] for every disqualifying shape.
-pub(crate) fn validate_summary(aggregation: &IrAggregation) -> Result<String, CompactionError> {
+pub(super) fn validate_summary(aggregation: &IrAggregation) -> Result<String, CompactionError> {
     let Some(finish) = aggregation.finish else {
         return Err(CompactionError::unusable_summary(
             "the summary inference ended without a finish",

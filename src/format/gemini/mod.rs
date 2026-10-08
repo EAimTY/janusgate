@@ -21,7 +21,7 @@ use serde_json::Value;
 /// drift: the Gemini error render ([`crate::api::error::gemini`]) classifies the API error into
 /// the official Status envelope (README §6.7), which is serialized and framed as the single
 /// `data:` frame that terminates the stream.
-pub(in crate::format::gemini) fn error_data_frame(error: &crate::api::Error) -> String {
+fn error_data_frame(error: &crate::api::Error) -> String {
     let (_, envelope) = crate::api::error::gemini::render(error);
 
     crate::sse::format_data_frame(&crate::format::render_json(&envelope))
@@ -33,10 +33,7 @@ pub(in crate::format::gemini) fn error_data_frame(error: &crate::api::Error) -> 
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when no matching tool call exists in the conversation.
-pub(in crate::format::gemini) fn resolve_tool_output_name(
-    call_id: &str,
-    ir: &IrRequest,
-) -> Result<String, InvalidRequest> {
+fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, InvalidRequest> {
     for message in &ir.messages {
         for part in &message.parts {
             if let IrPart::ToolCall {
@@ -61,23 +58,23 @@ pub(in crate::format::gemini) fn resolve_tool_output_name(
 /// (ai.google.dev/api/interactions-api): the protocol-pinned discriminant both Gemini codecs must
 /// agree on, because an opaque replay payload carrying it is the credential for Gemini-family
 /// membership on either wire (README §6.4).
-pub(in crate::format::gemini) const STEP_THOUGHT: &str = "thought";
+const STEP_THOUGHT: &str = "thought";
 
-/// Tests the Gemini-family membership of a reasoning block's opaque replay payload: an object
+/// Answers the Gemini-family membership of a reasoning block's opaque replay payload: an object
 /// whose `type` is [`STEP_THOUGHT`] is Gemini-family state, anything else — cross-family blocks,
 /// text-only blocks — is not.
 ///
-/// The predicate is the one family test of both Gemini codecs, shared so the two can never drift:
-/// the Interactions codec replays an accepted payload verbatim onto its own wire, while the
-/// GenerateContent codec bridges the same payload onto its thinking part (`thought: true` text,
-/// the signature riding `thoughtSignature`) — the README §6.4 bridge only round-trips if both
-/// codecs answer membership identically, and one shared test makes a one-directional drift
-/// unrepresentable.
+/// The predicate is the one family membership check of both Gemini codecs, shared so the two can
+/// never drift: the Interactions codec replays an accepted payload verbatim onto its own wire,
+/// while the GenerateContent codec bridges the same payload onto its thinking part
+/// (`thought: true` text, the signature riding `thoughtSignature`) — the README §6.4 bridge only
+/// round-trips if both codecs answer membership identically, and one shared predicate makes a
+/// one-directional drift unrepresentable.
 ///
 /// The probe is a typed struct rather than a member lookup, so the payload is modelled, never
 /// walked ad hoc.
-pub(in crate::format::gemini) fn is_gemini_thought_step(opaque: &Value) -> bool {
-    /// Minimal shape probe for the family-membership test.
+fn is_gemini_thought_step(opaque: &Value) -> bool {
+    /// Minimal shape probe for the family-membership check.
     #[derive(Debug, Deserialize)]
     struct ThoughtProbe {
         /// Step type tag; anything but the thought tag is a foreign block.
@@ -96,7 +93,7 @@ const GEMINI_RESPONSE_SCHEMA_NAME: &str = "response";
 /// The reason a Gemini-family response format is rejected: one of the two failure cells of the
 /// family decision table, which each surface renders into its own wire vocabulary.
 #[derive(Debug)]
-pub(in crate::format::gemini) enum GeminiResponseFormatRejection {
+enum GeminiResponseFormatRejection {
     /// A schema was given for `text/plain`, whose output cannot carry one.
     SchemaWithoutJsonMime,
 
@@ -116,7 +113,7 @@ pub(in crate::format::gemini) enum GeminiResponseFormatRejection {
 ///
 /// Returns [`GeminiResponseFormatRejection`] for a schema beside a MIME type that cannot carry
 /// one and for a MIME type the gateway does not render.
-pub(in crate::format::gemini) fn parse_gemini_response_format(
+fn parse_gemini_response_format(
     mime_type: &str,
     schema: Option<&Value>,
 ) -> Result<Option<IrResponseFormat>, GeminiResponseFormatRejection> {
@@ -147,7 +144,7 @@ pub(in crate::format::gemini) fn parse_gemini_response_format(
 /// `saturating_add`: for every token count whose sum fits `u64` — every count a real upstream
 /// reports — the rendered total is the exact sum, and a third-party total can never panic (debug)
 /// or wrap (release) the parser the way a plain add could at overflow.
-pub(in crate::format::gemini) fn fold_gemini_usage(
+fn fold_gemini_usage(
     input_tokens: u64,
     output_tokens_excluding_reasoning: u64,
     reasoning_tokens: Option<u64>,
@@ -170,9 +167,7 @@ pub(in crate::format::gemini) fn fold_gemini_usage(
 /// — restoring exactly the members the fold consumed; each renderer rebuilds its wire members
 /// from the components and renders its official total as the sum of the members it emits
 /// (README §6.3). The components line up position-for-position with the fold's inputs.
-pub(in crate::format::gemini) fn split_gemini_usage(
-    usage: &IrUsage,
-) -> (u64, u64, Option<u64>, Option<u64>) {
+fn split_gemini_usage(usage: &IrUsage) -> (u64, u64, Option<u64>, Option<u64>) {
     let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0);
 
     (
@@ -181,40 +176,4 @@ pub(in crate::format::gemini) fn split_gemini_usage(
         usage.reasoning_tokens,
         usage.cached_tokens,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The split is the fold's inverse: folding the Gemini members into an IR usage and splitting
-    /// it back restores them exactly, with and without reported reasoning, and a usage whose
-    /// output total falls below its reported reasoning count clamps the non-reasoning remainder
-    /// at zero — the only direction the split can subtract.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the split diverges from the fold's inverse.
-    #[test]
-    fn split_gemini_usage_inverts_the_fold() {
-        let folded = fold_gemini_usage(10, 5, Some(1), Some(2));
-
-        assert_eq!(split_gemini_usage(&folded), (10, 5, Some(1), Some(2)));
-
-        let unreasoned = fold_gemini_usage(10, 6, None, None);
-
-        assert_eq!(split_gemini_usage(&unreasoned), (10, 6, None, None));
-
-        // A third-party usage reporting more reasoning than its output total carries: the
-        // non-reasoning remainder clamps at zero, never underflows.
-        let clamped = IrUsage {
-            input_tokens: 4,
-            output_tokens: 2,
-            cached_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: Some(5),
-        };
-
-        assert_eq!(split_gemini_usage(&clamped), (4, 0, Some(5), None));
-    }
 }

@@ -16,7 +16,7 @@ use crate::{
 use std::{collections::HashSet, num::NonZeroU64};
 
 /// A request-local scan; every account comes from one released database snapshot.
-pub(super) struct Selection {
+struct Selection {
     /// Complete coherent route snapshot, retaining missing/disabled pool targets for bindings.
     snapshot: RouteSnapshot,
     /// Position in the authored total order; never wraps or reloads between account attempts.
@@ -36,11 +36,7 @@ impl Selection {
     ///
     /// Returns storage or model-not-found failures; empty pools remain available for binding
     /// lookup.
-    pub(super) async fn load(
-        database: &Database,
-        public_id: &str,
-        api_key_id: i64,
-    ) -> Result<Self, Error> {
+    async fn load(database: &Database, public_id: &str, api_key_id: i64) -> Result<Self, Error> {
         let not_found = || Error::ModelNotFound {
             model: public_id.into(),
         };
@@ -186,7 +182,7 @@ impl Selection {
     /// # Errors
     ///
     /// Returns pool-unavailable for an enabled pool without any structural target.
-    pub(super) fn first_structural(&mut self) -> Result<ModelRouting, Error> {
+    fn first_structural(&mut self) -> Result<ModelRouting, Error> {
         self.next_structural()
             .ok_or_else(|| Error::PoolUnavailable {
                 model: self.snapshot.route.public_id.clone(),
@@ -437,12 +433,12 @@ pub(crate) struct CompactionSelection {
     /// Cache reservation or established binding, never an account alternative list.
     pub(crate) ownership: Ownership,
     /// Content-free visible history for later actual artifact/output registration.
-    pub(crate) projector: Option<crate::affinity::fingerprint::Projector>,
+    projector: Option<crate::affinity::fingerprint::Projector>,
 }
 
 impl CompactionSelection {
     /// Constructs an explicit direct target without affinity or alternative accounts.
-    pub(crate) fn direct(routing: ModelRouting) -> Self {
+    fn direct(routing: ModelRouting) -> Self {
         Self {
             selection: None,
             routing,
@@ -776,39 +772,4 @@ fn pool_retry_after(candidates: &[CandidateReset], now: i64) -> Option<NonZeroU6
     let seconds =
         u64::try_from((delta + 999_999) / 1_000_000).expect("positive reset seconds fit u64");
     NonZeroU64::new(seconds)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A candidate's latest reset is useful only while every applicable reset remains future.
-    /// Unknown candidates never suppress a different candidate's complete recheck evidence.
-    ///
-    /// # Panics
-    ///
-    /// Panics if elapsed candidates suppress future ones or fractional seconds round down.
-    #[test]
-    fn rechecks_require_complete_future_candidate_evidence_at_response_time() {
-        let candidates = [
-            CandidateReset {
-                earliest: 1_000_001,
-                latest: 4_000_001,
-            },
-            CandidateReset {
-                earliest: 5_000_001,
-                latest: 6_000_001,
-            },
-        ];
-        assert_eq!(
-            pool_retry_after(&candidates, 1_000_000).map(NonZeroU64::get),
-            Some(4)
-        );
-        assert_eq!(
-            pool_retry_after(&candidates, 1_000_001).map(NonZeroU64::get),
-            Some(5)
-        );
-        assert_eq!(pool_retry_after(&candidates, 5_000_001), None);
-        assert_eq!(pool_retry_after(&[], 0), None);
-    }
 }

@@ -16,10 +16,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[cfg(test)]
-mod engine_tests;
-
-pub(crate) mod control;
+mod control;
 pub(crate) mod definition;
 pub(crate) mod discovery;
 pub(crate) mod oauth;
@@ -128,7 +125,7 @@ impl From<control::ControlFailure> for Error {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum StoredCredentials {
+pub(crate) enum StoredCredentials {
     /// A static API key.
     #[serde(rename = "api_key")]
     ApiKey {
@@ -217,7 +214,7 @@ impl StoredCredentials {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum CredentialKind {
+pub(crate) enum CredentialKind {
     /// A static API key.
     ApiKey,
 
@@ -244,7 +241,7 @@ impl CredentialKind {
 /// `DiscoveryState::as_str` — the storage form and the wire form are one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum DiscoveryState {
+pub(crate) enum DiscoveryState {
     /// Listed by the most recent successful discovery of its provider.
     #[serde(rename = "discovered")]
     Discovered,

@@ -10,7 +10,7 @@ pub(crate) use fingerprint::initialize_key;
 
 /// An opaque process-keyed fingerprint; never a client identifier or a disk value.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub(crate) struct Digest(pub(in crate::affinity) [u8; 32]);
+pub(crate) struct Digest([u8; 32]);
 
 /// Pool-wide account affinity, independent of public route, physical model, or result mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -23,7 +23,7 @@ pub(crate) struct Namespace {
 
 /// Fingerprint identity strength; exact wire identities win equal-length matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Projection {
+enum Projection {
     /// Calls/results use their canonical relationship ordinals.
     Relational,
     /// Actual wire call IDs and corresponding references participate.
@@ -34,18 +34,18 @@ pub(crate) enum Projection {
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryPrefix {
     /// Exact or relational identity semantics.
-    pub(crate) projection: Projection,
+    projection: Projection,
     /// Completed prefix chain digest.
-    pub(crate) digest: Digest,
+    digest: Digest,
     /// Positive number of completed canonical units, used for longest-prefix ranking.
-    pub(crate) units: NonZeroU64,
+    units: NonZeroU64,
 }
 
 /// Complete request identity, exact when available and otherwise relational.
 #[derive(Clone, Copy)]
 pub(crate) struct RetryFingerprint {
     /// Identity semantics of this complete projection.
-    pub(crate) projection: Projection,
+    projection: Projection,
     /// Whole accepted active-history digest; absent for an unresolved suffix.
     pub(crate) digest: Digest,
 }
@@ -54,7 +54,7 @@ pub(crate) struct RetryFingerprint {
 #[derive(Default)]
 pub(crate) struct Evidence {
     /// Canonical active-history prefixes; superseded history is absent.
-    pub(crate) history: Vec<HistoryPrefix>,
+    history: Vec<HistoryPrefix>,
     /// Complete request retry/concurrency identity, when fingerprintable.
     pub(crate) retry: Option<RetryFingerprint>,
     /// Latest usable authenticated carrier identity or canonical raw-artifact digest.

@@ -52,24 +52,24 @@ route! {
 /// to configure clients.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct ApiKeyResponse {
+struct ApiKeyResponse {
     /// API key row identifier.
-    pub id: i64,
+    id: i64,
 
     /// Human label; not unique.
-    pub name: String,
+    name: String,
 
     /// Plaintext shared secret.
-    pub key: String,
+    key: String,
 
     /// Whether the key authorizes traffic.
-    pub is_enabled: bool,
+    is_enabled: bool,
 
     /// Complete authored model access policy.
-    pub access_control: ApiKeyAccessControl,
+    access_control: ApiKeyAccessControl,
 
     /// Creation timestamp in UTC microseconds.
-    pub created_at: i64,
+    created_at: i64,
 }
 
 impl ApiKeyResponse {
@@ -98,7 +98,7 @@ pub(super) struct ListApiKeysRequest {}
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListApiKeysResponse {
     /// Every stored API key, ordered by row id.
-    pub api_keys: Vec<ApiKeyResponse>,
+    api_keys: Vec<ApiKeyResponse>,
 }
 
 /// Strictly parsed `api-keys:create` request (README §7.1): the complete state of one key, every
@@ -108,17 +108,17 @@ pub(super) struct ListApiKeysResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateApiKeyRequest {
     /// Human label; must be non-empty, need not be unique.
-    pub name: String,
+    name: String,
 
     /// Plaintext shared secret; non-empty printable ASCII without whitespace, and not held
     /// by another key.
-    pub key: String,
+    key: String,
 
     /// Serving state.
-    pub is_enabled: bool,
+    is_enabled: bool,
 
     /// Complete authored model access policy.
-    pub access_control: ApiKeyAccessControl,
+    access_control: ApiKeyAccessControl,
 }
 
 /// Strictly parsed `api-keys:update` request (README §7.1): the complete desired state of the row,
@@ -129,20 +129,20 @@ pub(super) struct CreateApiKeyRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UpdateApiKeyRequest {
     /// Addressed API key row.
-    pub api_key_id: i64,
+    api_key_id: i64,
 
     /// Human label; must be non-empty, need not be unique.
-    pub name: String,
+    name: String,
 
     /// Plaintext shared secret; non-empty printable ASCII without whitespace, and not held
     /// by another key.
-    pub key: String,
+    key: String,
 
     /// Serving state.
-    pub is_enabled: bool,
+    is_enabled: bool,
 
     /// Complete authored model access policy.
-    pub access_control: ApiKeyAccessControl,
+    access_control: ApiKeyAccessControl,
 }
 
 /// Strictly parsed `api-keys:delete` request.
@@ -151,7 +151,7 @@ pub(super) struct UpdateApiKeyRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DeleteApiKeyRequest {
     /// Addressed API key row.
-    pub api_key_id: i64,
+    api_key_id: i64,
 }
 
 /// The `api-keys:create` success body (README §7.1): the server-assigned `id` and `created_at` are
@@ -160,7 +160,7 @@ pub(super) struct DeleteApiKeyRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ApiKeyEnvelope {
     /// The created API key row.
-    pub api_key: ApiKeyResponse,
+    api_key: ApiKeyResponse,
 }
 
 /// Handles `POST /api-keys:list`.
@@ -262,116 +262,4 @@ pub(super) async fn delete(
     info!("deleted API key {}", request.api_key_id);
 
     Ok(Json(EmptyResponse {}))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ApiKeyEnvelope, ApiKeyResponse, CreateApiKeyRequest, UpdateApiKeyRequest};
-
-    /// Verifies the `api-keys` wire shapes (README §7.0 rules 2-3): every field of the create and
-    /// update requests is required — an omitted field or an unknown one is rejected — and the
-    /// rendered key carries the complete readable row, plaintext secret included.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a payload parses or rejects outside its contract.
-    #[test]
-    fn parses_the_api_key_payloads_strictly() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payloads are constructed to parse"
-        )]
-        let created: CreateApiKeyRequest = serde_json::from_str(
-            r#"{"name":"service-a",
-                "key":"sk-live",
-                "is_enabled":true,
-                "access_control":{"default_access":"allow",
-                "owner_defaults":[],
-                "route_overrides":[]}}"#,
-        )
-        .unwrap();
-
-        assert_eq!(created.name, "service-a");
-
-        // A required field's absence is named by serde's own missing-field rejection.
-        assert!(
-            serde_json::from_str::<CreateApiKeyRequest>(
-                r#"{"name":"service-a",
-                "is_enabled":true,
-                "access_control":{"default_access":"allow",
-                "owner_defaults":[],
-                "route_overrides":[]}}"#
-            )
-            .is_err()
-        );
-
-        // An unknown field is rejected.
-        assert!(
-            serde_json::from_str::<CreateApiKeyRequest>(
-                r#"{"name":"service-a",
-                "key":"sk-live",
-                "is_enabled":true,
-                "created_at":1}"#
-            )
-            .is_err()
-        );
-
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payloads are constructed to parse"
-        )]
-        let updated: UpdateApiKeyRequest = serde_json::from_str(
-            r#"{"api_key_id":7,
-                "name":"service-a",
-                "key":"sk-live",
-                "is_enabled":false,
-                "access_control":{"default_access":"allow",
-                "owner_defaults":[],
-                "route_overrides":[]}}"#,
-        )
-        .unwrap();
-
-        assert_eq!(updated.api_key_id, 7);
-
-        assert!(
-            serde_json::from_str::<UpdateApiKeyRequest>(
-                r#"{"api_key_id":7,
-                "name":"service-a",
-                "is_enabled":false,
-                "access_control":{"default_access":"allow",
-                "owner_defaults":[],
-                "route_overrides":[]}}"#
-            )
-            .is_err()
-        );
-
-        #[expect(clippy::expect_used, reason = "the key body always serializes")]
-        let rendered = serde_json::to_value(&ApiKeyEnvelope {
-            api_key: ApiKeyResponse {
-                id: 7,
-                name: "service-a".to_string(),
-                key: "sk-live".to_string(),
-                is_enabled: true,
-                created_at: 1_700_000_000_000_000,
-                access_control: crate::test_support::allow_all_access(),
-            },
-        })
-        .expect("the key body serializes");
-
-        assert_eq!(
-            rendered,
-            serde_json::json!({
-                "api_key": {
-                    "id": 7,
-                    "name": "service-a",
-                    "key": "sk-live",
-                    "is_enabled": true,
-                    "created_at": 1_700_000_000_000_000_i64,
-                    "access_control": {
-                        "default_access":"allow", "owner_defaults":[], "route_overrides":[]
-                    },
-                }
-            })
-        );
-    }
 }

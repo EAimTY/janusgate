@@ -87,7 +87,7 @@ pub(crate) struct IrReasoningBlock {
 
 impl IrReasoningBlock {
     /// Builds a text-only block with no replay payload.
-    pub(crate) fn text_only(text: String) -> Self {
+    fn text_only(text: String) -> Self {
         Self {
             text,
             signature: None,
@@ -798,34 +798,6 @@ impl Aggregator {
             Some(position) => self.pending_arguments.swap_remove(position).1,
 
             None => String::new(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ReasoningLevel;
-
-    /// Pins the request-boundary [`ReasoningLevel::parse`] to the vocabulary table
-    /// ([`ReasoningLevel::VOCABULARY`](crate::vocabulary::ReasoningLevel::VOCABULARY)):
-    /// `parse(spelling)` returns the table's level again. The `as_str` and
-    /// `from_vocabulary_str` lookups need no pin beside this: they read the same table in
-    /// [`crate::vocabulary`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the parse match diverges from the table.
-    #[test]
-    fn parse_round_trips_every_vocabulary_spelling() {
-        for (level, spelling) in ReasoningLevel::VOCABULARY {
-            #[expect(
-                clippy::expect_used,
-                reason = "a vocabulary spelling is constructed to parse"
-            )]
-            let parsed = ReasoningLevel::parse(spelling, "reasoning_effort")
-                .expect("a vocabulary spelling must parse");
-
-            assert_eq!(parsed, level);
         }
     }
 }

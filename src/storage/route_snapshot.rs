@@ -62,7 +62,7 @@ pub(crate) struct RouteSnapshot {
 
 impl RouteSnapshot {
     /// Current typed owner in this coherent snapshot; pooled members never affect ownership.
-    pub(crate) fn owner(&self) -> crate::access_control::RouteOwner {
+    fn owner(&self) -> crate::access_control::RouteOwner {
         match &self.target {
             TargetSnapshot::Direct { provider, .. } => {
                 crate::access_control::RouteOwner::Provider(provider.id)
@@ -89,7 +89,7 @@ pub(crate) async fn find_admitted_route(
 }
 
 /// Resolves key state, policy, route identity, and owner within the caller's snapshot.
-pub(super) async fn read_admitted_route(
+async fn read_admitted_route(
     transaction: &mut Transaction,
     public_id: &str,
     api_key_id: i64,
@@ -112,16 +112,6 @@ pub(super) async fn read_admitted_route(
     }))
 }
 
-/// Structural fixture read through the same production admission path.
-#[cfg(test)]
-pub(crate) async fn find_route(
-    database: &Database,
-    public_id: &str,
-) -> Result<Option<RouteSnapshot>, Error> {
-    let api_key_id = crate::test_support::structural_api_key(database).await?;
-    find_admitted_route(database, public_id, api_key_id).await
-}
-
 /// Reads a route's target within the caller's coherent snapshot.
 ///
 /// # Errors
@@ -131,7 +121,7 @@ pub(crate) async fn find_route(
 /// # Panics
 ///
 /// Panics if an enforced foreign reference is absent in the same transaction.
-pub(super) async fn read_target(
+async fn read_target(
     transaction: &mut Transaction,
     route: ModelRoute,
 ) -> Result<RouteSnapshot, Error> {

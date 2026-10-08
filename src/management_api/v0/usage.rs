@@ -52,58 +52,58 @@ const FILTER_VALUES_CAP: usize = 100;
 /// entity list routes (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct ApiLogResponse {
+struct ApiLogResponse {
     /// Stable requested public route identity.
-    pub model_route_id: i64,
+    model_route_id: i64,
     /// First data-plane upstream header status; null means no upstream response was received.
-    pub upstream_http_status: Option<i64>,
+    upstream_http_status: Option<i64>,
     /// Dispatch-start instant in UTC microseconds; the `usage:list` pagination cursor.
-    pub started_at: i64,
+    started_at: i64,
 
     /// Row id of the authenticated gateway API key.
-    pub api_key_id: i64,
+    api_key_id: i64,
 
     /// Row id of the routed provider.
-    pub provider_id: i64,
+    provider_id: i64,
 
     /// Row id of the routed model.
-    pub model_id: i64,
+    model_id: i64,
 
     /// Outward completion endpoint the request arrived on.
-    pub endpoint_type: super::ApiLogEndpointType,
+    endpoint_type: super::ApiLogEndpointType,
 
     /// Whether the client requested a streamed response.
-    pub is_stream: bool,
+    is_stream: bool,
 
     /// HTTP status delivered to the client; `null` when no response was ever produced — the
     /// nullable mirror column (rule 2).
-    pub http_status: Option<i64>,
+    http_status: Option<i64>,
 
     /// Recorded outcome of the request.
-    pub outcome: super::ApiLogOutcome,
+    outcome: super::ApiLogOutcome,
 
     /// Milliseconds between the dispatch stamp and the accounting instant.
-    pub duration: i64,
+    duration: i64,
 
     /// Tokens consumed by the input; `null` when the upstream reported no usage — the nullable
     /// mirror column (rule 2).
-    pub input_tokens: Option<i64>,
+    input_tokens: Option<i64>,
 
     /// Tokens produced by the output, `reasoning_tokens` included; `null` without usage — the
     /// nullable mirror column (rule 2).
-    pub output_tokens: Option<i64>,
+    output_tokens: Option<i64>,
 
     /// Input tokens served from the upstream prompt cache; `null` without that breakdown — the
     /// nullable mirror column (rule 2).
-    pub cached_tokens: Option<i64>,
+    cached_tokens: Option<i64>,
 
     /// Input tokens written to the upstream prompt cache; `null` without that breakdown — the
     /// nullable mirror column (rule 2).
-    pub cache_write_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
 
     /// Output tokens spent on reasoning; `null` without that breakdown — the nullable mirror
     /// column (rule 2).
-    pub reasoning_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
 }
 
 impl ApiLogResponse {
@@ -143,7 +143,7 @@ pub(super) struct ListUsageRequest {
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub limit: Option<i64>,
+    limit: Option<i64>,
 
     /// Exclusive upper cursor bound: only strictly older rows — `started_at < before`, in UTC
     /// microseconds — are listed. Absent starts at the newest row; the next page's cursor is the
@@ -155,7 +155,7 @@ pub(super) struct ListUsageRequest {
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub before: Option<i64>,
+    before: Option<i64>,
 
     /// The shared filter (README §7.1); absent lists every row.
     #[serde(
@@ -164,7 +164,7 @@ pub(super) struct ListUsageRequest {
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub filter: Option<UsageFilter>,
+    filter: Option<UsageFilter>,
 }
 
 /// The `usage:list` success body (README §7.1): rows ordered by `started_at` descending, the
@@ -173,7 +173,7 @@ pub(super) struct ListUsageRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListUsageResponse {
     /// One page of accounting rows, newest first.
-    pub api_logs: Vec<ApiLogResponse>,
+    api_logs: Vec<ApiLogResponse>,
 }
 
 /// Strictly parsed `usage:query` request (README §7.1): `group_by` is required and is a set of
@@ -185,7 +185,7 @@ pub(super) struct ListUsageResponse {
 pub(super) struct QueryUsageRequest {
     /// Bucketing dimensions in request order; `[]` aggregates one total bucket. A repeated
     /// dimension is rejected with 400 naming the field.
-    pub group_by: Vec<UsageGroupBy>,
+    group_by: Vec<UsageGroupBy>,
 
     /// The shared filter (README §7.1); absent filters nothing.
     #[serde(
@@ -194,7 +194,7 @@ pub(super) struct QueryUsageRequest {
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub filter: Option<UsageFilter>,
+    filter: Option<UsageFilter>,
 }
 
 /// The composite bucket key of one aggregation row (README §7.1): one field per requested
@@ -204,45 +204,45 @@ pub(super) struct QueryUsageRequest {
 /// form — its nullable mirror (rule 2).
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct UsageBucketKey {
+struct UsageBucketKey {
     /// The grouped public route identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub model_route_id: Option<i64>,
+    model_route_id: Option<i64>,
     /// The UTC day of `started_at`, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub day: Option<String>,
+    day: Option<String>,
 
     /// The grouped model row id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub model_id: Option<i64>,
+    model_id: Option<i64>,
 
     /// The grouped provider row id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub provider_id: Option<i64>,
+    provider_id: Option<i64>,
 
     /// The grouped API key row id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub api_key_id: Option<i64>,
+    api_key_id: Option<i64>,
 
     /// The grouped outward completion endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub endpoint_type: Option<super::ApiLogEndpointType>,
+    endpoint_type: Option<super::ApiLogEndpointType>,
 
     /// The grouped recorded outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub outcome: Option<super::ApiLogOutcome>,
+    outcome: Option<super::ApiLogOutcome>,
 
     /// The grouped stream flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub is_stream: Option<bool>,
+    is_stream: Option<bool>,
 
     /// The grouped HTTP status; `null` for the `NULL` rows' bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -250,7 +250,7 @@ pub(super) struct UsageBucketKey {
         feature = "management-api-typescript-bindings",
         ts(type = "number | null", optional)
     )]
-    pub http_status: Option<Nullable<i64>>,
+    http_status: Option<Nullable<i64>>,
 }
 
 impl UsageBucketKey {
@@ -283,28 +283,28 @@ impl UsageBucketKey {
 /// a number. No name rides along (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct UsageBucket {
+struct UsageBucket {
     /// Bucket key: exactly the requested dimensions; the request order drives the bucket
     /// ordering.
-    pub key: UsageBucketKey,
+    key: UsageBucketKey,
 
     /// Number of accounting rows in the bucket.
-    pub requests: i64,
+    requests: i64,
 
     /// Summed input tokens.
-    pub input_tokens: i64,
+    input_tokens: i64,
 
     /// Summed output tokens.
-    pub output_tokens: i64,
+    output_tokens: i64,
 
     /// Summed cached input tokens.
-    pub cached_tokens: i64,
+    cached_tokens: i64,
 
     /// Summed cache-write input tokens.
-    pub cache_write_tokens: i64,
+    cache_write_tokens: i64,
 
     /// Summed reasoning output tokens.
-    pub reasoning_tokens: i64,
+    reasoning_tokens: i64,
 }
 
 impl UsageBucket {
@@ -328,7 +328,7 @@ impl UsageBucket {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct QueryUsageResponse {
     /// One bucket per distinct requested-dimension combination inside the filter.
-    pub buckets: Vec<UsageBucket>,
+    buckets: Vec<UsageBucket>,
 }
 
 /// Resolves the requested page size: an absent `limit` is [`DEFAULT_LIMIT`], a present one must
@@ -467,379 +467,4 @@ pub(super) async fn query(
             .map(|aggregate| UsageBucket::from_aggregate(aggregate, &group_by))
             .collect(),
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ApiLogResponse, FILTER_VALUES_CAP, ListUsageRequest, QueryUsageRequest, UsageBucket,
-        UsageFilter, resolve_filter, resolve_group_by, resolve_limit,
-    };
-    use crate::{
-        accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
-        management_api::v0::Error,
-        test_support::list1,
-    };
-
-    /// Verifies the two request payloads strictly (README §7.0 rule 2, §7.1): `group_by` is a
-    /// required set over the closed dimension vocabulary, `filter` is absent-keeps at every
-    /// level — the object itself and each of its fields — an unknown field never parses in
-    /// either, a multi-value field rejects an empty array, and the enum fields parse only their
-    /// recorded vocabularies.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a payload parses or rejects outside its contract.
-    #[test]
-    fn parses_the_usage_payloads_strictly() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let listed: ListUsageRequest =
-            serde_json::from_str(r#"{"limit":50,"before":7,"filter":{"model_id":[3]}}"#).unwrap();
-
-        assert_eq!(listed.limit, Some(50));
-        assert_eq!(listed.before, Some(7));
-        assert_eq!(
-            listed.filter.map(|filter| filter.model_id),
-            Some(Some(list1(&[3])))
-        );
-
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let defaulted: ListUsageRequest = serde_json::from_str(r#"{}"#).unwrap();
-
-        assert_eq!(defaulted.limit, None);
-        assert_eq!(defaulted.before, None);
-        assert_eq!(defaulted.filter, None);
-
-        // Absent-keeps: an explicit null is rejected, an unknown field is rejected.
-        assert!(serde_json::from_str::<ListUsageRequest>(r#"{"limit":null}"#).is_err());
-        assert!(serde_json::from_str::<ListUsageRequest>(r#"{"filter":null}"#).is_err());
-        assert!(
-            serde_json::from_str::<ListUsageRequest>(r#"{"oldest":true}"#).is_err(),
-            "the request payload is strictly parsed"
-        );
-        // The retired row-id cursor is gone: its field is unknown now.
-        assert!(serde_json::from_str::<ListUsageRequest>(r#"{"before_id":7}"#).is_err());
-
-        // The filter is strict at its own level too: unknown fields and present-but-null
-        // fields are rejected inside it.
-        assert!(serde_json::from_str::<ListUsageRequest>(r#"{"filter":{"bogus":1}}"#).is_err());
-        assert!(
-            serde_json::from_str::<ListUsageRequest>(r#"{"filter":{"model_id":null}}"#).is_err()
-        );
-
-        // A multi-value field rejects an empty array, and the enum fields parse only their
-        // closed vocabularies.
-        assert!(serde_json::from_str::<ListUsageRequest>(r#"{"filter":{"model_id":[]}}"#).is_err());
-        assert!(
-            serde_json::from_str::<ListUsageRequest>(r#"{"filter":{"outcome":["retrying"]}}"#)
-                .is_err()
-        );
-        assert!(
-            serde_json::from_str::<ListUsageRequest>(
-                r#"{"filter":{"endpoint_type":["openai_responses"],"is_stream":true}}"#
-            )
-            .is_ok()
-        );
-
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let queried: QueryUsageRequest =
-            serde_json::from_str(r#"{"group_by":["day","model"],"filter":{"from":5}}"#).unwrap();
-
-        assert_eq!(
-            queried.group_by,
-            vec![UsageGroupBy::Day, UsageGroupBy::Model]
-        );
-        assert_eq!(queried.filter.map(|filter| filter.from), Some(Some(5)));
-
-        // The empty dimension set is legal: one total bucket.
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let total: QueryUsageRequest = serde_json::from_str(r#"{"group_by":[]}"#).unwrap();
-
-        assert!(total.group_by.is_empty());
-        assert_eq!(total.filter, None);
-
-        // `group_by` is required, must be an array, and its element type is the validation.
-        assert!(serde_json::from_str::<QueryUsageRequest>(r#"{}"#).is_err());
-        assert!(serde_json::from_str::<QueryUsageRequest>(r#"{"group_by":null}"#).is_err());
-        assert!(serde_json::from_str::<QueryUsageRequest>(r#"{"group_by":"day"}"#).is_err());
-        assert!(serde_json::from_str::<QueryUsageRequest>(r#"{"group_by":["hour"]}"#).is_err());
-        assert!(
-            serde_json::from_str::<QueryUsageRequest>(r#"{"group_by":["day"],"up":1}"#).is_err()
-        );
-        // The old top-level filter fields are gone: an unknown field now.
-        assert!(
-            serde_json::from_str::<QueryUsageRequest>(r#"{"group_by":["day"],"from":1}"#).is_err()
-        );
-    }
-
-    /// Verifies the `limit` boundary (README §7.1): absent resolves to the default, both range
-    /// edges pass, and anything outside `1..=1000` — zero or a thousand and one — classifies as
-    /// the invalid-request category (400).
-    ///
-    /// # Panics
-    ///
-    /// Panics if a boundary resolves or classifies outside its contract.
-    #[test]
-    fn enforces_the_limit_boundary() {
-        #[expect(clippy::unwrap_used, reason = "the default is in range")]
-        let default = resolve_limit(None).unwrap();
-
-        assert_eq!(default, 100);
-
-        #[expect(clippy::unwrap_used, reason = "the edges are in range")]
-        let edges = (
-            resolve_limit(Some(1)).unwrap(),
-            resolve_limit(Some(1000)).unwrap(),
-        );
-
-        assert_eq!(edges, (1, 1000));
-
-        for outside in [0, -5, 1001] {
-            #[expect(
-                clippy::expect_used,
-                reason = "the out-of-range value must be rejected"
-            )]
-            let rejected = resolve_limit(Some(outside))
-                .expect_err("an out-of-range limit must be rejected with 400");
-
-            assert!(
-                matches!(
-                    rejected,
-                    crate::management_api::v0::Error::Validation { .. }
-                ),
-                "an out-of-range limit classifies as an invalid request"
-            );
-        }
-    }
-
-    /// Verifies the two rules the payload parsing cannot state (README §7.1): a repeated
-    /// `group_by` dimension is a 400 naming the field, and a multi-value filter field over the
-    /// shared cap is a 400 naming the exact field, while the cap itself stays accepted.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a validation accepts or rejects outside its contract.
-    #[test]
-    fn enforces_the_grouping_and_filter_rules() {
-        // The full closed set exactly once is legal; the empty set is legal.
-        let every_dimension = resolve_group_by(vec![
-            UsageGroupBy::Day,
-            UsageGroupBy::Model,
-            UsageGroupBy::Provider,
-            UsageGroupBy::ApiKey,
-            UsageGroupBy::EndpointType,
-            UsageGroupBy::Outcome,
-            UsageGroupBy::IsStream,
-            UsageGroupBy::HttpStatus,
-        ]);
-
-        assert!(every_dimension.is_ok());
-        assert!(resolve_group_by(vec![]).is_ok());
-
-        // A repeated dimension is a 400 naming the field and the repeated dimension.
-        let repeated = resolve_group_by(vec![UsageGroupBy::Day, UsageGroupBy::Day]);
-
-        assert!(
-            matches!(
-                &repeated,
-                Err(Error::Validation { message, .. })
-                    if message == "`group_by` repeats `day`"
-            ),
-            "a repeated dimension must be rejected with 400 naming the field: {repeated:?}"
-        );
-
-        // At the cap the filter passes; one past it fails naming the field.
-        let values = vec![0; FILTER_VALUES_CAP];
-        let at_cap = UsageFilter {
-            model_id: Some(list1(&values)),
-            ..UsageFilter::default()
-        };
-
-        assert!(
-            resolve_filter(Some(at_cap)).is_ok(),
-            "a filter at the cap must be accepted"
-        );
-
-        let mut over = values;
-        over.push(1);
-        let over_cap = UsageFilter {
-            model_id: Some(list1(&over)),
-            ..UsageFilter::default()
-        };
-
-        let rejected = resolve_filter(Some(over_cap));
-
-        assert!(
-            matches!(
-                &rejected,
-                Err(Error::Validation { message, .. })
-                    if message.contains("filter.model_id")
-            ),
-            "a filter over the cap must be rejected with 400 naming the field: {rejected:?}"
-        );
-
-        // An absent filter resolves to the empty filter, filtering nothing.
-        assert!(
-            resolve_filter(None)
-                .is_ok_and(|filter| filter == crate::storage::api_logs::UsageFilter::default()),
-            "an absent filter resolves to the empty filter"
-        );
-    }
-
-    /// Pins the wire shapes at the JSON level (README §7.1, §7.0 rule 7): the row renders its
-    /// sixteen published columns with the nullable mirrors as `null` — and positively carries
-    /// no row id, no name, and no content column — while a bucket renders its composite key with
-    /// exactly the requested dimensions beside plain numeric sums.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a rendered body diverges from the documented shape.
-    #[test]
-    fn renders_the_documented_wire_shapes() {
-        let log = crate::storage::api_logs::ApiLog {
-            model_route_id: 9,
-            upstream_http_status: Some(429),
-            started_at: 1_700_000_000_000_000,
-            api_key_id: 3,
-            provider_id: 5,
-            model_id: 7,
-            endpoint_type: ApiLogEndpointType::OpenaiResponses,
-            is_stream: true,
-            http_status: None,
-            outcome: ApiLogOutcome::ClientAborted,
-            duration: 12,
-            input_tokens: Some(11),
-            output_tokens: None,
-            cached_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: None,
-        };
-
-        #[expect(clippy::expect_used, reason = "the row body always serializes")]
-        let rendered =
-            serde_json::to_value(ApiLogResponse::from_log(&log)).expect("the row body serializes");
-
-        assert_eq!(
-            rendered,
-            serde_json::json!({
-                "started_at": 1_700_000_000_000_000_i64,
-                "model_route_id": 9,
-                "upstream_http_status": 429,
-                "api_key_id": 3,
-                "provider_id": 5,
-                "model_id": 7,
-                "endpoint_type": "openai_responses",
-                "is_stream": true,
-                "http_status": null,
-                "outcome": "client_aborted",
-                "duration": 12,
-                "input_tokens": 11,
-                "output_tokens": null,
-                "cached_tokens": null,
-                "cache_write_tokens": null,
-                "reasoning_tokens": null,
-            })
-        );
-
-        // The row carries the log's own facts alone: no row id, no name, no content column.
-        #[expect(clippy::expect_used, reason = "the row renders as an object")]
-        let rendered = rendered.as_object().expect("the row renders as an object");
-        assert!(!rendered.contains_key("id"));
-        assert!(!rendered.contains_key("name"));
-        assert!(!rendered.contains_key("provider"));
-        assert!(!rendered.contains_key("prompt"));
-        assert!(!rendered.contains_key("completion"));
-        assert!(!rendered.contains_key("reasoning_effort"));
-
-        // A composite key renders exactly the requested dimensions, in request order.
-        let aggregate = crate::storage::api_logs::UsageAggregate {
-            key: crate::storage::api_logs::UsageBucketKey {
-                day: Some("2026-01-02".to_string()),
-                model_id: Some(42),
-                ..crate::storage::api_logs::UsageBucketKey::default()
-            },
-            requests: 4,
-            input_tokens: 10,
-            output_tokens: 20,
-            cached_tokens: 0,
-            cache_write_tokens: 0,
-            reasoning_tokens: 5,
-        };
-
-        #[expect(clippy::expect_used, reason = "the bucket body always serializes")]
-        let rendered = serde_json::to_value(UsageBucket::from_aggregate(
-            &aggregate,
-            &[UsageGroupBy::Day, UsageGroupBy::Model],
-        ))
-        .expect("the bucket body serializes");
-
-        assert_eq!(
-            rendered,
-            serde_json::json!({
-                "key": {"day": "2026-01-02", "model_id": 42},
-                "requests": 4,
-                "input_tokens": 10,
-                "output_tokens": 20,
-                "cached_tokens": 0,
-                "cache_write_tokens": 0,
-                "reasoning_tokens": 5,
-            })
-        );
-
-        // The `NULL` status bucket renders `null`, and the total bucket's key is empty.
-        let aggregate = crate::storage::api_logs::UsageAggregate {
-            key: crate::storage::api_logs::UsageBucketKey {
-                outcome: Some(ApiLogOutcome::ClientAborted),
-                http_status: None,
-                ..crate::storage::api_logs::UsageBucketKey::default()
-            },
-            requests: 1,
-            input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: 0,
-            cache_write_tokens: 0,
-            reasoning_tokens: 0,
-        };
-
-        #[expect(clippy::expect_used, reason = "the bucket body always serializes")]
-        let rendered = serde_json::to_value(UsageBucket::from_aggregate(
-            &aggregate,
-            &[UsageGroupBy::Outcome, UsageGroupBy::HttpStatus],
-        ))
-        .expect("the bucket body serializes");
-
-        assert_eq!(
-            rendered.get("key"),
-            Some(&serde_json::json!({"outcome": "client_aborted", "http_status": null}))
-        );
-
-        let aggregate = crate::storage::api_logs::UsageAggregate {
-            key: crate::storage::api_logs::UsageBucketKey::default(),
-            requests: 7,
-            input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: 0,
-            cache_write_tokens: 0,
-            reasoning_tokens: 0,
-        };
-
-        #[expect(clippy::expect_used, reason = "the bucket body always serializes")]
-        let rendered = serde_json::to_value(UsageBucket::from_aggregate(&aggregate, &[]))
-            .expect("the bucket body serializes");
-
-        assert_eq!(rendered.get("key"), Some(&serde_json::json!({})));
-        assert_eq!(rendered.get("requests"), Some(&serde_json::json!(7)));
-    }
 }

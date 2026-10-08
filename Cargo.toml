@@ -67,9 +67,6 @@ turso = { version = "0.8.2", default-features = false }
 uuid = { version = "1.27.0", default-features = false, features = ["v4"] }
 vec1 = { version = "1.12.1", default-features = false, features = ["std", "serde"] }
 
-[dev-dependencies]
-turso_parser = { version = "0.8.2", default-features = false }
-
 [lints.rust]
 missing_docs = "deny"
 unsafe_op_in_unsafe_fn = "deny"

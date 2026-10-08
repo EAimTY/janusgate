@@ -21,7 +21,7 @@ use thiserror::Error;
 
 /// A remote-compaction failure.
 #[derive(Debug, Error)]
-pub(crate) enum CompactionError {
+pub(super) enum CompactionError {
     /// The request's history is structurally invalid — an orphan tool result or
     /// an interaction unit the gateway cannot indivisibly retain. The history is
     /// rejected without discarding content or fabricating state.
@@ -109,35 +109,35 @@ pub(crate) enum CompactionError {
 
 impl CompactionError {
     /// Builds the invalid-history failure.
-    pub(crate) fn unusable_history(message: impl Into<String>) -> Self {
+    pub(super) fn unusable_history(message: impl Into<String>) -> Self {
         Self::UnusableHistory {
             message: message.into(),
         }
     }
 
     /// Builds the inaccessible-native-state failure.
-    pub(crate) fn inaccessible_native_state(message: impl Into<String>) -> Self {
+    pub(super) fn inaccessible_native_state(message: impl Into<String>) -> Self {
         Self::InaccessibleNativeState {
             message: message.into(),
         }
     }
 
     /// Builds the invalid-gateway-state failure.
-    pub(crate) fn invalid_gateway_state(message: impl Into<String>) -> Self {
+    pub(super) fn invalid_gateway_state(message: impl Into<String>) -> Self {
         Self::InvalidGatewayState {
             message: message.into(),
         }
     }
 
     /// Builds the unusable-summary failure.
-    pub(crate) fn unusable_summary(reason: impl Into<String>) -> Self {
+    pub(super) fn unusable_summary(reason: impl Into<String>) -> Self {
         Self::UnusableSummary {
             reason: reason.into(),
         }
     }
 
     /// Builds the budget-exceeded failure.
-    pub(crate) fn budget_exceeded(message: impl Into<String>) -> Self {
+    pub(super) fn budget_exceeded(message: impl Into<String>) -> Self {
         Self::BudgetExceeded {
             message: message.into(),
         }

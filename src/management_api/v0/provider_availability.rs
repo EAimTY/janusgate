@@ -33,7 +33,7 @@ route! {
 #[serde(deny_unknown_fields)]
 pub(super) struct GetProviderAvailabilityRequest {
     /// Addressed account identifier.
-    pub provider_id: i64,
+    provider_id: i64,
 }
 
 /// Committed restrictions and current-process safe refresh metadata.
@@ -42,9 +42,9 @@ pub(super) struct GetProviderAvailabilityRequest {
 #[serde(deny_unknown_fields)]
 pub(super) struct GetProviderAvailabilityResponse {
     /// Durable account restrictions sorted lexicographically by exact identity tuple.
-    pub blocks: Vec<QuotaBlock>,
+    blocks: Vec<QuotaBlock>,
     /// A tagged completed-check outcome; absence after restart is `not_observed`.
-    pub last_refresh: LastRefresh,
+    last_refresh: LastRefresh,
 }
 
 /// Explicit reset request; resets account evidence shared by every pool.
@@ -53,7 +53,7 @@ pub(super) struct GetProviderAvailabilityResponse {
 #[serde(deny_unknown_fields)]
 pub(super) struct ResetProviderAvailabilityRequest {
     /// Addressed account identifier.
-    pub provider_id: i64,
+    provider_id: i64,
 }
 
 /// Reads availability without renewal, quota I/O, or derived-state writes.

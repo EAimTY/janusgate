@@ -32,12 +32,12 @@ impl From<Value> for Checkpoint {
 #[serde(tag = "type", rename = "compaction")]
 pub(crate) struct ResponsesCheckpoint {
     /// Gateway-issued item identifier.
-    pub(crate) id: String,
+    pub(super) id: String,
     /// Authenticated gateway state carrier.
-    pub(crate) encrypted_content: String,
+    pub(super) encrypted_content: String,
     /// Optional authoring provenance.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) created_by: Option<String>,
+    pub(super) created_by: Option<String>,
 }
 
 /// The gateway-generated Messages compaction block.
@@ -45,7 +45,7 @@ pub(crate) struct ResponsesCheckpoint {
 #[serde(tag = "type", rename = "compaction")]
 pub(crate) struct MessagesCheckpoint {
     /// Readable summary or the fixed encrypted-state transport description.
-    pub(crate) content: String,
+    pub(super) content: String,
     /// Authenticated gateway carrier bound to the visible content.
-    pub(crate) signature: String,
+    pub(super) signature: String,
 }

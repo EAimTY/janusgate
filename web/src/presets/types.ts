@@ -14,7 +14,7 @@ import type { DefinitionPayload } from "../management-api/definitions/types";
  */
 
 /** The verification status one preset carries. */
-export type PresetVerification = "live" | "unverified";
+type PresetVerification = "live" | "unverified";
 
 /** One preset: a full definition payload plus its presentation facts. */
 export type ProviderPreset = {

@@ -4,7 +4,7 @@ import english from "./catalogs/en";
 import { resolveBrowserLocale } from "./registry";
 import type { Catalog, LocaleEntry } from "./types";
 
-export type LanguageChangeState<T extends string = string> =
+type LanguageChangeState<T extends string = string> =
     | {
           readonly type: "idle";
       }

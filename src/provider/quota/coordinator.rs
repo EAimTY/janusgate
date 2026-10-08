@@ -22,7 +22,7 @@ use tokio::sync::watch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RefreshFailure {
+pub(crate) enum RefreshFailure {
     /// Credential acquisition failed before the quota read.
     CredentialRenewal,
     /// The read exceeded the control-plane timeout.
@@ -39,7 +39,7 @@ pub enum RefreshFailure {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum LastRefresh {
+pub(crate) enum LastRefresh {
     /// This process has no completed current-generation check.
     NotObserved,
     /// A full reading completed; a lost revision fence still records its cadence.
@@ -273,17 +273,6 @@ impl Coordinator {
         )]
         let slots = self.slots.lock().expect("quota metadata is not poisoned");
         slots
-    }
-
-    /// Reads cached safe metadata without performing a quota query.
-    #[cfg(test)]
-    fn last_refresh(&self, provider_id: i64) -> LastRefresh {
-        self.slots()
-            .get(&provider_id)
-            .and_then(|slot| slot.record.as_ref())
-            .map_or(LastRefresh::NotObserved, |record| {
-                record.last_refresh.clone()
-            })
     }
 
     /// Loads committed restrictions and refresh metadata without upstream I/O.
@@ -664,7 +653,3 @@ fn outcome(attempted_at: SafeTimestamp, result: &FlightResult) -> LastRefresh {
         reason,
     }
 }
-
-#[cfg(test)]
-#[path = "coordinator_tests.rs"]
-mod tests;

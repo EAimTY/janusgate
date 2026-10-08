@@ -85,7 +85,7 @@ export function effectiveMaxOutputTokens(model: ModelResponse): number | null {
  * while the administrator's member stands for it, `"discovered"` while the
  * latest discovery knowledge stands, `"unknown"` while neither does.
  */
-export type CompactionFactSource = "override" | "discovered" | "unknown";
+type CompactionFactSource = "override" | "discovered" | "unknown";
 
 /** One mechanism's effective compaction fact beside the layer it came from. */
 export type CompactionFact = {

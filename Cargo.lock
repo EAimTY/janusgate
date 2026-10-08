@@ -1564,7 +1564,6 @@ dependencies = [
  "tower-http 0.7.1",
  "ts-rs",
  "turso",
- "turso_parser",
  "uuid",
  "vec1",
 ]

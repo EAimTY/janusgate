@@ -14,7 +14,7 @@ import { Button } from "/src/ui/controls";
  * is `readonly` and pinned fixed off-screen so Safari's implicit focus on
  * `select()` cannot scroll the document to reveal it.
  */
-export async function copyText(value: string): Promise<boolean> {
+async function copyText(value: string): Promise<boolean> {
     if (navigator.clipboard !== undefined) {
         try {
             await navigator.clipboard.writeText(value);

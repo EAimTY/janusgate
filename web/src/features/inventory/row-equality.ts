@@ -6,7 +6,7 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
  * compared by its canonical rules, say — names its own comparator. Fields
  * without an override compare by the walk's default.
  */
-export type RowFieldEquality<TRow extends object> = Partial<{
+type RowFieldEquality<TRow extends object> = Partial<{
     [TFieldKey in keyof TRow]: (previous: TRow[TFieldKey], fresh: TRow[TFieldKey]) => boolean;
 }>;
 

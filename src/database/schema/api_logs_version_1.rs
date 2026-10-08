@@ -58,9 +58,8 @@ use super::Schema;
 /// The schema of version 1.
 ///
 /// The DDL is hand-written SQL in a raw string literal: every statement is terminated by `;`,
-/// the exact shape the migration workflow embeds into its transaction batches. Its validity is
-/// enforced by tests: the parent module's api-log schema tests apply it to a fresh database and
-/// walk every migration forward into its declared schema.
+/// the exact shape the migration workflow embeds into its transaction batches. The bootstrap
+/// applies it verbatim to a fresh api-log file and walks every later migration forward from it.
 pub(super) const SCHEMA: Schema = Schema {
     version: 1,
     schema: r###"

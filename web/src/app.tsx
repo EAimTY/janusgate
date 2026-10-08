@@ -114,10 +114,9 @@ export function App(): JSX.Element {
 
 /**
  * The leave-event surface the guard acts on: the two members the standard
- * cancel pattern writes. `BeforeUnloadEvent` satisfies it structurally, so
- * the installed listener hands the real event over, and the suite pins the
- * decision on a plain stand-in instead of dispatching an event jsdom cannot
- * express.
+ * cancel pattern writes. `BeforeUnloadEvent` satisfies it structurally, so the
+ * installed listener hands the real event over without the guard depending on
+ * a constructor the DOM does not expose.
  */
 type LeaveEvent = {
     readonly preventDefault: () => void;
@@ -135,7 +134,7 @@ type LeaveEvent = {
  * not guarded — the nav tabs and the router navigate freely; protecting it
  * is a deferred variant.
  */
-export function guardLeaveOnGuardedSubjects(event: LeaveEvent): void {
+function guardLeaveOnGuardedSubjects(event: LeaveEvent): void {
     if (!hasGuardedSubjects()) {
         return;
     }

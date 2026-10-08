@@ -4,17 +4,11 @@ pub(crate) mod coordinator;
 pub(crate) mod extraction;
 mod types;
 
-pub(crate) use extraction::extract;
-pub use types::{QuotaApplicability, QuotaEntry, QuotaReset, SafeDuration, SafeTimestamp};
-#[cfg(test)]
-pub(crate) use types::{QuotaMeasurement, QuotaRouting, QuotaScope, QuotaWindow};
-
-#[cfg(test)]
-mod tests;
-
 use super::{Error as ProviderError, Provider, control, oauth};
 use crate::{database::Database, provider::definition::eval::ValueEnv};
+use extraction::extract;
 use reqwest::Client;
+pub(crate) use types::{QuotaApplicability, QuotaEntry, QuotaReset, SafeDuration, SafeTimestamp};
 
 /// A completed observation, stamped once before atomic extraction.
 #[derive(Debug, Clone)]
@@ -49,29 +43,12 @@ pub(crate) enum Error {
     Extraction(#[from] extraction::ExtractionError),
 }
 
-/// Fetches one reading with current credentials and the exact definition returned by renewal.
-///
-/// # Panics
-///
-/// Panics if stored request expressions violate the validated stage contract or the system
-/// clock cannot be represented by the frontend's documented timestamp domain.
-#[cfg(test)]
-pub(crate) async fn query(
-    database: &Database,
-    client: &Client,
-    provider: &Provider,
-) -> Result<Observation, Error> {
-    query_fenced(database, client, provider)
-        .await
-        .map(|result| result.observation)
-}
-
 /// One read's complete observation and authoritative predispatch ordering fence.
-pub(crate) struct FencedObservation {
+struct FencedObservation {
     /// Complete atomically extracted reading.
-    pub(crate) observation: Observation,
+    observation: Observation,
     /// Fence captured after ordinary credential renewal and before upstream execution.
-    pub(crate) fence: crate::storage::quota_blocks::QuotaFence,
+    fence: crate::storage::quota_blocks::QuotaFence,
 }
 
 /// Queries current credentials, capturing interpretation and evidence immediately before I/O.

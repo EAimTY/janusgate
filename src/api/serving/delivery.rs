@@ -182,7 +182,7 @@ where
     clippy::too_many_arguments,
     reason = "one detached task owns stream, accounting, render selection, affinity, and handoff"
 )]
-pub(super) async fn aggregated_response_task<TFormat>(
+async fn aggregated_response_task<TFormat>(
     events: IrEventStream,
     public_id: String,
     api_log_store: Option<api_logs::ApiLogStore>,

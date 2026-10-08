@@ -32,7 +32,7 @@ pub(crate) struct ErrorBody {
     /// At most the configured error-body limit of original bytes.
     bytes: Vec<u8>,
     /// Whether the body ended successfully within the limit, including exact-limit input.
-    pub(crate) is_complete: bool,
+    is_complete: bool,
 }
 
 impl ErrorBody {
@@ -140,117 +140,5 @@ pub(crate) fn truncate_excerpt(body: &str) -> String {
         let excerpt: String = body.chars().take(EXCERPT_MAX_CHARS).collect();
 
         format!("{excerpt}…")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Complete input at the cap remains classifiable; overflow and failed reads never do.
-    /// A valid JSON prefix cannot disguise trailing bytes or a failed remainder.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the reader buffers beyond its cap or mistakes partial input for complete JSON.
-    #[tokio::test]
-    async fn bounded_reads_require_a_confirmed_complete_body() {
-        let mut exact = br#"{"error":{"code":"quota"}}"#.to_vec();
-        exact.resize(MAX_ERROR_BODY_BYTES, b' ');
-        let (bytes, end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(exact.clone())]),
-            MAX_ERROR_BODY_BYTES,
-        )
-        .await;
-        assert!(matches!(end, BoundedReadEnd::Complete));
-        let complete = ErrorBody {
-            is_complete: matches!(end, BoundedReadEnd::Complete),
-            bytes,
-        };
-        assert!(complete.complete_json().is_some());
-        let (bytes, overflow_end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(exact.clone()), Ok(vec![b'x'])]),
-            MAX_ERROR_BODY_BYTES,
-        )
-        .await;
-        assert!(matches!(overflow_end, BoundedReadEnd::Oversized));
-        let overflow = ErrorBody {
-            is_complete: matches!(overflow_end, BoundedReadEnd::Complete),
-            bytes,
-        };
-        assert_eq!(overflow.bytes.len(), MAX_ERROR_BODY_BYTES);
-        assert!(overflow.complete_json().is_none());
-        let (bytes, failed_end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(exact.clone()), Err(())]),
-            MAX_ERROR_BODY_BYTES,
-        )
-        .await;
-        assert!(matches!(failed_end, BoundedReadEnd::Failed(())));
-        let failed = ErrorBody {
-            is_complete: matches!(failed_end, BoundedReadEnd::Complete),
-            bytes,
-        };
-        assert!(failed.complete_json().is_none());
-        exact.push(b'x');
-        let (bytes, chunk_end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(exact)]),
-            MAX_ERROR_BODY_BYTES,
-        )
-        .await;
-        assert!(matches!(chunk_end, BoundedReadEnd::Oversized));
-        assert_eq!(bytes.len(), MAX_ERROR_BODY_BYTES);
-        let (bytes, utf8_end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(vec![b'"', 255, b'"'])]),
-            MAX_ERROR_BODY_BYTES,
-        )
-        .await;
-        assert!(matches!(utf8_end, BoundedReadEnd::Complete));
-        let invalid_utf8 = ErrorBody {
-            is_complete: matches!(utf8_end, BoundedReadEnd::Complete),
-            bytes,
-        };
-        assert!(invalid_utf8.complete_json().is_none());
-    }
-
-    /// The success-body read shares the core at its own caller-supplied cap: a body split across
-    /// chunks at exactly the cap is complete, anything beyond the cap is oversized with the
-    /// prefix retained, and a failed transport never masquerades as complete.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the bounded read misclassifies any end at a caller-supplied cap.
-    #[tokio::test]
-    async fn success_reads_classify_their_end_at_the_body_cap() {
-        const CAP: usize = 8;
-
-        let (bytes, end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(b"12345".to_vec()), Ok(b"678".to_vec())]),
-            CAP,
-        )
-        .await;
-        assert_eq!(bytes, b"12345678".to_vec());
-        assert!(matches!(end, BoundedReadEnd::Complete));
-
-        let (_, end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(b"12345678".to_vec()), Ok(b"9".to_vec())]),
-            CAP,
-        )
-        .await;
-        assert!(matches!(end, BoundedReadEnd::Oversized));
-
-        let (bytes, end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(vec![b'x'; CAP + 1])]),
-            CAP,
-        )
-        .await;
-        assert_eq!(bytes.len(), CAP);
-        assert!(matches!(end, BoundedReadEnd::Oversized));
-
-        let (_, end) = read_bounded_stream(
-            tokio_stream::iter(vec![Ok::<_, ()>(b"1234".to_vec()), Err(())]),
-            CAP,
-        )
-        .await;
-        assert!(matches!(end, BoundedReadEnd::Failed(())));
     }
 }

@@ -99,14 +99,14 @@ export function redirectUri(): ValueExpr {
 }
 
 /** A `device_code` expression node: the device grant's polling code. */
-export function deviceCode(): ValueExpr {
+function deviceCode(): ValueExpr {
     return {
         type: "device_code",
     };
 }
 
 /** A `refresh_token` expression node: the stored refresh token. */
-export function refreshToken(): ValueExpr {
+function refreshToken(): ValueExpr {
     return {
         type: "refresh_token",
     };

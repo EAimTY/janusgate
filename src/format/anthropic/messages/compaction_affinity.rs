@@ -75,7 +75,7 @@ pub(crate) fn checkpoint_projection(
 /// # Panics
 ///
 /// Panics if a sealer-proven gateway block lacks its required signature.
-pub(crate) fn completed_projection(
+pub(super) fn completed_projection(
     block: &Value,
     artifact_id: Option<&str>,
 ) -> Option<(Projector, Vec<Anchor>)> {

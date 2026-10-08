@@ -30,10 +30,6 @@ This file contains the coding style guide that applies to the whole project. Per
     9. Standalone functions, public first and trivial last.
     10. Trivial trait implementations, such as wrappers, or `Clone`.
 
-## Tests
-
-- Tests that drive the database return `Result<(), Box<dyn StdError>>` and propagate failures with `?`; network-loopback and pure-logic tests use direct assertions.
-
 ## SQL (SQLite)
 
 - Use UPPERCASE for SQL keywords, PascalCase for type names, and snake_case for column names.

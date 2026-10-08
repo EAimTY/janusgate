@@ -18,7 +18,7 @@ use std::num::NonZeroU64;
     clippy::large_enum_variant,
     reason = "control-plane extraction descriptors do not allocate per streamed event"
 )]
-pub enum DiscoveryExtract {
+pub(in crate::provider) enum DiscoveryExtract {
     /// The identifiers are the entries of one upstream array.
     Array {
         /// The closed path of the array.
@@ -55,22 +55,22 @@ pub enum DiscoveryExtract {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct CapabilityExtraction {
+pub(in crate::provider) struct CapabilityExtraction {
     /// The thinking-level extraction; absent means levels are never extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_levels: Option<ThinkingLevelsExtraction>,
+    pub(in crate::provider) thinking_levels: Option<ThinkingLevelsExtraction>,
 
     /// The maximum-input-tokens member path inside each entry; absent means never extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_input_tokens: Option<ResponsePath>,
+    pub(in crate::provider) max_input_tokens: Option<ResponsePath>,
 
     /// The maximum-output-tokens member path inside each entry; absent means never extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<ResponsePath>,
+    pub(in crate::provider) max_output_tokens: Option<ResponsePath>,
 
     /// The compaction-flag extraction; absent means no compaction fact is ever extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compaction: Option<CompactionCapabilityExtraction>,
+    pub(in crate::provider) compaction: Option<CompactionCapabilityExtraction>,
 }
 
 /// The compaction-flag extraction of a discovery (README §5.5): each configured mechanism
@@ -82,17 +82,17 @@ pub struct CapabilityExtraction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct CompactionCapabilityExtraction {
+pub(in crate::provider) struct CompactionCapabilityExtraction {
     /// The Messages on-demand compaction flag (the Anthropic
     /// `capabilities.compaction.supported` shape); absent means never extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages_on_demand: Option<FlaggedMemberExtraction>,
+    pub(in crate::provider) messages_on_demand: Option<FlaggedMemberExtraction>,
 
     /// The Messages threshold compaction flag (the Anthropic
     /// `capabilities.context_management.compact_20260112.supported` shape); absent means never
     /// extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages_threshold: Option<FlaggedMemberExtraction>,
+    pub(in crate::provider) messages_threshold: Option<FlaggedMemberExtraction>,
 }
 
 /// One boolean flag read out of one addressed object: the object the `object_at` path names
@@ -100,19 +100,19 @@ pub struct CompactionCapabilityExtraction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct FlaggedMemberExtraction {
+pub(in crate::provider) struct FlaggedMemberExtraction {
     /// The closed path of the flagged object inside each entry.
-    pub object_at: ResponsePath,
+    pub(in crate::provider) object_at: ResponsePath,
 
     /// The closed path of the boolean flag inside the addressed object.
-    pub flag_field: ResponsePath,
+    pub(in crate::provider) flag_field: ResponsePath,
 }
 
 /// The two wire shapes a thinking-level set is extracted from (README §5.5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ThinkingLevelsExtraction {
+pub(in crate::provider) enum ThinkingLevelsExtraction {
     /// An array of objects, each naming one level in one string member — the Codex backend's
     /// `supported_reasoning_levels[].effort` shape.
     MemberArray {
@@ -141,7 +141,7 @@ pub enum ThinkingLevelsExtraction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Pagination {
+pub(in crate::provider) enum Pagination {
     /// The upstream list fits one response.
     None,
 
@@ -180,14 +180,14 @@ pub enum Pagination {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct Discovery {
+pub(crate) struct Discovery {
     /// The control request fetching one model-list page.
-    pub request: ControlRequest,
+    pub(in crate::provider) request: ControlRequest,
 
     /// The extraction yielding the page's identifiers.
-    pub extract: DiscoveryExtract,
+    pub(in crate::provider) extract: DiscoveryExtract,
 
     /// The pagination loop; absent means the list fits one response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pagination: Option<Pagination>,
+    pub(in crate::provider) pagination: Option<Pagination>,
 }

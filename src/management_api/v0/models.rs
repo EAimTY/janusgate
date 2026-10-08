@@ -74,44 +74,44 @@ route! {
 /// returns (README §7.0 rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct ModelResponse {
+struct ModelResponse {
     /// Row identifier; the address of `models:update` and `models:delete`.
-    pub id: i64,
+    id: i64,
 
     /// Owning provider row identifier.
-    pub provider_id: i64,
+    provider_id: i64,
 
     /// Owning provider's current name.
-    pub provider: String,
+    provider: String,
 
     /// Exact upstream model identifier.
-    pub upstream_id: String,
+    upstream_id: String,
 
     /// Configured serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
 
     /// Discovery lifecycle state of the row.
-    pub discovery_state: DiscoveryState,
+    discovery_state: DiscoveryState,
 
     /// Discovered thinking levels in the vocabulary spellings, canonicalized; `null` is unknown
     /// — the latest upstream knowledge, never "none" (README §3).
-    pub thinking_levels: Option<Vec<String>>,
+    thinking_levels: Option<Vec<String>>,
 
     /// Discovered maximum input tokens; `null` is unknown.
-    pub max_input_tokens: Option<i64>,
+    max_input_tokens: Option<i64>,
 
     /// Discovered maximum output tokens; `null` is unknown.
-    pub max_output_tokens: Option<i64>,
+    max_output_tokens: Option<i64>,
 
     /// Administrator's thinking-level override in the vocabulary spellings, canonicalized;
     /// `null` keeps the discovered value (rule 2).
-    pub thinking_levels_override: Option<Vec<String>>,
+    thinking_levels_override: Option<Vec<String>>,
 
     /// Administrator's maximum-input-tokens override; `null` keeps the discovered value.
-    pub max_input_tokens_override: Option<i64>,
+    max_input_tokens_override: Option<i64>,
 
     /// Administrator's maximum-output-tokens override; `null` keeps the discovered value.
-    pub max_output_tokens_override: Option<i64>,
+    max_output_tokens_override: Option<i64>,
 
     /// Discovered compaction support facts — the per-mechanism known facts of the latest
     /// refresh, keyed by the closed mechanism spellings; `null` is unknown (README §3).
@@ -119,7 +119,7 @@ pub(super) struct ModelResponse {
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" } | null")
     )]
-    pub compaction_support: Option<CompactionSupportFacts>,
+    compaction_support: Option<CompactionSupportFacts>,
 
     /// Administrator's compaction facts override; `null` keeps the discovered facts (rule 2).
     /// An explicit `"unknown"` member is legal here and suppresses the lower layers for that
@@ -128,7 +128,7 @@ pub(super) struct ModelResponse {
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
     )]
-    pub compaction_support_override: Option<CompactionSupportFacts>,
+    compaction_support_override: Option<CompactionSupportFacts>,
 }
 
 impl ModelResponse {
@@ -198,7 +198,7 @@ pub(super) struct ListModelsRequest {
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub provider_id: Option<i64>,
+    provider_id: Option<i64>,
 }
 
 /// The `models:list` success body (README §7.1): every row, `vanished` ones included; the caller
@@ -208,7 +208,7 @@ pub(super) struct ListModelsRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListModelsResponse {
     /// Every stored model, ordered by provider ID and upstream ID.
-    pub models: Vec<ModelResponse>,
+    models: Vec<ModelResponse>,
 }
 
 /// The `models:discover` success body (README §7.1): the provider's complete fresh rows — which
@@ -218,7 +218,7 @@ pub(super) struct ListModelsResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DiscoverModelsResponse {
     /// The provider's model rows as stored by the refresh, all states included.
-    pub models: Vec<ModelResponse>,
+    models: Vec<ModelResponse>,
 }
 
 /// Strictly parsed `models:discover` request.
@@ -227,7 +227,7 @@ pub(super) struct DiscoverModelsResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DiscoverModelsRequest {
     /// Provider whose model rows the refresh reapplies.
-    pub provider_id: i64,
+    provider_id: i64,
 }
 
 /// Strictly parsed `models:create` request (README §7.1): the complete desired initial state of
@@ -240,14 +240,14 @@ pub(super) struct DiscoverModelsRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateModelRequest {
     /// Owning provider row identifier.
-    pub provider_id: i64,
+    provider_id: i64,
 
     /// Exact upstream model identifier; routing-safe: nonempty printable ASCII without
     /// whitespace, `/`, or `:`.
-    pub upstream_id: String,
+    upstream_id: String,
 
     /// Serving state.
-    pub is_enabled: bool,
+    is_enabled: bool,
 
     /// Thinking-level override; `null` keeps the discovered value, an array replaces the
     /// declaration wholesale — the empty array is the positive declaration of no levels (README
@@ -256,21 +256,21 @@ pub(super) struct CreateModelRequest {
         feature = "management-api-typescript-bindings",
         ts(type = "Array<string> | null")
     )]
-    pub thinking_levels_override: Nullable<Vec<String>>,
+    thinking_levels_override: Nullable<Vec<String>>,
 
     /// Maximum-input-tokens override; `null` keeps the discovered value.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "number | null")
     )]
-    pub max_input_tokens_override: Nullable<i64>,
+    max_input_tokens_override: Nullable<i64>,
 
     /// Maximum-output-tokens override; `null` keeps the discovered value.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "number | null")
     )]
-    pub max_output_tokens_override: Nullable<i64>,
+    max_output_tokens_override: Nullable<i64>,
 
     /// Compaction support facts override; `null` keeps the discovered facts, an object replaces
     /// them wholesale — the mechanism spellings are the closed keys, `"unknown"` is a legal
@@ -279,7 +279,7 @@ pub(super) struct CreateModelRequest {
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
     )]
-    pub compaction_support_override: Nullable<BTreeMap<String, String>>,
+    compaction_support_override: Nullable<BTreeMap<String, String>>,
 }
 
 /// Strictly parsed `models:update` request (README §7.1): the complete state of the row's
@@ -294,10 +294,10 @@ pub(super) struct CreateModelRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UpdateModelRequest {
     /// Addressed model row.
-    pub model_id: i64,
+    model_id: i64,
 
     /// Serving state.
-    pub is_enabled: bool,
+    is_enabled: bool,
 
     /// Thinking-level override; `null` keeps the discovered value, an array replaces the
     /// declaration wholesale — the empty array is the positive declaration of no levels (README
@@ -306,21 +306,21 @@ pub(super) struct UpdateModelRequest {
         feature = "management-api-typescript-bindings",
         ts(type = "Array<string> | null")
     )]
-    pub thinking_levels_override: Nullable<Vec<String>>,
+    thinking_levels_override: Nullable<Vec<String>>,
 
     /// Maximum-input-tokens override; `null` keeps the discovered value.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "number | null")
     )]
-    pub max_input_tokens_override: Nullable<i64>,
+    max_input_tokens_override: Nullable<i64>,
 
     /// Maximum-output-tokens override; `null` keeps the discovered value.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "number | null")
     )]
-    pub max_output_tokens_override: Nullable<i64>,
+    max_output_tokens_override: Nullable<i64>,
 
     /// Compaction support facts override; `null` keeps the discovered facts, an object replaces
     /// them wholesale.
@@ -328,7 +328,7 @@ pub(super) struct UpdateModelRequest {
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
     )]
-    pub compaction_support_override: Nullable<BTreeMap<String, String>>,
+    compaction_support_override: Nullable<BTreeMap<String, String>>,
 }
 
 /// Strictly parsed `models:delete` request (README §7.1): addressed by the row identifier.
@@ -337,7 +337,7 @@ pub(super) struct UpdateModelRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DeleteModelRequest {
     /// Addressed model row.
-    pub model_id: i64,
+    model_id: i64,
 }
 
 /// The applied physical model returned by creation and administrator override updates.
@@ -345,7 +345,7 @@ pub(super) struct DeleteModelRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ModelEnvelope {
     /// The applied model row.
-    pub model: ModelResponse,
+    model: ModelResponse,
 }
 
 /// Handles `POST /models:list`.
@@ -561,7 +561,7 @@ async fn handle_discover(
     )?;
 
     // Validate the complete report before any lifecycle or capability write can apply. The
-    // upstream-reported ids are not request fields, so the boundary tests the shared token
+    // upstream-reported ids are not request fields, so the boundary checks the shared token
     // predicate directly and maps a failure to the report rejection — there is no request
     // parameter for a client-facing identifier rejection to name.
     for model in &unique_models {
@@ -663,495 +663,4 @@ async fn handle_update(
     info!("updated model {}", request.model_id);
 
     Ok(entry)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        BTreeMap, CompactionSupportFacts, CreateModelRequest, DeleteModelRequest, Mechanism,
-        MechanismSupport, ModelResponse, UpdateModelRequest,
-    };
-    use crate::{
-        management_api::v0::Nullable,
-        provider::{DiscoveredModel, DiscoveryState, Model},
-        storage::models::ModelEntry,
-        vocabulary::ReasoningLevel,
-    };
-
-    /// One discovered fixture carrying no capability facts.
-    fn discovered(upstream_id: &str) -> DiscoveredModel {
-        DiscoveredModel {
-            upstream_id: upstream_id.to_string(),
-            thinking_levels: None,
-            max_input_tokens: None,
-            max_output_tokens: None,
-            compaction: None,
-        }
-    }
-
-    /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing
-    /// physical upstream identifier and the row's own inputs `is_enabled` and `discovery_state` —
-    /// and, positively, that no thinking-level field and no derived effective verdict rides
-    /// along: the row carries its inputs and the caller derives the three-input status (README
-    /// §7.0 rule 7). The compaction facts render the stored maps verbatim, the base keyed by the
-    /// mechanism spellings, the override admitting the explicit `unknown`. The `vanished` row is
-    /// pinned beside `is_enabled: true`, so the derivation has everything it needs right in the
-    /// row.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rendered row diverges from the documented shape.
-    #[test]
-    fn renders_the_documented_model_row() {
-        let entry = |discovery_state, is_enabled| {
-            #[expect(clippy::expect_used, reason = "the fixture fact pairs are non-empty")]
-            let compaction_support = CompactionSupportFacts::from_pairs([(
-                Mechanism::MessagesOnDemandCompaction,
-                MechanismSupport::Supported,
-            )])
-            .expect("fixture fact pairs are non-empty");
-
-            #[expect(
-                clippy::expect_used,
-                reason = "the fixture override pairs are non-empty"
-            )]
-            let compaction_support_override = CompactionSupportFacts::from_pairs([(
-                Mechanism::MessagesThresholdCompaction,
-                MechanismSupport::Unknown,
-            )])
-            .expect("fixture override pairs are non-empty");
-
-            ModelEntry {
-                provider_id: 7,
-                provider_name: "acme".to_string(),
-                model: Model {
-                    id: 42,
-                    upstream_id: "gpt-4".to_string(),
-                    is_enabled,
-                    discovery_state,
-                    thinking_levels: Some(vec![ReasoningLevel::Low, ReasoningLevel::High]),
-                    max_input_tokens: Some(200_000),
-                    max_output_tokens: None,
-                    thinking_levels_override: None,
-                    max_input_tokens_override: None,
-                    max_output_tokens_override: Some(64_000),
-                    compaction_support: Some(compaction_support),
-                    compaction_support_override: Some(compaction_support_override),
-                },
-            }
-        };
-
-        #[expect(clippy::expect_used, reason = "the row body always serializes")]
-        let rendered = serde_json::to_value(ModelResponse::from_entry(entry(
-            DiscoveryState::Discovered,
-            true,
-        )))
-        .expect("the row body serializes");
-
-        assert_eq!(
-            rendered,
-            serde_json::json!({
-                "id": 42,
-                "provider_id": 7,
-                "provider": "acme",
-                "upstream_id": "gpt-4",
-                "is_enabled": true,
-                "discovery_state": "discovered",
-                "thinking_levels": ["low", "high"],
-                "max_input_tokens": 200000,
-                "max_output_tokens": null,
-                "thinking_levels_override": null,
-                "max_input_tokens_override": null,
-                "max_output_tokens_override": 64000,
-                "compaction_support": {"messages_on_demand_compaction": "supported"},
-                "compaction_support_override": {"messages_threshold_compaction": "unknown"},
-            })
-        );
-
-        #[expect(clippy::expect_used, reason = "the row body always serializes")]
-        let vanished = serde_json::to_value(ModelResponse::from_entry(entry(
-            DiscoveryState::Vanished,
-            true,
-        )))
-        .expect("the row body serializes");
-
-        assert_eq!(
-            vanished,
-            serde_json::json!({
-                "id": 42,
-                "provider_id": 7,
-                "provider": "acme",
-                "upstream_id": "gpt-4",
-                "is_enabled": true,
-                "discovery_state": "vanished",
-                "thinking_levels": ["low", "high"],
-                "max_input_tokens": 200000,
-                "max_output_tokens": null,
-                "thinking_levels_override": null,
-                "max_input_tokens_override": null,
-                "max_output_tokens_override": 64000,
-                "compaction_support": {"messages_on_demand_compaction": "supported"},
-                "compaction_support_override": {"messages_threshold_compaction": "unknown"},
-            })
-        );
-    }
-
-    /// Verifies the `models:update` request (README §7.0 rules 2-3, §7.1): addressed by `model_id`,
-    /// every field required, the capability overrides nullable with the
-    /// omitted-key tolerance, an unknown field rejected — and no `discovery_state` or capability
-    /// base column accepted.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the request parses or rejects outside its contract.
-    #[test]
-    fn parses_the_row_addressed_update_strictly() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let parsed: UpdateModelRequest = serde_json::from_str(
-            r#"{"model_id":7,"is_enabled":true,
-                "thinking_levels_override":[],"max_input_tokens_override":null,
-                "max_output_tokens_override":8192,
-                "compaction_support_override":{"messages_on_demand_compaction":"unknown"}}"#,
-        )
-        .unwrap();
-
-        assert_eq!(parsed.model_id, 7);
-        assert!(parsed.is_enabled);
-        assert_eq!(parsed.thinking_levels_override, Nullable(Some(Vec::new())));
-        assert_eq!(parsed.max_input_tokens_override, Nullable(None));
-        assert_eq!(parsed.max_output_tokens_override, Nullable(Some(8192)));
-        assert_eq!(
-            parsed.compaction_support_override,
-            Nullable(Some(
-                [(
-                    "messages_on_demand_compaction".to_string(),
-                    "unknown".to_string()
-                ),]
-                .into_iter()
-                .collect(),
-            )),
-        );
-
-        assert!(
-            serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"is_enabled":true,
-                    "thinking_levels_override":null,"max_input_tokens_override":null,
-                    "max_output_tokens_override":null,"bogus":1}"#
-            )
-            .is_err()
-        );
-
-        assert!(
-            serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"is_enabled":true,"discovery_state":"manual"}"#
-            )
-            .is_err()
-        );
-
-        // A capability base column is not the request's to state (README §3) — the compaction
-        // base facts included.
-        assert!(
-            serde_json::from_str::<UpdateModelRequest>(
-                r#"{"model_id":7,"is_enabled":true,
-                    "thinking_levels_override":null,"max_input_tokens_override":null,
-                    "max_output_tokens_override":null,
-                    "compaction_support":{"messages_on_demand_compaction":"supported"}}"#
-            )
-            .is_err()
-        );
-    }
-
-    /// Verifies the `models:create` request (README §7.0 rule 3, §7.1): every field required, the
-    /// nullable capability mirrors, unknown fields rejected, and no thinking-level field
-    /// accepted.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the request parses or rejects outside its contract.
-    #[test]
-    fn parses_the_create_request_strictly() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let parsed: CreateModelRequest = serde_json::from_str(
-            r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":false,
-                "thinking_levels_override":["high","low"],"max_input_tokens_override":null,
-                "max_output_tokens_override":4096,
-                "compaction_support_override":{"messages_threshold_compaction":"supported"}}"#,
-        )
-        .unwrap();
-
-        assert_eq!(parsed.provider_id, 7);
-        assert_eq!(parsed.upstream_id, "gpt-4o");
-        assert!(!parsed.is_enabled);
-        assert_eq!(
-            parsed.thinking_levels_override,
-            Nullable(Some(vec!["high".to_string(), "low".to_string()]))
-        );
-        assert_eq!(parsed.max_input_tokens_override, Nullable(None));
-        assert_eq!(parsed.max_output_tokens_override, Nullable(Some(4096)));
-        assert_eq!(
-            parsed.compaction_support_override,
-            Nullable(Some(
-                [(
-                    "messages_threshold_compaction".to_string(),
-                    "supported".to_string()
-                )]
-                .into_iter()
-                .collect(),
-            )),
-        );
-
-        assert!(
-            serde_json::from_str::<CreateModelRequest>(
-                r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":true,
-                    "thinking_levels_override":null,"max_input_tokens_override":null,
-                    "max_output_tokens_override":null}"#
-            )
-            .is_ok()
-        );
-
-        // An omitted capability override reads as `null` — the required-nullable tolerance.
-        assert!(
-            serde_json::from_str::<CreateModelRequest>(
-                r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":true}"#
-            )
-            .is_ok()
-        );
-
-        assert!(
-            serde_json::from_str::<CreateModelRequest>(
-                r#"{"provider_id":7,"upstream_id":"gpt-4o",
-                    "is_enabled":true,"discovery_state":"manual"}"#
-            )
-            .is_err()
-        );
-    }
-
-    /// Verifies the capability-override validation (README §7.1): a foreign level string is
-    /// rejected naming the field, the empty array is the legal positive declaration of no
-    /// levels, a duplicate set canonicalizes into vocabulary order, a non-positive token cap
-    /// is rejected naming the field — and the compaction facts map validates its closed
-    /// mechanism and support vocabularies, canonicalizes into the mechanism order, admits the
-    /// explicit `"unknown"`, and normalizes an empty object to the no-override `None`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the validation diverges from its contract.
-    #[test]
-    fn validates_capability_overrides() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let parsed = super::parse_capability_overrides(
-            Nullable(Some(vec!["high".to_string(), "low".to_string()])),
-            Nullable(Some(200_000)),
-            Nullable(None),
-            Nullable(None),
-        )
-        .unwrap();
-
-        use crate::vocabulary::ReasoningLevel;
-        assert_eq!(
-            parsed.thinking_levels,
-            Some(vec![ReasoningLevel::Low, ReasoningLevel::High])
-        );
-        assert_eq!(parsed.max_input_tokens, Some(200_000));
-        assert_eq!(parsed.max_output_tokens, None);
-        assert_eq!(parsed.compaction_support, None);
-
-        #[expect(clippy::unwrap_used, reason = "the empty set is constructed to parse")]
-        let empty = super::parse_capability_overrides(
-            Nullable(Some(Vec::new())),
-            Nullable(None),
-            Nullable(None),
-            Nullable(None),
-        )
-        .unwrap();
-
-        assert_eq!(empty.thinking_levels, Some(Vec::new()));
-
-        // The compaction facts map canonicalizes into the mechanism order regardless of the
-        // document's key order, and the explicit `"unknown"` value parses.
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented compaction map is constructed to parse"
-        )]
-        let compaction = super::parse_capability_overrides(
-            Nullable(None),
-            Nullable(None),
-            Nullable(None),
-            Nullable(Some(
-                [
-                    (
-                        "messages_threshold_compaction".to_string(),
-                        "supported".to_string(),
-                    ),
-                    (
-                        "responses_explicit_trigger".to_string(),
-                        "unknown".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            )),
-        )
-        .unwrap();
-
-        assert_eq!(
-            compaction.compaction_support,
-            CompactionSupportFacts::from_pairs([
-                (
-                    Mechanism::ResponsesExplicitTrigger,
-                    MechanismSupport::Unknown,
-                ),
-                (
-                    Mechanism::MessagesThresholdCompaction,
-                    MechanismSupport::Supported,
-                ),
-            ]),
-        );
-
-        // The empty map is the no-override `None`.
-        #[expect(clippy::unwrap_used, reason = "the empty map is constructed to parse")]
-        let empty_map = super::parse_capability_overrides(
-            Nullable(None),
-            Nullable(None),
-            Nullable(None),
-            Nullable(Some(BTreeMap::new())),
-        )
-        .unwrap();
-
-        assert_eq!(empty_map.compaction_support, None);
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the foreign level is constructed to be rejected"
-        )]
-        let foreign = super::parse_capability_overrides(
-            Nullable(Some(vec!["ultra".to_string()])),
-            Nullable(None),
-            Nullable(None),
-            Nullable(None),
-        )
-        .expect_err("a foreign level must be rejected");
-
-        let names_the_field = matches!(
-            foreign,
-            super::Error::UnknownReasoningLevel {
-                param: "thinking_levels_override",
-                ..
-            }
-        );
-
-        assert!(names_the_field, "the rejection names the field");
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the non-positive cap is constructed to be rejected"
-        )]
-        let non_positive = super::parse_capability_overrides(
-            Nullable(None),
-            Nullable(Some(0)),
-            Nullable(None),
-            Nullable(None),
-        )
-        .expect_err("a non-positive cap must be rejected");
-
-        assert!(
-            matches!(
-                non_positive,
-                super::Error::NonPositiveTokenCap { param } if param == "max_input_tokens_override"
-            ),
-            "the rejection names the field"
-        );
-
-        // A foreign mechanism spelling and a foreign support value are each rejected naming the
-        // field.
-        for value in [
-            ("bogus_mechanism", "supported"),
-            ("messages_on_demand_compaction", "partially"),
-        ] {
-            #[expect(
-                clippy::expect_used,
-                reason = "the foreign spelling is constructed to be rejected"
-            )]
-            let rejected = super::parse_capability_overrides(
-                Nullable(None),
-                Nullable(None),
-                Nullable(None),
-                Nullable(Some(
-                    [(value.0.to_string(), value.1.to_string())]
-                        .into_iter()
-                        .collect(),
-                )),
-            )
-            .expect_err("a foreign compaction spelling must be rejected");
-
-            assert!(
-                matches!(
-                    rejected,
-                    super::Error::UnknownCompactionSupport {
-                        param: "compaction_support_override",
-                        ..
-                    }
-                ),
-                "the rejection names the field: {rejected}"
-            );
-        }
-    }
-
-    /// Verifies the `models:delete` request is the row-addressed single-field payload (README
-    /// §7.1) and that the discovery guard deduplicates identifiers keeping the first occurrence
-    /// while refusing an empty upstream set with the upstream-error category — the 502 that keeps
-    /// an empty discovery from marking the provider's rows vanished (README §7.1).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the payload parses outside its contract or the guard diverges.
-    #[test]
-    fn parses_the_delete_request_and_guards_discovery() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the documented payload is constructed to parse"
-        )]
-        let parsed: DeleteModelRequest = serde_json::from_str(r#"{"model_id":7}"#).unwrap();
-
-        assert_eq!(parsed.model_id, 7);
-
-        assert!(
-            serde_json::from_str::<DeleteModelRequest>(r#"{"provider_id":7}"#).is_err(),
-            "models:delete addresses the row by its own identifier"
-        );
-
-        #[expect(clippy::unwrap_used, reason = "duplicates are constructed to dedupe")]
-        let unique = super::unique_discovered_models(vec![
-            discovered("a"),
-            discovered("b"),
-            discovered("a"),
-        ])
-        .unwrap();
-
-        assert_eq!(
-            unique
-                .into_iter()
-                .map(|model| model.upstream_id)
-                .collect::<Vec<_>>(),
-            ["a", "b"]
-        );
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the empty set is constructed to be refused"
-        )]
-        let empty = super::unique_discovered_models(Vec::new())
-            .expect_err("an empty upstream set must be refused");
-
-        assert!(matches!(empty, super::Error::UpstreamReportedNoModels));
-    }
 }

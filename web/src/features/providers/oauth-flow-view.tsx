@@ -64,7 +64,7 @@ function FlowFacts(props: { readonly flow: StartProviderOauthResponse }): JSX.El
  * caller hangs under it. The app neither stores the state and the code nor
  * composes any address out of them.
  */
-export function AuthorizeStep(props: {
+function AuthorizeStep(props: {
     readonly flow: Extract<
         StartProviderOauthResponse,
         {

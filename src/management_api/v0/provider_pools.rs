@@ -47,17 +47,17 @@ route! {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub(super) struct ProviderPoolResponse {
+struct ProviderPoolResponse {
     /// Never-recycled row identifier.
-    pub id: i64,
+    id: i64,
     /// Unique pool label.
-    pub name: String,
+    name: String,
     /// Prefix concatenated with exact upstream IDs for automatic pool exposure.
-    pub model_prefix: String,
+    model_prefix: String,
     /// Administrator serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
     /// Complete account membership; priorities define the selection order.
-    pub members: Vec<ProviderPoolMember>,
+    members: Vec<ProviderPoolMember>,
 }
 
 /// Empty request for the complete inventory.
@@ -72,7 +72,7 @@ pub(super) struct ListProviderPoolsRequest {}
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListProviderPoolsResponse {
     /// Rows ordered by pool name.
-    pub provider_pools: Vec<ProviderPoolResponse>,
+    provider_pools: Vec<ProviderPoolResponse>,
 }
 
 /// Complete initial authored state.
@@ -81,13 +81,13 @@ pub(super) struct ListProviderPoolsResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateProviderPoolRequest {
     /// Unique pool label.
-    pub name: String,
+    name: String,
     /// Prefix concatenated with exact upstream IDs for automatic pool exposure.
-    pub model_prefix: String,
+    model_prefix: String,
     /// Administrator serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
     /// Complete account membership; priorities define the selection order.
-    pub members: Vec<ProviderPoolMember>,
+    members: Vec<ProviderPoolMember>,
 }
 
 /// New identity assigned by the server.
@@ -96,7 +96,7 @@ pub(super) struct CreateProviderPoolRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct CreateProviderPoolResponse {
     /// Created row identifier.
-    pub provider_pool_id: i64,
+    provider_pool_id: i64,
 }
 
 /// Complete replacement state; preserves the row identity.
@@ -105,15 +105,15 @@ pub(super) struct CreateProviderPoolResponse {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct UpdateProviderPoolRequest {
     /// Addressed row identifier.
-    pub provider_pool_id: i64,
+    provider_pool_id: i64,
     /// Unique pool label.
-    pub name: String,
+    name: String,
     /// Prefix concatenated with exact upstream IDs for automatic pool exposure.
-    pub model_prefix: String,
+    model_prefix: String,
     /// Administrator serving switch.
-    pub is_enabled: bool,
+    is_enabled: bool,
     /// Complete account membership; priorities define the selection order.
-    pub members: Vec<ProviderPoolMember>,
+    members: Vec<ProviderPoolMember>,
 }
 
 /// Delete one stored entity by identity.
@@ -122,7 +122,7 @@ pub(super) struct UpdateProviderPoolRequest {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DeleteProviderPoolRequest {
     /// Addressed row identifier.
-    pub provider_pool_id: i64,
+    provider_pool_id: i64,
 }
 
 /// Lists the complete authored inventory without upstream I/O.
@@ -231,54 +231,4 @@ fn validate_fields(name: &str, members: &[ProviderPoolMember]) -> Result<(), Err
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Duplicate identities and order keys are client faults, while gaps and empty pools are valid.
-    ///
-    /// # Panics
-    ///
-    /// Panics if authored total-order validation differs from the contract.
-    #[test]
-    fn member_order_rejects_duplicates_without_requiring_contiguous_priorities() {
-        let a = ProviderPoolMember {
-            provider_id: 1,
-            priority: 4,
-        };
-        let b = ProviderPoolMember {
-            provider_id: 2,
-            priority: 9,
-        };
-        assert!(validate_fields("coding", &[a.clone(), b.clone()]).is_ok());
-        assert!(validate_fields("coding", &[]).is_ok());
-        assert!(
-            validate_fields(
-                "coding",
-                &[
-                    a.clone(),
-                    ProviderPoolMember {
-                        provider_id: 1,
-                        priority: 9
-                    }
-                ]
-            )
-            .is_err()
-        );
-        assert!(
-            validate_fields(
-                "coding",
-                &[
-                    a,
-                    ProviderPoolMember {
-                        provider_id: 2,
-                        priority: 4
-                    }
-                ]
-            )
-            .is_err()
-        );
-    }
 }

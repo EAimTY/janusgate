@@ -3,14 +3,14 @@
 use serde::{Deserialize, Serialize};
 
 /// Largest integer exactly representable by the administration frontend.
-pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+pub(super) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// A finite, nonnegative informational amount, normalized to positive zero.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[cfg_attr(feature = "management-api-typescript-bindings", ts(type = "number"))]
-pub struct Amount(f64);
+pub(crate) struct Amount(f64);
 
 impl TryFrom<f64> for Amount {
     type Error = &'static str;
@@ -33,7 +33,7 @@ impl From<Amount> for f64 {
 #[serde(try_from = "f64", into = "f64")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[cfg_attr(feature = "management-api-typescript-bindings", ts(type = "number"))]
-pub struct PositiveAmount(f64);
+pub(crate) struct PositiveAmount(f64);
 
 impl TryFrom<f64> for PositiveAmount {
     type Error = &'static str;
@@ -56,7 +56,7 @@ impl From<PositiveAmount> for f64 {
 #[serde(try_from = "u64", into = "u64")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[cfg_attr(feature = "management-api-typescript-bindings", ts(type = "number"))]
-pub struct SafeDuration(u64);
+pub(crate) struct SafeDuration(u64);
 
 impl TryFrom<u64> for SafeDuration {
     type Error = &'static str;
@@ -79,7 +79,7 @@ impl From<SafeDuration> for u64 {
 #[serde(try_from = "i64", into = "i64")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[cfg_attr(feature = "management-api-typescript-bindings", ts(type = "number"))]
-pub struct SafeTimestamp(i64);
+pub(crate) struct SafeTimestamp(i64);
 
 impl TryFrom<i64> for SafeTimestamp {
     type Error = &'static str;
@@ -101,28 +101,28 @@ impl From<SafeTimestamp> for i64 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct QuotaEntry {
+pub(crate) struct QuotaEntry {
     /// Ordered identity tuple, never delimiter-joined.
-    pub key: Vec<String>,
+    pub(crate) key: Vec<String>,
     /// Human-readable restriction label.
-    pub label: String,
+    pub(super) label: String,
     /// Account, pool, or model scope.
-    pub scope: QuotaScope,
+    pub(super) scope: QuotaScope,
     /// Resolved dispatch applicability, independent of presentation scope.
-    pub routing: QuotaRouting,
+    pub(crate) routing: QuotaRouting,
     /// Observed allowance period.
-    pub window: QuotaWindow,
+    pub(super) window: QuotaWindow,
     /// Observed normalized usage or remaining amount.
-    pub measurement: QuotaMeasurement,
+    pub(crate) measurement: QuotaMeasurement,
     /// Reset metadata without inferred alignment.
-    pub reset: QuotaReset,
+    pub(crate) reset: QuotaReset,
 }
 
 /// Concrete dispatch applicability of a normalized quota entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaRouting {
+pub(crate) enum QuotaRouting {
     /// No effect on account availability.
     MonitoringOnly,
     /// Restricts every exact model on this account.
@@ -138,7 +138,7 @@ pub enum QuotaRouting {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaApplicability {
+pub(crate) enum QuotaApplicability {
     /// Restricts every model on the account.
     AllModels,
     /// Restricts a canonical nonempty set of exact upstream IDs.
@@ -185,7 +185,7 @@ impl QuotaApplicability {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaScope {
+pub(super) enum QuotaScope {
     /// No scope was observed.
     Unknown,
     /// An explicit upstream or configured scope.
@@ -199,7 +199,7 @@ pub enum QuotaScope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaWindow {
+pub(super) enum QuotaWindow {
     /// The period is unknown.
     Unknown,
     /// A fixed positive duration.
@@ -218,7 +218,7 @@ pub enum QuotaWindow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaMeasurement {
+pub(crate) enum QuotaMeasurement {
     /// No measurement was observed.
     Unknown,
     /// A used fraction; over one remains visible.
@@ -263,7 +263,7 @@ impl QuotaMeasurement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaReset {
+pub(crate) enum QuotaReset {
     /// No reset was observed.
     Unknown,
     /// An exact instant, including a past one.

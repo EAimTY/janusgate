@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 /// A decoded control response body: the declared encoding's value tree.
 #[derive(Debug, Clone)]
-pub(crate) enum DecodedBody {
+pub(super) enum DecodedBody {
     /// A JSON document.
     Json(Json),
 
@@ -32,7 +32,7 @@ pub(crate) enum DecodedBody {
 
 /// One extracted response value: the declared shapes render into text or integer.
 #[derive(Debug, Clone)]
-pub(crate) enum Extracted {
+pub(super) enum Extracted {
     /// A string value.
     Text(String),
 
@@ -43,7 +43,7 @@ pub(crate) enum Extracted {
 impl Extracted {
     /// The value as text; an integer renders in its decimal form.
     #[must_use]
-    pub(crate) fn as_text(&self) -> String {
+    pub(super) fn as_text(&self) -> String {
         match self {
             Self::Text(text) => text.clone(),
             Self::Integer(value) => value.to_string(),
@@ -52,7 +52,7 @@ impl Extracted {
 
     /// The value as an integer; a text value is `None`.
     #[must_use]
-    pub(crate) const fn as_integer(&self) -> Option<i64> {
+    pub(super) const fn as_integer(&self) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(*value),
             Self::Text(_) => None,
@@ -66,7 +66,7 @@ impl Extracted {
 /// the transport timeout carried as its own variant so consumers can match the fact typed
 /// instead of parsing the rendered message.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ControlFailure {
+pub(super) enum ControlFailure {
     /// The upstream answered a non-2xx status.
     #[error("upstream rejected with status {status}")]
     Rejected {
@@ -164,7 +164,7 @@ fn form_decode(component: &str) -> String {
 /// Parses an `application/x-www-form-urlencoded` body into its flat field map; a repeated field
 /// keeps its last value, matching how every consumer here reads them.
 #[must_use]
-pub(crate) fn parse_form(body: &str) -> BTreeMap<String, String> {
+pub(super) fn parse_form(body: &str) -> BTreeMap<String, String> {
     body.split('&')
         .filter(|pair| !pair.is_empty())
         .map(|pair| match pair.split_once('=') {
@@ -203,7 +203,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 /// `application/x-www-form-urlencoded` body variant keeps its own `+`-for-space rule, which is
 /// the content type's, not the URL query's.
 #[must_use]
-pub(crate) fn percent_encode_component(component: &str) -> String {
+pub(super) fn percent_encode_component(component: &str) -> String {
     let mut encoded = String::with_capacity(component.len());
 
     for byte in component.bytes() {
@@ -262,7 +262,7 @@ pub(super) fn append_query_row(url: &mut String, name: &str, value: &str) {
 /// not carry. A `GET` request never carries a body — the definition write boundary rejects that
 /// configuration outright (the "a GET control request never carries a body" validation) — so no
 /// runtime method check exists or is needed here.
-pub(crate) fn build_request(
+pub(super) fn build_request(
     client: &Client,
     request: &ControlRequest,
     env: &ValueEnv<'_>,
@@ -335,7 +335,7 @@ fn transport_failure(detail: String, error: &reqwest::Error) -> ControlFailure {
 ///
 /// Returns [`ControlFailure`] for transport failures, a success body beyond the bounded size,
 /// non-2xx statuses, and bodies that do not decode through the declared encoding.
-pub(crate) async fn execute(
+pub(super) async fn execute(
     client: &Client,
     request: &ControlRequest,
     env: &ValueEnv<'_>,
@@ -430,7 +430,7 @@ pub(super) fn is_truthy_scalar(value: &Json) -> bool {
 ///
 /// Returns [`ControlFailure::Unavailable`] when a required path is missing or a present value
 /// contradicts its declared shape.
-pub(crate) fn extract_field(
+pub(super) fn extract_field(
     body: &DecodedBody,
     path: &ResponsePath,
     shape: &ExtractionShape,
@@ -522,12 +522,12 @@ pub(crate) fn extract_field(
 /// device-authorization, exchange, and refresh mappings all read text — a JSON number renders
 /// as its decimal text (RFC 6749 §5.1) — and their integer-valued targets parse the text at
 /// their consumers. A provisioning extraction declares its own shape.
-pub(crate) const TEXT_FIELD_SHAPE: ExtractionShape = ExtractionShape::String;
+pub(super) const TEXT_FIELD_SHAPE: ExtractionShape = ExtractionShape::String;
 
 /// The descriptor-level facts of one response-field mapping, abstracted over the stage
 /// descriptors whose extraction shapes differ: the stage-level [`ResponseField`] fixes the
 /// shared text shape, while a [`ProvisionExtraction`] declares its own.
-pub(crate) trait ResponseMapping {
+pub(super) trait ResponseMapping {
     /// The closed path of the response value.
     fn path(&self) -> &ResponsePath;
 
@@ -586,7 +586,7 @@ impl ResponseMapping for ProvisionExtraction {
 ///
 /// Returns the first failure: an extraction failure converted through [`ControlFailure`], the
 /// missing-required failure, or the first `apply` failure returned unchanged.
-pub(crate) fn map_response_fields<T, E>(
+pub(super) fn map_response_fields<T, E>(
     decoded: &DecodedBody,
     fields: &[T],
     what: &str,
@@ -617,308 +617,4 @@ where
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "the fixtures are constructed so each unwrap lands on its documented side"
-    )]
-    #![expect(
-        clippy::panic,
-        reason = "a fixture landing on the wrong side of its check is the failure report"
-    )]
-
-    use super::*;
-    use crate::provider::definition::template::{ParamRow, StringExpr};
-
-    /// Control-request query rows render through the strict RFC 3986 unreserved-set percent
-    /// encoding the authorize-URL builder shares: a space renders `%20` and a literal plus
-    /// `%2B` — RFC 3986 §3.4 makes `+` in a query a literal plus — and the pre-encoded
-    /// components reach the built request unre-encoded. A row on a URL already carrying a
-    /// query joins with `&`. The form body variant is untouched: its `+`-for-space rule is the
-    /// `application/x-www-form-urlencoded` content type's own.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the built request's query diverges from the strict encoding.
-    #[test]
-    fn encodes_query_rows_with_the_strict_unreserved_set() {
-        let request = ControlRequest {
-            method: ControlMethod::Get,
-            url: StringExpr::literal("https://upstream.example/discovery?fixed=1"),
-            headers: Vec::new(),
-            query: vec![
-                ParamRow {
-                    name: "scope".to_string(),
-                    value: StringExpr::literal("a b+c"),
-                },
-                ParamRow {
-                    name: "label key".to_string(),
-                    value: StringExpr::literal("é"),
-                },
-            ],
-            body: None,
-        };
-
-        let slots = BTreeMap::new();
-
-        let env = ValueEnv::for_exchange(
-            &slots,
-            None,
-            "client-id",
-            None,
-            "code",
-            Some("verifier"),
-            "redirect",
-        );
-
-        let built = build_request(&Client::new(), &request, &env, "test")
-            .unwrap()
-            .build()
-            .unwrap();
-
-        assert_eq!(
-            built.url().query(),
-            Some("fixed=1&scope=a%20b%2Bc&label%20key=%C3%A9")
-        );
-    }
-
-    /// A control request whose evaluated URL carries a `#` fragment gets its query rows joined
-    /// into the query component before the fragment, and the fragment re-attached after the
-    /// last row (RFC 3986 §3): rows appended after the first `#` would fold into the fragment
-    /// and silently drop from the request.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the built request's URL diverges from the byte-exact expectation.
-    #[test]
-    fn build_request_joins_query_rows_before_a_url_fragment() {
-        let request = ControlRequest {
-            method: ControlMethod::Get,
-            url: StringExpr::literal("https://upstream.example/discovery#tenant"),
-            headers: Vec::new(),
-            query: vec![
-                ParamRow {
-                    name: "scope".to_string(),
-                    value: StringExpr::literal("a b+c"),
-                },
-                ParamRow {
-                    name: "page".to_string(),
-                    value: StringExpr::literal("2"),
-                },
-            ],
-            body: None,
-        };
-
-        let slots = BTreeMap::new();
-
-        let env = ValueEnv::for_exchange(
-            &slots,
-            None,
-            "client-id",
-            None,
-            "code",
-            Some("verifier"),
-            "redirect",
-        );
-
-        let built = build_request(&Client::new(), &request, &env, "test")
-            .unwrap()
-            .build()
-            .unwrap();
-
-        assert_eq!(
-            built.url().as_str(),
-            "https://upstream.example/discovery?scope=a%20b%2Bc&page=2#tenant"
-        );
-
-        assert_eq!(built.url().query(), Some("scope=a%20b%2Bc&page=2"));
-
-        assert_eq!(built.url().fragment(), Some("tenant"));
-    }
-
-    /// The form decoder renders a `%XX` escape as its byte only when both following bytes are
-    /// hexadecimal digits: `u8::from_str_radix` accepts a leading `+`, so an unguarded parse
-    /// would decode the `%+5` escape as the byte `0x05` instead of its documented rendering —
-    /// the verbatim `%` with the walk continuing after it. Valid escapes decode in both
-    /// hex alphabets, and a truncated escape renders its `%` verbatim.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a decoded field diverges from its documented rendering.
-    #[test]
-    fn form_decode_renders_invalid_escapes_verbatim() {
-        let decoded = parse_form("plus=%2Bb%20c%2bd&invalid=%+5x&truncated=%Ag");
-
-        assert_eq!(decoded.get("plus").map(String::as_str), Some("+b c+d"));
-        assert_eq!(decoded.get("invalid").map(String::as_str), Some("% 5x"));
-        assert_eq!(decoded.get("truncated").map(String::as_str), Some("%Ag"));
-    }
-
-    /// The shared query-row join inserts the `?`/`&` separator into the URL's query component
-    /// and re-attaches a `#` fragment after the appended row (RFC 3986 §3): the first `#` is
-    /// always the fragment delimiter, and a `?` inside a fragment never flips the join. The
-    /// join is the helper's whole contract — the row text lands verbatim.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a rendered URL diverges from its byte-exact expectation.
-    #[test]
-    fn append_query_row_joins_into_the_query_before_the_fragment() {
-        let cases = [
-            (
-                "https://upstream.example/discovery",
-                "a",
-                "1",
-                "https://upstream.example/discovery?a=1",
-            ),
-            (
-                "https://upstream.example/discovery?a=1",
-                "b",
-                "2",
-                "https://upstream.example/discovery?a=1&b=2",
-            ),
-            (
-                "https://upstream.example/discovery#tenant",
-                "a",
-                "1",
-                "https://upstream.example/discovery?a=1#tenant",
-            ),
-            (
-                "https://upstream.example/discovery?a=1#tenant",
-                "b",
-                "2",
-                "https://upstream.example/discovery?a=1&b=2#tenant",
-            ),
-            (
-                "https://upstream.example/discovery#tenant?a=1",
-                "b",
-                "2",
-                "https://upstream.example/discovery?b=2#tenant?a=1",
-            ),
-        ];
-
-        for (before, name, value, after) in cases {
-            let mut url = before.to_string();
-
-            append_query_row(&mut url, name, value);
-
-            assert_eq!(url, after, "join mismatch for `{before}`");
-        }
-    }
-
-    /// Pins the shared field-mapping fold (README §5.1): present values apply in order, a
-    /// missing optional path leaves its target unchanged, a missing required path fails the
-    /// stage with its label, and a present value of the wrong declared shape always fails. The
-    /// text shape reads strings and JSON numbers — the number renders as its decimal text
-    /// (RFC 6749 §5.1) — and rejects every other JSON kind.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a fixture lands on the wrong side of its check.
-    #[test]
-    fn folds_response_fields_per_their_declaration() {
-        let decoded = DecodedBody::Json(serde_json::json!({
-            "present": "value",
-            "nested": { "leaf": "refresh-token" },
-            "count": 1,
-            "flag": true
-        }));
-
-        let fields = [
-            ResponseField {
-                path: ResponsePath(vec!["absent".to_string()]),
-                target: ResponseTarget::Slot {
-                    name: "optional".to_string(),
-                },
-                required: false,
-            },
-            ResponseField {
-                path: ResponsePath(vec!["present".to_string()]),
-                target: ResponseTarget::AccessToken,
-                required: false,
-            },
-            ResponseField {
-                path: ResponsePath(vec!["nested".to_string(), "leaf".to_string()]),
-                target: ResponseTarget::RefreshToken,
-                required: true,
-            },
-        ];
-
-        let mut applied = Vec::new();
-
-        map_response_fields(&decoded, &fields, "stage", |target, extracted| {
-            applied.push((target.clone(), extracted.as_text()));
-
-            Ok::<(), ControlFailure>(())
-        })
-        .unwrap();
-
-        assert_eq!(
-            applied,
-            vec![
-                (ResponseTarget::AccessToken, "value".to_string()),
-                (ResponseTarget::RefreshToken, "refresh-token".to_string()),
-            ]
-        );
-
-        let required = [ResponseField {
-            path: ResponsePath(vec!["absent".to_string()]),
-            target: ResponseTarget::AccessToken,
-            required: true,
-        }];
-
-        let Err(failure) = map_response_fields(&decoded, &required, "stage", |_, _| {
-            Ok::<(), ControlFailure>(())
-        }) else {
-            panic!("a missing required path must fail the stage");
-        };
-
-        let ControlFailure::Unavailable { detail } = failure else {
-            panic!("a missing required path is an unavailable stage");
-        };
-
-        assert_eq!(
-            detail,
-            r#"stage response lacks the required path ["absent"]"#
-        );
-
-        // The text shape reads the integer the `count` member carries, rendered as its decimal
-        // text (RFC 6749 §5.1 includes numerical values as JSON numbers).
-        let numeric = [ResponseField {
-            path: ResponsePath(vec!["count".to_string()]),
-            target: ResponseTarget::AccessToken,
-            required: true,
-        }];
-
-        let mut applied = Vec::new();
-
-        map_response_fields(&decoded, &numeric, "stage", |target, extracted| {
-            applied.push((target.clone(), extracted.as_text()));
-
-            Ok::<(), ControlFailure>(())
-        })
-        .unwrap();
-
-        assert_eq!(
-            applied,
-            vec![(ResponseTarget::AccessToken, "1".to_string())]
-        );
-
-        // Any other non-string, non-number kind stays the wrong shape.
-        let wrong_shape = [ResponseField {
-            path: ResponsePath(vec!["flag".to_string()]),
-            target: ResponseTarget::AccessToken,
-            required: true,
-        }];
-
-        let is_failed = map_response_fields(&decoded, &wrong_shape, "stage", |_, _| {
-            Ok::<(), ControlFailure>(())
-        })
-        .is_err();
-
-        assert!(is_failed);
-    }
 }

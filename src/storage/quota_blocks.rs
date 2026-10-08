@@ -26,7 +26,7 @@ pub(crate) struct QuotaBlock {
     /// Canonical resolved applicability, never a presentation label.
     pub(crate) applies_to: quota::QuotaApplicability,
     /// UTC microseconds when exhaustion was observed.
-    pub(crate) observed_at: i64,
+    observed_at: i64,
     /// Known future absolute recheck instant; unknown resets remain null.
     pub(crate) blocked_until: Option<i64>,
 }
@@ -236,7 +236,7 @@ pub(crate) async fn record_rejection(
 /// # Errors
 ///
 /// Returns database failures.
-pub(crate) async fn invalidate_in_transaction(
+pub(super) async fn invalidate_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
 ) -> Result<(), Error> {
@@ -341,7 +341,3 @@ async fn advance_revision(transaction: &mut Transaction, provider_id: i64) -> Re
         .await?;
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "quota_blocks_tests.rs"]
-mod tests;

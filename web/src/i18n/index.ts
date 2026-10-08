@@ -30,4 +30,6 @@ export const translation = controller.translation;
 export const languageChangeState = controller.changeState;
 export const setLanguagePreference = controller.setPreference;
 export const retryLanguageChange = controller.retry;
-export const disposeLocalization = controller.dispose;
+
+// The singleton lives for the page's lifetime, so it publishes no disposal binding: `dispose`
+// stays on the controller the factory returns (see `./controller`).

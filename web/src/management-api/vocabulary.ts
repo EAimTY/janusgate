@@ -18,7 +18,7 @@ import type {
  * union — the declaration's whole value domain is still this set, so the
  * vocabulary below narrows each member explicitly.
  */
-export type ReasoningLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type ReasoningLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * The credential kinds a provider row or a definition carries. The generated
@@ -26,7 +26,7 @@ export type ReasoningLevel = "none" | "minimal" | "low" | "medium" | "high" | "x
  * vocabulary states them here — the `ProviderResponse` union's own `type`
  * members keep the type below exhaustive.
  */
-export type CredentialKind = "api_key" | "oauth";
+type CredentialKind = "api_key" | "oauth";
 
 type VocabularyOption<TValue extends string> = {
     readonly value: TValue;

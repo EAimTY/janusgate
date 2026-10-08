@@ -4,10 +4,10 @@ import { bucketKeyField } from "/src/management-api/usage-buckets";
 import { USAGE_OUTCOME_FAILURES } from "../usage/filter";
 
 /** The number of UTC days the overview's daily chart covers, today included. */
-export const OVERVIEW_DAILY_DAYS = 14;
+const OVERVIEW_DAILY_DAYS = 14;
 
 /** One day's bar: the UTC day and the requests recorded inside it. */
-export type OverviewDailyPoint = {
+type OverviewDailyPoint = {
     readonly day: string;
     readonly requests: number;
 };

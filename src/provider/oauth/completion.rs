@@ -24,17 +24,17 @@ use reqwest::Client;
 /// commits.
 pub(crate) struct CompletionProduct {
     /// The stored credentials the completed flow produced.
-    pub(crate) credentials: StoredCredentials,
+    credentials: StoredCredentials,
 
     /// The working base URL after the exchange and any provisioning extraction.
-    pub(crate) base_url: Option<String>,
+    base_url: Option<String>,
 
     /// Whether [`CompletionProduct::base_url`] is an upstream-derived replacement — the
     /// exchange's `base_url` fold or a provisioning extraction — rather than the flow's
     /// begin-time base. Only a derived base joins a reauthorize flow's write (README §7.1); a
     /// create flow stores the working base either way, the begin-time base being the
     /// operator-supplied initial value there (README §7.1's `oauth:start` contract).
-    pub(crate) is_base_url_derived: bool,
+    is_base_url_derived: bool,
 }
 
 /// Maps one executed exchange's classification onto an authorization-code completion: the

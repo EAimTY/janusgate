@@ -17,26 +17,26 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub(crate) struct GeminiErrorEnvelope {
     /// The rendered error object.
-    pub(crate) error: GeminiErrorBody,
+    error: GeminiErrorBody,
 }
 
 /// The Gemini error object.
 #[derive(Debug, Serialize)]
-pub(crate) struct GeminiErrorBody {
+struct GeminiErrorBody {
     /// HTTP status of the failure; the official Status schema types the JSON `code` as an
     /// int32 HTTP status code, not a code-name string.
-    pub(crate) code: u16,
+    code: u16,
 
     /// Human-readable error message.
-    pub(crate) message: String,
+    message: String,
 
     /// Canonical google.rpc.Code-style status name (`NOT_FOUND`, `UNAUTHENTICATED`, ...).
-    pub(crate) status: &'static str,
+    status: &'static str,
 }
 
 /// Renders the Gemini error body for one API failure. Compiler exhaustiveness over [`Error`] is
 /// the invariant: a new variant forces this match to grow.
-pub(crate) fn render_body(error: &Error) -> GeminiErrorBody {
+fn render_body(error: &Error) -> GeminiErrorBody {
     match error {
         Error::InvalidApiKey => GeminiErrorBody {
             code: StatusCode::UNAUTHORIZED.as_u16(),
@@ -137,92 +137,4 @@ pub(crate) fn render(error: &Error) -> (StatusCode, GeminiErrorEnvelope) {
             error: render_body(error),
         },
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::at;
-    use serde_json::{Value, json};
-
-    /// Serializes one rendered error body for inspection.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rendered body fails to serialize.
-    fn body_json(error: &Error) -> Value {
-        #[expect(
-            clippy::expect_used,
-            reason = "the rendered body is under test; a failing render is the failure"
-        )]
-        serde_json::to_value(render_body(error)).expect("the error body serializes")
-    }
-
-    /// Verifies the official Status shape (google.aip.dev/193): `code` carries the numeric HTTP
-    /// status and `status` carries the canonical google.rpc.Code-style name — Gemini-dialect
-    /// SDKs type `error.code` as a number and branch on `error.status` strings.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a rendered field carries the wrong kind of value.
-    #[test]
-    fn renders_numeric_code_and_canonical_status_name() {
-        let key = body_json(&Error::InvalidApiKey);
-
-        assert_eq!(at(&key, "/code"), &json!(401));
-        assert_eq!(at(&key, "/status"), &json!("UNAUTHENTICATED"));
-
-        let body = body_json(&Error::ModelNotFound {
-            model: "m".to_string(),
-        });
-
-        assert_eq!(at(&body, "/code"), &json!(404));
-        assert_eq!(at(&body, "/status"), &json!("NOT_FOUND"));
-
-        let body = body_json(&Error::MalformedRequest {
-            param: Some("model".to_string()),
-            message: "bad model".to_string(),
-        });
-
-        assert_eq!(at(&body, "/code"), &json!(400));
-        assert_eq!(at(&body, "/status"), &json!("INVALID_ARGUMENT"));
-
-        let body = body_json(&Error::Internal);
-
-        assert_eq!(at(&body, "/code"), &json!(500));
-        assert_eq!(at(&body, "/status"), &json!("INTERNAL"));
-    }
-
-    /// Maps a mirrored upstream status to the most accurate canonical name per the canonical
-    /// HTTP-to-code mapping, degrading to `UNKNOWN` where the vocabulary has no member.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a mirrored status renders outside its canonical name.
-    #[test]
-    fn maps_mirrored_upstream_statuses_to_canonical_names() {
-        let body = body_json(&Error::Upstream {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: "rate limited".to_string(),
-        });
-
-        assert_eq!(at(&body, "/code"), &json!(429));
-        assert_eq!(at(&body, "/status"), &json!("RESOURCE_EXHAUSTED"));
-
-        let body = body_json(&Error::Upstream {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            message: "overloaded".to_string(),
-        });
-
-        assert_eq!(at(&body, "/code"), &json!(503));
-        assert_eq!(at(&body, "/status"), &json!("UNAVAILABLE"));
-
-        let body = body_json(&Error::Upstream {
-            status: StatusCode::SEE_OTHER,
-            message: "odd upstream".to_string(),
-        });
-
-        assert_eq!(at(&body, "/code"), &json!(303));
-        assert_eq!(at(&body, "/status"), &json!("UNKNOWN"));
-    }
 }

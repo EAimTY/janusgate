@@ -27,8 +27,8 @@ export type AccessInventory = {
     readonly models: ReadonlyArray<ModelResponse>;
     readonly modelRoutes: ReadonlyArray<ModelRouteResponse>;
 };
-export type AccessSource = "key" | "provider" | "pool" | "route";
-export type ResolvedAccess = {
+type AccessSource = "key" | "provider" | "pool" | "route";
+type ResolvedAccess = {
     readonly access: AccessDecision;
     readonly source: AccessSource;
 };
@@ -42,7 +42,7 @@ export function newAccessControl(): ApiKeyAccessControl {
     };
 }
 
-export function ruleOwner(rule: ApiKeyOwnerDefault): Owner {
+function ruleOwner(rule: ApiKeyOwnerDefault): Owner {
     return rule.type === "provider"
         ? {
               type: "provider",
@@ -54,7 +54,7 @@ export function ruleOwner(rule: ApiKeyOwnerDefault): Owner {
           };
 }
 
-export function isSameOwner(left: Owner, right: Owner): boolean {
+function isSameOwner(left: Owner, right: Owner): boolean {
     return left.type === right.type && left.id === right.id;
 }
 
@@ -126,7 +126,7 @@ export function accessLabel(result: ResolvedAccess): string {
 }
 
 /** Stable order only; no deduplication or removal of explicit equal-default pins. */
-export function canonicalPolicy(policy: ApiKeyAccessControl): ApiKeyAccessControl {
+function canonicalPolicy(policy: ApiKeyAccessControl): ApiKeyAccessControl {
     return {
         default_access: policy.default_access,
         owner_defaults: [

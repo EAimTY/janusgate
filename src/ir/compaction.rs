@@ -30,7 +30,7 @@ pub(crate) enum SamplingKind {
 pub(crate) struct IterationReport {
     /// Sampling operation kind.
     #[serde(rename = "type")]
-    pub(crate) kind: SamplingKind,
+    kind: SamplingKind,
     /// Tokens consumed by the input.
     pub(crate) input_tokens: u64,
     /// Tokens produced by the output.

@@ -11,16 +11,16 @@ use time::{Date, OffsetDateTime, format_description::well_known::Rfc3339};
 #[error("quota source {source_key:?}, entry {entry_key:?}: {reason}")]
 pub(crate) struct ExtractionError {
     /// Configured source key, absent before source selection.
-    pub(crate) source_key: Option<String>,
+    source_key: Option<String>,
     /// Configured entry key, absent before entry selection.
-    pub(crate) entry_key: Option<String>,
+    entry_key: Option<String>,
     /// Safe contract failure category.
-    pub(crate) reason: ExtractionReason,
+    reason: ExtractionReason,
 }
 
 /// Closed categories of malformed observations.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
-pub(crate) enum ExtractionReason {
+enum ExtractionReason {
     /// A required source, entry, or fact was absent.
     #[error("required value is absent")]
     Missing,
@@ -54,7 +54,7 @@ struct Context<'a> {
 }
 
 /// Extracts every observation or one safe error; no partially successful list escapes.
-pub(crate) fn extract(
+pub(super) fn extract(
     root: &Json,
     descriptor: &QuotaDescriptor,
 ) -> Result<Vec<QuotaEntry>, ExtractionError> {

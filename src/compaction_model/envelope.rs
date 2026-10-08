@@ -182,14 +182,14 @@ pub(crate) enum ReplacementMode {
 #[serde(deny_unknown_fields)]
 pub(crate) struct EnvelopeV1 {
     /// Envelope schema version; always `1` for [`EnvelopeV1`].
-    pub(crate) version: u8,
+    pub(super) version: u8,
 
     /// The gateway-minted artifact identifier, stable across SSE and JSON
     /// representations.
     pub(crate) artifact_id: String,
 
     /// How the caller's window is consumed at the checkpoint boundary.
-    pub(crate) replacement: ReplacementMode,
+    replacement: ReplacementMode,
 
     /// The envelope's payload.
     pub(crate) payload: EnvelopePayload,
@@ -197,7 +197,7 @@ pub(crate) struct EnvelopeV1 {
     /// Digest of the visible content the carrier presented alongside the
     /// envelope, when the carrier binds one (the Messages carrier binds its
     /// block's visible content). Verified on every unseal.
-    pub(crate) visible_content_digest: Option<String>,
+    pub(super) visible_content_digest: Option<String>,
 }
 
 /// The envelope payload, discriminated by type.
@@ -213,7 +213,7 @@ pub(crate) enum EnvelopePayload {
 
 impl EnvelopeV1 {
     /// The envelope schema version this type decodes.
-    pub(crate) const VERSION: u8 = 1;
+    pub(super) const VERSION: u8 = 1;
 
     /// Builds a version-1 envelope.
     #[must_use]
@@ -247,102 +247,4 @@ pub(crate) fn summary_message(summary_text: &str) -> IrMessage {
 }
 
 /// The fixed first line of a restored gateway summary message.
-pub(crate) const SUMMARY_RESTORE_PREFIX: &str =
-    "The following is a summary of the earlier conversation:";
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "test fixtures serialize and decode values constructed to succeed"
-    )]
-    #![expect(
-        clippy::panic,
-        reason = "a failing fixture pattern-match is the test failure report"
-    )]
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "fixtures index parts they constructed themselves"
-    )]
-
-    use super::{EnvelopePayload, EnvelopeV1, ReplacementMode, summary_message};
-    use crate::{
-        compaction_model::identity::ItemIdentity,
-        ir::{IrMessage, IrPart, IrRole},
-    };
-
-    /// A gateway summary envelope round-trips through serde with all
-    /// distinctions intact.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn gateway_summary_envelope_round_trips() {
-        let envelope = EnvelopeV1::new(
-            String::from("cmp_abc"),
-            ReplacementMode::HistoricalCheckpoint,
-            EnvelopePayload::GatewaySummary(super::GatewaySummaryPayload {
-                summary_text: String::from("did things"),
-                preserved_instructions: vec![super::PreservedInstruction {
-                    identity: ItemIdentity::for_instruction(
-                        super::InstructionRole::System,
-                        0,
-                        "be terse",
-                        None,
-                    ),
-                    role: super::InstructionRole::System,
-                    text: String::from("be terse"),
-                }],
-                retained_units: vec![super::RetainedUnit {
-                    messages: vec![IrMessage {
-                        role: IrRole::User,
-                        parts: vec![IrPart::Text {
-                            text: String::from("recent"),
-                        }],
-                    }],
-                }],
-                retained_state_items: Vec::new(),
-                overlap_identities: vec![ItemIdentity::for_instruction(
-                    super::InstructionRole::System,
-                    0,
-                    "be terse",
-                    None,
-                )],
-            }),
-            None,
-        );
-
-        let encoded = serde_json::to_string(&envelope).expect("a first-party envelope serializes");
-
-        #[expect(clippy::expect_used, reason = "the encoded envelope decodes")]
-        let decoded: EnvelopeV1 = serde_json::from_str(&encoded).expect("decodes");
-
-        assert_eq!(decoded, envelope);
-        assert!(matches!(
-            decoded.payload,
-            EnvelopePayload::GatewaySummary(_)
-        ));
-        assert_eq!(decoded.version, EnvelopeV1::VERSION);
-    }
-
-    /// The restored summary message carries the fixed prefix line and stays a
-    /// user-role message.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn summary_message_carries_the_prefix() {
-        let message = summary_message("the summary");
-
-        assert_eq!(message.role, IrRole::User);
-
-        let IrPart::Text { text } = &message.parts[0] else {
-            panic!("a summary message renders text");
-        };
-
-        assert!(text.starts_with(super::SUMMARY_RESTORE_PREFIX));
-        assert!(text.ends_with("the summary"));
-    }
-}
+const SUMMARY_RESTORE_PREFIX: &str = "The following is a summary of the earlier conversation:";

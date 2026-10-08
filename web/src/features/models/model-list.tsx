@@ -135,7 +135,7 @@ const COMPACTION_BADGE_NAMES: Record<CompactionMechanism, string> = {
  * would claim a fact nobody stated. A stated supported fact reads the
  * mechanism's name; a stated unsupported fact reads "no" over it.
  */
-export function modelCompactionBadges(model: ModelResponse): ReadonlyArray<BadgeMark> {
+function modelCompactionBadges(model: ModelResponse): ReadonlyArray<BadgeMark> {
     const facts = effectiveCompactionFacts(model);
 
     return COMPACTION_MECHANISM.options.flatMap(({ value }) => {

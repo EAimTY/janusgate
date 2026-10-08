@@ -18,7 +18,7 @@ import { SelectField, Switch, TextField } from "/src/ui/controls";
  * set stands. The gateway canonicalizes the set on write (deduplicated,
  * vocabulary-ordered), so the selection's own order never matters.
  */
-export function normalizedThinkingLevelsOverride(
+function normalizedThinkingLevelsOverride(
     hasOverride: boolean,
     selected: ReadonlyArray<string>,
 ): Array<string> | null {
@@ -51,7 +51,7 @@ export function isSameLevelSet(
  * discovered value stands. An invalid entry reads as `null` here; the
  * inline error beside the field (not this function) is what holds the save.
  */
-export function normalizedTokenCapOverride(hasOverride: boolean, text: string): number | null {
+function normalizedTokenCapOverride(hasOverride: boolean, text: string): number | null {
     if (!hasOverride) {
         return null;
     }
@@ -73,7 +73,7 @@ export function normalizedTokenCapOverride(hasOverride: boolean, text: string): 
  * positive integer — empty, fractional, zero, negative, or beyond the
  * safe-integer range is the same one rejection, naming the field.
  */
-export function tokenCapOverrideError(
+function tokenCapOverrideError(
     hasOverride: boolean,
     text: string,
     field: "maxInputOverride" | "maxOutputOverride",
@@ -95,7 +95,7 @@ export function tokenCapOverrideError(
  * returned row, or the baseline a revert picks up). A `null` initial seeds
  * the creation shape: every override off, every field clear.
  */
-export type CapabilityOverrideDraft = {
+type CapabilityOverrideDraft = {
     readonly hasLevelsOverride: Accessor<boolean>;
     readonly setHasLevelsOverride: (hasOverride: boolean) => void;
     readonly selectedLevels: Accessor<ReadonlyArray<string>>;
@@ -362,12 +362,10 @@ export function TokenCapOverrideFields(props: {
  * then the definition's declaration decide; the three support states are
  * the explicit members the wire carries.
  */
-export type CompactionOverrideChoice = "unset" | MechanismSupport;
+type CompactionOverrideChoice = "unset" | MechanismSupport;
 
 /** The per-mechanism override choices of one compaction-facts edit. */
-export type CompactionOverrideSelection = Readonly<
-    Record<CompactionMechanism, CompactionOverrideChoice>
->;
+type CompactionOverrideSelection = Readonly<Record<CompactionMechanism, CompactionOverrideChoice>>;
 
 /**
  * The editor's selection a stored override map opens with: a stated member
@@ -375,7 +373,7 @@ export type CompactionOverrideSelection = Readonly<
  * every mechanism explicitly, so a mechanism added to the vocabulary fails
  * to compile until the selection carries it.
  */
-export function compactionOverrideSelection(
+function compactionOverrideSelection(
     override: ModelResponse["compaction_support_override"],
 ): CompactionOverrideSelection {
     return {
@@ -394,7 +392,7 @@ export function compactionOverrideSelection(
  * discovered fact and the definition's declaration decide — or `null`
  * while it is off, so the discovered facts stand.
  */
-export function normalizedCompactionOverride(
+function normalizedCompactionOverride(
     hasOverride: boolean,
     selected: CompactionOverrideSelection,
 ): ModelResponse["compaction_support_override"] {

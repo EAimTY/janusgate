@@ -125,7 +125,7 @@ type AppLocation = {
  * once beside the shared usage filter (`/src/features/usage/filter`); the router
  * re-exports the types its routes carry.
  */
-export type { UsageQuerySubject, UsageQuerySubjectDimension } from "./features/usage/filter";
+export type { UsageQuerySubject } from "./features/usage/filter";
 
 /**
  * The query string one aggregates link carries for its subject: a single

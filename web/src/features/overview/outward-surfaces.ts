@@ -4,7 +4,7 @@
  * by public model ID alone, so every surface serves every upstream kind and
  * the paths are the only thing that distinguishes them from a client's side.
  */
-export type OutwardSurface = {
+type OutwardSurface = {
     /** The dialect family, as the console names it. */
     readonly label: string;
     /** The path, relative to the instance's base URL. */

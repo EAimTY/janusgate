@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum UpstreamStreaming {
+pub(crate) enum UpstreamStreaming {
     /// The upstream always streams: every dispatch requests streaming upstream, and a
     /// non-streaming client receives an aggregated response.
     Always,
@@ -25,40 +25,40 @@ pub enum UpstreamStreaming {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct Inference {
+pub(crate) struct Inference {
     /// The evaluated inference request URL; required.
-    pub url: StringExpr,
+    pub(crate) url: StringExpr,
 
     /// The evaluated streaming request URL, used only when the streaming action targets a
     /// different URL; when absent, streaming uses [`Inference::url`]. Stream-in-body formats
     /// normally omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_url: Option<StringExpr>,
+    pub(crate) stream_url: Option<StringExpr>,
 
     /// The evaluated request headers, rendered in the carried order. This list subsumes the auth
     /// style: `Authorization: Bearer <secret>`, `x-api-key: <secret>`, and `x-goog-api-key:
     /// <secret>` are rows here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub headers: Vec<ParamRow>,
+    pub(crate) headers: Vec<ParamRow>,
 
     /// The upstream streaming mode.
-    pub upstream_streaming: UpstreamStreaming,
+    pub(crate) upstream_streaming: UpstreamStreaming,
 
     /// The render options the codec applies to the body; every option must belong to the
     /// definition format's closed set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub render_options: Vec<RenderOption>,
+    pub(crate) render_options: Vec<RenderOption>,
 
     /// The optional inference request body envelope (README §5.1): a typed JSON tree whose
     /// [`TemplateNode::Body`] — appearing exactly once — is the codec-rendered upstream body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub envelope: Option<TemplateNode>,
+    pub(crate) envelope: Option<TemplateNode>,
 
     /// Optional ordered exact quota rejection classifier for generation/native compaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota_exhaustion: Option<super::quota_exhaustion::QuotaExhaustion>,
+    pub(crate) quota_exhaustion: Option<super::quota_exhaustion::QuotaExhaustion>,
 
     /// The optional object-member name the codec's parser unwraps before ingesting a response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_unwrap: Option<String>,
+    pub(crate) response_unwrap: Option<String>,
 }

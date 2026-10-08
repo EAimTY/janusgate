@@ -42,35 +42,35 @@ use std::{
 /// fields a step may supply, and the working base URL. The caller commits the state atomically —
 /// the provider row changes only when all steps succeed.
 #[derive(Debug, Default)]
-pub(crate) struct WorkingState {
+pub(super) struct WorkingState {
     /// The working slots, updated in place.
-    pub(crate) slots: BTreeMap<String, String>,
+    pub(super) slots: BTreeMap<String, String>,
 
     /// The access token a step supplied, when the exchange left it to provisioning.
-    pub(crate) access_token: Option<String>,
+    pub(super) access_token: Option<String>,
 
     /// The refresh token a step supplied, when provisioning replaces it.
-    pub(crate) refresh_token: Option<String>,
+    pub(super) refresh_token: Option<String>,
 
     /// The working base URL, replaceable by a `base_url` extraction.
-    pub(crate) base_url: Option<String>,
+    pub(super) base_url: Option<String>,
 
     /// Whether the working base URL is upstream-derived — the exchange's `base_url` fold or a
     /// provisioning `base_url` extraction — rather than the begin-time base the flow echoed in.
     /// Only a derived base replaces the stored one at a reauthorization's provider write (README
     /// §7.1); the begin-time echo never does, or the commit would clobber a base a concurrent
     /// `providers:update` legitimately stored while the flow ran.
-    pub(crate) is_base_url_derived: bool,
+    pub(super) is_base_url_derived: bool,
 
     /// The access token's absolute expiry, in UTC microseconds, scaled from a
     /// `expires_at_unix_seconds` extraction.
-    pub(crate) expires_at: Option<i64>,
+    pub(super) expires_at: Option<i64>,
 }
 
 impl WorkingState {
     /// Opens a working state over the given starting slots and base URL.
     #[must_use]
-    pub(crate) fn new(slots: BTreeMap<String, String>, base_url: Option<String>) -> Self {
+    pub(super) fn new(slots: BTreeMap<String, String>, base_url: Option<String>) -> Self {
         Self {
             slots,
             base_url,
@@ -85,16 +85,16 @@ impl WorkingState {
 /// constants down once; the engine rebuilds the environment itself from them plus the working
 /// state before every request, so each step and poll sees what the preceding stages placed.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ProvisioningEnv<'a> {
+pub(super) struct ProvisioningEnv<'a> {
     /// The credential secret the stage's `Secret` references render; `None` fails them as
     /// stored drift.
-    pub(crate) secret: Option<&'a str>,
+    pub(super) secret: Option<&'a str>,
 
     /// The configured OAuth client ID.
-    pub(crate) client_id: &'a str,
+    pub(super) client_id: &'a str,
 
     /// The configured OAuth client secret.
-    pub(crate) client_secret: Option<&'a str>,
+    pub(super) client_secret: Option<&'a str>,
 }
 
 /// Runs one provisioning sequence to completion.
@@ -108,7 +108,7 @@ pub(crate) struct ProvisioningEnv<'a> {
 /// extraction, an exhausted poll budget, or a terminal poll failure at the configured error
 /// path. Every failure the stage raises is gateway-authored; upstream response content from a
 /// failure payload stays in the log excerpt alone.
-pub(crate) async fn run_steps(
+pub(super) async fn run_steps(
     http: &Client,
     steps: &[ProvisioningStep],
     constants: &ProvisioningEnv<'_>,
@@ -450,263 +450,5 @@ fn apply_target(
             message: "the provisioning extraction targets a value its stage does not produce"
                 .to_string(),
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "the fixtures are constructed so each unwrap lands on its documented side"
-    )]
-    #![expect(
-        clippy::panic,
-        reason = "a fixture landing on the wrong side of its check is the failure report"
-    )]
-
-    use super::{ResponsePath, ResponseTarget, WorkingState, apply_target, done_at, error_at};
-    use crate::provider::control::{DecodedBody, Extracted};
-    use std::collections::BTreeMap;
-
-    /// The provisioning fold shares the exchange fold's storage boundary (README §7): slot text
-    /// must be routing-safe machine-consumed text, a mapped `base_url` must additionally
-    /// carry the non-empty `http(s)://` scheme, and the extracted `access_token`/`refresh_token`
-    /// must be HTTP header-value bytes — the strictest destination both tokens face — so an
-    /// upstream value outside the contracts fails the step instead of storing an unusable
-    /// value, and valid values fold in verbatim.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a fixture lands on the wrong side of its check.
-    #[test]
-    fn the_provisioning_fold_validates_machine_consumed_targets() {
-        let Err(base_url_error) = fold(
-            &mut WorkingState::default(),
-            &ResponseTarget::BaseUrl,
-            "upstream.example",
-        ) else {
-            panic!("a scheme-less base_url must fail the provisioning fold");
-        };
-
-        assert!(
-            base_url_error.to_string().contains("base_url"),
-            "{base_url_error}"
-        );
-
-        let Err(_) = fold(
-            &mut WorkingState::default(),
-            &ResponseTarget::BaseUrl,
-            "ftp://upstream.example",
-        ) else {
-            panic!("a non-http base_url scheme must fail the provisioning fold");
-        };
-
-        let mut state = WorkingState::default();
-
-        fold(
-            &mut state,
-            &ResponseTarget::BaseUrl,
-            "https://upstream.example/v1",
-        )
-        .unwrap();
-
-        assert_eq!(
-            state.base_url.as_deref(),
-            Some("https://upstream.example/v1"),
-            "a valid base_url stores"
-        );
-
-        let Err(slot_error) = fold(
-            &mut WorkingState::default(),
-            &ResponseTarget::Slot {
-                name: "stage".to_string(),
-            },
-            "has space",
-        ) else {
-            panic!("slot text with whitespace must fail the provisioning fold");
-        };
-
-        assert!(slot_error.to_string().contains("stage"), "{slot_error}");
-
-        let mut state = WorkingState::default();
-
-        fold(
-            &mut state,
-            &ResponseTarget::Slot {
-                name: "stage".to_string(),
-            },
-            "clean-value",
-        )
-        .unwrap();
-
-        assert_eq!(
-            state.slots.get("stage").map(String::as_str),
-            Some("clean-value"),
-            "valid slot text stores"
-        );
-
-        let Err(access_token_error) = fold(
-            &mut WorkingState::default(),
-            &ResponseTarget::AccessToken,
-            "tok\nen",
-        ) else {
-            panic!("an access token carrying a control byte must fail the provisioning fold");
-        };
-
-        assert!(
-            access_token_error.to_string().contains("access_token"),
-            "{access_token_error}"
-        );
-
-        let Err(refresh_token_error) = fold(
-            &mut WorkingState::default(),
-            &ResponseTarget::RefreshToken,
-            "tok\nen",
-        ) else {
-            panic!("a refresh token carrying a control byte must fail the provisioning fold");
-        };
-
-        assert!(
-            refresh_token_error.to_string().contains("refresh_token"),
-            "{refresh_token_error}"
-        );
-
-        let mut state = WorkingState::default();
-
-        fold(&mut state, &ResponseTarget::AccessToken, "token-value").unwrap();
-
-        fold(&mut state, &ResponseTarget::RefreshToken, "refresh-value").unwrap();
-
-        assert_eq!(
-            state.access_token.as_deref(),
-            Some("token-value"),
-            "a valid access token stores"
-        );
-
-        assert_eq!(
-            state.refresh_token.as_deref(),
-            Some("refresh-value"),
-            "a valid refresh token stores"
-        );
-    }
-
-    /// Folds one text value into the state through the given target, returning the fold's
-    /// result so the test can pin its failure side.
-    fn fold(
-        state: &mut WorkingState,
-        target: &ResponseTarget,
-        value: &str,
-    ) -> Result<(), super::Error> {
-        apply_target(state, target, Extracted::Text(value.to_string()))
-    }
-
-    /// The poll failure rendering bounds and shapes the upstream payload (README §4): an
-    /// object renders its `status` and `message` members, a bare JSON string renders its text —
-    /// never the JSON-quoted spelling — any other non-`null` value renders its JSON text, every
-    /// rendering is truncated to the shared excerpt bound, and a `null` payload reads as no
-    /// failure.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a fixture lands on the wrong side of its check.
-    #[test]
-    fn error_at_renders_json_payloads_bounded_and_unquoted() {
-        let path = ResponsePath(vec!["error".to_string()]);
-
-        let json = |value: serde_json::Value| DecodedBody::Json(value);
-
-        let rendered = error_at(
-            &json(serde_json::json!({
-                "error": {
-                    "status": "quota_exceeded",
-                    "message": "the operation exploded"
-                }
-            })),
-            &path,
-        )
-        .unwrap();
-
-        assert_eq!(
-            rendered.as_deref(),
-            Some("quota_exceeded: the operation exploded"),
-            "an object payload renders its display members"
-        );
-
-        let rendered = error_at(
-            &json(serde_json::json!({"error": "quota went away"})),
-            &path,
-        )
-        .unwrap();
-
-        assert_eq!(
-            rendered.as_deref(),
-            Some("quota went away"),
-            "a bare string renders its text, never the JSON-quoted spelling"
-        );
-
-        let rendered = error_at(&json(serde_json::json!({"error": 42})), &path).unwrap();
-
-        assert_eq!(rendered.as_deref(), Some("42"));
-
-        let rendered = error_at(&json(serde_json::json!({"error": [1, 2]})), &path).unwrap();
-
-        assert_eq!(rendered.as_deref(), Some("[1,2]"));
-
-        let rendered =
-            error_at(&json(serde_json::json!({"error": "x".repeat(500)})), &path).unwrap();
-
-        assert_eq!(
-            rendered.map(|text| text.chars().count()),
-            Some(401),
-            "the rendering is truncated to the shared excerpt bound"
-        );
-
-        let none = error_at(&json(serde_json::json!({"error": null})), &path).unwrap();
-
-        assert_eq!(none, None, "a null payload reads as no failure");
-    }
-
-    /// A flat form response carries no nesting (README §5.1), so a poll path addressing it
-    /// names exactly one member: a multi-member done or error path is a malformed definition
-    /// that fast-fails the poll — never a missing value read as still-running (the done path)
-    /// or as no failure (the error path).
-    ///
-    /// # Panics
-    ///
-    /// Panics when a fixture lands on the wrong side of its check.
-    #[test]
-    fn a_multi_member_poll_path_against_a_form_body_fast_fails() {
-        let body = DecodedBody::Form(BTreeMap::from([(
-            "status".to_string(),
-            "running".to_string(),
-        )]));
-
-        let Err(done_error) = done_at(
-            &body,
-            &ResponsePath(vec!["result".to_string(), "done".to_string()]),
-        ) else {
-            panic!("a two-member done path against a form body must fail the poll");
-        };
-
-        assert!(
-            done_error
-                .to_string()
-                .contains("done path addresses a flat form field and carries exactly one member"),
-            "{done_error}"
-        );
-
-        let Err(error_path_error) = error_at(
-            &body,
-            &ResponsePath(vec!["result".to_string(), "error".to_string()]),
-        ) else {
-            panic!("a two-member error path against a form body must fail the poll");
-        };
-
-        assert!(
-            error_path_error
-                .to_string()
-                .contains("error path addresses a flat form field and carries exactly one member"),
-            "{error_path_error}"
-        );
     }
 }

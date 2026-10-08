@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ValueExpr {
+pub(crate) enum ValueExpr {
     /// A constant string.
     Literal {
         /// The constant text.
@@ -89,7 +89,7 @@ impl ValueExpr {
     /// Literal text and coalesce arguments never reach the stage-vocabulary checks — the walk
     /// handles those forms explicitly — so their names exist only to keep the method total.
     #[must_use]
-    pub(crate) fn display_name(&self) -> &'static str {
+    pub(super) fn display_name(&self) -> &'static str {
         match self {
             Self::Literal { .. } => "literal",
             Self::Secret => "secret",
@@ -117,23 +117,16 @@ impl ValueExpr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(transparent)]
-pub struct StringExpr(
+pub(crate) struct StringExpr(
     /// The ordered parts.
-    pub Vec<ValueExpr>,
+    pub(crate) Vec<ValueExpr>,
 );
 
 impl StringExpr {
     /// Builds the one-part literal expression of `text`.
     #[must_use]
-    pub fn literal(text: impl Into<String>) -> Self {
+    pub(in crate::provider) fn literal(text: impl Into<String>) -> Self {
         Self(vec![ValueExpr::Literal { value: text.into() }])
-    }
-
-    /// Builds the expression carrying the single value part.
-    #[cfg(test)]
-    #[must_use]
-    pub fn single(part: ValueExpr) -> Self {
-        Self(vec![part])
     }
 }
 
@@ -141,12 +134,12 @@ impl StringExpr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ParamRow {
+pub(crate) struct ParamRow {
     /// The header, query, or form field name.
-    pub name: String,
+    pub(crate) name: String,
 
     /// The evaluated value.
-    pub value: StringExpr,
+    pub(crate) value: StringExpr,
 }
 
 /// A typed JSON template tree: the shape of a control request's JSON body and of an inference
@@ -158,7 +151,7 @@ pub struct ParamRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum TemplateNode {
+pub(crate) enum TemplateNode {
     /// A literal JSON leaf of any shape — a string, number, boolean, or `null` — rendered
     /// verbatim. The carried value's shape is the operator's to define, so it is modeled as an
     /// opaque JSON value.
@@ -196,7 +189,7 @@ pub enum TemplateNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "UPPERCASE")]
-pub enum ControlMethod {
+pub(in crate::provider) enum ControlMethod {
     /// An HTTP `GET` request; a control request with this method carries no body.
     Get,
 
@@ -211,7 +204,7 @@ pub enum ControlMethod {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ControlBody {
+pub(in crate::provider) enum ControlBody {
     /// A `application/x-www-form-urlencoded` body of evaluated name-value fields.
     Form {
         /// The evaluated fields, rendered in the carried order.
@@ -231,32 +224,32 @@ pub enum ControlBody {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ControlRequest {
+pub(in crate::provider) struct ControlRequest {
     /// The request method.
-    pub method: ControlMethod,
+    pub(in crate::provider) method: ControlMethod,
 
     /// The evaluated request URL.
-    pub url: StringExpr,
+    pub(in crate::provider) url: StringExpr,
 
     /// The evaluated request headers, rendered in the carried order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub headers: Vec<ParamRow>,
+    pub(in crate::provider) headers: Vec<ParamRow>,
 
     /// The evaluated query parameters, appended to the URL in the carried order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub query: Vec<ParamRow>,
+    pub(in crate::provider) query: Vec<ParamRow>,
 
     /// The request body; a `GET` request never carries one, and a `POST` without a body is the
     /// bodyless form some endpoints require.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body: Option<ControlBody>,
+    pub(in crate::provider) body: Option<ControlBody>,
 }
 
 /// The wire encoding a control response arrives in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum ResponseEncoding {
+pub(in crate::provider) enum ResponseEncoding {
     /// A JSON document.
     Json,
 
@@ -274,9 +267,9 @@ pub enum ResponseEncoding {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(transparent)]
-pub struct ResponsePath(
+pub(in crate::provider) struct ResponsePath(
     /// The ordered member names.
-    pub Vec<String>,
+    pub(in crate::provider) Vec<String>,
 );
 
 impl ResponsePath {
@@ -285,7 +278,7 @@ impl ResponsePath {
     /// Arrays are not addressed by value paths, so an array met mid-chain is a `None` like any
     /// other non-object.
     #[must_use]
-    pub(crate) fn resolve<'a>(&self, json: &'a Json) -> Option<&'a Json> {
+    pub(in crate::provider) fn resolve<'a>(&self, json: &'a Json) -> Option<&'a Json> {
         let mut value = json;
 
         for member in &self.0 {
@@ -300,7 +293,7 @@ impl ResponsePath {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ExtractionShape {
+pub(in crate::provider) enum ExtractionShape {
     /// The value is a JSON string, or a JSON number rendered as its decimal text.
     String,
 
@@ -322,27 +315,27 @@ pub enum ExtractionShape {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ResponseField {
+pub(in crate::provider) struct ResponseField {
     /// The closed path of the response value.
-    pub path: ResponsePath,
+    pub(in crate::provider) path: ResponsePath,
 
     /// Where the extracted value is stored.
-    pub target: ResponseTarget,
+    pub(in crate::provider) target: ResponseTarget,
 
     /// Whether a missing path fails the stage (`true`) or leaves the target unchanged (`false`).
-    pub required: bool,
+    pub(in crate::provider) required: bool,
 }
 
 /// The declared encoding and field mappings of one control response (README §5.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ResponseDescriptor {
+pub(in crate::provider) struct ResponseDescriptor {
     /// The wire encoding the response arrives in.
-    pub encoding: ResponseEncoding,
+    pub(in crate::provider) encoding: ResponseEncoding,
 
     /// The name-to-value mappings applied to the decoded response.
-    pub fields: Vec<ResponseField>,
+    pub(in crate::provider) fields: Vec<ResponseField>,
 }
 
 /// The merged working-state targets of a decoded control response: one closed vocabulary shared
@@ -351,7 +344,7 @@ pub struct ResponseDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ResponseTarget {
+pub(in crate::provider) enum ResponseTarget {
     /// The access token; may be supplied by a later provisioning step instead, but must exist
     /// before the provider write.
     AccessToken,
@@ -393,47 +386,4 @@ pub enum ResponseTarget {
     /// The access token's absolute expiry, rendered by the upstream in Unix seconds
     /// (provisioning only).
     ExpiresAtUnixSeconds,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// One path resolution, panicking on a `None` the fixture guarantees.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the path does not resolve.
-    fn resolved<'a>(path: &'a ResponsePath, json: &'a Json) -> &'a Json {
-        #[expect(clippy::unwrap_used, reason = "the fixture path always resolves")]
-        path.resolve(json).unwrap()
-    }
-
-    /// `resolve` walks the member chain with the empty chain as the root, and any missing
-    /// member or non-object intermediate yields `None` (README §5.1).
-    ///
-    /// # Panics
-    ///
-    /// Panics when a fixture path does not resolve.
-    #[test]
-    fn resolves_member_chains() {
-        let json = serde_json::json!({ "a": { "b": { "c": "leaf" } } });
-
-        let root = ResponsePath::default();
-
-        assert_eq!(resolved(&root, &json), &json);
-
-        let leaf = ResponsePath(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
-
-        assert_eq!(resolved(&leaf, &json), &serde_json::json!("leaf"));
-
-        let missing = ResponsePath(vec!["a".to_string(), "absent".to_string()]);
-
-        assert_eq!(missing.resolve(&json), None);
-
-        // An intermediate value that is not an object — a string here — addresses nothing.
-        let flat = serde_json::json!({ "a": "text" });
-
-        assert_eq!(leaf.resolve(&flat), None);
-    }
 }

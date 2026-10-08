@@ -14,7 +14,7 @@ import { registerLeaveGuardSubject } from "/src/leave-guard-registry";
  * becomes null and nothing is held, dirt included, because deletion ends the
  * form (the screen's not-found state takes over).
  */
-export function createHeldRow<TRow>(
+function createHeldRow<TRow>(
     latest: Accessor<TRow | null>,
     isFormDirty: Accessor<boolean>,
     isSameRow: (previous: TRow, fresh: TRow) => boolean,

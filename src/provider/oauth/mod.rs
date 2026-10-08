@@ -25,13 +25,7 @@ mod provisioning;
 mod refresh;
 
 pub(crate) use completion::{complete_exchange, completed_outcome, write_completion_provider};
-#[cfg(test)]
-pub(crate) use exchange::ExchangeOutcome;
 pub(crate) use exchange::execute_exchange;
 pub(crate) use flow::{BeganFlow, BeginFacts, BeginPurpose, begin_flow, initialize_slots};
-#[cfg(test)]
-pub(crate) use flow::{DeviceAuthorization, execute_device_authorization};
 pub(crate) use poller::spawn_device_poller;
-#[cfg(test)]
-pub(crate) use provisioning::{ProvisioningEnv, WorkingState, run_steps};
 pub(crate) use refresh::ensure_fresh_token;

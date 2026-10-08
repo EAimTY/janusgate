@@ -65,7 +65,7 @@
 //!   well-formed thought step of this family (an object whose `type` is `thought`) replays
 //!   byte-for-byte — members and values preserved, key order canonicalized by `serde_json`'s map
 //!   ordering — while any other opaque (cross-family blocks, text-only blocks) renders from
-//!   `text`/`signature` and drops the payload. The family-membership test is structural, so a
+//!   `text`/`signature` and drops the payload. The family-membership check is structural, so a
 //!   foreign block can never leak onto this family's wire.
 //!
 //! # What remains self-pinned
@@ -256,7 +256,7 @@ enum ContentBlock {
 /// alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub(in crate::format) enum ResponseFormatShape {
+enum ResponseFormatShape {
     /// Text output, optionally constrained to JSON.
     Text {
         /// Output MIME type: `text/plain` (the upstream default) or `application/json`.

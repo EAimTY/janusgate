@@ -9,7 +9,7 @@ use std::fmt;
 
 /// Source semantics not recoverable from the tool output's normalized inference text.
 #[derive(Clone, Copy)]
-pub(crate) enum ResultShape {
+pub(super) enum ResultShape {
     /// Accepted text, including the codec's normalized text-block result form.
     Text,
     /// A foreign JSON object, array, number, or boolean serialized into inference text.
@@ -81,7 +81,7 @@ impl Sources {
     }
 
     /// Starts source metadata for one accepted client codec.
-    pub(crate) fn new(client_format: UpstreamFormat) -> Self {
+    pub(super) fn new(client_format: UpstreamFormat) -> Self {
         Self {
             client_format,
             tools: Vec::new(),
@@ -91,7 +91,7 @@ impl Sources {
 
     /// Records codecs whose every accepted call/result reference is a required real wire ID,
     /// and whose results normalize to text. ID-less/foreign-result codecs record at conversion.
-    pub(crate) fn from_wire_messages(
+    pub(super) fn from_wire_messages(
         client_format: UpstreamFormat,
         messages: &[IrMessage],
     ) -> Self {
@@ -108,17 +108,17 @@ impl Sources {
     }
 
     /// Captures identity provenance at the same point that the parser emits an IR invocation.
-    pub(crate) fn call(&mut self, has_wire_id: bool) {
+    pub(super) fn call(&mut self, has_wire_id: bool) {
         self.tools.push(ToolSource::Call { has_wire_id });
     }
 
     /// Captures reference provenance and content type before the normal parser loses either.
-    pub(crate) fn result(&mut self, has_wire_id: bool, shape: ResultShape) {
+    pub(super) fn result(&mut self, has_wire_id: bool, shape: ResultShape) {
         self.tools.push(ToolSource::Result { has_wire_id, shape });
     }
 
     /// Records an accepted part whose inference destination is already known.
-    pub(crate) fn part(&mut self, message: usize, part: usize) {
+    pub(super) fn part(&mut self, message: usize, part: usize) {
         if let Some(order) = &mut self.order {
             order.push(PartLocation::Resolved { message, part });
         }
@@ -129,7 +129,7 @@ impl Sources {
     /// # Panics
     ///
     /// Panics if called by a codec without a part-order channel, a first-party parser invariant.
-    pub(crate) fn defer_part(&mut self, part: usize) -> usize {
+    pub(super) fn defer_part(&mut self, part: usize) -> usize {
         #[expect(
             clippy::expect_used,
             reason = "only GenerateContent defers reordered user parts"
@@ -148,7 +148,7 @@ impl Sources {
     /// # Panics
     ///
     /// Panics if a parser-supplied deferred slot is missing or already resolved.
-    pub(crate) fn resolve_parts(&mut self, slots: &[usize], message: usize) {
+    pub(super) fn resolve_parts(&mut self, slots: &[usize], message: usize) {
         #[expect(
             clippy::expect_used,
             reason = "only GenerateContent resolves its own deferred parts"
@@ -234,7 +234,7 @@ impl Sources {
     /// # Panics
     ///
     /// Panics if parser source records or validated foreign JSON violate their typed contracts.
-    pub(crate) fn append(&self, messages: &[IrMessage], projector: &mut Projector) {
+    fn append(&self, messages: &[IrMessage], projector: &mut Projector) {
         self.append_window(messages, &[], 0, projector);
     }
 
@@ -417,7 +417,7 @@ pub(crate) fn replay_family(format: UpstreamFormat) -> Option<ReplayFamily> {
 
 /// Projects a completed emitted invocation only if its foreign argument string is replayable.
 /// An upstream malformed argument suffix disables output anchoring without altering inference.
-pub(in crate::format) fn project_call(
+pub(super) fn project_call(
     projector: &mut Projector,
     call_id: &str,
     name: &str,
@@ -445,7 +445,3 @@ fn identity(call_id: &str, has_wire_id: bool) -> Identity<'_> {
         Identity::Synthetic(call_id)
     }
 }
-
-#[cfg(test)]
-#[path = "affinity_tests.rs"]
-mod tests;

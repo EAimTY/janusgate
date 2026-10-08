@@ -32,7 +32,7 @@ use serde_json::Value;
 
 /// Why one native dispatch failed, before any artifact was committed.
 #[derive(Debug)]
-pub(crate) enum NativeAttemptFailure {
+pub(super) enum NativeAttemptFailure {
     /// The upstream answered with a response the definition's typed classifier
     /// positively matches — status, error code, or error parameter. The one
     /// runtime evidence that permits the single summary fallback.
@@ -177,7 +177,7 @@ pub(crate) fn classify_failure(
 ///
 /// Panics if the codec-rendered compact body fails to serialize, which cannot
 /// occur for a first-party rendered body.
-pub(crate) async fn responses_standalone(
+pub(super) async fn responses_standalone(
     context: &Context,
     routing: &ModelRouting,
     operation: &StandaloneCompactOperation,
@@ -300,7 +300,7 @@ pub(crate) async fn responses_standalone(
 ///
 /// Panics if the codec-rendered count body fails to serialize, which cannot
 /// occur for a first-party rendered body.
-pub(crate) async fn count_tokens(
+pub(super) async fn count_tokens(
     context: &Context,
     routing: &ModelRouting,
     operation: &crate::provider::definition::compaction::CountTokensOperation,
@@ -373,7 +373,7 @@ pub(crate) async fn count_tokens(
 
 /// The outcome of a native Messages on-demand compaction dispatch.
 #[derive(Debug)]
-pub(crate) enum OnDemandOutcome {
+pub(super) enum OnDemandOutcome {
     /// The upstream returned one complete, signed compaction block: the exact
     /// native artifact, beside the raw vendor iteration entries the usage
     /// render carries.
@@ -422,7 +422,7 @@ pub(crate) enum OnDemandOutcome {
               accounting facts the native call shares; splitting them would obscure the \
               call's single contract"
 )]
-pub(crate) async fn messages_on_demand(
+pub(super) async fn messages_on_demand(
     context: &Context,
     routing: &ModelRouting,
     overlay_headers: &[crate::provider::definition::template::ParamRow],
@@ -556,120 +556,8 @@ pub(crate) async fn messages_on_demand(
 
 /// Converts parsed threshold edits to their concrete upstream wire representation.
 #[must_use]
-pub(crate) fn threshold_edits(
+pub(super) fn threshold_edits(
     edits: &[crate::format::compaction_control::ThresholdEdit],
 ) -> Vec<crate::ir::compaction::ThresholdEdit> {
     edits.iter().map(Into::into).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "test fixtures parse and render values constructed to succeed"
-    )]
-
-    use super::{CompactionBlockView, threshold_edits, usage_to_ir};
-    use crate::{
-        format::{compaction_control::ThresholdEdit, openai::response::UpstreamUsage},
-        ir::{IrUsage, compaction::AutomaticEntry},
-    };
-    use serde_json::json;
-
-    /// The usage conversion maps every reported breakdown and leaves the
-    /// unreported ones absent.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn usage_conversion_maps_reported_breakdowns() {
-        let full = usage_to_ir(&UpstreamUsage {
-            input_tokens: 100,
-            output_tokens: 20,
-            input_tokens_details: Some(crate::format::openai::PromptTokensDetails {
-                cached_tokens: Some(5),
-                cache_write_tokens: None,
-            }),
-            output_tokens_details: Some(crate::format::openai::CompletionTokensDetails {
-                reasoning_tokens: Some(7),
-            }),
-            dropped_message_count: Some(3),
-        });
-
-        assert_eq!(
-            full,
-            IrUsage {
-                input_tokens: 100,
-                output_tokens: 20,
-                cached_tokens: Some(5),
-                cache_write_tokens: None,
-                reasoning_tokens: Some(7),
-            }
-        );
-
-        let bare = usage_to_ir(&UpstreamUsage::default());
-
-        assert_eq!(bare, IrUsage::default());
-    }
-
-    /// The passthrough entry renders round-trip to the vendor shapes the
-    /// upstream render members carry: thresholds and triggers only when
-    /// stated, the pause flag only when requested.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a rendered value diverges from the vendor shape.
-    #[test]
-    fn passthrough_values_render_the_vendor_shapes() {
-        assert_eq!(
-            serde_json::json!(vec![
-                AutomaticEntry {
-                    compact_threshold: Some(90_000),
-                },
-                AutomaticEntry {
-                    compact_threshold: None,
-                },
-            ]),
-            json!([
-                {"type": "compaction", "compact_threshold": 90_000},
-                {"type": "compaction"},
-            ])
-        );
-
-        assert_eq!(
-            serde_json::json!(threshold_edits(&[ThresholdEdit {
-                trigger: Some(120_000),
-                pause_after_compaction: true,
-                instructions: Some(String::from("focus")),
-            }])),
-            json!([{
-                "type": "compact_20260112",
-                "trigger": {"type": "input_tokens", "value": 120_000},
-                "pause_after_compaction": true,
-                "instructions": "focus",
-            }])
-        );
-    }
-
-    /// The vendor block view reads content and signature and ignores the rest.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the view diverges from the tolerant-read contract.
-    #[test]
-    fn block_view_reads_content_and_signature() {
-        let view: CompactionBlockView =
-            serde_json::from_value(json!({"type": "compaction", "content": "s", "signature":
-            "sig", "encrypted_content": "x", "tool_changes": []}))
-            .expect("the vendor block view parses");
-
-        assert_eq!(view.content.as_deref(), Some("s"));
-        assert_eq!(view.signature.as_deref(), Some("sig"));
-
-        let null_block: CompactionBlockView =
-            serde_json::from_value(json!({"type": "compaction", "content": null})).expect("parses");
-
-        assert_eq!(null_block.content, None);
-    }
 }

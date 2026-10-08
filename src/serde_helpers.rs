@@ -55,11 +55,12 @@ where
 /// full-state update semantics (rule 3) the two spellings share the one meaning — "no override" —
 /// and the bindings keep well-typed clients honest by requiring the key.
 ///
-/// The struct is `pub` only because it is the field type of publicly reachable wire payloads;
-/// the defining module stays private, so the name is reachable exclusively through the
-/// re-exports of the surfaces that declare it.
+/// The struct is `pub(crate)` only because the management API's wire payloads use it as a field
+/// type; the defining module sits at the crate root, so the crate is the narrowest scope that
+/// reaches them, and the name stays reachable exclusively through the imports of the surfaces
+/// that declare it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Nullable<T>(pub Option<T>);
+pub(crate) struct Nullable<T>(pub(crate) Option<T>);
 
 impl<T> Serialize for Nullable<T>
 where
@@ -142,7 +143,7 @@ pub(crate) mod absent_keeps {
     /// # Errors
     ///
     /// Returns the deserializer's error when the value is `null` or malformed.
-    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+    pub(crate) fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
     where
         D: Deserializer<'de>,
         T: Deserialize<'de>,

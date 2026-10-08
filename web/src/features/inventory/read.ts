@@ -78,7 +78,7 @@ export function readProviderPools(
 }
 
 /** The entity pair the provider and model screens read alongside their rows. */
-export type ProviderCatalog = {
+type ProviderCatalog = {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
 };

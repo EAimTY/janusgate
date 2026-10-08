@@ -314,7 +314,7 @@ export function UsageQueryScreen(props: {
                 reportRefresh();
             }
         } catch (error) {
-            // The abort test runs ahead of any diagnosis, as the shared
+            // The abort check runs ahead of any diagnosis, as the shared
             // harness's catch orders it: a failure answer that lands on an
             // already-superseded cycle is the dead cycle's diagnosis — the
             // newer cycle owns the screen, and nothing installs.

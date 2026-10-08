@@ -10,7 +10,7 @@ use vec1::Vec1;
 #[serde(try_from = "u16", into = "u16")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[cfg_attr(feature = "management-api-typescript-bindings", ts(type = "number"))]
-pub struct RejectedStatus(u16);
+pub(crate) struct RejectedStatus(u16);
 
 impl TryFrom<u16> for RejectedStatus {
     type Error = &'static str;
@@ -32,53 +32,53 @@ impl From<RejectedStatus> for u16 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct QuotaExhaustion {
+pub(crate) struct QuotaExhaustion {
     /// Authored evaluation order; the `Vec1` type rejects an empty list at parse.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(as = "Vec<QuotaExhaustionRule>")
     )]
-    pub rules: Vec1<QuotaExhaustionRule>,
+    pub(in crate::provider) rules: Vec1<QuotaExhaustionRule>,
 }
 
 /// One positive discrimination rule; status alone can never establish exhaustion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct QuotaExhaustionRule {
+pub(in crate::provider) struct QuotaExhaustionRule {
     /// Unique author-defined diagnostic name, excluded from the restriction identity.
-    pub name: String,
+    name: String,
     /// Nonempty set of rejected HTTP statuses.
-    pub statuses: BTreeSet<RejectedStatus>,
+    pub(in crate::provider) statuses: BTreeSet<RejectedStatus>,
     /// Exact string member required in a complete valid JSON object.
-    pub code: ExactQuotaCode,
+    pub(in crate::provider) code: ExactQuotaCode,
     /// Nonempty ordered restriction identity recipe; the `Vec1` type rejects an empty recipe at
     /// parse.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(as = "Vec<RestrictionKeySegment>")
     )]
-    pub restriction_key: Vec1<RestrictionKeySegment>,
+    pub(in crate::provider) restriction_key: Vec1<RestrictionKeySegment>,
     /// Account-wide or exact requested physical model applicability.
-    pub applies_to: RejectionApplicability,
+    pub(in crate::provider) applies_to: RejectionApplicability,
 }
 
 /// One object-member string code, matched case-sensitively without coercion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ExactQuotaCode {
+pub(in crate::provider) struct ExactQuotaCode {
     /// Nonempty object-member chain; array addressing is unavailable.
-    pub at: ResponsePath,
+    pub(in crate::provider) at: ResponsePath,
     /// Exact required string value.
-    pub value: String,
+    pub(in crate::provider) value: String,
 }
 
 /// One ordered restriction identity segment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum RestrictionKeySegment {
+pub(in crate::provider) enum RestrictionKeySegment {
     /// Author-defined identity text.
     Literal {
         /// Nonempty exact segment.
@@ -92,7 +92,7 @@ pub enum RestrictionKeySegment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum RejectionApplicability {
+pub(in crate::provider) enum RejectionApplicability {
     /// Blocks every exact model on the account.
     AllModels,
     /// Blocks only this dispatch's requested exact upstream model.

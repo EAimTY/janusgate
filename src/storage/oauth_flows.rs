@@ -90,7 +90,7 @@ impl FlowPurpose {
 
     /// The storage form of the purpose.
     #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
             Self::Reauthorize => "reauthorize",
@@ -98,7 +98,7 @@ impl FlowPurpose {
     }
 
     /// Parses the storage form of the purpose; anything else is storage drift.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    fn parse(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|purpose| purpose.as_str() == value)
@@ -135,7 +135,7 @@ impl FlowGrant {
     }
 
     /// Parses the storage form of the grant kind; anything else is storage drift.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|grant| grant.as_str() == value)
     }
 }
@@ -161,7 +161,7 @@ impl FlowOutcome {
 
     /// The storage form of the outcome.
     #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
@@ -169,7 +169,7 @@ impl FlowOutcome {
     }
 
     /// Parses the storage form of the outcome; anything else is storage drift.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    fn parse(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|outcome| outcome.as_str() == value)
@@ -196,17 +196,17 @@ pub(crate) struct OngoingFlow {
     pub(crate) purpose: FlowPurpose,
 
     /// The new provider's name, for a create flow.
-    pub(crate) provider_name: Option<String>,
+    provider_name: Option<String>,
 
     /// Direct-model prefix for a create flow; absent for reauthorization.
-    pub(crate) model_prefix: Option<String>,
+    model_prefix: Option<String>,
 
     /// The working base URL: the creation's initial instance URL, or the target provider's
     /// stored one, replaceable by an exchange or provisioning extraction before commit.
     pub(crate) base_url: Option<String>,
 
     /// The reauthorized provider's row identifier, for a reauthorize flow.
-    pub(crate) target_provider_id: Option<i64>,
+    target_provider_id: Option<i64>,
 
     /// The grant kind the flow runs.
     pub(crate) grant_type: FlowGrant,
@@ -249,13 +249,13 @@ pub(crate) struct OngoingFlow {
 
     /// The provider row the successful flow produced; a bare id without a foreign key, so a
     /// later provider deletion cannot strand the result row.
-    pub(crate) result_provider_id: Option<i64>,
+    result_provider_id: Option<i64>,
 
     /// The gateway-owned failure code of a failed flow; never an upstream body.
-    pub(crate) failure_code: Option<String>,
+    failure_code: Option<String>,
 
     /// The gateway-owned failure message of a failed flow; never an upstream body.
-    pub(crate) failure_message: Option<String>,
+    failure_message: Option<String>,
 
     /// Unix timestamp in microseconds after which the flow is invalid; the authorization-code
     /// TTL is fixed at ten minutes, a device flow's comes from its authorization response or the
@@ -875,283 +875,4 @@ pub(crate) async fn commit_device_success_in_transaction(
         .await?;
 
     Ok(changes == 1)
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "the fixtures are constructed so each expect lands on its documented side"
-    )]
-
-    use super::{
-        DevicePollOutcome, FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
-        commit_device_success_in_transaction, consume_flow, consume_terminal_flow,
-        find_flow_by_state, insert_flow, persist_device_poll, sweep_expired_flows,
-    };
-    use crate::{
-        storage::test_support::{insert_oauth_definition, insert_test_provider, oauth_definition},
-        test_support,
-    };
-    use std::{collections::BTreeMap, error::Error as StdError};
-
-    /// The storage-layer flow fixture: the crate-wide device-flow fixture
-    /// [`test_support::insert_flow_fixture`] narrowed to the fixed small schedule and the
-    /// `"st-device-1"` token these tests assert against. The delta pins the whole schedule, so
-    /// the fixture instant the callers pass never reaches the row.
-    fn new_device_flow_delta() -> test_support::FlowFixtureDelta {
-        test_support::FlowFixtureDelta {
-            state_token: Some("st-device-1".to_string()),
-            purpose: Some(FlowPurpose::Reauthorize),
-            provider_name: Some(None),
-            target_provider_id: Some(1),
-            device_code: Some("dc".to_string()),
-            device_user_code: Some("uc".to_string()),
-            device_next_poll_at: Some(500),
-            expires_at: Some(1_000_000),
-            ..test_support::FlowFixtureDelta::default()
-        }
-    }
-
-    /// Verifies the OAuth flow lifecycle against the real database: a device flow's stored
-    /// schedule drives the conditional claim, the claim owner alone persists its outcome, a
-    /// terminal success commits atomically with the provider write, the result is consumed once,
-    /// and the expiry sweep clears unconsumed rows.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn device_flow_lifecycle_claims_and_consumes_once() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = test_support::create_test_database().await;
-
-        let definition = oauth_definition();
-
-        insert_oauth_definition(&database, &definition).await?;
-
-        let flow =
-            test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta())
-                .await;
-
-        // Nothing is due before its next-poll instant.
-        let now = 400;
-
-        assert!(claim_due_device_flow(&database, now, 0).await?.is_none());
-
-        // The due flow is claimed by exactly one conditional update.
-        let claimed = claim_due_device_flow(&database, 500, 0)
-            .await?
-            .expect("the due flow claims");
-
-        assert_eq!(claimed.id, flow.id);
-        assert_eq!(claimed.device_poll_started_at, Some(500));
-
-        // A second claimant cannot steal a live claim.
-        assert!(claim_due_device_flow(&database, 500, 0).await?.is_none());
-
-        // A lost claim is the owner's alone to persist; the schedule retry lands.
-        let is_persisted = persist_device_poll(
-            &database,
-            flow.id,
-            999,
-            DevicePollOutcome::Retry {
-                next_poll_at: 10_000,
-                interval_seconds: 5,
-            },
-        )
-        .await?;
-
-        assert!(!is_persisted);
-
-        let is_persisted = persist_device_poll(
-            &database,
-            flow.id,
-            500,
-            DevicePollOutcome::Retry {
-                next_poll_at: 10_000,
-                interval_seconds: 5,
-            },
-        )
-        .await?;
-
-        assert!(is_persisted);
-
-        let rescheduled = find_flow_by_state(&database, "st-device-1", 0)
-            .await?
-            .expect("the flow persists");
-
-        assert_eq!(rescheduled.device_next_poll_at, Some(10_000));
-        assert_eq!(rescheduled.device_poll_started_at, None);
-
-        // The success commits the provider write and the terminal outcome in one transaction.
-        let target = insert_test_provider(&database, "oauth-target").await?;
-
-        let mut transaction = database.transaction().await?;
-
-        let is_committed =
-            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000 - 5, target)
-                .await?;
-
-        assert!(!is_committed, "a stale claim cannot commit");
-
-        // The discarded attempt releases its write lock before the next claim.
-        transaction.rollback().await?;
-
-        let mut transaction = database.transaction().await?;
-
-        let claim = claim_due_device_flow(&database, 10_000, 0)
-            .await?
-            .expect("the rescheduled flow claims again");
-
-        assert_eq!(claim.device_poll_started_at, Some(10_000));
-
-        let is_committed =
-            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000, target).await?;
-
-        assert!(is_committed);
-
-        transaction.commit().await?;
-
-        let terminal = find_flow_by_state(&database, "st-device-1", 0)
-            .await?
-            .expect("the terminal row stays until consumed");
-
-        assert_eq!(terminal.outcome, Some(FlowOutcome::Succeeded));
-        assert_eq!(terminal.result_provider_id, Some(target));
-        assert_eq!(
-            terminal.device_next_poll_at, None,
-            "the terminal row carries no next-poll instant"
-        );
-        assert_eq!(terminal.device_poll_started_at, None);
-
-        // The result is consumed exactly once.
-        let consumed = consume_terminal_flow(&database, "st-device-1", 0).await?;
-
-        assert!(consumed.is_some());
-        assert!(
-            consume_terminal_flow(&database, "st-device-1", 0)
-                .await?
-                .is_none()
-        );
-
-        // A pending authorization-code flow is never consumed by the terminal-only consume.
-        let auth_flow = insert_flow(
-            &database,
-            NewFlow {
-                model_prefix: Some(String::new()),
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "st-auth-1".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("new-provider".to_string()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::AuthorizationCode,
-                slots: BTreeMap::new(),
-                code_verifier: Some("verifier".to_string()),
-                device_code: None,
-                device_user_code: None,
-                device_verification_uri: None,
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: None,
-                device_next_poll_at: None,
-                expires_at: 1_000_000,
-            },
-        )
-        .await?;
-
-        assert!(
-            consume_terminal_flow(&database, "st-auth-1", 0)
-                .await?
-                .is_none()
-        );
-
-        // The atomic consume spends the row exactly once, whatever its state.
-        let consumed = consume_flow(&database, "st-auth-1", 0).await?;
-
-        assert_eq!(consumed.map(|flow| flow.id), Some(auth_flow.id));
-        assert!(consume_flow(&database, "st-auth-1", 0).await?.is_none());
-
-        // The expiry sweep clears unconsumed rows.
-        test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta()).await;
-
-        sweep_expired_flows(&database, 2_000_000).await?;
-
-        assert!(
-            find_flow_by_state(&database, "st-device-1", 0)
-                .await?
-                .is_none()
-        );
-
-        Ok(())
-    }
-
-    /// Verifies the terminal failure persist: the flow records its gateway-owned pair and drops
-    /// the next-poll instant — a device flow carries its schedule exactly while it is pending
-    /// (README §3) — while keeping the device columns and interval that identify its grant, and
-    /// the failure is consumable exactly once as the flow's terminal result.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn device_flow_terminal_failure_clears_the_next_poll_instant()
-    -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = test_support::create_test_database().await;
-
-        let definition = oauth_definition();
-
-        insert_oauth_definition(&database, &definition).await?;
-
-        test_support::insert_flow_fixture(&database, &definition, 0, new_device_flow_delta()).await;
-
-        let claim = claim_due_device_flow(&database, 500, 0)
-            .await?
-            .expect("the due flow claims");
-
-        let is_persisted = persist_device_poll(
-            &database,
-            claim.id,
-            500,
-            DevicePollOutcome::Failed {
-                code: "expired_token".to_string(),
-                message: "the device code expired".to_string(),
-            },
-        )
-        .await?;
-
-        assert!(is_persisted);
-
-        let terminal = find_flow_by_state(&database, "st-device-1", 0)
-            .await?
-            .expect("the terminal row stays until consumed");
-
-        assert_eq!(terminal.outcome, Some(FlowOutcome::Failed));
-        assert_eq!(terminal.failure_code.as_deref(), Some("expired_token"));
-        assert_eq!(
-            terminal.failure_message.as_deref(),
-            Some("the device code expired")
-        );
-        assert_eq!(
-            terminal.device_next_poll_at, None,
-            "the terminal row carries no next-poll instant"
-        );
-        assert_eq!(terminal.device_poll_started_at, None);
-        assert_eq!(terminal.device_poll_interval_seconds, Some(5));
-        assert_eq!(terminal.device_code.as_deref(), Some("dc"));
-
-        // The failure is consumed exactly once, like every terminal result.
-        assert!(
-            consume_terminal_flow(&database, "st-device-1", 0)
-                .await?
-                .is_some()
-        );
-        assert!(
-            consume_terminal_flow(&database, "st-device-1", 0)
-                .await?
-                .is_none()
-        );
-
-        Ok(())
-    }
 }

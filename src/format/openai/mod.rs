@@ -21,9 +21,7 @@ use serde::{Deserialize, Serialize};
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `tool_choice` for unknown modes.
-pub(in crate::format::openai) fn parse_tool_choice_mode(
-    mode: &str,
-) -> Result<IrToolChoice, InvalidRequest> {
+fn parse_tool_choice_mode(mode: &str) -> Result<IrToolChoice, InvalidRequest> {
     match mode {
         "auto" => Ok(IrToolChoice::Auto),
         "none" => Ok(IrToolChoice::None),
@@ -39,7 +37,7 @@ pub(in crate::format::openai) fn parse_tool_choice_mode(
 /// vocabulary [`parse_tool_choice_mode`] parses inbound.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(in crate::format::openai) enum ToolChoiceMode {
+enum ToolChoiceMode {
     /// The model decides freely.
     Auto,
 
@@ -58,7 +56,7 @@ pub(in crate::format::openai) enum ToolChoiceMode {
 /// (`{"type": "function", "name": ...}`) — so the object is the rendering codec's own type.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(in crate::format::openai) enum ToolChoice<NamedToolChoice> {
+enum ToolChoice<NamedToolChoice> {
     /// The mode-string form.
     Mode(ToolChoiceMode),
 
@@ -71,7 +69,7 @@ pub(in crate::format::openai) enum ToolChoice<NamedToolChoice> {
 /// named-function form's wire shape is per-codec, so its object is built by `named` from the
 /// required function name.
 #[must_use]
-pub(in crate::format::openai) fn render_tool_choice<'a, NamedToolChoice>(
+fn render_tool_choice<'a, NamedToolChoice>(
     tool_choice: &'a IrToolChoice,
     named: impl FnOnce(&'a str) -> NamedToolChoice,
 ) -> ToolChoice<NamedToolChoice> {

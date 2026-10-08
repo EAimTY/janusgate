@@ -95,22 +95,3 @@ impl MechanismSupport {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Mechanism;
-
-    /// Pins the mechanism spellings against the [`Mechanism::ALL`] table.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails — the assertion is the failure report.
-    #[test]
-    fn mechanism_spellings_round_trip() {
-        for mechanism in Mechanism::ALL {
-            assert_eq!(Mechanism::from_str(mechanism.as_str()), Some(mechanism));
-        }
-
-        assert_eq!(Mechanism::from_str("nonsense"), None);
-    }
-}

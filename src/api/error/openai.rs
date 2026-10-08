@@ -14,16 +14,16 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct OpenAiErrorBody {
     /// Human-readable error message.
-    pub(crate) message: String,
+    message: String,
 
     /// OpenAI `type` field.
-    pub(crate) r#type: &'static str,
+    r#type: &'static str,
 
     /// OpenAI `param` field, when the failure names a request parameter.
-    pub(crate) param: Option<String>,
+    param: Option<String>,
 
     /// OpenAI `code` field, when the failure has a stable code.
-    pub(crate) code: Option<String>,
+    code: Option<String>,
 }
 
 /// The JSON error envelope `{"error": {...}}` shared by the JSON error response and the streamed
@@ -126,7 +126,7 @@ pub(crate) fn render_body(error: &Error) -> OpenAiErrorBody {
 }
 
 /// Renders the full OpenAI error response: the HTTP status the variant pins beside its envelope.
-pub(crate) fn render(error: &Error) -> (StatusCode, OpenAiErrorEnvelope) {
+pub(in crate::api) fn render(error: &Error) -> (StatusCode, OpenAiErrorEnvelope) {
     let status = error.http_status();
 
     (

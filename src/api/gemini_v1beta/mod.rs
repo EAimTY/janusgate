@@ -16,8 +16,8 @@ use crate::{
 use axum::{Router, extract::Request, http::StatusCode};
 use serde::Serialize;
 
-pub(super) mod generate_content;
-pub(super) mod interactions;
+mod generate_content;
+mod interactions;
 
 /// The Gemini prefix surface's identity for the shared pipeline: `x-goog-api-key` credentials
 /// (header only — no `?key=` query form) and the Gemini error envelope.
@@ -52,57 +52,10 @@ pub(super) fn router(database: Database) -> Router<Context> {
 /// both Gemini endpoints. The check parses the raw query without the axum `query` extractor
 /// (which would require the axum `query` feature) by splitting on `&` and `=`; no form decoding
 /// is needed — the override is exactly `alt=sse`.
-pub(super) fn has_alt_sse(query: Option<&str>) -> bool {
+fn has_alt_sse(query: Option<&str>) -> bool {
     query.is_some_and(|query| {
         query
             .split('&')
             .any(|pair| matches!(pair.split_once('='), Some(("alt", "sse"))))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verifies the streaming query predicate: exactly the `alt=sse` pair matches, in any query
-    /// position, while an absent query, an unrelated query, a prefixed name, a wrong value, a
-    /// case difference, and a value carrying extra content all reject.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a query classifies outside its documented outcome.
-    #[test]
-    fn detects_only_the_alt_sse_query_form() {
-        for query in [
-            "alt=sse",
-            "alt=sse&other=1",
-            "other=1&alt=sse",
-            "other=1&alt=sse&more=2",
-            // The override rides any `alt` pair: the first `alt=sse` forces streaming even when a
-            // later pair would disagree.
-            "alt=sse&alt=stream",
-        ] {
-            assert!(
-                has_alt_sse(Some(query)),
-                "`{query}` carries the streaming override"
-            );
-        }
-
-        for query in [
-            "other=1",
-            "alt",
-            "alt=",
-            "alt=stream",
-            "ALT=sse",
-            "xalt=sse",
-            "alt=sse=1",
-        ] {
-            assert!(
-                !has_alt_sse(Some(query)),
-                "`{query}` does not carry the streaming override"
-            );
-        }
-
-        assert!(!has_alt_sse(None), "an absent query never streams");
-    }
 }

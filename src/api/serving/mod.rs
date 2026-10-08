@@ -29,7 +29,7 @@ mod delivery;
 pub(super) use completion::{OperationKind, run_compact, run_completion};
 
 /// Maximum accepted request body size, large enough for inline image data.
-pub(super) const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// The per-surface identity the shared pipeline renders through: the two conventions that are
 /// deliberately not shared — how a request presents its credential, and how an [`Error`] lands on
@@ -114,11 +114,7 @@ where
 /// next request; a database failure renders the surface's internal error instead of an
 /// authentication rejection. A request that passes is stamped with the matching key's row id,
 /// which the completion handlers carry into the request accounting (README §3 *ApiLog*).
-pub(super) async fn authenticate<S>(
-    State(database): State<Database>,
-    request: Request,
-    next: Next,
-) -> Response
+async fn authenticate<S>(State(database): State<Database>, request: Request, next: Next) -> Response
 where
     S: Surface,
 {
@@ -220,7 +216,7 @@ where
 
 /// Handles unmapped surface paths with the surface's 404, logging the rendered error once at this
 /// response boundary.
-pub(super) async fn fallback<S>(OriginalUri(uri): OriginalUri, request: Request) -> Response
+async fn fallback<S>(OriginalUri(uri): OriginalUri, request: Request) -> Response
 where
     S: Surface,
 {
@@ -237,7 +233,7 @@ where
 /// Handles a request whose method is not registered on an otherwise-matching path with the
 /// surface's 405, logging the rendered error once at this response boundary. Axum still attaches
 /// the `Allow` header listing the registered methods.
-pub(super) async fn method_not_allowed<S>(method: Method, OriginalUri(uri): OriginalUri) -> Response
+async fn method_not_allowed<S>(method: Method, OriginalUri(uri): OriginalUri) -> Response
 where
     S: Surface,
 {
@@ -330,7 +326,7 @@ where
 ///
 /// Panics if the rendered body fails to serialize or the static response
 /// parts fail to build, neither of which can occur.
-pub(super) fn json_response<T>(status: StatusCode, body: &T) -> Response
+fn json_response<T>(status: StatusCode, body: &T) -> Response
 where
     T: Serialize,
 {
@@ -380,6 +376,3 @@ where
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

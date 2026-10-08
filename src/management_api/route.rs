@@ -38,14 +38,14 @@ pub(super) trait Route {
 #[derive(Clone)]
 pub(super) struct ClosureType {
     /// Identity of the Rust type.
-    pub(crate) type_id: TypeId,
+    pub(super) type_id: TypeId,
 
     /// TypeScript identifier of the type.
-    pub(crate) ident: String,
+    pub(super) ident: String,
 
     /// Renders the type's declaration — doc comment included — as it appears in the version's
     /// single bindings file.
-    pub(crate) declaration: fn(&Config) -> String,
+    pub(super) declaration: fn(&Config) -> String,
 }
 
 /// ts-rs-backed description of one request or response payload type, produced lazily because
@@ -53,12 +53,12 @@ pub(super) struct ClosureType {
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) struct PayloadBinding {
     /// Identity and TypeScript identifier of the payload type itself.
-    pub(crate) root: (TypeId, String),
+    pub(super) root: (TypeId, String),
 
     /// The payload type plus every type it transitively references; the walk mirrors the one
     /// ts-rs's exporter performs, so every entry's declaration is rendered into the version's
     /// bindings file.
-    pub(crate) closure: Vec<ClosureType>,
+    pub(super) closure: Vec<ClosureType>,
 }
 
 /// One route's registration in its version's registry, holding function pointers because a
@@ -67,16 +67,16 @@ pub(super) struct PayloadBinding {
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) struct RouteBinding {
     /// HTTP method the route answers.
-    pub(crate) method: fn() -> Method,
+    pub(super) method: fn() -> Method,
 
     /// Path within its version's sub-router.
-    pub(crate) path: &'static str,
+    pub(super) path: &'static str,
 
     /// Request payload binding.
-    pub(crate) request: fn(&Config) -> PayloadBinding,
+    pub(super) request: fn(&Config) -> PayloadBinding,
 
     /// Response payload binding.
-    pub(crate) response: fn(&Config) -> PayloadBinding,
+    pub(super) response: fn(&Config) -> PayloadBinding,
 }
 
 /// One payload type a version's bindings export besides its route payloads, such as its error body;

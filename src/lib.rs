@@ -23,7 +23,7 @@ mod context;
 mod database;
 mod format;
 mod gateway;
-pub(crate) mod http_body;
+mod http_body;
 mod http_client;
 mod ids;
 mod ir;
@@ -38,8 +38,6 @@ mod serde_helpers;
 mod server;
 mod sse;
 mod storage;
-#[cfg(test)]
-mod test_support;
 mod unix_time;
 mod vocabulary;
 

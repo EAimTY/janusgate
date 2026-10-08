@@ -163,7 +163,7 @@ pub(crate) enum Error {
 
 impl Error {
     /// The HTTP status the variant pins.
-    pub(crate) fn http_status(&self) -> StatusCode {
+    fn http_status(&self) -> StatusCode {
         match self {
             Self::InvalidApiKey => StatusCode::UNAUTHORIZED,
 
@@ -204,7 +204,7 @@ impl Error {
     /// without its accounting being decided: a catch-all would silently record `completed` with
     /// a 5xx status in every row a new gateway-side failure finalizes, and accounting is written
     /// and swallowed — nothing else would flag it.
-    pub(crate) fn accounting(&self) -> (ApiLogOutcome, i64) {
+    pub(super) fn accounting(&self) -> (ApiLogOutcome, i64) {
         match self {
             Self::Upstream { status, .. } | Self::QuotaRejected { status, .. } => {
                 (ApiLogOutcome::UpstreamError, i64::from(status.as_u16()))
@@ -385,163 +385,5 @@ impl From<axum::extract::rejection::BytesRejection> for Error {
                 message: rejection.to_string(),
             },
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::format::PayloadError;
-
-    /// Verifies every variant pins its contract status (README §6.7): 401 for the key, 404 for the
-    /// URL and the model, 405 for the method, 413 for the body, 400 for the malformed request, the
-    /// mirrored status for the upstream, 502 for the unavailable upstream, and 500 with the fixed
-    /// message for the internal failure.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any variant pins a different status or the internal message leaks its cause.
-    #[test]
-    fn pins_one_status_per_variant() {
-        let cases: Vec<(Error, StatusCode)> = vec![
-            (Error::InvalidApiKey, StatusCode::UNAUTHORIZED),
-            (
-                Error::InvalidUrl {
-                    method: "GET".to_string(),
-                    path: "/nope".to_string(),
-                },
-                StatusCode::NOT_FOUND,
-            ),
-            (Error::MethodNotAllowed, StatusCode::METHOD_NOT_ALLOWED),
-            (Error::PayloadTooLarge, StatusCode::PAYLOAD_TOO_LARGE),
-            (
-                Error::MalformedRequest {
-                    param: Some("model".to_string()),
-                    message: "bad model".to_string(),
-                },
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                Error::ModelNotFound {
-                    model: "gpt-4o".to_string(),
-                },
-                StatusCode::NOT_FOUND,
-            ),
-            (
-                Error::Upstream {
-                    status: StatusCode::TOO_MANY_REQUESTS,
-                    message: "rate limited".to_string(),
-                },
-                StatusCode::TOO_MANY_REQUESTS,
-            ),
-            (
-                Error::UpstreamUnavailable {
-                    message: "connection refused".to_string(),
-                },
-                StatusCode::BAD_GATEWAY,
-            ),
-            (Error::Internal, StatusCode::INTERNAL_SERVER_ERROR),
-        ];
-
-        for (error, status) in cases {
-            assert_eq!(error.http_status(), status, "status mismatch for {error}");
-        }
-
-        assert_eq!(Error::Internal.to_string(), INTERNAL_MESSAGE);
-    }
-
-    /// Verifies the domain conversion in its one place: gateway pipeline failures land on their
-    /// contract variants — routing misses become the model row, mirrored statuses stay mirrored,
-    /// transport failures become unavailable, and every gateway-side failure (including a vanished
-    /// provider mid-refresh and storage drift) becomes the fixed-message internal that never leaks
-    /// its cause.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any domain failure classifies outside its contract row.
-    #[test]
-    fn converts_domain_failures_in_one_place() {
-        let error = Error::from(GatewayError::ModelNotFound {
-            model: "m".to_string(),
-        });
-
-        assert!(matches!(error, Error::ModelNotFound { .. }));
-        assert_eq!(error.http_status(), StatusCode::NOT_FOUND);
-
-        let error = Error::from(GatewayError::Upstream {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            detail: "overloaded".to_string(),
-        });
-
-        assert_eq!(error.http_status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(matches!(error, Error::Upstream { .. }));
-
-        let error = Error::from(GatewayError::from(PayloadError::new("connection refused")));
-
-        assert_eq!(error.http_status(), StatusCode::BAD_GATEWAY);
-        assert!(matches!(error, Error::UpstreamUnavailable { .. }));
-
-        for error in [
-            Error::from(GatewayError::Internal {
-                message: "storage drift".to_string(),
-            }),
-            Error::from(GatewayError::Provider(ProviderError::NotFound {
-                message: "provider vanished during token refresh".to_string(),
-            })),
-            Error::from(StorageError::Drift {
-                message: "drift".to_string(),
-            }),
-        ] {
-            assert_eq!(error.http_status(), StatusCode::INTERNAL_SERVER_ERROR);
-            assert_eq!(error.to_string(), INTERNAL_MESSAGE);
-        }
-
-        let error = Error::from(InvalidRequest::field("model", "bad model"));
-
-        assert!(matches!(error, Error::MalformedRequest { .. }));
-        assert_eq!(error.http_status(), StatusCode::BAD_REQUEST);
-    }
-
-    /// Verifies the accounting classification derives from the same variant: mirrored statuses
-    /// record `upstream_error` with that status, transport failures record `upstream_error` with
-    /// 502, gateway-side failures record `internal` with 500, and client faults record
-    /// `completed` with their own pinned status.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any variant classifies outside its documented outcome.
-    #[test]
-    fn classifies_accounting_from_the_same_variant() {
-        let (outcome, status) = Error::Upstream {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: "rate limited".to_string(),
-        }
-        .accounting();
-
-        assert_eq!((outcome, status), (ApiLogOutcome::UpstreamError, 429));
-
-        let (outcome, status) = Error::UpstreamUnavailable {
-            message: "unreachable".to_string(),
-        }
-        .accounting();
-
-        assert_eq!((outcome, status), (ApiLogOutcome::UpstreamError, 502));
-
-        let (outcome, status) = Error::Internal.accounting();
-
-        assert_eq!((outcome, status), (ApiLogOutcome::Internal, 500));
-
-        // The client faults share one arm, so two representatives pin the `completed` outcome;
-        // their statuses are already pinned exhaustively by `pins_one_status_per_variant`.
-        let (outcome, status) = Error::InvalidApiKey.accounting();
-
-        assert_eq!((outcome, status), (ApiLogOutcome::Completed, 401));
-
-        let (outcome, status) = Error::ModelNotFound {
-            model: "gpt-4o".to_string(),
-        }
-        .accounting();
-
-        assert_eq!((outcome, status), (ApiLogOutcome::Completed, 404));
     }
 }

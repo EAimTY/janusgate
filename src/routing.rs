@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum ModelRouteTarget {
+pub(crate) enum ModelRouteTarget {
     /// One concrete physical model; bypasses pooled selection and affinity.
     Direct {
         /// Physical model row identifier.
@@ -25,9 +25,9 @@ pub enum ModelRouteTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ProviderPoolMember {
+pub(crate) struct ProviderPoolMember {
     /// Credential-bearing account row identifier.
-    pub provider_id: i64,
+    pub(crate) provider_id: i64,
     /// Nonnegative order key; smaller values are considered first.
-    pub priority: u32,
+    pub(crate) priority: u32,
 }

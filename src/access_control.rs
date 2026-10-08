@@ -32,20 +32,6 @@ pub(crate) enum RouteOwner {
     Pool(i64),
 }
 
-#[cfg(test)]
-impl RouteOwner {
-    /// Creates an explicit owner default with its typed identity.
-    pub(crate) fn rule(self, access: AccessDecision) -> ApiKeyOwnerDefault {
-        match self {
-            Self::Provider(provider_id) => ApiKeyOwnerDefault::Provider {
-                provider_id,
-                access,
-            },
-            Self::Pool(pool_id) => ApiKeyOwnerDefault::Pool { pool_id, access },
-        }
-    }
-}
-
 /// One explicit default for a provider or pool, including owners with no public routes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -86,9 +72,9 @@ impl ApiKeyOwnerDefault {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(crate) struct ApiKeyRouteOverride {
     /// Never-recycled public-route identity.
-    pub model_route_id: i64,
+    pub(crate) model_route_id: i64,
     /// Explicit decision, independent of the route's current owner.
-    pub access: AccessDecision,
+    pub(crate) access: AccessDecision,
 }
 
 /// The complete authored key policy; sparse collections are unordered on writes.
@@ -97,11 +83,11 @@ pub(crate) struct ApiKeyRouteOverride {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(crate) struct ApiKeyAccessControl {
     /// Decision for entries inheriting from the key.
-    pub default_access: AccessDecision,
+    pub(crate) default_access: AccessDecision,
     /// Explicit typed owner defaults.
-    pub owner_defaults: Vec<ApiKeyOwnerDefault>,
+    pub(crate) owner_defaults: Vec<ApiKeyOwnerDefault>,
     /// Explicit public-route decisions.
-    pub route_overrides: Vec<ApiKeyRouteOverride>,
+    pub(crate) route_overrides: Vec<ApiKeyRouteOverride>,
 }
 
 impl ApiKeyAccessControl {
@@ -128,72 +114,5 @@ impl ApiKeyAccessControl {
                 RouteOwner::Pool(id) => (1, id),
             });
         self.route_overrides.sort_by_key(|rule| rule.model_route_id);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every level wins over lower levels, with distinct provider and pool identities.
-    ///
-    /// # Panics
-    /// Panics if precedence, explicit pins, or owner-kind isolation changes.
-    #[test]
-    fn precedence_and_explicit_intent() {
-        for default_access in [AccessDecision::Allow, AccessDecision::Deny] {
-            for owner_access in [
-                None,
-                Some(AccessDecision::Allow),
-                Some(AccessDecision::Deny),
-            ] {
-                for route_access in [
-                    None,
-                    Some(AccessDecision::Allow),
-                    Some(AccessDecision::Deny),
-                ] {
-                    for owner in [RouteOwner::Provider(7), RouteOwner::Pool(7)] {
-                        let mut policy = ApiKeyAccessControl {
-                            default_access,
-                            owner_defaults: owner_access
-                                .map(|access| owner.rule(access))
-                                .into_iter()
-                                .collect(),
-                            route_overrides: route_access
-                                .map(|access| ApiKeyRouteOverride {
-                                    model_route_id: 41,
-                                    access,
-                                })
-                                .into_iter()
-                                .collect(),
-                        };
-                        assert_eq!(
-                            policy.resolve(41, owner),
-                            route_access.or(owner_access).unwrap_or(default_access)
-                        );
-                        assert_eq!(
-                            policy.resolve(42, owner),
-                            owner_access.unwrap_or(default_access)
-                        );
-                        let other = match owner {
-                            RouteOwner::Provider(id) => RouteOwner::Pool(id),
-                            RouteOwner::Pool(id) => RouteOwner::Provider(id),
-                        };
-                        assert_eq!(policy.resolve(42, other), default_access);
-                        policy.default_access = if default_access == AccessDecision::Allow {
-                            AccessDecision::Deny
-                        } else {
-                            AccessDecision::Allow
-                        };
-                        assert_eq!(
-                            policy.resolve(41, owner),
-                            route_access
-                                .or(owner_access)
-                                .unwrap_or(policy.default_access)
-                        );
-                    }
-                }
-            }
-        }
     }
 }

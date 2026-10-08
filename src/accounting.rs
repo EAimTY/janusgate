@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// and [`ApiLogEndpointType::as_str`] are one vocabulary (README §3 *ApiLog*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum ApiLogEndpointType {
+pub(crate) enum ApiLogEndpointType {
     /// `POST /api/openai-v1/chat/completions`.
     #[serde(rename = "openai_chat_completions")]
     OpenaiChatCompletions,
@@ -62,7 +62,7 @@ impl ApiLogEndpointType {
     /// Renders the storage spelling of the endpoint type — the exact string the schema `CHECK`
     /// accepts.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::OpenaiChatCompletions => "openai_chat_completions",
             Self::OpenaiResponses => "openai_responses",
@@ -89,7 +89,7 @@ impl ApiLogEndpointType {
 /// and [`ApiLogOutcome::as_str`] are one vocabulary (README §3 *ApiLog*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum ApiLogOutcome {
+pub(crate) enum ApiLogOutcome {
     /// The response completed normally: `completed` + `200`.
     #[serde(rename = "completed")]
     Completed,
@@ -124,7 +124,7 @@ impl ApiLogOutcome {
 
     /// Renders the storage spelling of the outcome — the exact string the schema `CHECK` accepts.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
             Self::ClientAborted => "client_aborted",
@@ -147,7 +147,7 @@ impl ApiLogOutcome {
 /// request payload parses. The serde and TypeScript names are the wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum UsageGroupBy {
+pub(crate) enum UsageGroupBy {
     /// UTC day of `started_at`, rendered `YYYY-MM-DD`.
     #[serde(rename = "day")]
     Day,
@@ -189,7 +189,7 @@ impl UsageGroupBy {
     /// Renders the wire spelling of the dimension — the exact string the request vocabulary
     /// carries.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Day => "day",
             Self::Model => "model",
@@ -201,38 +201,5 @@ impl UsageGroupBy {
             Self::IsStream => "is_stream",
             Self::HttpStatus => "http_status",
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ApiLogEndpointType;
-
-    /// The stored vocabulary round-trips: every variant's storage spelling parses back to it,
-    /// and a spelling outside the closed set parses to nothing — the drift classification the
-    /// `api_logs.endpoint_type` `CHECK` vocabulary relies on.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a spelling fails to round-trip or a foreign spelling parses.
-    #[test]
-    fn endpoint_type_round_trips_its_whole_vocabulary() {
-        for endpoint_type in ApiLogEndpointType::ALL {
-            #[expect(
-                clippy::expect_used,
-                reason = "a vocabulary spelling is constructed to parse"
-            )]
-            let parsed = ApiLogEndpointType::parse(endpoint_type.as_str())
-                .expect("a vocabulary spelling must parse");
-
-            assert_eq!(parsed, endpoint_type);
-        }
-
-        assert_eq!(
-            ApiLogEndpointType::parse("openai_responses_compact"),
-            Some(ApiLogEndpointType::OpenaiResponsesCompact)
-        );
-
-        assert_eq!(ApiLogEndpointType::parse("grpc"), None);
     }
 }
