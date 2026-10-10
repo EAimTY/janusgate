@@ -1,4 +1,4 @@
-//! Context measurement and gateway threshold defaults (README §6.8): the
+//! Context measurement and gateway threshold defaults (`docs/design/compaction.md`): the
 //! shared text-only estimator every gateway-emulated threshold evaluates, and
 //! the documented default thresholds.
 //!

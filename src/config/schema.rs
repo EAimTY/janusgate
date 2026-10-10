@@ -65,8 +65,9 @@ pub(crate) struct Config {
     /// sealed compaction artifacts: present, gateway summaries and wrapped native windows are
     /// sealed under the configured keys; absent, any operation that would produce or consume a
     /// sealed carrier fails while native passthrough keeps working. The first key seals; every
-    /// configured key unseals by its carrier-carried identifier, so keys rotate by appending.
-    /// Removing a key intentionally invalidates its artifacts.
+    /// configured key unseals by its carrier-carried identifier, so rotation prepends a new active
+    /// key while retaining old entries. Removing a key intentionally invalidates its
+    /// artifacts.
     #[serde(default)]
     pub(super) compaction: Option<CompactionConfig>,
 
@@ -253,14 +254,14 @@ pub(crate) struct ApiConfig {
     #[serde(default)]
     pub(super) cors: CorsConfig,
 
-    /// Request accounting configuration (`api.logs`, README §3 *ApiLog Store*). Defaults as a
-    /// whole: recording on, the day files under `api_logs` beside the configuration file, and
-    /// 90 days of retention.
+    /// Request accounting configuration (`api.logs`, `docs/design/storage.md` *ApiLog Store*).
+    /// Defaults as a whole: recording on, the day files under `api_logs` beside the
+    /// configuration file, and 90 days of retention.
     #[serde(default)]
     pub(crate) logs: LogsConfig,
 }
 
-/// Request accounting configuration (`api.logs`, README §3 *ApiLog Store*).
+/// Request accounting configuration (`api.logs`, `docs/design/storage.md` *ApiLog Store*).
 ///
 /// `is_enabled` is the recording switch: `true`, dispatched requests are recorded into the
 /// day-partitioned api-log store; `false`, none are, while existing api-log files stay readable

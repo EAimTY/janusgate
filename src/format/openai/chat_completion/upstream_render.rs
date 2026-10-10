@@ -53,7 +53,7 @@ pub(crate) struct RequestBody<'a> {
     response_format: Option<ResponseFormat<'a>>,
 
     /// Reasoning effort string rendered verbatim into the upstream's own parameter; omitted when
-    /// the client sent no effort (README §6.4).
+    /// the client sent no effort (`docs/reference/inference.md`).
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
 }
@@ -122,8 +122,8 @@ enum UserContentPart<'a> {
 /// The image URL object of an image content part.
 #[derive(Debug, Serialize)]
 struct ImageUrl<'a> {
-    /// Inline data URL or remote `http`/`https` URL (README §6.6), borrowed verbatim for a
-    /// remote image.
+    /// Inline data URL or remote `http`/`https` URL (`docs/reference/inference.md`), borrowed
+    /// verbatim for a remote image.
     url: Cow<'a, str>,
 }
 
@@ -239,7 +239,7 @@ struct JsonSchema<'a> {
 }
 
 /// Renders the upstream Chat Completions payload: the body only — the URL, the headers, and the
-/// streaming decision belong to the provider definition (README §5.2).
+/// streaming decision belong to the provider definition (`docs/design/providers.md`).
 pub(crate) fn render_request_body(
     ir: &IrRequest,
     is_streaming: bool,

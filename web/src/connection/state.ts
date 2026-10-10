@@ -2,7 +2,7 @@ import type { Connection } from "/src/connection/model";
 
 /**
  * A refused connection attempt, kept whole so the setup screen can explain it
- * (README §3.1): the message is what a person reads, `cause` is what the
+ * (`web/docs/architecture.md`): the message is what a person reads, `cause` is what the
  * diagnosis needs, and `baseUrl` is the address the failed attempt carried, so
  * the reconnect screen seeds its address field with it and a later edit of the
  * field cannot misattribute the failure. No token travels with it: the token
@@ -16,7 +16,7 @@ type ConnectionFailure = {
 };
 
 /**
- * The lifecycle of the connection pair (README §3.1). State is a value; events
+ * The lifecycle of the connection pair (`web/docs/architecture.md`). State is a value; events
  * are the only way it changes, and every transition is stated explicitly.
  */
 export type ConnectionState =
@@ -59,7 +59,7 @@ export type ConnectionEvent =
     | {
           /**
            * The operator cancelled the probe in flight: control flow, never a
-           * refusal (README §3.1) — no gateway refused, so no failure lands
+           * refusal (`web/docs/architecture.md`) — no gateway refused, so no failure lands
            * and setup reopens with nothing to diagnose or seed from.
            */
           readonly type: "connectionCancelled";

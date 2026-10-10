@@ -1,6 +1,6 @@
 //! The lease-guarded token renewal: one request drives the database refresh lease, the
 //! definition's refresh mode — a refresh grant or a reprovisioning — and the lease-conditioned
-//! persist, so concurrent requests never overwrite newer credentials (README §3).
+//! persist, so concurrent requests never overwrite newer credentials (`docs/design/storage.md`).
 //!
 //! The lease lives inside the credentials JSON document and every transition conditions on
 //! `json_extract(credentials, …)`; the engine never read–modify–writes a stale document in Rust.
@@ -108,7 +108,7 @@ fn is_renewable(provider: &Provider) -> bool {
 /// `null` expiry is the no-scheduled-refresh state — the lease is never granted for it, because
 /// the acquire requires a known expiry on both of its arms — so a renewable row in this state
 /// is dispatched as-is: waiting for a concurrent refresher would poll a lease that can never be
-/// granted until the wait limit fails every dispatch (README §3).
+/// granted until the wait limit fails every dispatch (`docs/design/storage.md`).
 #[must_use]
 fn is_refresh_scheduled(provider: &Provider) -> bool {
     match &provider.credentials {
@@ -435,7 +435,7 @@ enum Renewal {
         /// The refresh token the reprovisioning sequence extracted, when it rotated one; the
         /// persist carries the member only when present, so an absent extraction leaves the
         /// stored token in place — the reprovisioning arm's mirror of the grant arm's
-        /// retention of an omitted rotation (README §3).
+        /// retention of an omitted rotation (`docs/design/storage.md`).
         refresh_token: Option<String>,
 
         /// The renewed base URL, when provisioning supplied one.
@@ -557,7 +557,7 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
             // base only when an extraction derived one. Writing the acquire-time snapshot
             // unconditionally would clobber a base a concurrent `providers:update` stored
             // while the sequence ran — the flow path's identical hazard, which refuses a
-            // non-derived base for the same reason (README §3).
+            // non-derived base for the same reason (`docs/design/storage.md`).
             let mut state = WorkingState::new(slots.clone(), provider.base_url.clone());
 
             provisioning::run_steps(http, steps, &constants, &mut state).await?;
@@ -583,9 +583,10 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
                 expires_at,
                 refresh_token: state.refresh_token,
                 // The stored base joins the persist only when this renewal's provisioning
-                // extracted a replacement (README §3): the seed base aboard otherwise is the
-                // lease-acquire-time snapshot, and the persist's `COALESCE` keeps the stored
-                // column — a concurrent `providers:update`'s write — untouched.
+                // extracted a replacement (`docs/design/storage.md`): the seed base aboard
+                // otherwise is the lease-acquire-time snapshot, and the persist's
+                // `COALESCE` keeps the stored column — a concurrent
+                // `providers:update`'s write — untouched.
                 base_url: state
                     .is_base_url_derived
                     .then(|| state.base_url.clone())

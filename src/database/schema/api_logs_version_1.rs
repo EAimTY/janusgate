@@ -1,4 +1,5 @@
-//! Api-log schema version 1: the initial api-log file layout (README §3 *ApiLog Store*).
+//! Api-log schema version 1: the initial api-log file layout (`docs/design/storage.md` *ApiLog
+//! Store*).
 //!
 //! Version 1 creates the `api_logs` table and its five indexes in the api-log store's separate
 //! registry. Its [`Schema::migration`] is empty: there is no previous version to migrate from.

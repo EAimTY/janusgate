@@ -3,10 +3,11 @@
 //! Two clients are built at startup, one per traffic class: the data plane ([`crate::gateway`])
 //! streams long-lived completions, while the control plane (OAuth token exchange and refresh, model
 //! discovery, project onboarding) performs short JSON round-trips. Splitting them lets each client
-//! carry the timeout profile its traffic class needs instead of one compromise profile (README §4).
-//! Both clients refuse redirects outright (`reqwest::redirect::Policy::none`): a 3xx surfaces as
-//! the upstream response it is and flows through the caller's non-2xx path, so credential headers
-//! and request bodies are never re-dispatched to the Location origin.
+//! carry the timeout profile its traffic class needs instead of one compromise profile
+//! (`docs/reference/configuration.md`). Both clients refuse redirects outright
+//! (`reqwest::redirect::Policy::none`): a 3xx surfaces as the upstream response it is and flows
+//! through the caller's non-2xx path, so credential headers and request bodies are never
+//! re-dispatched to the Location origin.
 
 use reqwest::{Client, redirect::Policy};
 use std::time::Duration;

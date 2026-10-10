@@ -54,14 +54,14 @@ export function StatedNotice(props: {
 }
 
 /**
- * The standing notice a screen's read states (README §6.3): the last read
+ * The standing notice a screen's read states (`web/docs/architecture.md`): the last read
  * failure's diagnosis, or the last action's reported outcome, rendered where
  * every screen states it — above the screen's content, before the skeleton
  * window.
  *
  * Where the screen wires its reload as `retry`, a failed first read carries
  * the same *Read again* action the detail and edit frame renders beside its
- * standing failure (README §6.3): the same wording, rerunning the screen's
+ * standing failure (`web/docs/architecture.md`): the same wording, rerunning the screen's
  * own read in place — the recovery needs no trip to the shell's *Refresh*.
  * The action gates on the first read exactly as the frame's does, so it
  * stands only where the failure leaves nothing else on the page; a notice

@@ -1,11 +1,12 @@
 //! Gemini GenerateContent protocol codec, the GenerateContent family of the Gemini protocol under
 //! [`crate::format::gemini`].
 //!
-//! Speaks the `gemini_generate_content` upstream protocol, both in the Antigravity envelope (§5.2)
-//! and as a bare OpenAI-compatible upstream protocol (§5.3), and serves the inbound Gemini
-//! GenerateContent surface — `POST /models/{model}:generateContent` (non-streaming) and
-//! `POST /models/{model}:streamGenerateContent?alt=sse` (streaming, only the `alt=sse` form is
-//! supported, else 400) plus `GET /models` — per README §§6.3–6.6.
+//! Speaks the `gemini_generate_content` upstream protocol, both in the Antigravity envelope
+//! (`docs/design/providers.md`) and as a bare OpenAI-compatible upstream protocol
+//! (`docs/design/providers.md`), and serves the inbound Gemini GenerateContent surface — `POST
+//! /models/{model}:generateContent` (non-streaming) and `POST /models/{model}:
+//! streamGenerateContent?alt=sse` (streaming, only the `alt=sse` form is supported, else 400) plus
+//! `GET /models` — per `docs/reference/inference.md`–6.6.
 //!
 //! The architecture this surface plugs into:
 //! - [`crate::format::RouteContext`] carries the URL-routed public model id and the streaming mode

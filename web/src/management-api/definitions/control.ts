@@ -26,7 +26,7 @@ import {
     expectTemplateNode,
 } from "./expressions";
 
-/** One control body: a form-encoded field set or a typed JSON tree (README §5.1). */
+/** One control body: a form-encoded field set or a typed JSON tree (`docs/design/providers.md`). */
 function expectControlBody(value: unknown, context: string): ControlBody {
     const record = expectRecord(value, context);
     const kind = expectString(Reflect.get(record, "kind"), `${context}.kind`);
@@ -67,7 +67,7 @@ function expectControlBody(value: unknown, context: string): ControlBody {
 }
 
 /**
- * One control request: method, URL, headers, query, and body (README §5.1).
+ * One control request: method, URL, headers, query, and body (`docs/design/providers.md`).
  * The rules apply at every stage the request serves, since the walk is the
  * one the quota descriptor, the OAuth recipe, the provisioning steps, and the
  * discovery all parse through: the URL carries at least one expression part,
@@ -142,14 +142,14 @@ export function expectControlRequest(value: unknown, context: string): ControlRe
     return request;
 }
 
-/** One response path: the ordered member chain, every member non-empty (README §5.1). */
+/** One response path: the ordered member chain, every member non-empty (`docs/design/providers.md`). */
 export function expectResponsePath(value: unknown, context: string): ResponsePath {
     return expectArray(value, context).map((member, index) =>
         expectNonEmptyString(member, `${context}[${index}]`),
     );
 }
 
-/** One merged working-state target, rebuilt from its tag (README §5.3, §5.4). */
+/** One merged working-state target, rebuilt from its tag (`docs/design/providers.md`). */
 export function expectResponseTarget(value: unknown, context: string): ResponseTarget {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -225,7 +225,7 @@ function expectResponseField(
 }
 
 /**
- * One response descriptor: the encoding and its field mappings (README §5.1).
+ * One response descriptor: the encoding and its field mappings (`docs/design/providers.md`).
  * A form-encoded response's fields are flat, so every path of one addresses
  * exactly one member — the rule the gateway holds every descriptor to.
  */
@@ -259,7 +259,7 @@ export function expectResponseDescriptor(value: unknown, context: string): Respo
     return descriptor;
 }
 
-/** The declared shape of one extracted value (README §5.4). */
+/** The declared shape of one extracted value (`docs/design/providers.md`). */
 export function expectExtractionShape(value: unknown, context: string): ExtractionShape {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -296,7 +296,7 @@ export function expectExtractionShape(value: unknown, context: string): Extracti
     throw new ContractViolationError(`${context}.type is not an extraction shape: ${type}`);
 }
 
-/** The wire encoding a control response arrives in (README §5.1). */
+/** The wire encoding a control response arrives in (`docs/design/providers.md`). */
 export function expectResponseEncoding(value: unknown, context: string): ResponseEncoding {
     return expectOneOf(
         value,

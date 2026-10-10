@@ -1,5 +1,5 @@
 //! Gemini inbound surfaces (`/api/gemini-v1beta`): GenerateContent and Interactions under one
-//! prefix (README §6.3).
+//! prefix (`docs/reference/inference.md`).
 //!
 //! This module owns the shared prefix router: `x-goog-api-key` authentication (header only, no
 //! `?key=`), the format-compliant 404/405 bodies via [`crate::api::error::gemini`], the body

@@ -42,9 +42,9 @@ const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub(super) trait Surface {
     /// Renders one API failure onto the surface's error wire: the surface's error render module's
     /// `render` function, which classifies the [`Error`] variant into the surface's (HTTP status,
-    /// JSON envelope) pair (README §6.7). The shared [`error_response`] composes it with the
-    /// universal JSON response builder, so every rejection and handler failure the pipeline
-    /// produces lands on the wire through one glue path.
+    /// JSON envelope) pair (`docs/reference/inference.md`). The shared [`error_response`] composes
+    /// it with the universal JSON response builder, so every rejection and handler failure the
+    /// pipeline produces lands on the wire through one glue path.
     fn render_error(error: &Error) -> (StatusCode, impl Serialize);
 
     /// Reads the presented credential key from the request per the surface's authentication
@@ -71,8 +71,9 @@ pub(super) enum AuthRejection {
 
 /// The row id of the gateway API key that authorized the current request: the authentication
 /// middleware stamps it into the request extensions when it lets a request through, and the
-/// completion handlers extract it to attribute the request's accounting row (README §3 *ApiLog*).
-/// Only the never-recycled row identity travels this far — never the secret itself.
+/// completion handlers extract it to attribute the request's accounting row
+/// (`docs/design/storage.md` *ApiLog*). Only the never-recycled row identity travels this far —
+/// never the secret itself.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AuthenticatedApiKeyRow(pub(super) i64);
 
@@ -113,7 +114,8 @@ where
 /// are read from the live database, so a created, rotated, or disabled key takes effect on the
 /// next request; a database failure renders the surface's internal error instead of an
 /// authentication rejection. A request that passes is stamped with the matching key's row id,
-/// which the completion handlers carry into the request accounting (README §3 *ApiLog*).
+/// which the completion handlers carry into the request accounting (`docs/design/storage.md`
+/// *ApiLog*).
 async fn authenticate<S>(State(database): State<Database>, request: Request, next: Next) -> Response
 where
     S: Surface,
@@ -178,7 +180,8 @@ where
 /// Renders one API failure as the surface's JSON error response: the surface's error wire
 /// renderer ([`Surface::render_error`]) through the universal JSON response builder
 /// [`json_response`]. Every rejection and handler failure the pipeline produces lands on the wire
-/// here, and each surface's handlers reuse it directly for their own failures (README §6.7).
+/// here, and each surface's handlers reuse it directly for their own failures
+/// (`docs/reference/inference.md`).
 ///
 /// # Panics
 ///
@@ -257,12 +260,12 @@ where
 ///
 /// - The authentication middleware wraps the routes and their fallbacks — the fallbacks are
 ///   registered first — so an unauthorized request is rejected with the surface's 401 before a 404
-///   or 405 body is produced (README §2.2 item 4).
+///   or 405 body is produced (`docs/design/architecture.md` item 4).
 /// - The body limit is extractor-side configuration: the [`DefaultBodyLimit`] layer only plants the
 ///   limit into request extensions, and each handler's [`axum::body::Bytes`] extractor enforces it,
 ///   rendering the surface's 413 ([`BodyError`]) at extraction time — after authentication, since
-///   the handlers run within [`authenticate`]'s `next.run` (README §4: the 64 MiB outward body
-///   cap).
+///   the handlers run within [`authenticate`]'s `next.run` (`docs/reference/configuration.md`: the
+///   64 MiB outward body cap).
 ///
 /// `database` feeds the authentication middleware its own state, so every request checks the
 /// presented key against the live database rather than the router state.
@@ -344,16 +347,17 @@ where
         .expect("static response parts are always valid")
 }
 
-/// Renders the outward `GET /models` listing shared by every surface (README §6.3/§6.5): it
-/// lists the effectively enabled models with their effective capability declarations over the
-/// shared pipeline's database and maps them onto the surface's native page shape, or converts
-/// the storage failure and renders it through the surface's error envelope under the shared
-/// `"model listing"` log target. Each surface supplies only its success-shape mapping.
+/// Renders the outward `GET /models` listing shared by every surface
+/// (`docs/reference/inference.md`/`docs/design/routing.md`): it lists the effectively enabled
+/// models with their effective capability declarations over the shared pipeline's database and maps
+/// them onto the surface's native page shape, or converts the storage failure and renders it
+/// through the surface's error envelope under the shared `"model listing"` log target. Each surface
+/// supplies only its success-shape mapping.
 ///
 /// `render_page` receives the listed models by value, ordered by public ID, and returns the
 /// surface's typed success body, which [`json_response`] serializes; each entry's capability
 /// values are already the effective `override ?? base` composition, with `None` (unknown) left
-/// for the surface to omit (README §6.5).
+/// for the surface to omit (`docs/design/routing.md`).
 pub(super) async fn model_list_response<S, T, F>(
     database: &Database,
     api_key_id: i64,

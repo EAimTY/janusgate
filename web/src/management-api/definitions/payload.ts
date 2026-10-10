@@ -22,7 +22,7 @@ import { parseQuotaDescriptor, validateQuotaRequest } from "./quota";
 import type { DefinitionPayload, DefinitionPayloadResult } from "./types";
 
 /**
- * Validates one authored definition payload (README §5): the JSON a preset
+ * Validates one authored definition payload (`docs/design/providers.md`): the JSON a preset
  * emitted or an operator edited. The gateway parses descriptors with
  * `deny_unknown_fields` and answers a broken payload with errno 1, so this
  * walk applies the same strictness before the round trip — every closed

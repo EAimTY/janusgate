@@ -5,14 +5,14 @@
 //! serves the outward `POST /interactions` client surface. Both directions share the one wire
 //! vocabulary defined here, and that vocabulary is the official Gemini Interactions API dialect:
 //! a provider of this type targets the real endpoint (the `x-goog-api-key` and pinned
-//! `Api-Revision` headers, README §5), so every member shape below is pinned by the official
-//! reference (ai.google.dev/api/interactions-api) and mirrored by the official
+//! `Api-Revision` headers, `docs/design/providers.md`), so every member shape below is pinned by
+//! the official reference (ai.google.dev/api/interactions-api) and mirrored by the official
 //! googleapis/python-genai SDK types. The family splits by concern: `request_parse` parses the
 //! inbound body, `client_render` renders the native completion (SSE frames plus the aggregated
 //! resource), `upstream_render` renders the upstream request, and `upstream_parse` parses upstream
 //! streams and bodies.
 //!
-//! # Wire contract (normative in README §5.7)
+//! # Wire contract (normative in `docs/design/providers.md`)
 //!
 //! - The model rides the request **body** (`model`), never the URL: `POST /interactions` has no URL
 //!   model slot (unlike GenerateContent), so the Interactions API addresses models in the body like

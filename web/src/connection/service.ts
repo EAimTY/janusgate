@@ -17,7 +17,7 @@ import { ErrorCode } from "/src/management-api/generated/v0";
 type ConnectionServiceDependencies = {
     readonly storage: Storage | null;
     /**
-     * The connection probe: `providers:list`, the first call of §3.1. The
+     * The connection probe: `providers:list`, the first call of `web/docs/architecture.md`. The
      * signal is the attempt's cancel channel, owned by the service: an
      * aborted attempt is the operator's cancellation, never a refusal — the
      * probe's own deadline and failures still surface as rejections.
@@ -33,7 +33,7 @@ type ConnectionService = {
     /**
      * Cancels the connect probe in flight, if one is: the attempt ends and
      * the machine records a cancellation — control flow, never a refusal
-     * (README §3.1). A probe that already answered is untouched.
+     * (`web/docs/architecture.md`). A probe that already answered is untouched.
      */
     readonly cancelConnect: () => void;
     /**

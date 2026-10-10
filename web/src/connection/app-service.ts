@@ -41,8 +41,7 @@ export function cancelConnectionProbe(): void {
 
 /**
  * The application's single connection service, wired to the browser's storage
- * and to the connection probe — `providers:list`, the first call of README
- * §3.1. The service owns the attempt's cancel channel: `cancelConnect` aborts
+ * and to the connection probe — `providers:list`, the first call of `web/docs/architecture.md`. The service owns the attempt's cancel channel: `cancelConnect` aborts
  * the signal the probe in flight carries, and an aborted attempt lands as the
  * machine's cancellation, never as a refusal.
  */

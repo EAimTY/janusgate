@@ -4,7 +4,7 @@ import type { ScreenRead } from "../screen-state/read";
 import { Skeleton } from "./feedback";
 
 /**
- * The list screens' shared first-read skeleton (README §6.3): placeholder
+ * The list screens' shared first-read skeleton (`web/docs/architecture.md`): placeholder
  * rows standing in for the listing while the first read is in flight, closed
  * the moment it lands — the list counterpart of the frame's skeleton window.
  * What varies is how many rows stand in and at what height.

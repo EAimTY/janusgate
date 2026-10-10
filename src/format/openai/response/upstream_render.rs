@@ -167,8 +167,8 @@ enum MessageContentPart<'a> {
 
     /// An image reference.
     InputImage {
-        /// Inline data URL or remote `http`/`https` URL (README §6.6), borrowed verbatim for a
-        /// remote image.
+        /// Inline data URL or remote `http`/`https` URL (`docs/reference/inference.md`), borrowed
+        /// verbatim for a remote image.
         image_url: Cow<'a, str>,
     },
 
@@ -237,12 +237,13 @@ enum ResponseFormat<'a> {
 /// Reasoning configuration.
 #[derive(Debug, Serialize)]
 struct Reasoning<'a> {
-    /// Reasoning effort string rendered verbatim from the IR, opaque to the gateway (README §6.4).
+    /// Reasoning effort string rendered verbatim from the IR, opaque to the gateway
+    /// (`docs/reference/inference.md`).
     effort: &'a str,
 }
 
 /// Renders the upstream Responses payload: the body only — the URL, the headers, and the
-/// streaming decision belong to the provider definition (README §5.2).
+/// streaming decision belong to the provider definition (`docs/design/providers.md`).
 ///
 /// The `omit_max_output_tokens` render option drops the client-requested cap: the upstream
 /// rejects the parameter as unsupported, and the model's own output bound applies instead.
@@ -274,7 +275,7 @@ pub(crate) fn render_request_body_with_extensions<'a>(
 /// input window, and the instructions — nothing else. The compact body has no
 /// generation-only controls and no `stream` member, so the framing is always
 /// non-streaming regardless of the definition's inference streaming mode
-/// (README §6.8).
+/// (`docs/design/compaction.md`).
 #[derive(Debug, Serialize)]
 pub(crate) struct CompactUpstreamRequest<'a> {
     /// Upstream model name.

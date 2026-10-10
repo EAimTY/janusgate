@@ -1,5 +1,5 @@
-//! The management read engine over the api-log files: `usage:list` and `usage:query` (README
-//! §7.1).
+//! The management read engine over the api-log files: `usage:list` and `usage:query`
+//! (`docs/reference/management-api.md`).
 //!
 //! Both reads run per file — each retained file answers its own page or aggregation under the
 //! shared [`UsageFilter`] — and merge in Rust: pages sort newest first on `started_at` with each
@@ -13,7 +13,7 @@
 //! older one, so the aggregation scan of every remaining file is never paid for a page that is
 //! already complete; `usage:query` keeps scanning all candidate files, since an aggregation
 //! needs everything. The reads are never gated by the recording switch: an absent store
-//! answers empty (README §3 *ApiLog*).
+//! answers empty (`docs/design/storage.md` *ApiLog*).
 
 use super::{
     ApiLog,
@@ -41,7 +41,7 @@ impl ApiLogStore {
     /// bound of the same kind (`started_at < before`), so the tighter of the two upper bounds
     /// applies. A day strictly above the cursor's own day holds only rows at or after the
     /// cursor, so a deep cursor never re-opens the newer day files it cannot read from. The
-    /// listing runs on the blocking thread pool (README §3 *ApiLog Store*).
+    /// listing runs on the blocking thread pool (`docs/design/storage.md` *ApiLog Store*).
     async fn candidate_days(
         &self,
         filter: &UsageFilter,
@@ -223,7 +223,7 @@ impl ApiLogStore {
 }
 
 /// Lists accounting rows through the api-log store. See [`ApiLogStore::list`]
-/// for the merge semantics (README §7.1).
+/// for the merge semantics (`docs/reference/management-api.md`).
 ///
 /// # Errors
 ///
@@ -250,12 +250,12 @@ pub(crate) async fn query_usage(
     store.query(selection).await
 }
 
-/// The shared filter of both management reads (README §7.1): every present field narrows the
-/// rows the read considers — values within one field OR (SQL `IN`), fields compose with AND.
-/// Every field is absent-keeps (rule 2), and the multi-value fields are non-empty arrays: the
-/// `Vec1` parsing rejects an empty array with 400 before the filter exists. Values are never
-/// validated against stored rows — an unknown id or a never-recorded status matches an empty
-/// set, because a filter locates rather than addresses (rule 7).
+/// The shared filter of both management reads (`docs/reference/management-api.md`): every present
+/// field narrows the rows the read considers — values within one field OR (SQL `IN`), fields
+/// compose with AND. Every field is absent-keeps (two-state fields), and the multi-value fields are
+/// non-empty arrays: the `Vec1` parsing rejects an empty array with 400 before the filter exists.
+/// Values are never validated against stored rows — an unknown id or a never-recorded status
+/// matches an empty set, because a filter locates rather than addresses (response ownership).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -362,7 +362,7 @@ pub(crate) struct UsageFilter {
 
     /// HTTP statuses a row may carry; absent lists every status. A `NULL` status — a client
     /// disconnected before the first frame — matches no list, and there is no direct way to
-    /// select those rows; `outcome` reaches them indirectly (README §7.1).
+    /// select those rows; `outcome` reaches them indirectly (`docs/reference/management-api.md`).
     #[serde(
         default,
         deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
@@ -375,9 +375,9 @@ pub(crate) struct UsageFilter {
     pub(crate) http_status: Option<Vec1<i64>>,
 }
 
-/// Builds the WHERE clause both management reads share (README §7.1): conditions and values
-/// grow together, so every `?N` placeholder binds the value its clause pushed — the window
-/// bounds first, then each present filter field.
+/// Builds the WHERE clause both management reads share (`docs/reference/management-api.md`):
+/// conditions and values grow together, so every `?N` placeholder binds the value its clause pushed
+/// — the window bounds first, then each present filter field.
 fn filter_conditions(filter: &UsageFilter) -> (Vec<String>, Vec<Value>) {
     let mut conditions: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
@@ -445,7 +445,7 @@ fn filter_conditions(filter: &UsageFilter) -> (Vec<String>, Vec<Value>) {
 
     if let Some(statuses) = &filter.http_status {
         // SQL `NULL` never satisfies an `IN` list, so the never-answered rows match nothing
-        // here by the engine's own semantics (README §7.1).
+        // here by the engine's own semantics (`docs/reference/management-api.md`).
         push_in_condition(
             &mut conditions,
             &mut values,
@@ -527,8 +527,8 @@ fn api_log_from_row(row: &Row) -> Result<ApiLog, Error> {
 /// nothing, and a day-only selection is exactly such a query — one file is one day, so SQL
 /// groups by nothing and the file's empty partition must stay bucketless, as a `GROUP BY`-ed
 /// day query would answer. A group in any other selection forms only around rows, so its
-/// `requests` is never zero, and the empty selection's total bucket needs its zero row (README
-/// §7.1).
+/// `requests` is never zero, and the empty selection's total bucket needs its zero row
+/// (`docs/reference/management-api.md`).
 fn usage_aggregate_from_row(
     row: &Row,
     group_by: &[UsageGroupBy],
@@ -546,10 +546,10 @@ fn usage_aggregate_from_row(
 
     let mut key = UsageBucketKey::default();
 
-    // One file is one UTC day (README §3 *ApiLog Store*): every row this file answers
-    // carries the file's own day, stamped here so the bucket day is the floor-day of every
-    // stamp by construction — the same [`ApiLogDay`] mapping the write path used — never a
-    // SQL-side re-derivation of it.
+    // One file is one UTC day (`docs/design/storage.md` *ApiLog Store*): every row this file
+    // answers carries the file's own day, stamped here so the bucket day is the floor-day of
+    // every stamp by construction — the same [`ApiLogDay`] mapping the write path used — never
+    // a SQL-side re-derivation of it.
     if group_by.contains(&UsageGroupBy::Day) {
         key.day = Some(day.file_stem());
     }
@@ -595,12 +595,12 @@ fn text_enum_column<T>(
     }
 }
 
-/// The bucket key of one aggregation row (README §7.1): a fixed declaration-ordered object
-/// carrying exactly the requested dimensions — `None` for every dimension the aggregation
-/// did not request — while the request order drives only the bucket ordering, never the
-/// wire layout of the key. `http_status` is `None` both for an unrequested dimension and for
-/// the bucket the `NULL` rows form; the wire layer decides the field's presence from the
-/// requested dimensions and renders that bucket as `null`.
+/// The bucket key of one aggregation row (`docs/reference/management-api.md`): a fixed
+/// declaration-ordered object carrying exactly the requested dimensions — `None` for every
+/// dimension the aggregation did not request — while the request order drives only the bucket
+/// ordering, never the wire layout of the key. `http_status` is `None` both for an unrequested
+/// dimension and for the bucket the `NULL` rows form; the wire layer decides the field's presence
+/// from the requested dimensions and renders that bucket as `null`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub(crate) struct UsageBucketKey {
     /// Grouped public route identity.
@@ -630,9 +630,9 @@ pub(crate) struct UsageBucketKey {
     pub(crate) http_status: Option<i64>,
 }
 
-/// One aggregation bucket of `usage:query` (README §7.1): the bucket key, the row count, and the
-/// token sums — `NULL` token columns never participate in a sum, so a bucket whose rows all
-/// reported no usage sums to `0`, and every sum renders as a plain number.
+/// One aggregation bucket of `usage:query` (`docs/reference/management-api.md`): the bucket key,
+/// the row count, and the token sums — `NULL` token columns never participate in a sum, so a bucket
+/// whose rows all reported no usage sums to `0`, and every sum renders as a plain number.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct UsageAggregate {
     /// Bucket key: one value per requested dimension.
@@ -674,7 +674,7 @@ impl UsageAggregate {
 }
 
 /// The `usage:query` selection: the requested bucketing dimensions in request order — empty
-/// aggregates one total bucket — plus the shared filter (README §7.1).
+/// aggregates one total bucket — plus the shared filter (`docs/reference/management-api.md`).
 #[derive(Debug, Clone)]
 pub(crate) struct UsageSelection {
     /// Bucketing dimensions, deduplicated and closed-vocabulary by the request validation.
@@ -688,9 +688,10 @@ pub(crate) struct UsageSelection {
 /// The merge ordering compares two keys dimension by dimension through [`key_part`], and only
 /// the view's inner order is ever exercised — both compared parts always answer the same
 /// requested dimension, so the derived cross-variant order (declaration order) carries no
-/// contract. Each variant's inner order is its stored column's SQLite ordering (README §7.1):
-/// text by its bytes, numbers ascending, booleans as their stored `0`/`1`, and every absence
-/// — carried by the [`Option`] wrapper [`key_part`] returns, never inside a variant — first.
+/// contract. Each variant's inner order is its stored column's SQLite ordering
+/// (`docs/reference/management-api.md`): text by its bytes, numbers ascending, booleans as their
+/// stored `0`/`1`, and every absence — carried by the [`Option`] wrapper [`key_part`] returns,
+/// never inside a variant — first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum KeyPart<'a> {
     /// The `day` text, byte-ordered like every SQLite text column.
@@ -731,11 +732,11 @@ fn key_part(key: &UsageBucketKey, dimension: UsageGroupBy) -> Option<KeyPart<'_>
 }
 
 /// The SQL key column a dimension groups, selects, and orders by — [`None`] when it needs no
-/// SQL column at all. Only the day dimension needs none: one file is one UTC day (README §3
-/// *ApiLog Store*), so [`usage_aggregate_from_row`] stamps the bucket day from each row's
-/// own file — the very [`ApiLogDay`] mapping the write path used to place the row — and the key
-/// is the floor-day of every stamp by construction, signed stamps included. Deriving the day
-/// in SQL instead would re-implement that mapping with SQLite's `/`, which truncates toward
+/// SQL column at all. Only the day dimension needs none: one file is one UTC day
+/// (`docs/design/storage.md` *ApiLog Store*), so [`usage_aggregate_from_row`] stamps the bucket day
+/// from each row's own file — the very [`ApiLogDay`] mapping the write path used to place the row —
+/// and the key is the floor-day of every stamp by construction, signed stamps included. Deriving
+/// the day in SQL instead would re-implement that mapping with SQLite's `/`, which truncates toward
 /// zero and so disagrees with the file's floor division for a pre-epoch stamp — a divergence
 /// from the file-alignment invariant, unreachable through the dispatch clock but never the
 /// mapping's to assume.
@@ -754,10 +755,10 @@ fn key_expression(dimension: UsageGroupBy) -> Option<&'static str> {
 }
 
 /// Reads the one SQL key column at `column` — the per-dimension key columns sit in request
-/// order — into its key field. Every column carries exactly its stored type's values (README §3
-/// *ApiLog*): the ids, the flag, and the enum spellings are `NOT NULL`, and only `http_status`
-/// may read `NULL`, landing as the [`None`] that [`key_part`] orders first. The day dimension
-/// carries no column — [`usage_aggregate_from_row`] stamps its key from the file.
+/// order — into its key field. Every column carries exactly its stored type's values
+/// (`docs/design/storage.md` *ApiLog*): the ids, the flag, and the enum spellings are `NOT NULL`,
+/// and only `http_status` may read `NULL`, landing as the [`None`] that [`key_part`] orders first.
+/// The day dimension carries no column — [`usage_aggregate_from_row`] stamps its key from the file.
 fn read_key_part(
     key: &mut UsageBucketKey,
     dimension: UsageGroupBy,
@@ -791,11 +792,11 @@ fn read_key_part(
     Ok(())
 }
 
-/// Orders two bucket keys the way SQLite orders the key expressions (README §7.1): per
-/// requested dimension in request order, the first non-equal dimension deciding. Each
-/// dimension's ordering is [`KeyPart`]'s derived order through [`key_part`] — `NULL` first,
-/// text by its bytes (the enums by their stored spellings), numbers ascending — so the
-/// per-dimension comparison exists exactly once.
+/// Orders two bucket keys the way SQLite orders the key expressions
+/// (`docs/reference/management-api.md`): per requested dimension in request order, the first
+/// non-equal dimension deciding. Each dimension's ordering is [`KeyPart`]'s derived order through
+/// [`key_part`] — `NULL` first, text by its bytes (the enums by their stored spellings), numbers
+/// ascending — so the per-dimension comparison exists exactly once.
 fn compare_bucket_keys(
     first: &UsageBucketKey,
     second: &UsageBucketKey,

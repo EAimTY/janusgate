@@ -14,7 +14,7 @@ type UnconnectedLanding = Extract<
 
 /**
  * The setup screen's reactive diagnosis machine, beside the connection
- * machine it reads (README §6.4). Every unconnected landing is examined: a
+ * machine it reads (`web/docs/architecture.md`). Every unconnected landing is examined: a
  * landing without a failure — a cancellation's above all — is control flow,
  * never a write-up, the landing's address is handed back for the form to
  * seed, and a "no answer" verdict is refined by one reachability probe —
@@ -86,7 +86,7 @@ export function createConnectionDiagnosis(props: {
             // the response"; it is only worth a request while the answer is open.
             // This diagnosis owns its probe: a re-run of this effect (a newer
             // refusal) or the screen going away aborts it, so superseded
-            // diagnoses never leave an in-flight probe behind (README §6.4).
+            // diagnoses never leave an in-flight probe behind (`web/docs/architecture.md`).
             // The deadline stays on as the secondary backstop, so a
             // blackhole address cannot leave the refinement pending minutes
             // after the screen gave up. The flag still discards an answer

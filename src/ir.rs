@@ -51,8 +51,9 @@ impl InvalidRequest {
 }
 
 impl ReasoningLevel {
-    /// Parses the closed vocabulary string for a request parameter (README §6.4): the request
-    /// boundary's rejection of a foreign level, naming `param` in its own error domain.
+    /// Parses the closed vocabulary string for a request parameter (`docs/reference/inference.md`):
+    /// the request boundary's rejection of a foreign level, naming `param` in its own error
+    /// domain.
     ///
     /// # Errors
     ///
@@ -66,7 +67,8 @@ impl ReasoningLevel {
 
 /// One assistant reasoning block: its text (when the family exposes text) plus the opaque replay
 /// payload — enough to represent both an Anthropic-style `thinking` block and a
-/// `redacted_thinking` block, and an Interactions `thought` step, verbatim (README §6.1).
+/// `redacted_thinking` block, and an Interactions `thought` step, verbatim
+/// (`docs/reference/inference.md`).
 ///
 /// Same-family round-trip is mandatory: Anthropic inbound thinking/redacted blocks and
 /// Interactions inbound thought steps replay byte-exact to their own upstreams. OpenAI surfaces
@@ -218,13 +220,14 @@ pub(crate) enum IrPart {
         content: String,
 
         /// Whether the tool reported an error; read and rendered by the Anthropic surface pair
-        /// only, dropped by every other surface (README §6.1).
+        /// only, dropped by every other surface (`docs/reference/inference.md`).
         is_error: bool,
     },
 
-    /// An assistant reasoning block (README §6.1): its text plus the opaque family-bound replay
-    /// payload. Same-family round-trip replays the opaque payload verbatim; OpenAI surfaces
-    /// render the text through the existing reasoning channels and drop the payload.
+    /// An assistant reasoning block (`docs/reference/inference.md`): its text plus the opaque
+    /// family-bound replay payload. Same-family round-trip replays the opaque payload verbatim;
+    /// OpenAI surfaces render the text through the existing reasoning channels and drop the
+    /// payload.
     Reasoning {
         /// Reasoning text, when the family exposes text.
         text: String,
@@ -301,7 +304,7 @@ pub(crate) enum IrResponseFormat {
 }
 
 /// The producer family of a state item: the protocol whose upstream renders
-/// the item verbatim (README §6.1). Only the two protocols with a compaction
+/// the item verbatim (`docs/reference/inference.md`). Only the two protocols with a compaction
 /// state channel produce state items; every other surface rejects them all,
 /// so the family has no further variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,10 +398,10 @@ pub(crate) struct IrRequest {
     /// Response format restriction.
     pub(crate) response_format: Option<IrResponseFormat>,
 
-    /// Reasoning effort level in the closed shared vocabulary (README §6.4): parsed from the
-    /// client's own parameter into [`ReasoningLevel`], written verbatim into the upstream's own
-    /// parameter. `None` means the client omitted the field, and then no upstream parameter is
-    /// rendered.
+    /// Reasoning effort level in the closed shared vocabulary (`docs/reference/inference.md`):
+    /// parsed from the client's own parameter into [`ReasoningLevel`], written verbatim into
+    /// the upstream's own parameter. `None` means the client omitted the field, and then no
+    /// upstream parameter is rendered.
     pub(crate) reasoning_effort: Option<ReasoningLevel>,
 
     /// Opaque state items recognized in the history, each preserved at its
@@ -425,11 +428,11 @@ pub(crate) enum IrEvent {
     ReasoningDelta(String),
 
     /// A complete reasoning block, terminating the reasoning text streamed so far with its
-    /// signature so streaming and aggregated renderings agree (README §6.2). Upstream parsers
-    /// emit either deltas plus an empty-text done, or a done carrying the full text with no
-    /// prior deltas — never both with overlapping text — so renderers can render both safely:
-    /// a non-empty `text` renders when no deltas preceded it, an empty `text` closes the block
-    /// the deltas already delivered.
+    /// signature so streaming and aggregated renderings agree (`docs/reference/inference.md`).
+    /// Upstream parsers emit either deltas plus an empty-text done, or a done carrying the full
+    /// text with no prior deltas — never both with overlapping text — so renderers can render
+    /// both safely: a non-empty `text` renders when no deltas preceded it, an empty `text`
+    /// closes the block the deltas already delivered.
     ReasoningDone {
         /// Complete reasoning text of the block; empty when streamed deltas delivered it.
         text: String,
@@ -483,8 +486,8 @@ pub(crate) enum IrEvent {
         /// content-filter finish a parser derived from its upstream's prompt-feedback
         /// channel; every other finish carries [`None`]. Family-bound round-trip detail in
         /// the [`IrPart::ToolCall`] `thought_signature` mold: the native GenerateContent
-        /// surface renders it as `promptFeedback.blockReason` (README §6.3), every other
-        /// surface ignores it.
+        /// surface renders it as `promptFeedback.blockReason` (`docs/reference/inference.md`),
+        /// every other surface ignores it.
         prompt_block_reason: Option<String>,
     },
 
@@ -598,7 +601,7 @@ pub(crate) struct IrAggregation {
     pub(crate) reasoning: String,
 
     /// Completed reasoning blocks in emission order, carrying their signatures and opaque replay
-    /// payloads so streaming and aggregated renderings agree (README §6.2).
+    /// payloads so streaming and aggregated renderings agree (`docs/reference/inference.md`).
     pub(crate) reasoning_blocks: Vec<IrReasoningBlock>,
 
     /// Completed tool calls in emission order.
@@ -608,7 +611,7 @@ pub(crate) struct IrAggregation {
     pub(crate) finish: Option<IrFinishReason>,
 
     /// Verbatim upstream prompt-block reason when the finish is a prompt-level block
-    /// (README §6.3); [`None`] for every other finish.
+    /// (`docs/reference/inference.md`); [`None`] for every other finish.
     pub(crate) prompt_block_reason: Option<String>,
 
     /// Token accounting, when reported.

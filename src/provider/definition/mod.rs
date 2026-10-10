@@ -1,5 +1,5 @@
 //! Provider definitions: the immutable, one-format connection recipes every provider instance and
-//! OAuth flow references (README §3, §5).
+//! OAuth flow references (`docs/design/storage.md` and `docs/design/providers.md`).
 //!
 //! A definition decomposes into wire format (code, the five format codecs), connection
 //! configuration (data, the descriptors in this module), and credentials (data, the provider
@@ -54,17 +54,17 @@ pub(crate) struct DefinitionPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) quota: Option<quota::QuotaDescriptor>,
 
-    /// The optional remote-compaction section (README §5): strategy, budgets, per-mechanism
-    /// declarations, and the operations executing them.
+    /// The optional remote-compaction section (`docs/design/providers.md`): strategy, budgets,
+    /// per-mechanism declarations, and the operations executing them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) compaction: Option<compaction::CompactionSection>,
 }
 
 impl DefinitionPayload {
     /// Whether any descriptor expression of this payload references the instance base URL — the
-    /// [`template::ValueExpr::Base`] part (README §3). A definition so addressed evaluates every
-    /// such expression against the bound provider row's stored base URL, so a provider bound to
-    /// it must carry one.
+    /// [`template::ValueExpr::Base`] part (`docs/design/storage.md`). A definition so addressed
+    /// evaluates every such expression against the bound provider row's stored base URL, so a
+    /// provider bound to it must carry one.
     ///
     /// The walk covers every expression member whose evaluation environment carries the base
     /// URL — the inference and streaming URLs, the inference header-row values, the envelope's
@@ -78,8 +78,8 @@ impl DefinitionPayload {
     /// the requirement checks consult only this predicate, so a missed expression is accepted
     /// with no base URL and every later evaluation of it fails as stored drift. The authorize
     /// URL and its extra parameters are excluded: the write-time validation bars the base
-    /// reference at the authorize-URL stage (README §5.1), so those expressions can never
-    /// evaluate against a base URL.
+    /// reference at the authorize-URL stage (`docs/design/providers.md`), so those expressions can
+    /// never evaluate against a base URL.
     #[must_use]
     pub(crate) fn references_base(&self) -> bool {
         self.base_capable_surfaces()
@@ -173,7 +173,7 @@ impl DefinitionPayload {
 }
 
 /// One immutable provider definition version: the stored `(name, version)` row plus its parsed
-/// payload (README §3).
+/// payload (`docs/design/storage.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProviderDefinition {
     /// The definition's name; versions accumulate under it.

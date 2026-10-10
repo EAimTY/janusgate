@@ -1,6 +1,6 @@
 //! The flow begin orchestration of the OAuth protocol engine: both grants through the persisted
 //! flow row — the authorization-code grant's authorize URL and the device grant's authorization
-//! request (README §5.3, §7.1).
+//! request (`docs/design/providers.md` and `docs/reference/management-api.md`).
 //!
 //! Every provider-specific fact — endpoints, client credentials, parameter names, header sets —
 //! lives in the definition the flow references; this engine carries the grant mechanics alone.
@@ -52,9 +52,10 @@ fn random_url_safe(byte_count: usize) -> String {
     general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Initializes a new flow's working slots from the definition's `initial_slots` (README §5.3):
-/// the generators run once per new flow before its first external request, over the target
-/// provider's stored slots for a reauthorization, so only the missing names are initialized.
+/// Initializes a new flow's working slots from the definition's `initial_slots`
+/// (`docs/design/providers.md`): the generators run once per new flow before its first external
+/// request, over the target provider's stored slots for a reauthorization, so only the missing
+/// names are initialized.
 ///
 /// # Errors
 ///
@@ -89,7 +90,7 @@ pub(crate) fn initialize_slots(
 
 /// What one flow begin is for, with the purpose's own inputs: a create flow names the provider
 /// it will create, a reauthorize flow targets one existing provider's row. The pairs are the
-/// flow schema's cross-column checks (README §3) in type form.
+/// flow schema's cross-column checks (`docs/design/storage.md`) in type form.
 pub(crate) enum BeginPurpose {
     /// The flow creates a new provider when it completes.
     Create {
@@ -173,9 +174,10 @@ struct GrantFlowFields {
     expires_at: i64,
 }
 
-/// Begins one flow against its definition (README §5.3, §7.1): mints the state token and the
-/// optional PKCE verifier, builds the authorize URL or executes the device authorization,
-/// resolves the expiry, and persists the flow row whose stored facts the outcome carries.
+/// Begins one flow against its definition (`docs/design/providers.md` and
+/// `docs/reference/management-api.md`): mints the state token and the optional PKCE verifier,
+/// builds the authorize URL or executes the device authorization, resolves the expiry, and persists
+/// the flow row whose stored facts the outcome carries.
 ///
 /// # Errors
 ///
@@ -483,7 +485,7 @@ fn build_authorize_url(
     Ok(url)
 }
 
-/// The decoded product of a device authorization response (README §5.3).
+/// The decoded product of a device authorization response (`docs/design/providers.md`).
 #[derive(Debug, Clone)]
 struct DeviceAuthorization {
     /// The device code the polling exchange presents.

@@ -52,7 +52,7 @@ pub(super) struct SseRenderer {
     /// chunk. The accumulated prefixes let a conformant done render exactly the argument suffix
     /// the live deltas did not deliver — a done carries the complete arguments while an opening
     /// delta may carry none of them — and let the renderer recognize a done whose arguments the
-    /// streamed bytes are not a prefix of (README §6.2).
+    /// streamed bytes are not a prefix of (`docs/reference/inference.md`).
     streamed_arguments: Vec<(usize, String)>,
 
     /// Outward ordinals of the tool calls seen so far, mapping each call's IR index to the dense
@@ -60,7 +60,8 @@ pub(super) struct SseRenderer {
     /// internal identity — a Responses upstream reports the item's `output_index`, its position
     /// among all output items, so a reasoning-plus-tool turn opens its first call at a nonzero IR
     /// index — while the outward Chat Completions contract requires a dense zero-based numbering
-    /// per choice, so first sight of an IR index allocates the next free ordinal (README §6.2).
+    /// per choice, so first sight of an IR index allocates the next free ordinal
+    /// (`docs/reference/inference.md`).
     outward_indexes: Vec<(usize, usize)>,
 
     /// Whether the trailing usage chunk is wanted.
@@ -84,7 +85,7 @@ pub(super) struct ResponseChoice {
 
     /// Official `logprobs` member: required-nullable on the official choice schema, which the
     /// gateway never populates because it tracks no token probabilities, so the member renders
-    /// `null` and stays present (README §6.3).
+    /// `null` and stays present (`docs/reference/inference.md`).
     logprobs: Option<ChoiceLogprobs>,
 
     /// Canonical finish reason; `stop` when the upstream reported none.
@@ -114,7 +115,7 @@ pub(super) struct AssistantMessage {
 
     /// Official `refusal` member: required-nullable on the official response message schema,
     /// which the gateway never populates because it never produces refusals, so the member
-    /// renders `null` and stays present (README §6.3).
+    /// renders `null` and stays present (`docs/reference/inference.md`).
     refusal: Option<String>,
 
     /// The full reasoning text, omitted for a turn that produced none.
@@ -221,7 +222,7 @@ struct Delta {
 #[derive(Debug, Serialize)]
 struct DeltaToolCall {
     /// Stable index of the call within the response, renumbered outward-only into the dense
-    /// zero-based ordinal of the choice's tool calls array (README §6.2).
+    /// zero-based ordinal of the choice's tool calls array (`docs/reference/inference.md`).
     index: usize,
 
     /// Invocation identifier, revealed by the opening chunk.
@@ -255,7 +256,7 @@ struct DeltaFunction {
 
 /// Token accounting in the flat Chat Completions shape, shared by the streamed terminal usage chunk
 /// and the aggregated response body so streamed and non-streamed clients observe byte-identical
-/// accounting (README §6.3).
+/// accounting (`docs/reference/inference.md`).
 #[derive(Debug, Serialize)]
 struct TokenUsage {
     /// Tokens consumed by the input.
@@ -333,7 +334,7 @@ impl SseRenderer {
 
     /// Returns the outward ordinal for the tool call the IR index identifies, allocating the next
     /// dense ordinal on first sight; every chunk of a call — deltas, residuals, and the done's
-    /// full-call shape alike — renders the same ordinal (README §6.2).
+    /// full-call shape alike — renders the same ordinal (`docs/reference/inference.md`).
     fn outward_index(&mut self, ir_index: usize) -> usize {
         if let Some((_, outward_index)) = self
             .outward_indexes
@@ -429,7 +430,8 @@ impl ClientSseRenderer for SseRenderer {
             // A done carrying text renders it only when no deltas preceded it: upstream parsers
             // emit either deltas plus an empty-text done, or a done with the full text and no
             // deltas, never both with overlapping text — so rendering a non-empty done is the
-            // done-only path, and the opaque payload is dropped on OpenAI surfaces (README §6.2).
+            // done-only path, and the opaque payload is dropped on OpenAI surfaces
+            // (`docs/reference/inference.md`).
             IrEvent::ReasoningDone { text, .. } => {
                 if text.is_empty() {
                     Vec::new()
@@ -496,7 +498,7 @@ impl ClientSseRenderer for SseRenderer {
                 match streamed {
                     None => {
                         // The upstream never streamed a delta for this index
-                        // (README §6.2 recovery class), so the done payload
+                        // (`docs/reference/inference.md` recovery class), so the done payload
                         // carries the complete call and renders as one full
                         // tool_calls delta chunk, exactly the shape a delta
                         // would have produced.
@@ -525,7 +527,8 @@ impl ClientSseRenderer for SseRenderer {
                         // onto the streamed prefix into arguments matching neither the deltas nor
                         // the done, so `strip_prefix` silently skips the residual argument frame of
                         // a done whose arguments are not a superstring of the streamed bytes
-                        // (README §6.2); the skipped done's other content still renders.
+                        // (`docs/reference/inference.md`); the skipped done's other content still
+                        // renders.
                         //
                         // The residual is owned before rendering so the borrowed streamed prefix
                         // releases its borrow of the renderer before the mutable render point.
@@ -616,7 +619,7 @@ impl ClientSseRenderer for SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal SSE frame carrying the OpenAI error envelope,
-    /// classified once through the shared API error (README §6.7).
+    /// classified once through the shared API error (`docs/reference/inference.md`).
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let envelope = OpenAiErrorEnvelope {
             error: crate::api::error::openai::render_body(error),

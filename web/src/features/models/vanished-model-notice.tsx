@@ -6,7 +6,7 @@ import { hrefs } from "/src/router";
 import { Notice } from "/src/ui/feedback";
 
 /**
- * The vanished model's suspension notice (README §6.3): the warn notice the
+ * The vanished model's suspension notice (`web/docs/architecture.md`): the warn notice the
  * model detail and edit pages state under the header when the upstream no
  * longer reports the row, with the two recovery paths linked where the
  * sentence names them — discovery again on the owning provider's page, and

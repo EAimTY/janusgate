@@ -48,7 +48,7 @@ const RELOAD_DEBOUNCE: Duration = Duration::from_millis(500);
 /// swap them all with one store. Every reader — the [`Deref`]-based schema reads,
 /// [`ConfigLoader::tls`], and [`ConfigLoader::sealing_keys`] alike — therefore observes exactly
 /// one generation, and a reload can never present a new schema with the previous generation's
-/// TLS material or sealing keys, or the reverse (README §8).
+/// TLS material or sealing keys, or the reverse (`docs/reference/configuration.md`).
 #[derive(Debug)]
 struct AppliedConfig {
     /// The applied schema. Deliberately leaked: a dereferenced schema reference is borrowed from
@@ -198,7 +198,8 @@ impl ConfigLoader {
                 log::set_max_level(applied.schema.log_level);
 
                 // One store: the schema and the TLS server configuration are one generation and
-                // swap together, so no reader ever observes a half-applied reload (README §8).
+                // swap together, so no reader ever observes a half-applied reload
+                // (`docs/reference/configuration.md`).
                 self.applied.store(Arc::new(applied));
 
                 info!("applied the configuration");
@@ -236,7 +237,7 @@ fn read_inputs(path: &Path) -> Result<AppliedConfig, Error> {
 
     // Every relative path in the schema — the database file, the api-log directory, and the TLS
     // material — resolves against the configuration file's directory, never against the process's
-    // current directory (README §8).
+    // current directory (`docs/reference/configuration.md`).
     schema.resolve_relative_paths(parent_directory(path));
 
     let tls_server_config = self::tls::resolve(&schema)?;

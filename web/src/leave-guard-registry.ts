@@ -4,7 +4,7 @@ import { createSignal } from "solid-js";
  * One guarded subject's seat in the leave-guard registry: the handle its
  * owner keeps for as long as the subject lives — a settings form's mount, or
  * a live OAuth flow. The registry never derives guardedness itself — a
- * form's own dirt tracking (the edit screens' settings forms, README §6.3)
+ * form's own dirt tracking (the edit screens' settings forms, `web/docs/architecture.md`)
  * stays the one dirt source, and the OAuth flow machine guards its seat for
  * exactly as long as its flow stands live — mirrored here so the shell's
  * leave guard can read both without knowing any screen.
@@ -71,7 +71,7 @@ export function registerLeaveGuardSubject(): LeaveGuardSeat {
 
 /**
  * Whether any registered subject currently stands guarded — a form dirty or
- * an OAuth flow live — the shell's `beforeunload` gate (README §6.3). The
+ * an OAuth flow live — the shell's `beforeunload` gate (`web/docs/architecture.md`). The
  * registry is read live, so a call answers this moment's truth, never a
  * snapshot; called inside a reactive scope, it tracks the registry.
  */

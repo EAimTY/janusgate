@@ -4,11 +4,12 @@
 //! consumes plus the two cross-layer vocabulary types ([`UpstreamFormat`], which names all five
 //! families for the provider, storage, and gateway layers, and [`RenderOption`], which types every
 //! provider definition's render options), each protocol parent ([`anthropic`], [`gemini`],
-//! [`openai`]) holds the families speaking that one client/upstream protocol (README §1, §6) plus
-//! the items its families share, and each family directory splits by concern (`request_parse`,
-//! `client_render`, `upstream_render`, `upstream_parse`, and the pooled-projection pair
-//! `affinity` for the streaming render points and `json_affinity` for the aggregated body;
-//! families with a compaction channel add their compaction modules beside the pair).
+//! [`openai`]) holds the families speaking that one client/upstream protocol
+//! (`docs/design/architecture.md` and `docs/reference/inference.md`) plus the items its families
+//! share, and each family directory splits by concern (`request_parse`, `client_render`,
+//! `upstream_render`, `upstream_parse`, and the pooled-projection pair `affinity` for the streaming
+//! render points and `json_affinity` for the aggregated body; families with a compaction channel
+//! add their compaction modules beside the pair).
 //!
 //! Two contracts are declared once here. Every outward format implements [`ClientFormat`], which
 //! parses client requests and boxes a [`ClientSseRenderer`] for live streaming (aggregated
@@ -16,15 +17,15 @@
 //! [`UpstreamEventParser`]. Upstream payload rendering has no shared contract — the payloads are
 //! provider-coupled — so each codec exposes free body-render functions that the gateway invokes
 //! directly; each renders the upstream body alone, and the dispatch's URL, header rows, and
-//! streaming decision come from the provider definition's inference descriptor (README §5.2),
-//! evaluated by the gateway dispatcher around the rendered body.
+//! streaming decision come from the provider definition's inference descriptor
+//! (`docs/design/providers.md`), evaluated by the gateway dispatcher around the rendered body.
 //!
-//! All five families are bidirectional (README §6.3): each implements [`UpstreamEventParser`] for
-//! its same-named upstream protocol plus the free request renderers beside it, and each implements
-//! [`ClientFormat`] as the outward client surface served under that protocol's name —
-//! `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`,
-//! and `anthropic_messages`. No family is upstream-parse-only; every family both speaks its
-//! upstream protocol and serves its outward surface.
+//! All five families are bidirectional (`docs/reference/inference.md`): each implements
+//! [`UpstreamEventParser`] for its same-named upstream protocol plus the free request renderers
+//! beside it, and each implements [`ClientFormat`] as the outward client surface served under that
+//! protocol's name — `openai_response`, `openai_chat_completion`, `gemini_generate_content`,
+//! `gemini_interaction`, and `anthropic_messages`. No family is upstream-parse-only; every family
+//! both speaks its upstream protocol and serves its outward surface.
 
 use crate::{
     ir::{
@@ -57,7 +58,8 @@ struct EmptyObject {}
 
 /// Wire formats an upstream provider may speak: the closed vocabulary from which a
 /// provider definition pins the one format every inference of the definition speaks
-/// (README §1, §5), whatever its [`credential kind`](crate::provider::CredentialKind).
+/// (`docs/design/architecture.md` and `docs/design/providers.md`), whatever its [`credential
+/// kind`](crate::provider::CredentialKind).
 ///
 /// The serde and TypeScript names are the management wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,9 +119,9 @@ impl UpstreamFormat {
     }
 }
 
-/// One render option of a format codec (README §5.2): a closed, per-format switch adjusting the
-/// body rendering. Growing this enum is the documented extension path for a future provider that
-/// does not fit the plain body rendering.
+/// One render option of a format codec (`docs/design/providers.md`): a closed, per-format switch
+/// adjusting the body rendering. Growing this enum is the documented extension path for a future
+/// provider that does not fit the plain body rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -342,8 +344,8 @@ pub(crate) enum BoundaryPlacement {
     Historical,
 }
 
-/// Route context the router threads into request parsing (README §6.5): the facts the URL path
-/// carries that the body does not.
+/// Route context the router threads into request parsing (`docs/design/routing.md`): the facts the
+/// URL path carries that the body does not.
 ///
 /// OpenAI-family surfaces carry the model in the body, so they parse with an empty context.
 /// Gemini surfaces route the model from the URL path — the body carries no model — so they parse
@@ -400,11 +402,11 @@ impl RouteContext {
 ///
 /// The role-merging parsers and renderers share this accumulator over their own role and part
 /// types. The Anthropic Messages parser chunks a user turn's mixed content into user and tool
-/// messages (README §5.8) and the Interactions parser coalesces consecutive same-role steps into
-/// one message per run, both finishing into [`IrMessage`]s through [`RoleRun::finish`]; the Gemini
-/// renderers coalesce consecutive same-role messages into one content entry or input step per run,
-/// as their protocols' role-alternation rules require, taking the closed runs from
-/// [`RoleRun::into_runs`].
+/// messages (`docs/design/providers.md`) and the Interactions parser coalesces consecutive
+/// same-role steps into one message per run, both finishing into [`IrMessage`]s through
+/// [`RoleRun::finish`]; the Gemini renderers coalesce consecutive same-role messages into one
+/// content entry or input step per run, as their protocols' role-alternation rules require, taking
+/// the closed runs from [`RoleRun::into_runs`].
 struct RoleRun<R, P> {
     /// Runs flushed so far, in order.
     runs: Vec<(R, Vec<P>)>,
@@ -500,7 +502,7 @@ pub(crate) trait UpstreamEventParser {
 /// Emits the degraded finish of a clean upstream end-of-stream that carried no finish of its own —
 /// no finish reason (Chat Completions) or no terminal event (Responses/Gemini): the missing finish
 /// degrades to [`IrFinishReason::Stop`], so streamed and aggregated renderings of the same stream
-/// agree (README §6.3).
+/// agree (`docs/reference/inference.md`).
 ///
 /// The finished flag lives in each parser, which sets it on every path that emits a real finish —
 /// a streamed terminal event, a stop reason, or the complete-body parse — and whose
@@ -518,7 +520,7 @@ fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEvent> {
 }
 
 /// Emits the once-only opening [`IrEvent::MessageStart`] of an upstream event stream: exactly
-/// once, first (README §6.2), carrying the response's identity.
+/// once, first (`docs/reference/inference.md`), carrying the response's identity.
 ///
 /// The started flag lives in each parser, which passes it on every path that may open the
 /// stream — the stream-head announcement and the recovery paths that never saw it. The first
@@ -604,9 +606,9 @@ pub(crate) trait ClientSseRenderer {
 
     /// Renders a mid-stream error as a terminal frame from the shared [`crate::api::Error`]
     /// classification: the HTTP error path and the stream-frame path share one classification
-    /// (README §6.7); each codec places it in its own terminal frame — the Chat Completions
-    /// error envelope or the failed Responses response object — through its format's render
-    /// module.
+    /// (`docs/reference/inference.md`); each codec places it in its own terminal frame — the Chat
+    /// Completions error envelope or the failed Responses response object — through its
+    /// format's render module.
     fn error_frame(&mut self, error: &crate::api::Error) -> String;
 }
 
@@ -617,9 +619,9 @@ pub(crate) trait ClientFormat {
     type JsonResponse;
 
     /// Parses one client request body with the router's route context: the URL-path facts the
-    /// body does not carry (README §6.5). Surfaces routing the model from the body ignore the
-    /// context; Gemini surfaces take the public model id (and streaming mode, when the URL
-    /// action decides it) from it.
+    /// body does not carry (`docs/design/routing.md`). Surfaces routing the model from the body
+    /// ignore the context; Gemini surfaces take the public model id (and streaming mode, when
+    /// the URL action decides it) from it.
     ///
     /// # Errors
     ///
@@ -630,7 +632,7 @@ pub(crate) trait ClientFormat {
 
     /// Boxes the streaming renderer for one parsed request. `should_include_usage` is the trailing
     /// usage-chunk option; formats that always include usage ignore it. `public_id` is the public
-    /// routing ID (README §3) the client addressed.
+    /// routing ID (`docs/design/storage.md`) the client addressed.
     fn sse_renderer(
         should_include_usage: bool,
         public_id: String,
@@ -639,7 +641,7 @@ pub(crate) trait ClientFormat {
         Self: Sized;
 
     /// Renders an aggregated completion as a non-streaming response body. `public_id` is the public
-    /// routing ID (README §3) the client addressed.
+    /// routing ID (`docs/design/storage.md`) the client addressed.
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse;
 
     /// Projects the actual rendered conversation fields as this codec parses their replay.
@@ -683,7 +685,7 @@ pub(crate) trait ClientFormat {
 /// Re-renders an aggregated completion as the IR event sequence its live
 /// rendering would have consumed: the synthesis the compaction pipeline uses
 /// to stream a lifecycle the executor validated internally as one complete
-/// artifact (README §6.8 — the live and terminal representations of one
+/// artifact (`docs/design/compaction.md` — the live and terminal representations of one
 /// response).
 #[must_use]
 pub(crate) fn aggregation_events(aggregation: &IrAggregation, model: &str) -> Vec<IrEvent> {
@@ -747,7 +749,7 @@ pub(crate) fn aggregation_events(aggregation: &IrAggregation, model: &str) -> Ve
 ///
 /// Deserialization is hand-written rather than an `untagged` enum because an untagged enum buffers
 /// its variants and reports every inner failure as "data did not match any variant", which would
-/// lose the member name a rejection has to name (README §6.6).
+/// lose the member name a rejection has to name (`docs/reference/inference.md`).
 #[derive(Debug)]
 enum StringOrArray<T> {
     /// The plain-string form.
@@ -757,7 +759,7 @@ enum StringOrArray<T> {
     Array(Vec<T>),
 }
 
-/// The `error` member an upstream may embed in a 2xx response body (README §6.7).
+/// The `error` member an upstream may embed in a 2xx response body (`docs/reference/inference.md`).
 ///
 /// An error body inside a 2xx response is a malformed upstream payload, so the embedded `code` is
 /// never mirrored as the outward status — a 2xx code would otherwise render a success status
@@ -889,9 +891,9 @@ where
 /// The protocol's request shapes are concrete types with `deny_unknown_fields`, so one
 /// deserialization enforces every strictness rule at once: a member outside the shape, a missing
 /// required member, and a member of the wrong JSON kind are all rejected. serde names the offending
-/// member in the rejection, which is what README §6.6 requires; the rejection carries no
-/// [`InvalidRequest::param`] because serde reports the failure against the body as a whole rather
-/// than against one named parameter.
+/// member in the rejection, which is what `docs/reference/inference.md` requires; the rejection
+/// carries no [`InvalidRequest::param`] because serde reports the failure against the body as a
+/// whole rather than against one named parameter.
 ///
 /// # Errors
 ///
@@ -950,15 +952,15 @@ fn arguments_to_object_or_empty(arguments: &str) -> Map<String, Value> {
     arguments_as_object(arguments).unwrap_or_default()
 }
 
-/// The blank-line separator between flattened text parts (README §6.6): one cross-codec contract,
-/// shared by every surface that flattens a string-or-text-parts shape into one string and by the
-/// affinity projection that hashes the same flattened bytes.
+/// The blank-line separator between flattened text parts (`docs/reference/inference.md`): one
+/// cross-codec contract, shared by every surface that flattens a string-or-text-parts shape into
+/// one string and by the affinity projection that hashes the same flattened bytes.
 const TEXT_PART_SEPARATOR: &str = "\n\n";
 
-/// Flattens text parts into one string under the shared wire contract (README §6.6): the parts
-/// join with [`TEXT_PART_SEPARATOR`], and a leading run of empty parts is skipped — the separator
-/// only ever separates text the accumulator already holds, so leading empties carry none and an
-/// all-empty input flattens to the empty string.
+/// Flattens text parts into one string under the shared wire contract
+/// (`docs/reference/inference.md`): the parts join with [`TEXT_PART_SEPARATOR`], and a leading run
+/// of empty parts is skipped — the separator only ever separates text the accumulator already
+/// holds, so leading empties carry none and an all-empty input flattens to the empty string.
 fn join_text_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     parts
         .into_iter()

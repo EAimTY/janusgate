@@ -1,5 +1,5 @@
 //! Upstream model discovery, driven entirely by the provider definition's discovery descriptor
-//! (README §5.5).
+//! (`docs/design/providers.md`).
 //!
 //! Discovery configures a request, a response extraction, and a pagination loop; it discovers
 //! upstream model identifiers and never assigns protocol capabilities. A discovered model that
@@ -167,9 +167,10 @@ async fn run_discovery(
         }
     };
 
-    // Every discovered identifier is validated before any row is written (README §7): one
-    // unroutable identifier fails the whole refresh. The routing-token composition — routing-safe
-    // text without `/` or `:` — is the ingestion boundary of the shared text contract.
+    // Every discovered identifier is validated before any row is written
+    // (`docs/reference/management-api.md`): one unroutable identifier fails the whole refresh.
+    // The routing-token composition — routing-safe text without `/` or `:` — is the ingestion
+    // boundary of the shared text contract.
     if let Some(invalid) = models
         .iter()
         .find(|model| !crate::routing_text::is_routing_safe_token(&model.upstream_id))
@@ -189,7 +190,7 @@ async fn run_discovery(
 /// through the control engine, extracts its identifiers, and asks the mode's continuation
 /// reader for the next request-param value — `None` ends the walk. A budget that ends while
 /// the last fetched page still reports a continuation fails the refresh instead of delivering
-/// a truncated list (README §5.5).
+/// a truncated list (`docs/design/providers.md`).
 ///
 /// # Errors
 ///
@@ -246,7 +247,7 @@ fn discovery_env(provider: &Provider) -> ValueEnv<'_> {
 /// The failure for a page budget that ended while the upstream still reported more data: a
 /// truncated identifier list would reach the apply step, whose blanket mark suspends every row
 /// the truncated list fails to re-state, so the refresh fails here — before any storage write —
-/// like every other upstream anomaly (README §7.1).
+/// like every other upstream anomaly (`docs/reference/management-api.md`).
 fn page_budget_exhausted(max_pages: NonZeroU64) -> Error {
     Error::Unavailable {
         detail: format!(
@@ -284,7 +285,8 @@ fn set_query_param(request: &mut ControlRequest, name: &str, value: &str) {
 }
 
 /// Extracts one page's models per the discovery extraction shape: each entry's identifier with
-/// its per-entry capability facts when the descriptor declares an extraction (README §5.5).
+/// its per-entry capability facts when the descriptor declares an extraction
+/// (`docs/design/providers.md`).
 ///
 /// # Errors
 ///
@@ -364,10 +366,10 @@ fn extract_models(
     }
 }
 
-/// Extracts one entry's capability facts (README §5.5). A descriptor without a capability
-/// extraction — or an entry whose configured path is absent or `null` — yields the unknown
-/// state (`None`); a present value of the wrong shape fails the refresh; a level string outside
-/// the closed vocabulary is silently skipped (the declared set is the vocabulary-restricted
+/// Extracts one entry's capability facts (`docs/design/providers.md`). A descriptor without a
+/// capability extraction — or an entry whose configured path is absent or `null` — yields the
+/// unknown state (`None`); a present value of the wrong shape fails the refresh; a level string
+/// outside the closed vocabulary is silently skipped (the declared set is the vocabulary-restricted
 /// support set, so a value the gateway would itself reject never becomes a declaration); every
 /// extracted set canonicalizes — deduplicated, vocabulary-ordered.
 ///
@@ -389,7 +391,7 @@ fn extract_capabilities(
             level_field,
         }) => match array_at.resolve(entry) {
             // An absent path or an explicit null at the addressed member is the unknown state:
-            // the entry carries no level array, not an empty one (README §5.5).
+            // the entry carries no level array, not an empty one (`docs/design/providers.md`).
             None | Some(Json::Null) => None,
 
             Some(value) => {
@@ -412,7 +414,7 @@ fn extract_capabilities(
                     };
 
                     // A foreign level is silently skipped: the declaration covers the closed
-                    // vocabulary alone (README §5.5).
+                    // vocabulary alone (`docs/design/providers.md`).
                     if let Some(level) = ReasoningLevel::from_vocabulary_str(level) {
                         levels.push(level);
                     }
@@ -427,7 +429,7 @@ fn extract_capabilities(
             flag_field,
         }) => match object_at.resolve(entry) {
             // An absent path or an explicit null at the addressed member is the unknown state,
-            // like the member-array arm (README §5.5).
+            // like the member-array arm (`docs/design/providers.md`).
             None | Some(Json::Null) => None,
 
             Some(value) => {
@@ -496,8 +498,8 @@ fn extract_capabilities(
     })
 }
 
-/// One entry's extracted capability facts (README §5.5), the pre-insertion shape of the
-/// capability columns: every fact `None` — *unknown* — until a configured extraction reads it
+/// One entry's extracted capability facts (`docs/design/providers.md`), the pre-insertion shape of
+/// the capability columns: every fact `None` — *unknown* — until a configured extraction reads it
 /// off the entry.
 struct EntryCapabilities {
     /// Extracted thinking levels; `None` when unknown.
@@ -564,10 +566,10 @@ fn extract_token_cap(entry: &Json, path: &Option<ResponsePath>) -> Result<Option
     Ok(Some(cap))
 }
 
-/// Extracts one entry's compaction support facts (README §5.5): each configured mechanism reads
-/// one boolean flag out of the object its `object_at` path names — `true` extracts the
-/// mechanism's `supported` fact, `false` its `unsupported` fact, and an absent-or-null object or
-/// flag leaves the mechanism unknown. A present object or flag of the wrong shape — a
+/// Extracts one entry's compaction support facts (`docs/design/providers.md`): each configured
+/// mechanism reads one boolean flag out of the object its `object_at` path names — `true` extracts
+/// the mechanism's `supported` fact, `false` its `unsupported` fact, and an absent-or-null object
+/// or flag leaves the mechanism unknown. A present object or flag of the wrong shape — a
 /// non-object where an object is addressed, a non-boolean where a flag is addressed — fails the
 /// refresh as a malformed upstream fact, like every other present-wrong-shape capability value.
 ///

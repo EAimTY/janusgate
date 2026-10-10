@@ -1,15 +1,16 @@
 //! The OAuth token mechanics: the token exchange with terminal-code classification, the refresh
 //! grant, the token-response expiry resolution, and the token-data folding into the working
-//! slots (README §5.3, §7.1).
+//! slots (`docs/design/providers.md` and `docs/reference/management-api.md`).
 //!
 //! Every provider-specific fact — endpoints, client credentials, parameter names, header sets —
 //! lives in the definition the flow references; this engine carries the grant mechanics alone.
 //! The control-request executor runs each stage's request, and the stage's response descriptor
 //! maps its product. The exchange and refresh-grant fold applies the shared machine-consumed
-//! text validators (README §7) before any token, slot, or base-URL value reaches storage, and
-//! the identity-token claim absorption applies the slot validator before a claimed value lands.
-//! Those validators live in this module — the layer's substrate every stage above imports
-//! from — so one contract guards one storage boundary whichever stage extracted the value.
+//! text validators (`docs/reference/management-api.md`) before any token, slot, or base-URL value
+//! reaches storage, and the identity-token claim absorption applies the slot validator before a
+//! claimed value lands. Those validators live in this module — the layer's substrate every stage
+//! above imports from — so one contract guards one storage boundary whichever stage extracted the
+//! value.
 
 use crate::{
     provider::{
@@ -36,10 +37,10 @@ pub(super) const DEFAULT_DEVICE_INTERVAL_SECONDS: i64 = 5;
 /// §3.5.
 pub(super) const SLOW_DOWN_PENALTY_SECONDS: i64 = 5;
 
-/// The expiry of a token response, resolved per README §5.3: a positive reported `expires_in`,
-/// else a future `exp` claim of the access token, else the definition's explicitly configured
-/// lifetime, else no expiry at all. A reported non-positive `expires_in` or a non-future `exp`
-/// claim is a malformed token response, never silently treated as missing, and a configured
+/// The expiry of a token response, resolved per `docs/design/providers.md`: a positive reported
+/// `expires_in`, else a future `exp` claim of the access token, else the definition's explicitly
+/// configured lifetime, else no expiry at all. A reported non-positive `expires_in` or a non-future
+/// `exp` claim is a malformed token response, never silently treated as missing, and a configured
 /// lifetime beyond the database clock's range is a malformed definition, never silently
 /// treated as absent.
 pub(super) fn resolve_expiry(
@@ -158,8 +159,8 @@ fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
 /// Copies the definition's identity-token claims into the working slots: a claim whose path
 /// resolves into a string member of the payload names its slot's value, and any other claim is
 /// skipped. Every claimed value passes the shared routing-safety validation before it lands —
-/// the absorption is a storage boundary like the response-field folds (README §5.4) — so a
-/// hostile identity token fails the stage instead of poisoning the persisted slots.
+/// the absorption is a storage boundary like the response-field folds (`docs/design/providers.md`)
+/// — so a hostile identity token fails the stage instead of poisoning the persisted slots.
 ///
 /// # Errors
 ///
@@ -198,13 +199,14 @@ fn apply_id_token_claims(
 
 /// Folds one executed token stage's identity artifacts into the stored working slots: the
 /// stored slots stay in place, the identity token's claims copy over, and the stage's own slot
-/// targets extend the result (README §5.3). The completion pipeline and the refresh grant share
-/// this fold.
+/// targets extend the result (`docs/design/providers.md`). The completion pipeline and the refresh
+/// grant share this fold.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when an identity-token claim value fails the routing-safety validation
-/// (README §5.4) — the stage's own slot targets validated at the mapping boundary already.
+/// (`docs/design/providers.md`) — the stage's own slot targets validated at the mapping boundary
+/// already.
 pub(super) fn absorb_exchange_slots(
     stored: &BTreeMap<String, String>,
     outcome: &ExchangeOutcome,
@@ -221,14 +223,15 @@ pub(super) fn absorb_exchange_slots(
     Ok(slots)
 }
 
-/// The product of one token exchange (README §5.3).
+/// The product of one token exchange (`docs/design/providers.md`).
 ///
 /// The outcome serializes: the device poller persists a completed exchange as the flow row's
 /// checkpoint the moment it completes, so a restart that recovers the claim resumes from the
-/// checkpoint instead of re-presenting the consumed device code (README §3, §7.2). The values
-/// it carries are already validated — the mapping fold validated the stored tokens, the
-/// machine-consumed slots, and the base URL at the storage boundary — and only the gateway
-/// writes the checkpoint, so deserialization re-imposes no validation.
+/// checkpoint instead of re-presenting the consumed device code (`docs/design/storage.md` and
+/// `docs/reference/management-api.md`). The values it carries are already validated — the mapping
+/// fold validated the stored tokens, the machine-consumed slots, and the base URL at the storage
+/// boundary — and only the gateway writes the checkpoint, so deserialization re-imposes no
+/// validation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ExchangeOutcome {
     /// The access token, when the response mapped it.
@@ -251,7 +254,7 @@ pub(crate) struct ExchangeOutcome {
 }
 
 /// How one executed exchange classifies, combining the transport outcome with the terminal-code
-/// configuration (README §5.3 device grant).
+/// configuration (`docs/design/providers.md` device grant).
 pub(crate) enum ExchangeProduct {
     /// The exchange succeeded and its response was mapped.
     Completed(ExchangeOutcome),
@@ -321,10 +324,11 @@ fn error_code_of_json(json: &serde_json::Value) -> Option<String> {
 }
 
 /// Why one executed token exchange failed, split by what a retry can and cannot survive
-/// (README §3, §7.2): a fold failure after the upstream's decoded 2xx response is a
-/// deterministic response-shape violation a retry cannot fix — the single-use device code is
-/// consumed upstream whether or not the gateway could use the response — while every other
-/// failure happened before any fold and is one the poll schedule absorbs.
+/// (`docs/design/storage.md` and `docs/reference/management-api.md`): a fold failure after the
+/// upstream's decoded 2xx response is a deterministic response-shape violation a retry cannot fix —
+/// the single-use device code is consumed upstream whether or not the gateway could use the
+/// response — while every other failure happened before any fold and is one the poll schedule
+/// absorbs.
 #[derive(Debug)]
 pub(super) enum ExchangeFailure {
     /// A 2xx response decoded but folding its mapped fields failed: a mapped slot outside the
@@ -346,9 +350,9 @@ impl From<ExchangeFailure> for Error {
 }
 
 /// Executes one token exchange against the definition's exchange request and classifies the
-/// outcome (README §5.3). The synchronous surfaces read the failure as [`Error`] alone; the
-/// device poller consumes [`execute_classified_exchange`] to distinguish a consumed grant from
-/// a retryable attempt.
+/// outcome (`docs/design/providers.md`). The synchronous surfaces read the failure as [`Error`]
+/// alone; the device poller consumes [`execute_classified_exchange`] to distinguish a consumed
+/// grant from a retryable attempt.
 ///
 /// # Errors
 ///
@@ -365,9 +369,10 @@ pub(crate) async fn execute_exchange(
 }
 
 /// Executes one token exchange and classifies both the outcome and the failure's retry safety
-/// (README §5.3, §7.2): the device poller's resume contract persists a terminal gateway-owned
-/// failure for [`ExchangeFailure::Consumed`] — the consumed grant a retry could only
-/// re-present — and keeps the retry schedule for [`ExchangeFailure::Retryable`].
+/// (`docs/design/providers.md` and `docs/reference/management-api.md`): the device poller's resume
+/// contract persists a terminal gateway-owned failure for [`ExchangeFailure::Consumed`] — the
+/// consumed grant a retry could only re-present — and keeps the retry schedule for
+/// [`ExchangeFailure::Retryable`].
 ///
 /// # Errors
 ///
@@ -445,8 +450,8 @@ fn decoded_error_code(decoded: &DecodedBody) -> Option<String> {
 }
 
 /// Whether one upstream failure code is one of the definition's configured terminal codes,
-/// matched case-insensitively (README §5.1): a mis-cased configured code must still classify
-/// as its configured disposition.
+/// matched case-insensitively (`docs/design/providers.md`): a mis-cased configured code must still
+/// classify as its configured disposition.
 fn is_terminal_code(code: &str, terminal_codes: &[String]) -> bool {
     terminal_codes
         .iter()
@@ -455,9 +460,9 @@ fn is_terminal_code(code: &str, terminal_codes: &[String]) -> bool {
 
 /// Classifies one upstream failure code against the definition's terminal codes: the RFC 8628
 /// polling codes are engine-owned and match case-insensitively like the configured terminal
-/// codes (README §5.1) — a mis-cased `slow_down` must still apply the slow-down backoff — the
-/// configured terminal codes end the flow, and anything else is `Other` carrying the code's
-/// original text.
+/// codes (`docs/design/providers.md`) — a mis-cased `slow_down` must still apply the slow-down
+/// backoff — the configured terminal codes end the flow, and anything else is `Other` carrying the
+/// code's original text.
 fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct {
     match code.to_ascii_lowercase().as_str() {
         "authorization_pending" => return ExchangeProduct::Pending,
@@ -476,7 +481,8 @@ fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct
 /// targets: the exchange and the refresh grant share the same fold, differing only in the
 /// mapping slice and the stage label the failures carry. The fold is a storage boundary — the
 /// machine-consumed targets (`access_token`, `refresh_token`, `base_url`, `slot:<name>`)
-/// validate through the shared contract (README §7) before any value reaches it.
+/// validate through the shared contract (`docs/reference/management-api.md`) before any value
+/// reaches it.
 fn map_exchange_fields(
     decoded: &DecodedBody,
     fields: &[ResponseField],
@@ -493,8 +499,8 @@ fn map_exchange_fields(
 
 /// Folds one extracted exchange value into the outcome per its target, validating the values
 /// that must stay machine-consumed text (the stored tokens, slots, and base URLs) at the
-/// storage boundary (README §7): a hostile token endpoint fails the stage instead of poisoning
-/// the persisted routing state.
+/// storage boundary (`docs/reference/management-api.md`): a hostile token endpoint fails the stage
+/// instead of poisoning the persisted routing state.
 fn apply_exchange_target(
     outcome: &mut ExchangeOutcome,
     target: &Target,
@@ -518,8 +524,8 @@ fn apply_exchange_target(
         }
 
         // A present lifetime is consumed here or not at all: a non-integer value is a malformed
-        // token response (README §7.2), never a silent fall through to the weaker expiry
-        // sources the consumer consults when the lifetime is absent.
+        // token response (`docs/reference/management-api.md`), never a silent fall through to the
+        // weaker expiry sources the consumer consults when the lifetime is absent.
         Target::ExpiresInSeconds => match extracted {
             Extracted::Integer(seconds) => outcome.expires_in_seconds = Some(seconds),
 
@@ -565,11 +571,11 @@ fn apply_exchange_target(
     Ok(())
 }
 
-/// Validates one stored slot value against the shared routing-safe text contract (README §7):
-/// non-empty printable ASCII without whitespace. An upstream value outside the set fails the
-/// stage instead of storing an unusable value. Shared by every OAuth response fold — the
-/// exchange, refresh-grant, and identity-token folds here and the provisioning fold in
-/// [`super::provisioning`] — so one contract guards one storage boundary.
+/// Validates one stored slot value against the shared routing-safe text contract
+/// (`docs/reference/management-api.md`): non-empty printable ASCII without whitespace. An upstream
+/// value outside the set fails the stage instead of storing an unusable value. Shared by every
+/// OAuth response fold — the exchange, refresh-grant, and identity-token folds here and the
+/// provisioning fold in [`super::provisioning`] — so one contract guards one storage boundary.
 ///
 /// # Errors
 ///
@@ -588,8 +594,8 @@ pub(super) fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> 
 }
 
 /// Validates one stored base-URL value against the shared base-URL contract of
-/// [`crate::routing_text::is_base_url`] (README §7): routing-safe text plus the non-empty
-/// `http://` or `https://` scheme — the same composition the management boundary enforces on
+/// [`crate::routing_text::is_base_url`] (`docs/reference/management-api.md`): routing-safe text
+/// and a non-empty `http://` or `https://` scheme. Management applies the same contract to
 /// operator-supplied URLs. Shared by every OAuth response fold — the exchange and refresh-grant
 /// folds here and the provisioning fold in [`super::provisioning`] — so one contract guards one
 /// storage boundary.
@@ -610,8 +616,8 @@ pub(super) fn validate_base_url_value(value: &str) -> Result<(), Error> {
 }
 
 /// Validates one stored token value — the access or refresh token — against the HTTP
-/// header-value byte contract (README §5.1): the header is the strictest destination either
-/// token may face, and the access token's concrete instance is the `Authorization` header
+/// header-value byte contract (`docs/design/providers.md`): the header is the strictest destination
+/// either token may face, and the access token's concrete instance is the `Authorization` header
 /// every dispatch renders it into (the provisioning stage's `secret` references alongside).
 /// The refresh token is never rendered into an `Authorization` header — shipped presets send
 /// it only in the refresh-grant request body, and only the refresh-grant stage may reference

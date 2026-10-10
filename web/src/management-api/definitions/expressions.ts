@@ -8,7 +8,7 @@ import {
     expectString,
 } from "../validation-primitives";
 
-/** One value expression part, rebuilt from its validated kind (README §5.1). */
+/** One value expression part, rebuilt from its validated kind (`docs/design/providers.md`). */
 function expectExpressionPart(part: unknown, context: string): ValueExpr {
     const record = expectRecord(part, context);
     const kind = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -75,7 +75,7 @@ function expectExpressionPart(part: unknown, context: string): ValueExpr {
 
             // The gateway rejects an argument-less coalesce, which could never
             // resolve, and a coalesce nested in a coalesce's argument list,
-            // whose flattening is always representable (README §5.1).
+            // whose flattening is always representable (`docs/design/providers.md`).
             if (parts.length === 0) {
                 throw new ContractViolationError(`${context} carries an empty coalesce`);
             }
@@ -108,7 +108,7 @@ export function expectStringExpr(value: unknown, context: string): StringExpr {
 
 /**
  * The byte set of a valid HTTP header name: the RFC token characters the
- * gateway's HTTP crate accepts for a header row's name (README §5.1).
+ * gateway's HTTP crate accepts for a header row's name (`docs/design/providers.md`).
  */
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
@@ -193,7 +193,7 @@ function expectJsonValue(value: unknown, context: string): JsonValue {
     }
 }
 
-/** One template tree node, rebuilt from its node kind (README §5.1). */
+/** One template tree node, rebuilt from its node kind (`docs/design/providers.md`). */
 export function expectTemplateNode(value: unknown, context: string): TemplateNode {
     const record = expectRecord(value, context);
     const kind = expectString(Reflect.get(record, "type"), `${context}.type`);

@@ -234,8 +234,8 @@ pub(crate) async fn execute(
     // The parser is chosen by the upstream streaming mode the gateway requested, never by
     // response-header sniffing: the Codex upstream answers its 200 SSE streams without a
     // `Content-Type` header, and a 200 response to a streaming request is contractually a stream
-    // while a 200 response to a non-streaming request is contractually a JSON document (README
-    // §6.2).
+    // while a 200 response to a non-streaming request is contractually a JSON document
+    // (`docs/reference/inference.md`).
     if is_upstream_streaming {
         let body = response.bytes_stream().map(|chunk| {
             chunk.map_err(|error| Error::Unavailable {
@@ -297,8 +297,8 @@ struct AcceptedDispatch {
 /// provider's credential, render the upstream request, and send once, committing headers.
 ///
 /// The client's reasoning effort string needs no interpretation here: it is opaque end to end
-/// (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
-/// renderers write it verbatim into the upstream's own parameter.
+/// (`docs/reference/inference.md`) — no stored override is consulted, nothing is filtered or
+/// clamped — and the renderers write it verbatim into the upstream's own parameter.
 ///
 /// # Errors
 ///
@@ -317,7 +317,8 @@ async fn prepare_and_dispatch(
 
     // A gateway carrier never reaches dispatch: compaction preparation must decode, verify, and
     // remove it first, and a damaged marker must never be forwarded upstream. Its presence here is
-    // an internal invariant violation, not client state, so it fails fast (README §6.8).
+    // an internal invariant violation, not client state, so it fails fast
+    // (`docs/design/compaction.md`).
     if ir.state_items.iter().any(|item| item.is_gateway) {
         return Err(Error::Internal {
             message: "a gateway compaction carrier reached dispatch without preparation"
@@ -326,12 +327,13 @@ async fn prepare_and_dispatch(
     }
 
     // Names the upstream in every error-level record the lazy parser emits. Which single site logs
-    // such a record is partitioned by the client's streaming mode (README §8): for a streaming
-    // client the failure becomes a terminal mid-stream error frame that never passes a response
-    // boundary, so the detecting parser logs it; for a non-streaming client it becomes the
-    // aggregated HTTP error response, so the response boundary rendering it logs it.
-    // The client's mode is distinct from the upstream's: an `always`-streaming definition streams
-    // upstream while its client may not (README §5.2).
+    // such a record is partitioned by the client's streaming mode
+    // (`docs/reference/configuration.md`): for a streaming client the failure becomes a
+    // terminal mid-stream error frame that never passes a response boundary, so the detecting
+    // parser logs it; for a non-streaming client it becomes the aggregated HTTP error response,
+    // so the response boundary rendering it logs it. The client's mode is distinct from the
+    // upstream's: an `always`-streaming definition streams upstream while its client may not
+    // (`docs/design/providers.md`).
     let upstream_label = format!(
         "provider `{}` upstream model `{}`",
         routing.provider.name, ir.model
@@ -406,14 +408,14 @@ async fn prepare_and_dispatch(
 /// A clean upstream end that carried no real terminal event fails the dispatch:
 /// the degraded-finish rule of the ordinary pipeline never papers over a
 /// missing terminal on the compaction paths, where the result must be complete
-/// before any artifact stands (README §6.8).
+/// before any artifact stands (`docs/design/compaction.md`).
 ///
 /// Cancellation and deadlines: the dispatch runs inside the handler future, so
 /// a departing client drops it; the data-plane read-idle timeout bounds a
 /// stalled upstream. No fresh deadline is granted per internal call.
 ///
 /// The request's accounting draft is stamped the moment the send leaves, so the
-/// outer request's row exists exactly when a dispatch occurred (README §3
+/// outer request's row exists exactly when a dispatch occurred (`docs/design/storage.md`
 /// *ApiLog*); finalizing the row stays the outer boundary's job.
 ///
 /// # Errors
@@ -458,7 +460,7 @@ pub(crate) async fn execute_internal(
 /// Tracks one event stream's usage observations under the accounting rule that a compaction
 /// lifecycle's reported iteration totals override the ordinary terminal usage: the resolved
 /// usage is the latest iteration total when one arrived, otherwise the last ordinary usage
-/// observation (README §6.2's last-observation rule).
+/// observation (`docs/reference/inference.md`'s last-observation rule).
 ///
 /// Every consumer of a stream's usage observation — the internal compaction pump, the outward
 /// SSE render task, and the detached non-streaming aggregation — resolves its recorded usage

@@ -16,7 +16,7 @@ pub(crate) struct SseFrame {
 
     /// Parsed `event:` name of the frame, when the upstream sent one. Anthropic and Interactions
     /// upstream parsers discriminate on this name; the JSON payloads' own `type`/`event_type`
-    /// members are not relied on for discrimination (README §5.7, §5.8).
+    /// members are not relied on for discrimination (`docs/design/providers.md`).
     pub(crate) event: Option<String>,
 }
 

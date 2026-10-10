@@ -11,7 +11,7 @@ import type {
 
 /**
  * Constructors for the preset catalog's definition payloads: one function per
- * expression-node kind the presets use (README §5.1), the param row every
+ * expression-node kind the presets use (`docs/design/providers.md`), the param row every
  * header, query, and form surface spells, the shared request and OAuth-stage
  * shapes, and the per-family discovery descriptors. Product modules compose
  * payloads through these and keep only their pinned facts — URLs, betas,

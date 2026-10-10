@@ -69,11 +69,11 @@ export function ApiKeyEditScreen(props: {
     // The held row with its save-settling latch: an open form with unsaved
     // edits holds its row against refreshes, so an operator's input can never
     // silently vanish, and a succeeded save holds it until its own reload
-    // lands (README §6.3).
+    // lands (`web/docs/architecture.md`).
     const edit = createEditRow(latestKey, isSameApiKeyRow);
 
     // The notice is also the save's reported outcome, so only a new failure
-    // replaces it — a successful read keeps it (README §6.3).
+    // replaces it — a successful read keeps it (`web/docs/architecture.md`).
     const read = createScreenRead({
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {

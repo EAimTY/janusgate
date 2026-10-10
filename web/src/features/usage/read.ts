@@ -71,7 +71,7 @@ export function readUsageEntities(
  * is a contract failure — the same `ManagementApiError` a shape mismatch
  * raises — thrown while the cycle can still state its diagnosis, never at
  * render or stats time, where it would blank the screen or die as an
- * unhandled rejection (README §6.4). A key part that is `null` — the
+ * unhandled rejection (`web/docs/architecture.md`). A key part that is `null` — the
  * `NULL` status bucket — is present: only an absent field violates.
  */
 export function readUsageBuckets(

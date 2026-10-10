@@ -51,7 +51,8 @@ struct RequestBody {
     response_format: Option<ResponseFormatIn>,
 
     /// Reasoning effort string, opaque to the gateway: the string type is the whole constraint,
-    /// and the value is carried verbatim into the upstream's own parameter (README §6.4).
+    /// and the value is carried verbatim into the upstream's own parameter
+    /// (`docs/reference/inference.md`).
     #[serde(default)]
     reasoning_effort: Option<String>,
 
@@ -73,9 +74,12 @@ enum MessageIn {
         /// Instruction text: a plain string or an array of text parts.
         content: StringOrArray<TextPartIn>,
 
-        /// Turn name; accepted and ignored (README §6.6).
+        /// Turn name; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         name: Option<IgnoredAny>,
     },
 
@@ -84,9 +88,12 @@ enum MessageIn {
         /// Instruction text: a plain string or an array of text parts.
         content: StringOrArray<TextPartIn>,
 
-        /// Turn name; accepted and ignored (README §6.6).
+        /// Turn name; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         name: Option<IgnoredAny>,
     },
 
@@ -95,9 +102,12 @@ enum MessageIn {
         /// Text or mixed text/image content.
         content: StringOrArray<UserPartIn>,
 
-        /// Turn name; accepted and ignored (README §6.6).
+        /// Turn name; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         name: Option<IgnoredAny>,
     },
 
@@ -107,7 +117,7 @@ enum MessageIn {
     /// officially-typed `refusal`, `name`, `audio`, and `annotations` members: the reference
     /// SDKs' canonical history replay appends each response message's `model_dump()` verbatim as
     /// the next assistant turn, and that object carries them, so rejecting any of them would 400
-    /// turn two of that replay (README §6.6).
+    /// turn two of that replay (`docs/reference/inference.md`).
     Assistant {
         /// Text content, when any.
         #[serde(default)]
@@ -119,43 +129,63 @@ enum MessageIn {
 
         /// The legacy protocol's single invocation, parsed into the ordinary tool-call IR under
         /// its synthesized stable id; modern `tool_calls` take precedence when both are present
-        /// (README §6.2).
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
         function_call: Option<ToolCallFunctionIn>,
 
         /// Reasoning text under the OpenRouter/vLLM key; accepted and ignored, because the gateway
         /// itself emits `reasoning_content` and a stateless gateway has no replayable reasoning
-        /// state (README §6.6).
+        /// state (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         reasoning: Option<IgnoredAny>,
 
-        /// Reasoning text under the DeepSeek de-facto key; accepted and ignored (README §6.6).
+        /// Reasoning text under the DeepSeek de-facto key; accepted and ignored
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         reasoning_content: Option<IgnoredAny>,
 
         /// Upstream refusal text; accepted and ignored: the gateway already renders upstream
-        /// refusal text as ordinary assistant text (README §6.2), so a replayed turn carries it
-        /// with no replayable state behind it (README §6.6).
+        /// refusal text as ordinary assistant text (`docs/reference/inference.md`), so a replayed
+        /// turn carries it with no replayable state behind it
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         refusal: Option<IgnoredAny>,
 
-        /// Turn name; accepted and ignored (README §6.6).
+        /// Turn name; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         name: Option<IgnoredAny>,
 
         /// Audio output payload; accepted and ignored: a stateless gateway carries no replayable
-        /// audio state (README §6.6).
+        /// audio state (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         audio: Option<IgnoredAny>,
 
-        /// Citation annotations; accepted and ignored (README §6.6).
+        /// Citation annotations; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         annotations: Option<IgnoredAny>,
     },
 
@@ -211,9 +241,13 @@ enum UserPartIn {
         /// The image reference.
         image_url: ImageUrlIn,
 
-        /// OpenAI image detail hint beside the reference; accepted and ignored (README §6.6).
+        /// OpenAI image detail hint beside the reference; accepted and ignored
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         detail: Option<IgnoredAny>,
     },
 }
@@ -227,7 +261,10 @@ struct ImageUrlIn {
 
     /// OpenAI image detail hint; accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     detail: Option<String>,
 }
 
@@ -291,7 +328,10 @@ struct ToolFunctionIn {
 
     /// OpenAI strictness flag; accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     strict: Option<bool>,
 }
 
@@ -352,7 +392,10 @@ struct JsonSchemaIn {
 
     /// OpenAI strictness flag; accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     strict: Option<bool>,
 }
 
@@ -380,7 +423,7 @@ impl TextPartIn {
 
 /// Call identifier synthesized for the legacy `function_call` protocol: the protocol's single
 /// call occupies the tool-call assembly's default index, and the identifier names that index —
-/// the same stable spelling the upstream direction mints (README §6.2).
+/// the same stable spelling the upstream direction mints (`docs/reference/inference.md`).
 const LEGACY_FUNCTION_CALL_ID: &str = "call_0";
 
 /// Parses a Chat Completions request body into IR.
@@ -487,7 +530,8 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
                 // A legacy `function_call` is consulted only when the message carries no modern
                 // entry — modern `tool_calls` take precedence, the same assembly rule the
-                // upstream direction applies to `message.function_call` (README §6.2).
+                // upstream direction applies to `message.function_call`
+                // (`docs/reference/inference.md`).
                 if tool_calls.as_deref().is_none_or(|calls| calls.is_empty())
                     && let Some(function_call) = function_call
                 {
@@ -603,7 +647,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             response_format,
             // The closed vocabulary is enforced here: an unknown string is a 400 naming the
             // field, and the parsed enum renders verbatim into the upstream's own parameter
-            // (README §6.4).
+            // (`docs/reference/inference.md`).
             reasoning_effort: request
                 .reasoning_effort
                 .as_deref()

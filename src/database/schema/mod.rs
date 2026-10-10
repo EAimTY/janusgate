@@ -21,7 +21,7 @@
 //! query. A database file predating the stamp carries the default `0` and fails the same
 //! verification — an unreleased development artifact the operator recreates. The main
 //! database's startup open treats the error as fatal, while an api-log day file answering with
-//! drift fails only its own request (README §3).
+//! drift fails only its own request (`docs/design/storage.md`).
 //!
 //! Migration texts run under foreign key enforcement: the bootstrap connection enables
 //! `PRAGMA foreign_keys` before the walk, and each text executes inside its own transaction, where
@@ -88,7 +88,8 @@ pub(crate) enum Registry {
     /// The main control-plane database.
     Main,
 
-    /// One api-log file of the day-partitioned api-log store (README §3 *ApiLog Store*).
+    /// One api-log file of the day-partitioned api-log store (`docs/design/storage.md` *ApiLog
+    /// Store*).
     ApiLogs,
 }
 
@@ -202,7 +203,7 @@ async fn bring_up_to_latest(
             // Versions are contiguous from 1, so a binary-search miss among positive versions
             // can only be a version newer than the latest this build knows. Stored file state
             // this build cannot interpret: typed drift, fatal at the main database's startup
-            // open and request-scoped for an api-log day file (README §3).
+            // open and request-scoped for an api-log day file (`docs/design/storage.md`).
             let latest_version = last_schema(schemas).version;
 
             return Err(Error::SchemaDrift {
@@ -393,7 +394,8 @@ async fn verify_application_id(
 
     if stored != expected {
         // Stored file state this build cannot interpret: typed drift, fatal at the main
-        // database's startup open and request-scoped for an api-log day file (README §3).
+        // database's startup open and request-scoped for an api-log day file
+        // (`docs/design/storage.md`).
         return Err(Error::SchemaDrift {
             detail: format!(
                 "database {path} carries the application_id {stored:#x}, but the {name} registry \

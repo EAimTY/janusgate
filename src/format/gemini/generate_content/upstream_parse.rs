@@ -34,18 +34,18 @@ pub(crate) struct UpstreamParser {
 /// One upstream GenerateContentResponse, or the Antigravity envelope wrapping one.
 ///
 /// The Antigravity API wraps every GenerateContentResponse — `:generateContent` JSON bodies
-/// and `alt=sse` frames alike — in a `response` member beside `traceId` and `metadata` (README
-/// §5.2), while Gemini-compatible upstreams carry the bare response, which has no top-level
-/// `response` member of its own. Every member is optional because the body is either the envelope
-/// or the bare response, and upstreams are third-party: members the gateway does not read are
-/// ignored.
+/// and `alt=sse` frames alike — in a `response` member beside `traceId` and `metadata`
+/// (`docs/design/providers.md`), while Gemini-compatible upstreams carry the bare response, which
+/// has no top-level `response` member of its own. Every member is optional because the body is
+/// either the envelope or the bare response, and upstreams are third-party: members the gateway
+/// does not read are ignored.
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamBody {
     /// The response wrapped by the Antigravity envelope.
     #[serde(default)]
     response: Option<Box<UpstreamBody>>,
 
-    /// Failure the upstream may embed in a 2xx body (README §6.7).
+    /// Failure the upstream may embed in a 2xx body (`docs/reference/inference.md`).
     #[serde(default)]
     error: Option<UpstreamError>,
 
@@ -185,9 +185,10 @@ impl UpstreamParser {
     /// invalid-generation finish (`MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`,
     /// `TOO_MANY_TOOL_CALLS`).
     fn ingest_response(&mut self, body: UpstreamBody) -> Result<Vec<IrEvent>, PayloadError> {
-        // An error object inside a 2xx body is a malformed upstream payload (README §6.7); the
-        // check sits beside the protocol fields, before the `response` envelope below is unwrapped,
-        // shared with the OpenAI-family codecs.
+        // An error object inside a 2xx body is a malformed upstream payload
+        // (`docs/reference/inference.md`); the check sits beside the protocol fields,
+        // before the `response` envelope below is unwrapped, shared with the OpenAI-family
+        // codecs.
         if let Some(error) = &body.error {
             return Err(error.failure());
         }
@@ -197,8 +198,8 @@ impl UpstreamParser {
         // The veto covers wherever the document carries the member: the Antigravity envelope
         // wraps the response — and any failure riding it — one level in, so the wrapped
         // document's own `error` member aborts too instead of parsing as an empty success
-        // (README §6.7). Where the body carries no envelope, this re-reads the outer body's
-        // already-vetoed `None`.
+        // (`docs/reference/inference.md`). Where the body carries no envelope, this re-reads the
+        // outer body's already-vetoed `None`.
         if let Some(error) = &value.error {
             return Err(error.failure());
         }
@@ -238,7 +239,7 @@ impl UpstreamParser {
         // `finishReason` ever arrives and the clean end of stream would degrade the block into a
         // successful `Stop`. Upstream sends `promptFeedback` only when no candidate was generated,
         // so a candidate finish above always wins. The verbatim block reason rides the finish so
-        // the native render surface can mirror `promptFeedback` (README §6.3).
+        // the native render surface can mirror `promptFeedback` (`docs/reference/inference.md`).
         if !self.is_finished
             && let Some(block_reason) = value
                 .prompt_feedback
@@ -286,9 +287,9 @@ impl UpstreamParser {
         // thinking docs require clients to resend exactly as received
         // (`ai.google.dev/gemini-api/docs/thinking`), so it must survive the IR. The
         // empty-text done closes the delta-delivered block carrying the signature — the
-        // conformant deltas-then-empty-done pairing of README §6.2 — and the Interactions
-        // surface replays it as the signature-bearing thought step. A functionCall part's
-        // signature keeps its own channel below.
+        // conformant deltas-then-empty-done pairing of `docs/reference/inference.md` — and the
+        // Interactions surface replays it as the signature-bearing thought step. A
+        // functionCall part's signature keeps its own channel below.
         if is_thought && let Some(signature) = &part.thought_signature {
             events.push(IrEvent::ReasoningDone {
                 text: String::new(),
@@ -380,8 +381,8 @@ impl UpstreamEventParser for UpstreamParser {
 ///
 /// Returns [`PayloadError`] for the invalid-generation reasons `MALFORMED_FUNCTION_CALL`,
 /// `UNEXPECTED_TOOL_CALL`, and `TOO_MANY_TOOL_CALLS`: the turn delivered no usable result and must
-/// surface as an upstream failure (README §6.7) instead of a successful `Stop` finish that would
-/// mask the failure.
+/// surface as an upstream failure (`docs/reference/inference.md`) instead of a successful `Stop`
+/// finish that would mask the failure.
 fn finish_reason_from_gemini(
     value: &str,
     is_call_delivered: bool,

@@ -1,4 +1,4 @@
-//! Write-time validation of a provider definition payload (README §5).
+//! Write-time validation of a provider definition payload (`docs/design/providers.md`).
 //!
 //! The SQL schema enforces only the repository-wide constraint boundary; the management boundary
 //! enforces everything else once, at write time: descriptor structure, stage-available value
@@ -45,7 +45,7 @@ impl ValidationError {
 }
 
 /// The descriptor stages whose expressions carry distinct stage-available value vocabularies
-/// (README §5.1: OAuth values are available only at stages that produce them).
+/// (`docs/design/providers.md`: OAuth values are available only at stages that produce them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
     /// The authorize-URL building of a flow's begin: the base URL and its extra parameters.
@@ -201,8 +201,8 @@ impl SlotNamespace {
     }
 }
 
-/// The per-format closed render-option sets (README §5.2): a codec rejects options outside its
-/// set at write time. Growing a set is the documented extension path.
+/// The per-format closed render-option sets (`docs/design/providers.md`): a codec rejects options
+/// outside its set at write time. Growing a set is the documented extension path.
 #[must_use]
 fn allowed_render_options(format: UpstreamFormat) -> &'static [RenderOption] {
     match format {
@@ -229,8 +229,8 @@ const BUILDER_OWNED_AUTHORIZE_PARAMS: [&str; 6] = [
 ];
 
 impl DefinitionPayload {
-    /// Validates the payload against every write-time rule (README §5), in document order of
-    /// the descriptor sections.
+    /// Validates the payload against every write-time rule (`docs/design/providers.md`), in
+    /// document order of the descriptor sections.
     ///
     /// # Errors
     ///
@@ -397,9 +397,9 @@ impl DefinitionPayload {
         }
 
         // The client credentials render verbatim wherever a header row references them
-        // (README §5.1), so their bytes must be header-value bytes: a control byte — a pasted
-        // trailing newline foremost — would fail every such dispatch at runtime as a
-        // transport failure misclassified as upstream unavailability, the same
+        // (`docs/design/providers.md`), so their bytes must be header-value bytes: a control byte —
+        // a pasted trailing newline foremost — would fail every such dispatch at runtime as
+        // a transport failure misclassified as upstream unavailability, the same
         // misclassification the header-name rule exists for. URL and form destinations
         // percent-encode their components, so the header contract is the strictest one the
         // values face, and the recipe carries it once.
@@ -420,10 +420,10 @@ impl DefinitionPayload {
         // A credential-stage expression referencing the `client_secret` part while the recipe
         // configures none is guaranteed drift: every stage constructor that admits the part
         // receives the configured secret, so a secret-less credential leaves the part absent
-        // at every admitting stage and the reference fails every expression evaluation (README
-        // §5.1) — the same stored-drift shape the provisioning `secret` rule at the end of
-        // this method enforces for the flow's token. The check reads every admitting surface
-        // in payload document order.
+        // at every admitting stage and the reference fails every expression evaluation
+        // (`docs/design/providers.md`) — the same stored-drift shape the provisioning `secret` rule
+        // at the end of this method enforces for the flow's token. The check reads every
+        // admitting surface in payload document order.
         if client_secret.is_none() {
             let mut stranded: Vec<(&str, ExpressionSurface<'_>)> = Vec::new();
 
@@ -582,7 +582,8 @@ impl DefinitionPayload {
                 // `expires_in` the response is required to carry, or the definition's explicit
                 // fallback. An optional (or absent) expiry mapping without a fallback would let
                 // an upstream omission leave the flow with no lifetime at all, so the state is
-                // unrepresentable for a valid definition (README §5.3, §7.2).
+                // unrepresentable for a valid definition (`docs/design/providers.md` and
+                // `docs/reference/management-api.md`).
                 let maps_required_expiry = authorization.response.fields.iter().any(|field| {
                     matches!(field.target, Target::ExpiresInSeconds) && field.required
                 });
@@ -646,8 +647,8 @@ impl DefinitionPayload {
         // declares PKCE S256 — its presence is the challenge pair's marker (RFC 7636 §4.2) —
         // so an exchange under `pkce: none` referencing the `code_verifier` part references a
         // value the stage environment never carries: stored drift failing every exchange's
-        // evaluation (README §5.1), the same guaranteed-absent shape the client-secret rule
-        // above enforces.
+        // evaluation (`docs/design/providers.md`), the same guaranteed-absent shape the
+        // client-secret rule above enforces.
         if let Grant::AuthorizationCode {
             pkce: Pkce::None, ..
         } = grant
@@ -679,9 +680,9 @@ impl DefinitionPayload {
 
         // RFC 6749 §4.1.3: the token request presents the pasted authorization code — `code`
         // is REQUIRED — and an authorization-code flow is consumed by its first completion
-        // attempt even when the exchange then fails (README §7.2), so an exchange request that
-        // never references the part burns every flow on that attempt: the same required-carry
-        // shape the verifier and redirect-URI rules above enforce.
+        // attempt even when the exchange then fails (`docs/reference/management-api.md`), so an
+        // exchange request that never references the part burns every flow on that attempt:
+        // the same required-carry shape the verifier and redirect-URI rules above enforce.
         if let Grant::AuthorizationCode { .. } = grant
             && !ExpressionSurface::Control(&exchange.request)
                 .references(&ValueExpr::AuthorizationCode)
@@ -767,11 +768,11 @@ impl DefinitionPayload {
 
         validate_response_descriptor(&exchange.response, "token exchange")?;
 
-        // The runtime fold consumes exactly the exchange stage's target set (README §5.3): a
-        // device-authorization or provisioning target in an exchange mapping is stored drift
-        // the fold misclassifies as an internal error on every flow, so the boundary rejects
-        // the spelling. The defaulted refresh mapping reuses this descriptor, so the check
-        // covers the renewal's fold input too.
+        // The runtime fold consumes exactly the exchange stage's target set
+        // (`docs/design/providers.md`): a device-authorization or provisioning target in an
+        // exchange mapping is stored drift the fold misclassifies as an internal error on
+        // every flow, so the boundary rejects the spelling. The defaulted refresh mapping
+        // reuses this descriptor, so the check covers the renewal's fold input too.
         for field in &exchange.response.fields {
             if !is_exchange_stage_target(&field.target) {
                 return Err(ValidationError::new(format!(
@@ -922,7 +923,7 @@ impl DefinitionPayload {
                 // The renewal rewrites the stored credentials' expiry, so the sequence must
                 // produce a fresh absolute one: without an extraction the renewal would
                 // persist `null` — the no-scheduled-refresh state — over a known expiry, and
-                // the credential would silently never refresh again (README §5.4).
+                // the credential would silently never refresh again (`docs/design/providers.md`).
                 if !self
                     .provisioning
                     .as_ref()
@@ -940,12 +941,12 @@ impl DefinitionPayload {
         }
 
         // The provisioning stage's `secret` value is the exchange's access token — the flow's
-        // current token threaded through the completion (README §5.1, §5.4) — so an exchange
-        // that maps no `access_token` target passes it absent, and a provisioning expression
-        // referencing the part fails every flow's step with the stored-drift evaluation
-        // error. A token supplied by provisioning is reachable through the slot its
-        // extraction writes instead. The check lands after the refresh rules because the
-        // provisioning section follows the credential sections in the payload document.
+        // current token threaded through the completion (`docs/design/providers.md`) — so an
+        // exchange that maps no `access_token` target passes it absent, and a provisioning
+        // expression referencing the part fails every flow's step with the stored-drift
+        // evaluation error. A token supplied by provisioning is reachable through the slot
+        // its extraction writes instead. The check lands after the refresh rules because
+        // the provisioning section follows the credential sections in the payload document.
         if !exchange
             .response
             .fields
@@ -1020,7 +1021,7 @@ impl DefinitionPayload {
                 validate_path(&poll.done_path, "provisioning poll done")?;
 
                 // The error path's empty chain is the configured no-error-inspection
-                // (README §5.4); a carried chain still names only non-empty members.
+                // (`docs/design/providers.md`); a carried chain still names only non-empty members.
                 validate_path(&poll.error_path, "provisioning poll error")?;
 
                 reject_duplicate_targets(
@@ -1119,8 +1120,8 @@ impl DefinitionPayload {
 
                 // An empty has-more chain addresses the page root, whose truthy read is
                 // always false: the walk would end after page one with the budget guard never
-                // firing — the silent truncation README §5.5 forbids — so the chain must name
-                // at least one member.
+                // firing — the silent truncation `docs/design/providers.md` forbids — so the chain
+                // must name at least one member.
                 if has_more_path.0.is_empty() {
                     return Err(ValidationError::new(
                         "discovery has-more path must not be empty",
@@ -1155,7 +1156,7 @@ impl DefinitionPayload {
         // The format gating: a Responses mechanism speaks only through an `openai_response`
         // definition and a Messages mechanism only through an `anthropic_messages` one — a
         // declaration on the wrong format is an operation the definition can never render
-        // (README §5).
+        // (`docs/design/providers.md`).
         for (mechanism, declaration) in mechanisms.enumerated() {
             let required_format = required_format(mechanism);
 
@@ -1233,9 +1234,9 @@ impl DefinitionPayload {
     }
 }
 
-/// The one upstream wire format a compaction mechanism's declaration may ride (README §5): the
-/// Responses mechanisms speak `openai_response` and the Messages mechanisms
-/// `anthropic_messages`. The exhaustive match keeps the format gating aligned with the
+/// The one upstream wire format a compaction mechanism's declaration may ride
+/// (`docs/design/providers.md`): the Responses mechanisms speak `openai_response` and the Messages
+/// mechanisms `anthropic_messages`. The exhaustive match keeps the format gating aligned with the
 /// mechanism vocabulary.
 fn required_format(mechanism: Mechanism) -> UpstreamFormat {
     match mechanism {
@@ -1459,7 +1460,7 @@ fn validate_path(path: &ResponsePath, what: &str) -> Result<(), ValidationError>
     Ok(())
 }
 
-/// Validates one capability extraction's paths (README §5.5): every declared path
+/// Validates one capability extraction's paths (`docs/design/providers.md`): every declared path
 /// well-formed, and every member-path — the level-naming, flag, and compaction-object paths —
 /// non-empty, so a conforming descriptor never names the addressed value's root by accident.
 fn validate_capability_extraction(
@@ -1558,8 +1559,8 @@ fn validate_capability_extraction(
     Ok(())
 }
 
-/// Validates one terminal-code list: every code non-empty (README §5.1). The list's own
-/// non-emptiness is the carrying `Vec1` type's, rejected at parse.
+/// Validates one terminal-code list: every code non-empty (`docs/design/providers.md`). The list's
+/// own non-emptiness is the carrying `Vec1` type's, rejected at parse.
 fn validate_terminal_codes(codes: &Vec1<String>, what: &str) -> Result<(), ValidationError> {
     for code in codes {
         if code.is_empty() {
@@ -1616,11 +1617,11 @@ fn validate_control_request(
     Ok(())
 }
 
-/// Whether one response target is one the exchange and refresh folds consume (README §5.3):
-/// the tokens, the lifetime, the identity token, the base URL, and the named slots.
-/// [`crate::provider::oauth::exchange::apply_exchange_target`] holds the runtime half of this
-/// table — a target outside the set is stored drift its catch-all arm fails fast on — so the
-/// two must move together.
+/// Whether one response target is one the exchange and refresh folds consume
+/// (`docs/design/providers.md`): the tokens, the lifetime, the identity token, the base URL, and
+/// the named slots. [`crate::provider::oauth::exchange::apply_exchange_target`] holds the runtime
+/// half of this table — a target outside the set is stored drift its catch-all arm fails fast on —
+/// so the two must move together.
 fn is_exchange_stage_target(target: &Target) -> bool {
     matches!(
         target,
@@ -1633,8 +1634,8 @@ fn is_exchange_stage_target(target: &Target) -> bool {
     )
 }
 
-/// Whether one response target is one the provisioning fold consumes (README §5.4): the
-/// tokens, the base URL, the absolute expiry, and the named slots.
+/// Whether one response target is one the provisioning fold consumes (`docs/design/providers.md`):
+/// the tokens, the base URL, the absolute expiry, and the named slots.
 /// [`crate::provider::oauth::provisioning::apply_target`] holds the runtime half of this
 /// table — a target outside the set is stored drift its catch-all arm fails fast on — so the
 /// two must move together.
@@ -1651,9 +1652,9 @@ fn is_provision_stage_target(target: &Target) -> bool {
 
 /// Validates one response descriptor: non-empty paths, no target stored into twice, and — for
 /// a form-encoded response, whose fields are flat — exactly one path member. The
-/// duplicate-target rule covers every stage-level descriptor (README §5.1): the fold applies
-/// the fields in order and a later present value silently overwrites the earlier one, so the
-/// earlier mapping is dead configuration. Cross-stage repeats stay allowed — several stages
+/// duplicate-target rule covers every stage-level descriptor (`docs/design/providers.md`): the fold
+/// applies the fields in order and a later present value silently overwrites the earlier one, so
+/// the earlier mapping is dead configuration. Cross-stage repeats stay allowed — several stages
 /// may write one slot, each from its own response.
 fn validate_response_descriptor(
     descriptor: &ResponseDescriptor,
@@ -1720,10 +1721,10 @@ fn validate_provision_extraction(
     extraction: &ProvisionExtraction,
     encoding: &ResponseEncoding,
 ) -> Result<(), ValidationError> {
-    // The runtime fold consumes exactly the provisioning stage's target set (README §5.4): an
-    // exchange- or device-stage target in an extraction is stored drift the fold fails the
-    // step on. The check covers the steps' own extractions and the polls' result extractions
-    // alike, every caller routing through here.
+    // The runtime fold consumes exactly the provisioning stage's target set
+    // (`docs/design/providers.md`): an exchange- or device-stage target in an extraction is
+    // stored drift the fold fails the step on. The check covers the steps' own extractions and
+    // the polls' result extractions alike, every caller routing through here.
     if !is_provision_stage_target(&extraction.target) {
         return Err(ValidationError::new(format!(
             "provisioning extraction carries the `{}` target its stage does not produce",
@@ -1784,10 +1785,10 @@ impl<'a> ExpressionWalk<'a> {
     }
 
     /// Validates literal HTTP header rows using the shared structural owner, holding each
-    /// row's operator-authored value text to the HTTP header-value byte contract (README
-    /// §5.1): the row reaches the wire as a literal header value, and a control byte — a
-    /// trailing newline in a literal part foremost — would fail every dispatch at runtime as
-    /// a transport failure misclassified as upstream unavailability, the same
+    /// row's operator-authored value text to the HTTP header-value byte contract
+    /// (`docs/design/providers.md`): the row reaches the wire as a literal header value, and a
+    /// control byte — a trailing newline in a literal part foremost — would fail every dispatch
+    /// at runtime as a transport failure misclassified as upstream unavailability, the same
     /// misclassification the header-name rule exists for. Dynamic value sources keep their
     /// fold-time contracts; the configured client credentials carry the byte contract at the
     /// recipe.

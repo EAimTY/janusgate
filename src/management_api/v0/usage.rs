@@ -1,9 +1,9 @@
 //! Management routes reading the request-accounting rows (`usage:list`, `usage:query`).
 //!
-//! Both reads answer `POST` with typed bodies (README §7.0 rule 6), share one filter type,
-//! serve rows and aggregates that carry only the log's own facts — never a name, never content
-//! (rule 7) — and are never gated by the `api_logs` write switch: existing api-log files stay
-//! readable (README §3 *ApiLog*).
+//! Both reads answer `POST` with typed bodies (`docs/reference/management-api.md` POST JSON
+//! transport), share one filter type, serve rows and aggregates that carry only the log's own facts
+//! — never a name, never content (response ownership) — and are never gated by the `api_logs` write
+//! switch: existing api-log files stay readable (`docs/design/storage.md` *ApiLog*).
 
 use super::{Error, Nullable, UsageFilter, route};
 use crate::{
@@ -34,22 +34,23 @@ route! {
     }
 }
 
-/// Page size `usage:list` uses when `limit` is absent (README §7.1).
+/// Page size `usage:list` uses when `limit` is absent (`docs/reference/management-api.md`).
 const DEFAULT_LIMIT: i64 = 100;
 
-/// Largest accepted `usage:list` page size; larger values are rejected with 400 (README §7.1).
+/// Largest accepted `usage:list` page size; larger values are rejected with 400
+/// (`docs/reference/management-api.md`).
 const MAX_LIMIT: i64 = 1000;
 
-/// Largest accepted length of one multi-value filter field (README §7.1): one cap shared by
-/// every such field, bounding pathological requests — the management API may face untrusted
-/// users, and every value becomes a bound SQL parameter.
+/// Largest accepted length of one multi-value filter field (`docs/reference/management-api.md`):
+/// one cap shared by every such field, bounding pathological requests — the management API may face
+/// untrusted users, and every value becomes a bound SQL parameter.
 const FILTER_VALUES_CAP: usize = 100;
 
-/// One accounting row in its management wire shape (README §7.1): the row's sixteen published
-/// columns — the rowid never appears, serving only as the per-file tie-break of the read
-/// ordering. `http_status` and the five token columns mirror their nullable storage columns
-/// (`T | null`, rule 2), and no field carries a name or content: labels are resolved through the
-/// entity list routes (rule 7).
+/// One accounting row in its management wire shape (`docs/reference/management-api.md`): the row's
+/// sixteen published columns — the rowid never appears, serving only as the per-file tie-break of
+/// the read ordering. `http_status` and the five token columns mirror their nullable storage
+/// columns (`T | null`, two-state fields), and no field carries a name or content: labels are
+/// resolved through the entity list routes (response ownership).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct ApiLogResponse {
@@ -76,7 +77,7 @@ struct ApiLogResponse {
     is_stream: bool,
 
     /// HTTP status delivered to the client; `null` when no response was ever produced — the
-    /// nullable mirror column (rule 2).
+    /// nullable mirror column (two-state fields).
     http_status: Option<i64>,
 
     /// Recorded outcome of the request.
@@ -86,23 +87,23 @@ struct ApiLogResponse {
     duration: i64,
 
     /// Tokens consumed by the input; `null` when the upstream reported no usage — the nullable
-    /// mirror column (rule 2).
+    /// mirror column (two-state fields).
     input_tokens: Option<i64>,
 
     /// Tokens produced by the output, `reasoning_tokens` included; `null` without usage — the
-    /// nullable mirror column (rule 2).
+    /// nullable mirror column (two-state fields).
     output_tokens: Option<i64>,
 
     /// Input tokens served from the upstream prompt cache; `null` without that breakdown — the
-    /// nullable mirror column (rule 2).
+    /// nullable mirror column (two-state fields).
     cached_tokens: Option<i64>,
 
     /// Input tokens written to the upstream prompt cache; `null` without that breakdown — the
-    /// nullable mirror column (rule 2).
+    /// nullable mirror column (two-state fields).
     cache_write_tokens: Option<i64>,
 
     /// Output tokens spent on reasoning; `null` without that breakdown — the nullable mirror
-    /// column (rule 2).
+    /// column (two-state fields).
     reasoning_tokens: Option<i64>,
 }
 
@@ -130,7 +131,8 @@ impl ApiLogResponse {
     }
 }
 
-/// Strictly parsed `usage:list` request (README §7.1): every field is absent-keeps (rule 2).
+/// Strictly parsed `usage:list` request (`docs/reference/management-api.md`): every field is
+/// absent-keeps (two-state fields).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -148,7 +150,7 @@ pub(super) struct ListUsageRequest {
     /// Exclusive upper cursor bound: only strictly older rows — `started_at < before`, in UTC
     /// microseconds — are listed. Absent starts at the newest row; the next page's cursor is the
     /// last returned row's `started_at`, which the client derives and the response never echoes
-    /// (rule 7).
+    /// (response ownership).
     #[serde(
         default,
         deserialize_with = "super::absent_keeps::deserialize",
@@ -157,7 +159,7 @@ pub(super) struct ListUsageRequest {
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     before: Option<i64>,
 
-    /// The shared filter (README §7.1); absent lists every row.
+    /// The shared filter (`docs/reference/management-api.md`); absent lists every row.
     #[serde(
         default,
         deserialize_with = "super::absent_keeps::deserialize",
@@ -167,8 +169,8 @@ pub(super) struct ListUsageRequest {
     filter: Option<UsageFilter>,
 }
 
-/// The `usage:list` success body (README §7.1): rows ordered by `started_at` descending, the
-/// per-file rowid breaking ties.
+/// The `usage:list` success body (`docs/reference/management-api.md`): rows ordered by `started_at`
+/// descending, the per-file rowid breaking ties.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListUsageResponse {
@@ -176,9 +178,9 @@ pub(super) struct ListUsageResponse {
     api_logs: Vec<ApiLogResponse>,
 }
 
-/// Strictly parsed `usage:query` request (README §7.1): `group_by` is required and is a set of
-/// closed-vocabulary dimensions — the element type is the validation — and `filter` is
-/// absent-keeps (rule 2).
+/// Strictly parsed `usage:query` request (`docs/reference/management-api.md`): `group_by` is
+/// required and is a set of closed-vocabulary dimensions — the element type is the validation — and
+/// `filter` is absent-keeps (two-state fields).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -187,7 +189,7 @@ pub(super) struct QueryUsageRequest {
     /// dimension is rejected with 400 naming the field.
     group_by: Vec<UsageGroupBy>,
 
-    /// The shared filter (README §7.1); absent filters nothing.
+    /// The shared filter (`docs/reference/management-api.md`); absent filters nothing.
     #[serde(
         default,
         deserialize_with = "super::absent_keeps::deserialize",
@@ -197,11 +199,11 @@ pub(super) struct QueryUsageRequest {
     filter: Option<UsageFilter>,
 }
 
-/// The composite bucket key of one aggregation row (README §7.1): one field per requested
-/// dimension, exactly the requested ones — a fixed object serialized in declaration order, while
-/// the request order drives the bucket list's ordering. The enums use their
+/// The composite bucket key of one aggregation row (`docs/reference/management-api.md`): one field
+/// per requested dimension, exactly the requested ones — a fixed object serialized in declaration
+/// order, while the request order drives the bucket list's ordering. The enums use their
 /// recorded vocabularies; `http_status` renders `null` for the bucket the never-answered rows
-/// form — its nullable mirror (rule 2).
+/// form — its nullable mirror (two-state fields).
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct UsageBucketKey {
@@ -269,7 +271,8 @@ impl UsageBucketKey {
                 UsageGroupBy::EndpointType => wire.endpoint_type = key.endpoint_type,
                 UsageGroupBy::Outcome => wire.outcome = key.outcome,
                 UsageGroupBy::IsStream => wire.is_stream = key.is_stream,
-                // The never-answered rows' bucket renders `null` — the nullable mirror (rule 2).
+                // The never-answered rows' bucket renders `null` — the nullable mirror (two-state
+                // fields).
                 UsageGroupBy::HttpStatus => wire.http_status = Some(Nullable(key.http_status)),
             }
         }
@@ -278,9 +281,9 @@ impl UsageBucketKey {
     }
 }
 
-/// One `usage:query` bucket (README §7.1): the log's own numeric facts under its composite
-/// grouping key — `requests` counts rows and every token is a `NULL`-excluding sum rendered as
-/// a number. No name rides along (rule 7).
+/// One `usage:query` bucket (`docs/reference/management-api.md`): the log's own numeric facts under
+/// its composite grouping key — `requests` counts rows and every token is a `NULL`-excluding sum
+/// rendered as a number. No name rides along (response ownership).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct UsageBucket {
@@ -322,8 +325,8 @@ impl UsageBucket {
     }
 }
 
-/// The `usage:query` success body (README §7.1): buckets ordered by the key expressions in
-/// request order, `NULL` first.
+/// The `usage:query` success body (`docs/reference/management-api.md`): buckets ordered by the key
+/// expressions in request order, `NULL` first.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct QueryUsageResponse {
@@ -352,7 +355,7 @@ fn resolve_limit(limit: Option<i64>) -> Result<i64, Error> {
 
 /// Validates the `group_by` set: the element type's parsing already bounds the vocabulary, so
 /// the one extra rule is repetition — the same dimension twice is ambiguous for both the key
-/// shape and the ordering (README §7.1).
+/// shape and the ordering (`docs/reference/management-api.md`).
 ///
 /// # Errors
 ///
@@ -376,7 +379,7 @@ fn resolve_group_by(group_by: Vec<UsageGroupBy>) -> Result<Vec<UsageGroupBy>, Er
 
 /// Validates the shared filter, which is now the one storage-tier vocabulary type re-exported
 /// by this version: the parsing already rejected `null`, unknown fields, and empty arrays, so
-/// the one wire-level rule left is the per-field value cap (README §7.1).
+/// the one wire-level rule left is the per-field value cap (`docs/reference/management-api.md`).
 ///
 /// # Errors
 ///

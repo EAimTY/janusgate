@@ -1,8 +1,7 @@
 ---
-name: JanusGate Console
-description: A quiet, fresh console where each page does one job, every state reads as icon plus words, and the gateway's answer is stated where the action was taken.
+name: "JanusGate Console"
+description: "A quiet administration console: one page, one job."
 colors:
-  # Light (default): faint green-tinted neutrals, one teal accent
   canvas: "#f2f5f3"
   surface: "#ffffff"
   muted: "#e9efec"
@@ -25,7 +24,6 @@ colors:
   bad-ink: "#ffffff"
   scroll-thumb: "#c2cdc7"
   scroll-thumb-hover: "#a9b6b0"
-  # Dark: the same roles, re-inked
   dark-canvas: "#0d1412"
   dark-surface: "#151e1b"
   dark-muted: "#1d2925"
@@ -49,32 +47,101 @@ colors:
   dark-scroll-thumb: "#33443c"
   dark-scroll-thumb-hover: "#43564d"
 typography:
-  family: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Sans Arabic", Tahoma, sans-serif'
-  data: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace with tabular-nums'
-  page-title: '20px, 600, tight tracking'
-  section-title: '15px, 600, tight tracking'
-  body: '14px, 400, 1.55'
-  small: '13px body copy, 12.5px captions'
+  body:
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Geeza Pro\", \"Noto Sans Arabic\", Tahoma, sans-serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: 1.55
+  page-title:
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Geeza Pro\", \"Noto Sans Arabic\", Tahoma, sans-serif"
+    fontSize: "20px"
+    fontWeight: 600
+    letterSpacing: "-0.025em"
+  section-title:
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Geeza Pro\", \"Noto Sans Arabic\", Tahoma, sans-serif"
+    fontSize: "15px"
+    fontWeight: 600
+  control:
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Geeza Pro\", \"Noto Sans Arabic\", Tahoma, sans-serif"
+    fontSize: "13.5px"
+    fontWeight: 500
+  caption:
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Geeza Pro\", \"Noto Sans Arabic\", Tahoma, sans-serif"
+    fontSize: "12.5px"
+    fontWeight: 400
+  data:
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    fontSize: "0.92em"
+    lineHeight: 1.4
+    letterSpacing: "-0.01em"
+    fontFeature: "\"tnum\""
 rounded:
+  control: "8px"
+  notice: "12px"
   card: "16px"
-  control: "8-12px"
-  pill: "999px for badges and switches"
-motion:
-  grammar: "CSS only. 150-200ms ease-out on interactive state; one 200ms rise-in per screen entrance; skeleton wash while the first read is in flight. Nothing else moves."
-  reduced: "prefers-reduced-motion parks every animation; transitions collapse to near-zero."
+  pill: "999px"
+spacing:
+  tight: "8px"
+  related: "12px"
+  group: "16px"
+  card: "20px"
+  section: "24px"
 components:
-  button-primary: "accent fill, white text"
-  button-secondary: "surface, strong-rule border, ink text"
-  button-danger: "bad fill, bad-ink text"
-  button-ghost: "transparent, dim text"
-  badge: "soft tint ground, icon plus words, pill"
-  notice: "soft tint ground, thin tinted border, icon plus title plus the gateway's verbatim detail"
-  card: "surface, 1px rule border, 16px radius, no shadow"
-  field: "canvas ground, strong-rule border, accent focus, 8px radius"
-  switch: "pill track with sliding knob, role=switch, on/off text beside it"
-  check-pill: "a checkbox in a pill frame for a closed-set pick, accent edge and soft tint while checked"
-  stat-link: "a figure card whose whole surface is an anchor, chevron at its right edge"
-  bar-chart: "accent bars on the card ground, one 1px rule as the axis, no gridlines, no legend, a text name per bar"
+  button-primary:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.accent-ink}"
+    typography: "{typography.control}"
+    rounded: "{rounded.control}"
+    padding: "8px 14px"
+  button-primary-hover:
+    backgroundColor: "{colors.accent-strong}"
+  button-secondary:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink}"
+    typography: "{typography.control}"
+    rounded: "{rounded.control}"
+    padding: "8px 14px"
+  button-danger:
+    backgroundColor: "{colors.bad}"
+    textColor: "{colors.bad-ink}"
+    typography: "{typography.control}"
+    rounded: "{rounded.control}"
+    padding: "8px 14px"
+  button-ghost:
+    backgroundColor: "transparent"
+    textColor: "{colors.ink-dim}"
+    typography: "{typography.control}"
+    rounded: "{rounded.control}"
+    padding: "8px 14px"
+  field:
+    backgroundColor: "{colors.canvas}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.control}"
+    padding: "8px 12px"
+  card:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.card}"
+    padding: "20px"
+  badge:
+    backgroundColor: "{colors.ok-soft}"
+    textColor: "{colors.ok}"
+    rounded: "{rounded.pill}"
+    padding: "4px 10px"
+  notice:
+    backgroundColor: "{colors.bad-soft}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.notice}"
+    padding: "12px 14px"
+  switch:
+    backgroundColor: "{colors.accent}"
+    rounded: "{rounded.pill}"
+    height: "24px"
+    width: "44px"
+  nav:
+    backgroundColor: "{colors.accent-soft}"
+    textColor: "{colors.accent}"
+    rounded: "{rounded.control}"
 ---
 
 # Design System: JanusGate Console
@@ -83,191 +150,74 @@ components:
 
 **Creative North Star: "One page, one job."**
 
-The interface is a quiet console for a working operator, not an instrument
-to admire. Each page does exactly one thing — the overview reads the
-gateway's health and its recent traffic, the provider pages administer
-providers, the model pages administer models, the key pages hand out the
-serving secret, the usage pages read the accounting — and rows never unfold
-into editors: a row is one link to that thing's detail page, behind which its
-edit page owns every change. The operator always knows where they are, what
-this page owns, and where the one action they came for lives.
+The console gives an operator one clear job per page. Overview reads health and traffic; lists lead to a resource; its detail page explains state; its editor owns changes. Pools and public routes use dedicated editors. Physical availability, public exposure, and serving-key permission remain distinct.
 
-The world is built from restraint, not decoration. One neutral family
-tinted faintly green, one teal accent for actions and current selection, and
-three semantic hues that only ever paint a status or a notice. Surfaces are
-flat white (or flat ink in the dark theme) separated by 1px borders; there
-are no shadows, no gradients standing in for content, no display face, no
-webfont, no image file, no icon font. Type is the platform's own stacks —
-one sans for everything, the mono stack with tabular figures for anything
-that identifies a row: IDs, prefixes, counts, timestamps. Status is always
-icon plus words, never color alone.
-
-The console refuses the category's two defaults: the dark hacker cockpit
-with neon state lamps, and the dense everything-table that edits inline. It
-also refuses the previous generation of this same app — the enamelled
-route-setting panel with its tracks, sections, levers, and lamps — which is
-kept nowhere and referenced by nothing.
+The visual system is quiet and flat: green-tinted neutrals, one teal action accent, and semantic status hues. System fonts and inline SVG supply the materials; there are no remote visual assets. Light and dark themes share roles and follow the OS unless overridden. Motion conveys a state change, then stops.
 
 **Key Characteristics:**
 
-- Light by default, dark on demand: the OS decides unless the operator
-  overrode it; the override persists beside the connection, not in a build.
-- One page, one job; rows link to detail pages, edit pages own every change.
-- Flat surfaces, 1px borders, 16px cards, pill badges, no shadows.
-- Single sans family, fixed sizes; mono tabular figures for data.
-- Motion is CSS only and means state: switch flips, notices land, screens
-  settle once. Everything parks under `prefers-reduced-motion`.
-- Plain English copy. Domain words are provider, model, public ID, upstream
-  ID, prefix, enabled, serving, discover, reconnect, override, reasoning
-  level, capability, declaration — nothing else needs a glossary.
+- One page, one job; explicit resource and action ownership.
+- Flat bordered surfaces, compact controls, and generous grouping.
+- One sans stack for copy; mono tabular figures for machine values.
+- Status always includes words and an icon.
+- Localized copy, narrow layouts, visible focus, and reduced motion.
 
 ## Colors
 
-Forty-four tokens: twenty color roles themed twice, plus the scrollbar's
-scroll-thumb pair in both themes — the themed browser surfaces, tokenized.
-Every color the app paints comes from this set; the only literals elsewhere
-are the authored SVG geometry.
+The frontmatter lists the implemented CSS roles and their dark equivalents. `canvas` is the app ground; `surface` is a card or row; `muted` and `hover` provide quiet state fills. `ink`, `ink-dim`, and `ink-faint` establish text hierarchy. `rule` separates surfaces; `rule-strong` bounds controls. Scrollbar colors belong to this same role system.
 
-### Primary
+`accent` marks primary actions, focus, links, and selection, with `accent-strong` for interaction and `accent-soft` for tinted selection. `ok`, `warn`, and `bad` are status/destruction colors, paired with soft backgrounds. Primary and danger buttons use their dedicated ink tokens. Dark mode replaces the same CSS roles; component code does not invent a second palette.
 
-- **Accent** (light `#0b6e5c`, dark `#3ecfa4`): the one action color.
-  Primary buttons, the current nav tab, text links, focus rings, text
-  selection, the caret. It never paints a status and never decorates.
-- **Accent soft** (light `#ddf0e9`, dark `#123b30`): the tint behind the
-  current selection and the info-adjacent fills (empty-state medallions,
-  step numerals, kind picker).
-- **Accent strong** (light `#0a6352`, dark `#6fdcb9`): the hover fill for
-  primary buttons, and the text ink on dark-theme tint grounds.
+**The Status Rule.** A status uses words and an icon, with a semantic tint as reinforcement. A color-only dot does not establish state.
 
-### Secondary
-
-- **Ok** (light `#147339` on `#e2f4e7`, dark `#4cc38a` on `#123825`):
-  serving, valid credentials, success notices. Always with a check mark.
-- **Warn** (light `#9f4c08` on `#faeedb`, dark `#e8a04c` on `#3d2c12`):
-  expired or stale credentials, suspended and held-by-provider models, the
-  usage stream's client-aborted outcomes, unsaved-changes stamps. Always
-  with an alert mark or plain words.
-- **Bad** (light `#c92a1e` on `#fdecea`, dark `#f26d5f` on `#431b16`):
-  failures, destructive actions. Always with a mark — the alert triangle on
-  a notice, the cross on a status badge, so a failed request reads apart
-  from the alert-marked credential warning. Danger buttons set their label
-  in **bad ink** (light `#ffffff`, dark `#1a0b09`).
-
-### Neutral
-
-- **Canvas** (light `#f2f5f3`, dark `#0d1412`): the app ground, and the
-  ground inputs sit on so their boundary reads on a card.
-- **Surface** (light `#ffffff`, dark `#151e1b`): cards, rows, the nav bar.
-- **Muted** (light `#e9efec`, dark `#1d2925`): quiet fills — skeletons,
-  search-count pills, dark-theme input grounds.
-- **Ink / Dim / Faint**: the three text inks. Faint carries hints, counts,
-  captions, and placeholders — all of which still clear 4.5:1.
-- **Rule / Strong rule**: 1px borders; strong rule bounds inputs and
-  secondary buttons.
-
-### Contrast
-
-Measured pairs (WCAG 2.x relative luminance).
-
-Light, on surface `#ffffff` unless noted: ink 16.5, dim 7.3, faint 5.5
-(5.0 on canvas), accent 6.2, white on accent 6.2, accent on soft 5.2,
-ok 5.2, warn 5.2, bad 4.8, bad-ink on danger fill 4.8.
-
-Dark, on surface `#151e1b`: ink 14.4, dim 8.1, faint 4.9, accent 8.7,
-accent-strong on soft 7.5, dark text on accent fill 8.0, ok 5.9,
-warn 6.1, bad 5.1, bad-ink on bad fill 6.5.
-
-**The Badge Rule.** A status is a pill carrying an icon and words on a
-soft tint. A badge that is only a colored dot does not exist.
-
-**The Notice Rule.** A result is stated where its action was taken: the
-app's own title, the gateway's message verbatim as the detail, and a fix
-only where the app can be certain of one. Failures are `role="alert"`.
+Text/background pairs must meet WCAG AA contrast for their actual size. Verify tinted badges, danger labels, placeholders, and focus in both themes when changing colors; a compliant text token on surface does not establish contrast on every ground.
 
 ## Typography
 
-**One family for everything.** The platform sans carries titles, labels,
-buttons, and body; there is no display face and no pairing to maintain.
-Sizes are fixed, not fluid, each painted where it belongs: 26px stat
-figures, 22px the connection screen's title, 20px page titles, 17px the
-device flow's verification code — the flow's most prominent figure, the one
-value the operator transcribes — 16px empty-state titles, 15px card titles,
-14.5px table row names, 13.5px controls, 13px supporting copy, 12.5px
-captions, 12px step numerals — the 14px body base is set once by the
-stylesheet, and no utility re-states it. Titles track tight; nothing is
-ever set in all-caps as a voice.
+The platform sans stack carries body copy, labels, buttons, and headings. Body is 14px at 1.55; page titles are 20px/600, section titles 15px/600, controls 13.5px/500, captions 12.5px. The connection title, large statistics, and device code may use their existing larger scale. Avoid display typography and all-caps voice.
 
-**Data is mono with tabular figures.** Anything that identifies a row —
-public and upstream IDs, prefixes, provider addresses, states, expiries,
-counts — is set in the mono stack at 0.92em with `tabular-nums`, so
-columns of figures align. Mono is measurement, never a costume: prose
-about the data stays in the sans.
+**The Data Rule.** Machine identifiers, prefixes, counts, and timestamps use the mono stack and tabular figures; explanatory prose stays sans. Isolate machine text as LTR and foreign/user text with automatic direction.
+
+## Layout
+
+Group one subject in each card: state, settings, credentials, membership, permissions, or danger. Use the existing 8/12/16/20/24px rhythm; cards have 20px padding. Page headings identify the task and carry its primary action. Detail facts expand from one to two columns at the small breakpoint; narrow screens stack related controls without hiding operations. Long names and IDs wrap or scroll deliberately.
+
+**The Ownership Rule.** Rows link to the resource that owns their state. Refresh does not erase a dirty draft, and a save result stays beside its action.
+
+Keep physical inventory and automatic/authored public entries visibly distinguishable. Permission forms group typed owners and their routes; view filters do not mutate hidden choices. Translation can change label length, so use logical spacing and flexible layouts.
+
+## Elevation & Depth
+
+Surfaces are flat and separated by 1px rules. Cards have no shadow. Hover changes border or ground rather than lifting a surface. Focus uses a 2px accent outline with a 2px offset; keyboard focus must remain visible on every interactive element.
+
+Motion is CSS only: 150ms ease-out interactive transitions, one 200ms rise-in per screen, a 1.4-second skeleton wash, and switch travel. No child choreography or animated table rows. Under `prefers-reduced-motion`, animations stop and transitions collapse to 0.01ms.
+
+## Shapes
+
+Cards use 16px radii, notices 12px, fields/buttons 8px, and badges/switches a pill radius. Inputs use a strong border and canvas ground, with muted ground in dark mode where implemented. Buttons share padding and typography across primary, secondary, danger, and ghost tones. Do not introduce a new shape to distinguish an ordinary domain entity.
 
 ## Components
 
-- **Buttons** come in four tones — primary, secondary, danger, ghost —
-  one shape, one rhythm. Labels name the action ("Discover models", "Save
-  changes", "Delete for good"); busy states name the wait ("Discovering…").
-- **Fields** are labelled above, hinted below, errored below in bad with
-  an alert mark. Inputs sit on the canvas ground with a strong-rule edge;
-  focus turns the edge accent.
-- **Switches** are pills with knobs, `role="switch"`, with an On/Off word
-  beside them. A switch flips an enabled state — always labelled `Enabled`
-  with no caption, always first in its settings — it never submits a form.
-- **Cards** hold one subject: details, settings, credentials, models, usage,
-  danger. A card has a title, an optional one-line description, and the
-  actions that belong to it — nothing else.
-- **Stat links** are the overview's figures: a card whose whole surface is an
-  anchor, the figure in tabular figures at 26px, its name under it, and the
-  chevron a row carries at its right edge. Hover strengthens the border, lifts
-  the ground, and turns the chevron accent — a figure that goes somewhere
-  never looks like a figure that does not.
-- **Charts** are drawn from the console's own materials: one series, accent
-  bars on the card's ground, a single 1px rule as the axis, and no gridlines,
-  no legend, no second hue. A quiet day is a 2px tick at the axis, never a
-  gap. Every bar is a focusable point whose accessible name is its day and
-  figure; the axis prints the window's two ends, and a readout line states
-  the window's total and peak until a bar is read, then that day and its
-  figure — no figure is readable only by hovering.
-- **Skeletons** hold the layout while a screen's first read is in flight.
-  A failed first read replaces the skeleton with the failure, never stacks
-  under it.
-- **Empty states** teach: what this is, and the one way forward. The
-  gateway-wide empty state carries the five steps from here to a working
-  endpoint, with the finished steps checked off.
-- **Armed confirms** replace modals: Delete… arms, "Delete for good" plus
-  "Keep it" decide, and the blast radius (cascade count, 404 warning) is
-  stated on the armed state.
+Buttons name actions and busy states; disabled/busy controls cannot submit again. Fields have accessible labels, hints, and field-local error text. Switches are labelled enabled-state controls with on/off words; they do not submit the containing form. A card's heading and actions belong to its subject.
 
-## Motion
+**The Notice Rule.** State the action result where it happened. Use an authored title, preserve the gateway detail, and name a recovery only when known. Failure notices use role="alert".
 
-One grammar, four members, all CSS: interactive state at 150–200ms
-ease-out, the screen's one 200ms rise-in entrance, the skeleton wash, and
-the switch knob's travel. Page entrances never orchestrate children;
-results never slide across the screen; tables never animate rows. Motion
-conveys state — a flip, a landing, a settling — and nothing else.
+Badges combine icon and words on a soft ground. Destructive actions arm an inline confirmation with a clear consequence and cancel action. First-load skeletons hold structure, then yield to content or failure. Empty states explain the missing resource and the next action. Clickable figures and rows carry navigation affordances. Charts use accent bars, a simple axis, and keyboard-readable day/value information; data must not depend on hover.
 
-## Copy
+## Do's and Don'ts
 
-Controls name their action; errors name the problem and the recovery; the
-gateway's message is always kept verbatim as the detail. The fixed
-vocabulary: provider, model, public ID, upstream ID, prefix, enabled,
-serving, discover, reconnect, override, reasoning level, capability,
-declaration. Setup copy assumes a
-stranger who read only the READMEs; in-app copy assumes an operator mid-task.
+### Do
 
-## What this world refuses
+- Do reuse semantic tokens in both themes.
+- Do use clear labels, explicit unknown values, and labelled status icons.
+- Do group related settings and keep save/revert actions with their form.
+- Do accommodate translated copy and isolate machine values.
+- Do preserve keyboard focus and respect reduced motion.
 
-- Inline row editors, expandable table rows, and modals for ordinary
-  confirmations.
-- State carried by color alone; colored edge strips; gradient text; glass.
-- Kickers and eyebrows above headings; section numbers; hero-metric
-  stat blocks (figures here are labelled stats and doors, not decoration).
-- Display faces, webfonts, image assets, icon fonts, emoji-as-icons.
-- Anything that moves beyond the motion grammar, and any motion that
-  needs JavaScript to run.
+### Don't
 
-
-Standalone provider models are automatically callable as `provider.model_prefix + upstream_id`. Any pool membership hides these entries; each pool automatically exposes the union of member upstream IDs as `pool.model_prefix + upstream_id`, selecting only members with that exact model. Provider and pool identity forms expose editable prefixes, including the empty prefix, and explain the renaming effect beside the field. Inventory rows and physical model details show the actual automatic names. Public-route listings distinguish automatic entries and link them to the owning physical model or pool. Additional direct aliases and pool routes remain optional; setup leads from discovery directly to issuing a serving key.
-
-Serving-key forms keep Model access inside the existing settings form and save footer. Default and sparse owner/entry choices reuse labelled select controls; owner groups separate with the existing 1px rule, and narrow layouts stack controls below their labels. Permission/source and global status remain separate text facts. Search and Overrides only alter the view, never the draft. The same grouping and resolver appear read-only on key detail, while deleted references remain explicit with a Remove override action and a blocked save.
+- Don't introduce inline row editors or ordinary confirmation modals.
+- Don't use color as the only signal or conflate permission with availability.
+- Don't add shadows, gradients, glass, display fonts, or external visual assets.
+- Don't animate table rows or orchestrate page children.
+- Don't encode English-only text or volatile page inventories in visual tokens.

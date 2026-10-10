@@ -78,7 +78,7 @@ export function UsageScreen(props: {
     const [isLoadingMore, setIsLoadingMore] = createSignal(false);
     // The load-more failure is stated beside its own control — the Load more
     // button at the stream's end — never in the read-level notice above the
-    // page, which states read failures only (README §6.4). A read cycle that
+    // page, which states read failures only (`web/docs/architecture.md`). A read cycle that
     // lands replaces the stream wholesale and takes the failure with it: the
     // fresh stream's continuation is untested, so the old diagnosis describes
     // nothing that still exists.

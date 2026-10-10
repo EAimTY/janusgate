@@ -1,6 +1,6 @@
 //! The compaction descriptor: the optional remote-compaction section of a provider definition
-//! (README §5) — the strategy, the gateway budgets, the five per-mechanism support declarations
-//! with their operation data, and the optional native token-count operation.
+//! (`docs/design/providers.md`) — the strategy, the gateway budgets, the five per-mechanism support
+//! declarations with their operation data, and the optional native token-count operation.
 //!
 //! The section is definition-level connection data only: it never decides a dispatch by itself.
 //! A mechanism's effective support resolves per selected model from an administrator override,
@@ -17,7 +17,7 @@ use crate::compaction_model::mechanism::{Mechanism, MechanismSupport};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
-/// The remote-compaction section of one provider definition payload (README §5).
+/// The remote-compaction section of one provider definition payload (`docs/design/providers.md`).
 ///
 /// Every member carries a shipped default: a payload may name the section as `{}` and receive
 /// the native-preferred strategy with the default budgets and no declared mechanism — the
@@ -59,7 +59,7 @@ pub(crate) struct CompactionSection {
 impl CompactionSection {
     /// The section's declared default support of one mechanism: the declaration's default when
     /// the mechanism is declared, else the unknown state — an absent declaration is no
-    /// declaration at all (README §5).
+    /// declaration at all (`docs/design/providers.md`).
     pub(in crate::provider) fn declared_default(&self, mechanism: Mechanism) -> MechanismSupport {
         self.mechanisms
             .enumerated()
@@ -98,7 +98,7 @@ fn default_retention_budget() -> NonZeroU64 {
     NonZeroU64::new(8192).unwrap()
 }
 
-/// The compaction strategy a provider definition follows (README §5).
+/// The compaction strategy a provider definition follows (`docs/design/providers.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -228,7 +228,7 @@ impl Declaration<'_> {
 }
 
 /// The Responses standalone-compact declaration: the definition's default support plus the
-/// standalone operation executing it (README §5).
+/// standalone operation executing it (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -250,9 +250,9 @@ pub(crate) struct StandaloneCompactDeclaration {
 }
 
 /// The ride-along declaration shape shared by the Responses explicit-trigger and automatic
-/// threshold-compaction declarations (README §5): the definition's default support of the
-/// mechanism, and the unsupported classifier — the trigger and the automatic controls ride the
-/// ordinary inference request, so no operation data exists. The wire JSON is this shape for
+/// threshold-compaction declarations (`docs/design/providers.md`): the definition's default support
+/// of the mechanism, and the unsupported classifier — the trigger and the automatic controls ride
+/// the ordinary inference request, so no operation data exists. The wire JSON is this shape for
 /// both mechanisms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -268,8 +268,8 @@ pub(crate) struct RideAlongDeclaration {
 }
 
 /// The overlay declaration shape shared by the Messages on-demand and threshold-compaction
-/// declarations (README §5): the definition's default support, the beta header overlay the
-/// operation requires, and the unsupported classifier. The headers overlay the ordinary
+/// declarations (`docs/design/providers.md`): the definition's default support, the beta header
+/// overlay the operation requires, and the unsupported classifier. The headers overlay the ordinary
 /// inference connection — the replay of a returned compaction block needs them too, wherever
 /// the block later travels. The wire JSON is this shape for both mechanisms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -291,10 +291,10 @@ pub(crate) struct OverlayDeclaration {
     pub(crate) unsupported: Option<UnsupportedClassifier>,
 }
 
-/// The standalone compact connection of a Responses definition (README §5): URL, headers, body
-/// envelope, and response unwrapping, described independently from the normal generation
-/// connection — never derived by appending to the inference URL. The operation frames its
-/// upstream parsing and body stream flags itself: an inference descriptor that forces streaming
+/// The standalone compact connection of a Responses definition (`docs/design/providers.md`): URL,
+/// headers, body envelope, and response unwrapping, described independently from the normal
+/// generation connection — never derived by appending to the inference URL. The operation frames
+/// its upstream parsing and body stream flags itself: an inference descriptor that forces streaming
 /// does not force it here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -322,9 +322,9 @@ pub(crate) struct StandaloneCompactOperation {
     pub(crate) unsupported: Option<UnsupportedClassifier>,
 }
 
-/// The native token-count operation of a Messages definition (README §5): the connection
-/// primitives of the format's concrete count request. Counter calls are opt-in definition
-/// data; text-only threshold estimation works without them.
+/// The native token-count operation of a Messages definition (`docs/design/providers.md`): the
+/// connection primitives of the format's concrete count request. Counter calls are opt-in
+/// definition data; text-only threshold estimation works without them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -346,11 +346,11 @@ pub(crate) struct CountTokensOperation {
     pub(crate) response_unwrap: Option<String>,
 }
 
-/// The typed positive unsupported-response classifier of one native operation (README §5): a
-/// dispatched native call whose response matches any listed criterion is a positive
-/// mechanism-or-model boundary, the one runtime evidence that permits the single summary
-/// fallback. An empty classifier never positively classifies; free-form error-message
-/// substring matching does not exist.
+/// The typed positive unsupported-response classifier of one native operation
+/// (`docs/design/providers.md`): a dispatched native call whose response matches any listed
+/// criterion is a positive mechanism-or-model boundary, the one runtime evidence that permits the
+/// single summary fallback. An empty classifier never positively classifies; free-form
+/// error-message substring matching does not exist.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]

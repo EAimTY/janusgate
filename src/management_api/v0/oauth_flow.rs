@@ -1,5 +1,5 @@
 //! Management routes beginning and completing provider OAuth flows, across both grants
-//! (README §7.1, §7.2).
+//! (`docs/reference/management-api.md`).
 //!
 //! `oauth:start` begins a creation flow; `oauth:reauthorize` begins a reauthorization flow; the
 //! two targets are disjoint because device flows complete without a second user step.
@@ -56,7 +56,7 @@ route! {
 }
 
 /// Strictly parsed `oauth:start` request: the creation flow's definition reference and the new
-/// provider's naming, stated in full (rule 3).
+/// provider's naming, stated in full (full-state writes).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -112,9 +112,9 @@ pub(super) struct ReauthorizeProviderRequest {
     provider_definition_version: Option<i64>,
 }
 
-/// Strictly parsed `oauth:complete` request: a union discriminated by the flow's grant (rule 4),
-/// because an authorization-code completion pastes its code and a device completion polls its
-/// stored outcome.
+/// Strictly parsed `oauth:complete` request: a union discriminated by the flow's grant (tagged
+/// variants), because an authorization-code completion pastes its code and a device completion
+/// polls its stored outcome.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "grant", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -135,9 +135,9 @@ pub(super) enum CompleteProviderOauthRequest {
     },
 }
 
-/// The flow-begin routes' success body: a union discriminated by the flow's grant (rule 4), because
-/// an authorization-code flow answers with the URL to open and a device flow answers with the
-/// verification facts to approve through.
+/// The flow-begin routes' success body: a union discriminated by the flow's grant (tagged
+/// variants), because an authorization-code flow answers with the URL to open and a device flow
+/// answers with the verification facts to approve through.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "grant", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -179,7 +179,7 @@ pub(super) enum StartProviderOauthResponse {
     },
 }
 
-/// The `oauth:complete` success body: a union over the flow's observable state (rule 4).
+/// The `oauth:complete` success body: a union over the flow's observable state (tagged variants).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -260,7 +260,7 @@ fn pasted_authorization_code(code: &str) -> Result<String, Error> {
 }
 
 /// The credential-kind rejection both flow-begin paths render: a definition a flow would run
-/// against must carry OAuth credentials (README §7.1).
+/// against must carry OAuth credentials (`docs/reference/management-api.md`).
 fn credential_kind_mismatch(definition: &crate::provider::ProviderDefinition) -> Error {
     Error::CredentialKindMismatch {
         message: format!(
@@ -317,14 +317,15 @@ async fn handle_start(
 
     // A definition whose URLs reference the base requires the instance base URL: the flow stores
     // it for the exchange and provisioning, and the created provider's every dispatch evaluates
-    // those references against it (README §3, §7.1).
+    // those references against it (`docs/design/storage.md` and
+    // `docs/reference/management-api.md`).
     if definition.payload.references_base() && request.base_url.is_none() {
         return Err(super::base_url_required(&definition));
     }
 
     // The pre-insert check renders a clean 409 before any upstream round-trip; the database's
     // UNIQUE constraint stays the concurrent backstop, whose loss the device poller classifies
-    // as the flow's terminal `name_conflict` outcome (README §7.2).
+    // as the flow's terminal `name_conflict` outcome (`docs/reference/management-api.md`).
     if storage::providers::is_provider_name_taken(database, &request.name).await? {
         return Err(Error::ProviderNameTaken {
             name: request.name.clone(),
@@ -374,9 +375,10 @@ async fn handle_reauthorize_start(
         (None, None) => {
             // The default target is the provider's own definition pair, and the request
             // validity condition is the explicit target's: the target must carry OAuth
-            // credentials (README §7.1). A static-key provider reauthorized without an explicit
-            // target is the same client fault, so it renders the same rejection instead of
-            // failing deep in slot initialization as a gateway failure.
+            // credentials (`docs/reference/management-api.md`). A static-key provider reauthorized
+            // without an explicit target is the same client fault, so it renders the
+            // same rejection instead of failing deep in slot initialization as a
+            // gateway failure.
             let definition = provider.definition.clone();
 
             if definition.credential_kind() != CredentialKind::OAuth {
@@ -393,7 +395,8 @@ async fn handle_reauthorize_start(
 
     // The flow runs from the provider's stored base URL, so an effective target definition — the
     // explicit target, or the provider's own pair — whose URLs reference the base is satisfiable
-    // only while the row carries one (README §3, §7.1).
+    // only while the row carries one (`docs/design/storage.md` and
+    // `docs/reference/management-api.md`).
     if definition.payload.references_base() && provider.base_url.is_none() {
         return Err(super::stored_base_url_required(&definition));
     }
@@ -524,7 +527,7 @@ async fn complete_authorization_code(
     }
 
     // The consume is atomic: exactly one completion observes the row, and a failed exchange
-    // burns the flow (§6).
+    // burns the flow (`docs/reference/inference.md`).
     let flow = storage::oauth_flows::consume_flow(database, state, now)
         .await?
         .ok_or(Error::UnknownOauthState)?;
@@ -567,10 +570,10 @@ async fn complete_consumed_flow(
 ) -> Result<Provider, Error> {
     // A create flow whose provider name another row already holds can never succeed. The
     // conflict renders the same clean 409 the begin path does, before the exchange's upstream
-    // round-trip (README §7.1); the write's UNIQUE constraint stays the concurrent backstop,
-    // exactly like the device poller's terminal `name_conflict` classification (README §7.2).
-    // The flow row is already consumed either way — this classifies the loss, it does not
-    // un-spend the flow.
+    // round-trip (`docs/reference/management-api.md`); the write's UNIQUE constraint stays the
+    // concurrent backstop, exactly like the device poller's terminal `name_conflict`
+    // classification (`docs/reference/management-api.md`). The flow row is already consumed
+    // either way — this classifies the loss, it does not un-spend the flow.
     if flow.purpose == FlowPurposeStorage::Create {
         let name = flow.create_provider_name();
 

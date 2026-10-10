@@ -17,5 +17,9 @@
 # Third-party skill installation (keep skills-lock.json tracked)
 /.agents/skills/
 
-# Impeccable
-**/.impeccable/
+# Impeccable: keep transient work private; commit durable web design context.
+**/.impeccable/*
+!/web/.impeccable/design.json
+!/web/.impeccable/surfaces/
+/web/.impeccable/surfaces/*
+!/web/.impeccable/surfaces/web.md

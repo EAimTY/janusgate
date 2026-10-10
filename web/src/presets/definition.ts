@@ -11,8 +11,7 @@ export function presetDefinitionJson(preset: ProviderPreset): string {
 
 /**
  * Reads one preset's stored definition version, when the gateway holds one:
- * the client's own `MAX(version)` derivation over the name's rows (web README
- * §4.5), independent of the listing's order — the contract fixes the ordering
+ * the client's own `MAX(version)` derivation over the name's rows (web `docs/reference/configuration.md`), independent of the listing's order — the contract fixes the ordering
  * keys, never their direction.
  */
 export function matchStoredDefinition(

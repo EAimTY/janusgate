@@ -1,6 +1,6 @@
 //! The provisioning engine: the ordered control-request sequence a definition runs after a
 //! successful exchange — and, for the reprovisioning refresh mode, under the refresh lease
-//! (README §5.4).
+//! (`docs/design/providers.md`).
 //!
 //! Steps run in order; each folds its response extractions into one [`WorkingState`] that the
 //! caller commits atomically. A step guarded by `skip_if` runs only while that slot is absent —
@@ -9,7 +9,7 @@
 //! the completed operation's result extractions into the same state.
 //!
 //! The module also carries the machine-consumed-text contract every OAuth response fold applies
-//! before storage (README §7): the fold here shares the validators
+//! before storage (`docs/reference/management-api.md`): the fold here shares the validators
 //! [`super::exchange::validate_slot_value`], [`super::exchange::validate_token_value`], and
 //! [`super::exchange::validate_base_url_value`] with the exchange and refresh-grant folds in
 //! [`super::exchange`], so a value an upstream response extracts is validated identically
@@ -57,9 +57,9 @@ pub(super) struct WorkingState {
 
     /// Whether the working base URL is upstream-derived — the exchange's `base_url` fold or a
     /// provisioning `base_url` extraction — rather than the begin-time base the flow echoed in.
-    /// Only a derived base replaces the stored one at a reauthorization's provider write (README
-    /// §7.1); the begin-time echo never does, or the commit would clobber a base a concurrent
-    /// `providers:update` legitimately stored while the flow ran.
+    /// Only a derived base replaces the stored one at a reauthorization's provider write
+    /// (`docs/reference/management-api.md`); the begin-time echo never does, or the commit would
+    /// clobber a base a concurrent `providers:update` legitimately stored while the flow ran.
     pub(super) is_base_url_derived: bool,
 
     /// The access token's absolute expiry, in UTC microseconds, scaled from a
@@ -201,8 +201,9 @@ async fn run_poll(
         // A completed operation carrying a terminal failure payload fails the step. The payload
         // is upstream response content: its bounded excerpt is logged for diagnosis, while the
         // error the stage raises is fully gateway-authored, so the terminal failure pair a
-        // device flow persists (README §3, §7.2) never embeds an upstream body — the contract
-        // the poller's `provisioning_failure_message` renders under.
+        // device flow persists (`docs/design/storage.md` and `docs/reference/management-api.md`)
+        // never embeds an upstream body — the contract the poller's
+        // `provisioning_failure_message` renders under.
         if let Some(failure) = error_at(&body, &poll.error_path)? {
             debug!("provisioning poll {index} failed upstream: {failure}");
 
@@ -224,8 +225,8 @@ async fn run_poll(
 }
 
 /// One poll-path value resolved out of a decoded poll response: the JSON value at the path, or
-/// the text of the one flat form member the path names (README §5.1: form responses are flat,
-/// one member).
+/// the text of the one flat form member the path names (`docs/design/providers.md`: form responses
+/// are flat, one member).
 enum PollValue<'a> {
     /// The JSON value the path addresses.
     Json(&'a serde_json::Value),
@@ -287,12 +288,12 @@ fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
 /// `status` and `message` members, a bare string renders its text — never the JSON-quoted
 /// spelling — and any other non-`null` value renders its JSON text; on the flat form encoding,
 /// the one addressed member renders verbatim — it is already text. Every rendering is truncated
-/// to the shared excerpt bound (README §4), so a hostile payload can never stream unbounded
-/// text into a message. An absent or `null` payload reads as no failure.
+/// to the shared excerpt bound (`docs/reference/configuration.md`), so a hostile payload can never
+/// stream unbounded text into a message. An absent or `null` payload reads as no failure.
 ///
 /// The rendering is diagnostic text for the log alone: the error the poll raises names the
 /// failed step without embedding it, so no upstream body content can reach a stored terminal
-/// failure (README §3, §7.2).
+/// failure (`docs/design/storage.md` and `docs/reference/management-api.md`).
 fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, Error> {
     /// Known display fields inside an otherwise arbitrary upstream failure fragment.
     #[derive(Deserialize)]
@@ -405,19 +406,21 @@ fn apply_target(
 
             state.base_url = Some(value);
 
-            // The extraction is the provenance mark (README §7.1): the base now aboard is
-            // upstream-derived, the only kind a reauthorization's write commits.
+            // The extraction is the provenance mark (`docs/reference/management-api.md`): the base
+            // now aboard is upstream-derived, the only kind a reauthorization's write
+            // commits.
             state.is_base_url_derived = true;
 
             Ok(())
         }
 
         // Both expiry consult points prefer this extraction over the response's own token
-        // evidence (README §5.4), so a stored non-future timestamp is always elapsed for the
-        // freshness check and would send every dispatch back into the refresh lease. The
-        // contract for consulted evidence is that it must be in the future (README §7.2): a
-        // zero, negative, or past timestamp is a malformed provisioning response, the same
-        // failure the token path applies to a non-future `exp` claim.
+        // evidence (`docs/design/providers.md`), so a stored non-future timestamp is always elapsed
+        // for the freshness check and would send every dispatch back into the refresh
+        // lease. The contract for consulted evidence is that it must be in the future
+        // (`docs/reference/management-api.md`): a zero, negative, or past timestamp is a
+        // malformed provisioning response, the same failure the token path applies to a
+        // non-future `exp` claim.
         ResponseTarget::ExpiresAtUnixSeconds => {
             let Some(seconds) = extracted.as_integer() else {
                 return Err(Error::Unavailable {

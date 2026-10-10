@@ -1,4 +1,5 @@
-//! Management routes listing, creating, and versioning provider definitions (README §6).
+//! Management routes listing, creating, and versioning provider definitions
+//! (`docs/reference/inference.md`).
 //!
 //! `create` inserts version 1 under a new name; `update` must name the current latest
 //! `(name, version)` and atomically inserts the successor version under that name, rejecting a
@@ -62,7 +63,7 @@ pub(super) struct ListProviderDefinitionsResponse {
 }
 
 /// Strictly parsed `provider-definitions:create` request: the complete state of one definition's
-/// first version (rule 3), under a fresh name.
+/// first version (full-state writes), under a fresh name.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -125,8 +126,8 @@ impl DefinitionResponse {
     }
 }
 
-/// The definition write routes' success body (rule 7): the stored version's identity is the fact
-/// the caller cannot know.
+/// The definition write routes' success body (response ownership): the stored version's identity is
+/// the fact the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct DefinitionEnvelope {

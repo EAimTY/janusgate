@@ -32,7 +32,7 @@ pub(super) fn finalize_buffered<T: Serialize>(
 ) -> Response {
     // The body is complete before this call, so the row's outcome is the
     // successful hand-off; a client departing after the hand-off is the
-    // documented residual edge (README §3 *ApiLog*).
+    // documented residual edge (`docs/design/storage.md` *ApiLog*).
 
     let response = json_response(axum::http::StatusCode::OK, body);
 
@@ -164,10 +164,10 @@ where
         .expect("the aggregation task always hands its outcome to the handler")
 }
 
-/// The detached non-streaming aggregation task (finalization point 2, README §3 *ApiLog*):
-/// consumes the upstream event stream to completion, renders the aggregated body, and hands
-/// `Ok(response)` or `Err(error)` to the handler through `outcome_sender` — the handler renders
-/// it as the request's HTTP response when it is still there. The task owns the request's
+/// The detached non-streaming aggregation task (finalization point 2, `docs/design/storage.md`
+/// *ApiLog*): consumes the upstream event stream to completion, renders the aggregated body, and
+/// hands `Ok(response)` or `Err(error)` to the handler through `outcome_sender` — the handler
+/// renders it as the request's HTTP response when it is still there. The task owns the request's
 /// accounting draft, so the row finalizes even when hyper dropped the handler with the departing
 /// connection, and the hand-off attempt is the client-liveness signal:
 ///
@@ -177,7 +177,7 @@ where
 /// - a failed stream finalizes the outcome and status the shared [`Error`] classification yields,
 ///   regardless of the client — the upstream failure, not the departure, is what the row records —
 ///   carrying whatever usage the stream delivered before it failed (`NULL` columns when it
-///   delivered none, README §6.2's last-observation rule).
+///   delivered none, `docs/reference/inference.md`'s last-observation rule).
 #[expect(
     clippy::too_many_arguments,
     reason = "one detached task owns stream, accounting, render selection, affinity, and handoff"
@@ -260,7 +260,8 @@ async fn aggregated_response_task<TFormat>(
                 .await;
 
             // A failed hand-off returns the outcome: the handler is gone, so no response
-            // boundary will render this failure and this task is its single logger (README §8).
+            // boundary will render this failure and this task is its single logger
+            // (`docs/reference/configuration.md`).
             if let Err(Err(error)) = outcome_sender.send(Err(error)) {
                 log_error(&log_context, &error);
             }
@@ -320,12 +321,12 @@ const SSE_BODY_CHANNEL_BUFFER: usize = 64;
 
 /// Wraps an IR event stream into a live `text/event-stream` response, carrying the request's
 /// accounting draft and api-log store handle into the render task: that task is the streaming
-/// finalization point (README §3 *ApiLog*) and records exactly one row when the stream closes —
-/// `completed` + 200 for a clean end, the classified outcome under the already-declared 200 for
-/// an error frame (the first enqueued frame declares the status, so an error frame never changes
-/// it), and `client_aborted` for a broken body channel — with 200 only once a frame had been
-/// enqueued and `NULL` before the first. The recorded usage is whatever the stream delivered
-/// before closure.
+/// finalization point (`docs/design/storage.md` *ApiLog*) and records exactly one row when the
+/// stream closes — `completed` + 200 for a clean end, the classified outcome under the
+/// already-declared 200 for an error frame (the first enqueued frame declares the status, so an
+/// error frame never changes it), and `client_aborted` for a broken body channel — with 200 only
+/// once a frame had been enqueued and `NULL` before the first. The recorded usage is whatever the
+/// stream delivered before closure.
 ///
 /// # Panics
 ///
@@ -447,7 +448,7 @@ pub(super) fn sse_response(
                     }
 
                     // The error frame never changes the status already declared; only the
-                    // outcome moves to the classified failure (README §3 *ApiLog*).
+                    // outcome moves to the classified failure (`docs/design/storage.md` *ApiLog*).
                     api_logs::finalize_api_log(
                         &api_log_store,
                         &log,
@@ -503,7 +504,7 @@ pub(super) fn sse_response(
 
 /// The status recorded for a stream close: 200 once any frame — an error frame included — was
 /// enqueued, because the first enqueued frame is what declares the response to the client; `NULL`
-/// before the first, when no response ever reached it (README §3 *ApiLog*).
+/// before the first, when no response ever reached it (`docs/design/storage.md` *ApiLog*).
 fn declared_status(is_status_declared: bool) -> Option<i64> {
     if is_status_declared {
         Some(i64::from(StatusCode::OK.as_u16()))
@@ -516,7 +517,8 @@ fn declared_status(is_status_declared: bool) -> Option<i64> {
 /// usage the stream delivered — the terminal usage of a clean end, and for a failed stream the
 /// last usage observation it reported before failing (`None` when it delivered none), so a failed
 /// non-streaming dispatch records the usage the upstream already delivered exactly as its
-/// streaming twin does (README §3 *ApiLog*, §6.2's last-observation rule).
+/// streaming twin does (`docs/design/storage.md` *ApiLog*, `docs/reference/inference.md`'s
+/// last-observation rule).
 ///
 /// # Errors
 ///

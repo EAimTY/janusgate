@@ -33,14 +33,14 @@ pub(crate) struct UpstreamParser {
     /// index, or a streamed `output_item.done` item completing it — because a bare
     /// `response.output_item.added` opening carries the item skeleton without argument bytes and
     /// delivers no call content, so it never exhausts the terminal output array's copy of the
-    /// call (README §6.3).
+    /// call (`docs/reference/inference.md`).
     delivered_call_indices: IndexRecord,
 
     /// Output indices whose function call a [`IrEvent::ToolCallDone`] already completed: a
     /// streamed done item for an already-completed index is suppressed instead of re-emitting
-    /// the completion (README §6.2). This record is narrower than the delivered-call record —
-    /// streamed argument bytes deliver content without completing the call, and the streamed
-    /// done item must still deliver that completion.
+    /// the completion (`docs/reference/inference.md`). This record is narrower than the
+    /// delivered-call record — streamed argument bytes deliver content without completing the
+    /// call, and the streamed done item must still deliver that completion.
     completed_call_indices: IndexRecord,
 
     /// Whether a finish was already emitted; `finish` degrades a stream that ends without one
@@ -90,7 +90,7 @@ fn compaction_item_identity(item: &Value) -> String {
 /// Upstreams are third-party, so every member is optional — each event type carries its own subset,
 /// and upstreams attach identifiers, sequence numbers, and provider extensions the gateway never
 /// reads — and no member is required. The `error` member is read on every event type: any frame
-/// bearing one is an upstream failure, recognized type or not (README §6.7).
+/// bearing one is an upstream failure, recognized type or not (`docs/reference/inference.md`).
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamEvent {
     /// Event type discriminator.
@@ -191,13 +191,14 @@ pub(crate) struct UpstreamUsage {
 
 /// The object the Responses usage wrapper carries as `input_tokens_details`: the shared official
 /// input-side usage detail object [`PromptTokensDetails`] under its product-local name, its
-/// `cached_tokens` and `cache_write_tokens` members spelled identically on both wires (README
-/// §6.2).
+/// `cached_tokens` and `cache_write_tokens` members spelled identically on both wires
+/// (`docs/reference/inference.md`).
 type InputTokensDetails = PromptTokensDetails;
 
 /// The object the Responses usage wrapper carries as `output_tokens_details`: the shared official
 /// output-side usage detail object [`CompletionTokensDetails`] under its product-local name, its
-/// lone `reasoning_tokens` member spelled identically on both wires (README §6.2).
+/// lone `reasoning_tokens` member spelled identically on both wires
+/// (`docs/reference/inference.md`).
 type OutputTokensDetails = CompletionTokensDetails;
 
 /// One protocol output item, with arbitrary JSON confined to native compaction state.
@@ -273,14 +274,14 @@ struct OutputFields {
     #[serde(default)]
     arguments: String,
 
-    /// Upstream thought signature the gateway extension carries (README §6.6).
+    /// Upstream thought signature the gateway extension carries (`docs/reference/inference.md`).
     #[serde(default)]
     thought_signature: Option<String>,
 }
 
 /// One content part of a `message` item. Refusal text is message text: it rides the same text
-/// channel as `output_text` parts (README §6.2). Parts of other kinds carry no text and are
-/// ignored.
+/// channel as `output_text` parts (`docs/reference/inference.md`). Parts of other kinds carry no
+/// text and are ignored.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum ContentPart {
@@ -422,7 +423,7 @@ impl UpstreamParser {
     fn ingest_event(&mut self, event: UpstreamEvent) -> Result<Vec<IrEvent>, PayloadError> {
         // Any frame bearing a top-level error object is an upstream failure, recognized event type
         // or not; without this check such a frame would fall through to the unknown-type arm and
-        // parse as an empty success (README §6.7).
+        // parse as an empty success (`docs/reference/inference.md`).
         if let Some(error) = &event.error {
             return Err(error.failure());
         }
@@ -485,7 +486,8 @@ impl UpstreamParser {
 
                 // Only streamed argument bytes count as live delivery of the call; an
                 // argument-delta event without a payload delivered nothing and leaves the
-                // terminal output array's copy as the call's recovery source (README §6.3).
+                // terminal output array's copy as the call's recovery source
+                // (`docs/reference/inference.md`).
                 if !arguments_delta.is_empty() {
                     self.record_call_delivered(output_index);
                 }
@@ -582,7 +584,7 @@ impl UpstreamParser {
     /// the shared index. Tool-call recovery is keyed per index on content-bearing live events only:
     /// streamed argument bytes or a streamed done item count as live delivery of that index's call,
     /// while a bare `output_item.added` opening — the item skeleton without argument bytes — does
-    /// not (README §6.3).
+    /// not (`docs/reference/inference.md`).
     fn ingest_output_item(
         &mut self,
         item: &OutputItem,
@@ -605,7 +607,7 @@ impl UpstreamParser {
 
                 for part in &item.content {
                     // Refusal text is message text: it rides the same text channel as `output_text`
-                    // parts (README §6.2).
+                    // parts (`docs/reference/inference.md`).
                     let text = match part {
                         ContentPart::OutputText { text } => text.as_deref(),
 
@@ -672,9 +674,10 @@ impl UpstreamParser {
                 }
 
                 // A streamed done item is content-bearing: it completes its call and exhausts the
-                // terminal output array's copy of the same index (README §6.3) — but a done for an
-                // index another done already completed is suppressed, so a duplicating upstream
-                // cannot re-deliver the call (README §6.2). Argument bytes streamed for the index
+                // terminal output array's copy of the same index (`docs/reference/inference.md`) —
+                // but a done for an index another done already completed is
+                // suppressed, so a duplicating upstream cannot re-deliver the call
+                // (`docs/reference/inference.md`). Argument bytes streamed for the index
                 // do not complete it: the done item is still the event that must deliver the
                 // completion.
                 OutputItemOrigin::StreamDone(index) => {
@@ -690,9 +693,10 @@ impl UpstreamParser {
                 // the call at this index only when no content-bearing live event — streamed
                 // argument bytes or a streamed done item — delivered it; re-emitting a delivered
                 // call would duplicate it, while a call only opened by `output_item.added` still
-                // recovers here because the bare opening carries no argument bytes (README §6.3).
-                // The record is written during the walk, which is safe because every index is
-                // visited once and each delivery decision keys on its own index.
+                // recovers here because the bare opening carries no argument bytes
+                // (`docs/reference/inference.md`). The record is written during the
+                // walk, which is safe because every index is visited once and each
+                // delivery decision keys on its own index.
                 OutputItemOrigin::Terminal(index) => {
                     if !self.is_call_delivered(index) {
                         self.record_call_delivered(index);
@@ -712,7 +716,7 @@ impl UpstreamParser {
     /// The official opening event carries the item skeleton only — call id and name, no argument
     /// bytes, which arrive through `response.function_call_arguments.delta` — so the opening
     /// delta reveals the call to streaming renderers without delivering call content and never
-    /// counts as live delivery (README §6.3).
+    /// counts as live delivery (`docs/reference/inference.md`).
     fn open_function_call(&self, item: &OutputFields, output_index: usize) -> IrEvent {
         IrEvent::ToolCallDelta {
             index: output_index,
@@ -759,10 +763,11 @@ impl UpstreamParser {
         !self.delivered_call_indices.is_empty()
     }
 
-    /// Emits [`IrEvent::MessageStart`] exactly once, first (README §6.2): every ingest arm opens
-    /// with this call, so recovery paths that never see the live
-    /// `response.created`/`response.in_progress` events — no-live-delta upstreams per README §6.3 —
-    /// still open their event stream with it, and the once-only guard turns repeats into no-ops.
+    /// Emits [`IrEvent::MessageStart`] exactly once, first (`docs/reference/inference.md`): every
+    /// ingest arm opens with this call, so recovery paths that never see the live
+    /// `response.created`/`response.in_progress` events — no-live-delta upstreams per
+    /// `docs/reference/inference.md` — still open their event stream with it, and the once-only
+    /// guard turns repeats into no-ops.
     ///
     /// The identity comes from the response object the event carries; an event carrying none opens
     /// the stream with empty identity.
@@ -789,10 +794,11 @@ impl UpstreamEventParser for UpstreamParser {
         // The opening events precede the compaction pre-pass: a stream whose first frame
         // carries a compaction item — a streamed `output_item.done` item, or a terminal-only
         // static-key stream whose sole frame is a terminal response event — must still open
-        // with MessageStart (README §6.2). Only the frame kinds the compaction pre-pass reads
-        // are opened here; every one of them opens the stream in `ingest_event` too, so no
-        // other frame — an unknown type above all — gains a spurious opening, and the
-        // once-only guard turns `ingest_event`'s own opening into a no-op.
+        // with MessageStart (`docs/reference/inference.md`). Only the frame kinds the compaction
+        // pre-pass reads are opened here; every one of them opens the stream in
+        // `ingest_event` too, so no other frame — an unknown type above all — gains a
+        // spurious opening, and the once-only guard turns `ingest_event`'s own opening into
+        // a no-op.
         let mut events = match event.event_type.as_str() {
             "response.output_item.done" | "response.completed" | "response.incomplete" => {
                 self.message_start_events(event.response.as_ref())
@@ -815,9 +821,9 @@ impl UpstreamEventParser for UpstreamParser {
     fn parse_json_response(&mut self, body: &[u8]) -> Result<Vec<IrEvent>, PayloadError> {
         let response = format::parse_body::<ResponseObject>(body)?;
 
-        // A 2xx body carrying a top-level error object is an upstream failure (README §6.7), not an
-        // empty success; the failed-status fallback below still covers a failure without an error
-        // object.
+        // A 2xx body carrying a top-level error object is an upstream failure
+        // (`docs/reference/inference.md`), not an empty success; the failed-status fallback
+        // below still covers a failure without an error object.
         if let Some(error) = &response.error {
             return Err(error.failure());
         }
@@ -891,7 +897,7 @@ struct CompactedResponseBodyIn {
     usage: Option<UpstreamUsage>,
 
     /// Failure the upstream attached to the response; a present, non-null
-    /// member is a failed operation (README §6.7).
+    /// member is a failed operation (`docs/reference/inference.md`).
     #[serde(default)]
     error: Option<UpstreamError>,
 }
@@ -915,11 +921,11 @@ pub(crate) struct CompactedResponseNative {
 
 /// Parses a standalone compact upstream response body.
 ///
-/// A top-level non-null `error` member is a failed operation (README §6.7).
+/// A top-level non-null `error` member is a failed operation (`docs/reference/inference.md`).
 /// The body is usable only when its output is non-empty and carries exactly one
 /// `compaction` item — a native compacted window always contains retained
 /// items or the compaction item, and any other shape cannot stand in for a
-/// compaction result (README §6.8).
+/// compaction result (`docs/design/compaction.md`).
 ///
 /// # Errors
 ///

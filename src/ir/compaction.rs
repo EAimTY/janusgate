@@ -83,7 +83,7 @@ impl UsageIteration {
 
 /// One Responses automatic `context_management` entry: the parsed control and the native
 /// passthrough wire entry in one type — the parse and the upstream render share the single
-/// field-identical form (README §6.8).
+/// field-identical form (`docs/design/compaction.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename = "compaction")]
 pub(crate) struct AutomaticEntry {
@@ -94,7 +94,7 @@ pub(crate) struct AutomaticEntry {
 }
 
 /// One Messages native threshold edit: the vendor-shaped `compact_20260112` edit object a native
-/// threshold upstream receives verbatim (README §6.8). Converted from the parsed
+/// threshold upstream receives verbatim (`docs/design/compaction.md`). Converted from the parsed
 /// [`crate::format::compaction_control::ThresholdEdit`] at the format layer's request boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename = "compact_20260112")]

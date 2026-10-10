@@ -11,7 +11,7 @@ type DiscoveryFacts = {
 };
 
 /**
- * The provider page's discovery outcome (README §6.3): the headline counts
+ * The provider page's discovery outcome (`web/docs/architecture.md`): the headline counts
  * the models the upstream newly reports against the listing held before the
  * discovery, and the detail names the untouched manual rows and the vanished
  * rows the discovery kept. The facts are held, not rendered — the standing
@@ -51,7 +51,7 @@ type ProviderSaveFacts = {
 };
 
 /**
- * The provider edit page's save outcome (README §6.3): the saved account's
+ * The provider edit page's save outcome (`web/docs/architecture.md`): the saved account's
  * name, stating the replaced upstream key where the same save carried one —
  * the write-only field empties on the save, so this notice is the one place
  * the replacement is stated.

@@ -51,7 +51,7 @@ export function screenFailureNotice(cause: unknown, call?: FailureCall): ScreenN
 /**
  * Where a standing notice came from: a failed read cycle's diagnosis
  * (`"read"`), or an action's reported outcome (`"action"`). The origin
- * decides what may clear the notice — the two-origin rule (README §6.3).
+ * decides what may clear the notice — the two-origin rule (`web/docs/architecture.md`).
  */
 type NoticeOrigin = "read" | "action";
 
@@ -76,7 +76,7 @@ export type StandingNoticeController = {
 };
 
 /**
- * One screen's standing notice under the two-origin rule (README §6.3): one
+ * One screen's standing notice under the two-origin rule (`web/docs/architecture.md`): one
  * signal holds the notice and its origin together, so every write pairs them
  * and every clearing reads the origin of the notice that actually stands —
  * one notice owner, with no second state to drift. The rule is

@@ -242,7 +242,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     /**
      * The base-URL neediness the definition under edit dictates, derived from
      * the memoized payload's own URL expressions — the browser-side mirror of
-     * the gateway's base-URL requirement (gateway README §7.1 rejects the
+     * the gateway's base-URL requirement (`docs/reference/management-api.md` rejects the
      * write or flow start naming a base-addressed definition without one),
      * never a catalog fact. An edit that references the base opens the field
      * and closes the gate; a parse-broken edit has no payload to ask about,

@@ -195,8 +195,8 @@ pub(super) enum Error {
         path: String,
     },
 
-    /// A required identifier field is empty; names are non-empty (README
-    /// §7).
+    /// A required identifier field is empty; names are non-empty
+    /// (`docs/reference/management-api.md`).
     #[error("`{param}` must not be empty")]
     EmptyIdentifier {
         /// Name of the empty field.
@@ -205,7 +205,8 @@ pub(super) enum Error {
 
     /// A machine-consumed identifier or secret carries a character outside printable ASCII
     /// without whitespace: spaces, control characters, and non-ASCII text such as CJK are never
-    /// valid in routing IDs, model prefixes, or bearer secrets (README §7).
+    /// valid in routing IDs, model prefixes, or bearer secrets
+    /// (`docs/reference/management-api.md`).
     #[error("`{param}` must contain only printable ASCII without whitespace")]
     InvalidIdentifier {
         /// Name of the rejected field.
@@ -213,8 +214,9 @@ pub(super) enum Error {
     },
 
     /// A capability-override level value is not a member of the shared reasoning vocabulary
-    /// (README §6.4): the closed set is the declaration's whole value domain, so a foreign string
-    /// cannot become an override (nor, by the same rule, a discovery-extracted declaration).
+    /// (`docs/reference/inference.md`): the closed set is the declaration's whole value domain, so
+    /// a foreign string cannot become an override (nor, by the same rule, a discovery-extracted
+    /// declaration).
     #[error("`{param}` carries the unknown reasoning effort `{value}`")]
     UnknownReasoningLevel {
         /// Name of the rejected field.
@@ -244,7 +246,7 @@ pub(super) enum Error {
     },
 
     /// A static-key provider's base URL is not an `http(s)` URL of printable ASCII without
-    /// whitespace (README §7).
+    /// whitespace (`docs/reference/management-api.md`).
     #[error("`base_url` must be an http:// or https:// URL of printable ASCII without whitespace")]
     InvalidBaseUrl,
 
@@ -350,7 +352,7 @@ pub(super) enum Error {
     },
 
     /// Upstream model discovery answered with no models; the curated rows are never wiped by an
-    /// empty replacement (README §7.1).
+    /// empty replacement (`docs/reference/management-api.md`).
     #[error(
         "Upstream request failed: upstream reported no models; \
          refusing to replace the provider's model rows"
@@ -358,9 +360,10 @@ pub(super) enum Error {
     UpstreamReportedNoModels,
 
     /// Upstream model discovery reported an identifier the gateway cannot route: the refresh fails
-    /// before any row is written instead of storing an unroutable ID (README §7.1). A routable
-    /// identifier is a routing token — printable ASCII without whitespace, `/`, or `:` — and the
-    /// identifier is routing data, never request content, so naming it is safe.
+    /// before any row is written instead of storing an unroutable ID
+    /// (`docs/reference/management-api.md`). A routable identifier is a routing token —
+    /// printable ASCII without whitespace, `/`, or `:` — and the identifier is routing data,
+    /// never request content, so naming it is safe.
     #[error(
         "Upstream reported model `{upstream_id}` the gateway cannot route: identifiers must \
          contain only printable ASCII without whitespace, `/`, or `:`"
@@ -394,9 +397,9 @@ pub(super) enum Error {
     Provider(#[from] ProviderError),
 }
 
-/// The flat management error body every failed management request renders (README §7). It is part
-/// of this version's published wire surface, so external frontends can parse a rendered error and
-/// the bindings can publish it.
+/// The flat management error body every failed management request renders
+/// (`docs/reference/management-api.md`). It is part of this version's published wire surface, so
+/// external frontends can parse a rendered error and the bindings can publish it.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ErrorResponse {
@@ -496,18 +499,19 @@ impl Error {
     }
 
     /// Whether the failure is the calling client's own fault: every 4xx category belongs to the
-    /// caller and every 5xx category to the gateway or an upstream. README §8's severity policy
-    /// records client-fault rejections at debug level — an unauthorized management request
-    /// excepted, see [`Error::log_level`] — and gateway or upstream failures at error level.
+    /// caller and every 5xx category to the gateway or an upstream.
+    /// `docs/reference/configuration.md`'s severity policy records client-fault rejections at
+    /// debug level — an unauthorized management request excepted, see [`Error::log_level`] —
+    /// and gateway or upstream failures at error level.
     fn is_client_fault(&self) -> bool {
         self.as_errno().as_status_code().is_client_error()
     }
 
-    /// The severity the failure's one log record carries, per README §8's severity policy: an
-    /// unauthorized management request is anomalous-but-tolerated behavior — a probe of the
-    /// administrative surface — and is recorded at warn level; every other client fault is
-    /// per-request detail recorded at debug level, the rendered response already informing the
-    /// caller; a gateway or upstream failure is recorded at error level.
+    /// The severity the failure's one log record carries, per `docs/reference/configuration.md`'s
+    /// severity policy: an unauthorized management request is anomalous-but-tolerated behavior
+    /// — a probe of the administrative surface — and is recorded at warn level; every other
+    /// client fault is per-request detail recorded at debug level, the rendered response
+    /// already informing the caller; a gateway or upstream failure is recorded at error level.
     fn log_level(&self) -> Level {
         match self {
             Self::Unauthorized => Level::Warn,

@@ -1,4 +1,4 @@
-//! Gateway summary inference (README §6.8): the first-party default
+//! Gateway summary inference (`docs/design/compaction.md`): the first-party default
 //! summarization prompt, the planner that shapes the internal summarizer
 //! request, and the acceptance rule the summary must satisfy.
 //!
@@ -19,7 +19,7 @@ use crate::ir::{
     IrAggregation, IrFinishReason, IrMessage, IrPart, IrRequest, IrRole, IrToolChoice,
 };
 
-/// The first-party default summarization prompt (README §6.8): its
+/// The first-party default summarization prompt (`docs/design/compaction.md`): its
 /// contract is to preserve the objective, the active instructions, the
 /// decisions made, the constraints in force, the completed work, the unresolved
 /// work, the references, the tool facts, and the next actions, as text only.
@@ -37,7 +37,7 @@ work without the replaced history, and invent nothing.";
 const SUMMARY_CLOSING_INSTRUCTION: &str = "Produce the summary now.";
 
 /// Builds the internal summarizer request from the restored window and the
-/// gateway checkpoint plan (README §6.8).
+/// gateway checkpoint plan (`docs/design/compaction.md`).
 ///
 /// The request carries the restored window's serving facts with: the supplied
 /// instructions replacing the default prompt (their absence keeping the

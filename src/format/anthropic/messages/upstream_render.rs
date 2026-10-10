@@ -8,7 +8,7 @@
 //! `tool_choice`, verbatim sampling parameters, `max_tokens` from the client's budget else the
 //! synthesis constant, and `output_config` — the effort verbatim plus, for a JSON-schema response
 //! format, the official `JSONOutputFormatParam` beside it — or `thinking: disabled` for `none`
-//! (README §6.4).
+//! (`docs/reference/inference.md`).
 
 use super::{ImageSourceOut, OutBlock, TypedBlock, is_anthropic_block};
 use crate::{
@@ -24,7 +24,7 @@ use serde_json::Value;
 
 /// Fixed synthesis constant rendered as `max_tokens` when the client sent no
 /// `max_output_tokens`: the API requires the field, so the gateway documents this stand-in
-/// rather than inventing a caller-specific budget (README §5.8).
+/// rather than inventing a caller-specific budget (`docs/design/providers.md`).
 const SYNTHESIZED_MAX_TOKENS: u64 = 16384;
 
 /// The upstream Anthropic Messages request payload.
@@ -75,7 +75,8 @@ pub(crate) struct RequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig<'a>>,
 
-    /// Native off spelling, rendered only for the `none` effort level (README §6.4).
+    /// Native off spelling, rendered only for the `none` effort level
+    /// (`docs/reference/inference.md`).
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingDisabled>,
 
@@ -239,7 +240,7 @@ fn render_tools(tools: &[IrTool]) -> Vec<UpstreamTool<'_>> {
 }
 
 /// Renders the upstream Anthropic Messages payload: the body only — the URL, the headers, and the
-/// streaming decision belong to the provider definition (README §5.2).
+/// streaming decision belong to the provider definition (`docs/design/providers.md`).
 ///
 /// # Errors
 ///
@@ -254,7 +255,8 @@ pub(crate) fn render_request_body<'a>(
     // `output_config.format`, beside the effort (the official `JSONOutputFormatParam` requires
     // both members) — and has no slot for free-form JSON: dropping the constraint would silently
     // return prose, so the mismatch fails explicitly instead. The OpenAI-style schema name has no
-    // official member and is dropped (the Interactions codec's posture, README §5.7).
+    // official member and is dropped (the Interactions codec's posture,
+    // `docs/design/providers.md`).
     let output_format = match &ir.response_format {
         None | Some(IrResponseFormat::Text) => None,
 

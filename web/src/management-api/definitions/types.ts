@@ -1,7 +1,7 @@
 import type { CreateProviderDefinitionRequest } from "../generated/v0";
 
 /**
- * The authored definition payload's validator (README §5): the browser-side
+ * The authored definition payload's validator (`docs/design/providers.md`): the browser-side
  * mirror of the gateway's descriptor contract. A definition's descriptor is
  * authored JSON — a preset's emission or an operator's edit — and one
  * structural walk over it serves both directions: the creation page validates
@@ -10,7 +10,7 @@ import type { CreateProviderDefinitionRequest } from "../generated/v0";
  */
 
 /**
- * The authored definition payload (README §5): a definition's descriptor as
+ * The authored definition payload (`docs/design/providers.md`): a definition's descriptor as
  * `provider-definitions:create` and `provider-definitions:update` carry it,
  * everything beside the `name`.
  */

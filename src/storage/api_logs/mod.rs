@@ -1,5 +1,5 @@
-//! Request accounting: the `api_logs` store — its write path and read paths (README §3
-//! *ApiLog Store*).
+//! Request accounting: the `api_logs` store — its write path and read paths
+//! (`docs/design/storage.md` *ApiLog Store*).
 //!
 //! One row is one dispatched physical-account attempt — the instant the upstream HTTP request was
 //! issued (`send()`). Everything before that instant (authentication, routing, token refresh,
@@ -23,7 +23,7 @@
 //! finalization tasks own their request's draft, so a client disconnecting mid-generation records
 //! `client_aborted` rather than losing the row. The one accepted edge is the non-streaming
 //! disconnect *after* the rendered body has been handed to hyper — unobservable, and that row
-//! records `completed` with the status it rendered (README §3 *ApiLog*).
+//! records `completed` with the status it rendered (`docs/design/storage.md` *ApiLog*).
 //!
 //! Storage failures classify through the shared storage error domain
 //! ([`Error`](super::Error)): a constraint backstop classifies as a conflict on the management
@@ -67,10 +67,10 @@ pub(crate) enum AttemptProgress {
 
 /// One stored accounting row: the sixteen published columns exactly as stored, every column
 /// but the server-assigned `id` rowid — the record both the write path inserts and the
-/// management read surface mirrors (README §3 *ApiLog*). There is one physical record, so
-/// there is one type: [`finalize_api_log`] constructs it, [`ApiLogStore::record`] inserts it,
-/// and the read engine decodes it back. The rowid stays internal: it never appears here,
-/// serving only as the per-file tie-break of the list ordering.
+/// management read surface mirrors (`docs/design/storage.md` *ApiLog*). There is one physical
+/// record, so there is one type: [`finalize_api_log`] constructs it, [`ApiLogStore::record`]
+/// inserts it, and the read engine decodes it back. The rowid stays internal: it never appears
+/// here, serving only as the per-file tie-break of the list ordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApiLog {
     /// Stable requested route identity, independent of the current physical target.
@@ -96,7 +96,7 @@ pub(crate) struct ApiLog {
     pub(crate) is_stream: bool,
 
     /// HTTP status delivered to the client; `NULL` exactly when no response was ever produced
-    /// (README §3 *ApiLog*).
+    /// (`docs/design/storage.md` *ApiLog*).
     pub(crate) http_status: Option<i64>,
 
     /// Recorded outcome of the request.
@@ -160,7 +160,7 @@ pub(crate) struct ApiLogDraft {
     /// accounting reaches the row through no single upstream observation — a
     /// compaction request's ledger totals over its compaction calls. The
     /// finalization adds these totals to its own usage parameter, which covers
-    /// the boundary's last call alone (README §3 *ApiLog*).
+    /// the boundary's last call alone (`docs/design/storage.md` *ApiLog*).
     pub(crate) billed_usage: Option<IrUsage>,
 }
 
@@ -368,14 +368,14 @@ pub(crate) fn spawn_api_log_finalization(
 
 /// Closes one dispatched request's accounting: builds the terminal write from `draft` plus the
 /// finalization facts and inserts it into the draft's own day's file. Every call site runs at
-/// the attempt's current exclusive finalization owner (README §3 *ApiLog*), so each
+/// the attempt's current exclusive finalization owner (`docs/design/storage.md` *ApiLog*), so each
 /// dispatched request is recorded exactly once.
 ///
 /// This function never reports failure outward — an accounting INSERT failure must never enter
-/// any HTTP error domain (README §8): it is logged at error level with the key, provider, and
-/// model row ids for attribution and swallowed, leaving the served response and every later
-/// database operation untouched. An unstamped draft — the request was never dispatched with
-/// accounting enabled — performs no INSERT at all.
+/// any HTTP error domain (`docs/reference/configuration.md`): it is logged at error level with the
+/// key, provider, and model row ids for attribution and swallowed, leaving the served response and
+/// every later database operation untouched. An unstamped draft — the request was never dispatched
+/// with accounting enabled — performs no INSERT at all.
 ///
 /// `duration` is the whole span from the dispatch stamp to this finalization instant, in
 /// whole milliseconds: anything before dispatch (token refresh, payload rendering) is excluded by

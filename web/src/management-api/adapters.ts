@@ -9,7 +9,7 @@ import type {
 } from "/src/management-api/generated/v0";
 
 /**
- * Read-modify-write edits for `providers:update` (gateway README §7.1): an omitted
+ * Read-modify-write edits for `providers:update` (`docs/reference/management-api.md`): an omitted
  * field keeps the row's value, and the write-only `api_key` keeps the stored
  * secret when absent. Edits never carry the row's own `id`; the request
  * addresses the row through `provider_id`.
@@ -27,7 +27,7 @@ type ProviderEdits = {
 /**
  * Builds one `providers:update` request from a listed row and the fields the
  * administrator changed, restating the row's complete desired readable state
- * (README §6.1). Every row shares one wire shape — the definition pair, the
+ * (`docs/reference/inference.md`). Every row shares one wire shape — the definition pair, the
  * derived format, and the nullable base URL — so there is one branch. OAuth
  * credentials are never carried here: replacing them is an OAuth flow's job,
  * and omitting `api_key` keeps the stored secret.
@@ -51,8 +51,7 @@ export function toUpdateProviderRequest(
 }
 
 /**
- * Optional overrides of the model row's writable columns (README
- * §4.5). The nullable mirror columns are stated explicitly — `null` is
+ * Optional overrides of the model row's writable columns (`docs/reference/configuration.md`). The nullable mirror columns are stated explicitly — `null` is
  * the no-override state — so an override that clears one sends `null`
  * rather than omitting the field. `models:create` applies the overrides
  * over the defaults, `models:update` over the listed row.
@@ -113,7 +112,7 @@ export function toUpdateModelRequest(
 }
 
 /**
- * Read-modify-write edits for `api-keys:update` (README §4.5): the complete desired state of the
+ * Read-modify-write edits for `api-keys:update` (`docs/reference/configuration.md`): the complete desired state of the
  * row, every field required — a client renders the row, edits it, and sends the same shape back.
  * Unlike provider credentials, the key secret is readable, so it is restated like every other
  * field.

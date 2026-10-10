@@ -1,5 +1,5 @@
 //! Outward client API error domain: the one format-neutral taxonomy every `/api` surface shares
-//! (README §6.7).
+//! (`docs/reference/inference.md`).
 //!
 //! [`Error`] is the client API's own domain — the `crate::api` module's own error type under the
 //! repo's module-local `Error` convention, path-qualified against [`gateway::Error`] and the
@@ -32,7 +32,7 @@ use log::{debug, error};
 
 /// Fixed message every internal failure renders: the internal cause reaches the log record only —
 /// the previous behavior of passing internal messages through to the client is deliberately
-/// dropped (README §6.7).
+/// dropped (`docs/reference/inference.md`).
 const INTERNAL_MESSAGE: &str = "Internal server error.";
 
 /// Fixed client message for authentication failures.
@@ -45,7 +45,7 @@ const METHOD_NOT_ALLOWED_MESSAGE: &str = "Method not allowed.";
 const PAYLOAD_TOO_LARGE_MESSAGE: &str = "Request body too large.";
 
 /// An error surfaced to an outward API client: one variant per contract row, each pinning exactly
-/// one HTTP status (README §6.7).
+/// one HTTP status (`docs/reference/inference.md`).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The request carried a missing or invalid API key.
@@ -342,7 +342,8 @@ impl From<GatewayError> for Error {
             GatewayError::RoutingStateConflict { model } => Self::RoutingStateConflict { model },
 
             // The gateway error carries the complete bounded upstream body as classification
-            // evidence; this outward boundary renders its truncated excerpt (README §6.7).
+            // evidence; this outward boundary renders its truncated excerpt
+            // (`docs/reference/inference.md`).
             GatewayError::Upstream { status, detail } => Self::Upstream {
                 status,
                 message: crate::http_body::truncate_excerpt(&detail),

@@ -57,8 +57,8 @@ static CONFIG: OnceLock<ConfigLoader> = OnceLock::new();
 /// Panics if command-line arguments are invalid, the configuration cannot be
 /// loaded, the global configuration has already been initialized, or the main database cannot be
 /// opened or brought up to the latest schema version — a schema-drifted main database file is
-/// fatal at startup, unlike an api-log day file, whose drift fails only its own request (README
-/// §3).
+/// fatal at startup, unlike an api-log day file, whose drift fails only its own request
+/// (`docs/design/storage.md`).
 pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     let config_path = parse_config_path(args);
 
@@ -94,12 +94,13 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     // The api-log store is constructed once at startup from the resolved `api.logs` section;
     // `api.logs.is_enabled` is the live recording switch the write path reads per dispatched
     // request, while the store's directory is consumed here, so a changed path applies after
-    // restart (README §3 *ApiLog Store*).
+    // restart (`docs/design/storage.md` *ApiLog Store*).
     let api_log_store =
         ApiLogStore::new(CONFIG.api.logs.path.clone(), CONFIG.api.logs.retention_days);
 
     // One control-plane client is built per startup, and every short upstream round-trip — the
-    // context handlers' and the device poller's alike — shares its connection pool (README §4).
+    // context handlers' and the device poller's alike — shares its connection pool
+    // (`docs/reference/configuration.md`).
     let control_plane = http_client::control_plane();
 
     crate::affinity::initialize_key();

@@ -186,8 +186,7 @@ function conflictFix(action: ActionName | undefined): string {
 
         // A creation flow's completion conflicts only on the name the flow
         // was started under, and the gateway consumes the flow on the
-        // completion attempt even when it answers that conflict (root README
-        // §7.1): the page keeps the flow live — and with it the name locked — while the state is already spent, so no field a
+        // completion attempt even when it answers that conflict (`docs/reference/management-api.md`): the page keeps the flow live — and with it the name locked — while the state is already spent, so no field a
         // rename could point at is editable. The one in-page escape is the
         // step's own "Start over" control, which ends the flow and unlocks
         // the name for the fresh creation's rename. A reauthorize
@@ -213,7 +212,7 @@ function upstreamFix(context: ActionContext): string {
         // The gateway fails a discovery with the same upstream error whether
         // the call itself was refused or the upstream answered 200 with an
         // empty model list — a fresh pre-onboarded account does exactly that
-        // (root README §7.1) — so the fix names both recoveries the
+        // (`docs/reference/management-api.md`) — so the fix names both recoveries the
         // provider's kind admits (an OAuth account reconnects, a static key
         // is corrected in place) as conditionals and claims neither cause.
         if (isOAuthProvider !== undefined) {
@@ -456,7 +455,7 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
 /**
  * Explains a failed management call in the panel's own words, keeping the
  * gateway's message verbatim as the detail wherever the gateway rendered one
- * (README §4.3): the app never replaces what the gateway said, it only says
+ * (`docs/reference/configuration.md`): the app never replaces what the gateway said, it only says
  * what the operator can do about it — and only where it can be certain. A
  * call the browser refused never reached the gateway, so its diagnosis
  * speaks for the browser instead.
@@ -490,7 +489,7 @@ export function diagnoseFailure(error: unknown, context: ActionContext): Diagnos
         if (error.httpStatus === null) {
             // The browser refused the call before any answer existed, so
             // there is no gateway message to keep: the network diagnosis's
-            // own human wording is the detail (README §6.4).
+            // own human wording is the detail (`docs/reference/inference.md`).
             return networkDiagnosis(context, error.message);
         }
 

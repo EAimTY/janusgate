@@ -15,7 +15,7 @@ import type { OauthFlow } from "./oauth-flow";
  * navigation discards it — and since the approval happens in another tab,
  * stepping elsewhere in the console while authorizing is exactly the move
  * the visitor is tempted into. A tab close or a reload is the leave-guard
- * registry's to warn for (README §6.3); the in-app move is this sentence's.
+ * registry's to warn for (`web/docs/architecture.md`); the in-app move is this sentence's.
  */
 const navigationWarning = (): string =>
     translation()(
@@ -218,10 +218,9 @@ export function CompletionForm(props: {
  * pending answer, and now a failed-but-not-gone poll under the fragment's
  * retry bound — and `"done"` once it reports a terminal state itself, for a
  * gone flow, an exhausted run of failed polls, or a disposed screen or
- * replaced flow, which is the one disposal guard (README §6.4) keeping a
+ * replaced flow, which is the one disposal guard (`web/docs/architecture.md`) keeping a
  * late resolution from re-arming the timer or navigating after the visitor
- * left. Both verification URIs are optional on the wire (gateway README
- * §7.1): without either, the verification row renders not at all and the
+ * left. Both verification URIs are optional on the wire (`docs/reference/management-api.md`): without either, the verification row renders not at all and the
  * user code alone stands — never an anchor whose empty href would navigate
  * this app to itself.
  */

@@ -115,8 +115,9 @@ async fn query_fenced(
         }
         .into());
     }
-    // The success body rides the shared bounded read (README §4), so a hostile quota upstream
-    // cannot grow gateway memory without limit; the bytes then decode as one JSON document.
+    // The success body rides the shared bounded read (`docs/reference/configuration.md`), so a
+    // hostile quota upstream cannot grow gateway memory without limit; the bytes then decode as
+    // one JSON document.
     let bytes = crate::http_body::read_success_body(response)
         .await
         .map_err(|error| match error {

@@ -47,9 +47,9 @@ route! {
     }
 }
 
-/// One gateway API key in its management wire shape (README §7.1): the row's complete readable
-/// state, plaintext secret included — the secret is database-managed and the administrator needs it
-/// to configure clients.
+/// One gateway API key in its management wire shape (`docs/reference/management-api.md`): the row's
+/// complete readable state, plaintext secret included — the secret is database-managed and the
+/// administrator needs it to configure clients.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct ApiKeyResponse {
@@ -86,13 +86,14 @@ impl ApiKeyResponse {
     }
 }
 
-/// The `api-keys:list` request body (README §7.1): the empty request of a no-argument route.
+/// The `api-keys:list` request body (`docs/reference/management-api.md`): the empty request of a
+/// no-argument route.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListApiKeysRequest {}
 
-/// The `api-keys:list` success body (README §7.1).
+/// The `api-keys:list` success body (`docs/reference/management-api.md`).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -101,8 +102,9 @@ pub(super) struct ListApiKeysResponse {
     api_keys: Vec<ApiKeyResponse>,
 }
 
-/// Strictly parsed `api-keys:create` request (README §7.1): the complete state of one key, every
-/// field required (rule 3). The row identity and creation timestamp are server-assigned.
+/// Strictly parsed `api-keys:create` request (`docs/reference/management-api.md`): the complete
+/// state of one key, every field required (full-state writes). The row identity and creation
+/// timestamp are server-assigned.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -121,9 +123,9 @@ pub(super) struct CreateApiKeyRequest {
     access_control: ApiKeyAccessControl,
 }
 
-/// Strictly parsed `api-keys:update` request (README §7.1): the complete desired state of the row,
-/// every field required (rule 3) — a client renders the row, edits it, and sends the same shape
-/// back.
+/// Strictly parsed `api-keys:update` request (`docs/reference/management-api.md`): the complete
+/// desired state of the row, every field required (full-state writes) — a client renders the row,
+/// edits it, and sends the same shape back.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -154,8 +156,8 @@ pub(super) struct DeleteApiKeyRequest {
     api_key_id: i64,
 }
 
-/// The `api-keys:create` success body (README §7.1): the server-assigned `id` and `created_at` are
-/// the facts the caller cannot know (rule 7).
+/// The `api-keys:create` success body (`docs/reference/management-api.md`): the server-assigned
+/// `id` and `created_at` are the facts the caller cannot know (response ownership).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ApiKeyEnvelope {

@@ -1,5 +1,5 @@
 //! The inference descriptor: how a provider definition renders and frames upstream inference
-//! requests (README §5.2).
+//! requests (`docs/design/providers.md`).
 //!
 //! The format codecs render and parse bodies only; the URL, the headers, the streaming decision,
 //! and the response unwrapping are this descriptor's data, applied by the generic dispatcher.
@@ -7,8 +7,8 @@
 use super::template::{ParamRow, StringExpr, TemplateNode};
 use crate::format::RenderOption;
 use serde::{Deserialize, Serialize};
-/// The upstream streaming mode a provider definition pins (README §5.2): it drives both the
-/// rendered body's stream flag and the SSE-versus-JSON response parser choice.
+/// The upstream streaming mode a provider definition pins (`docs/design/providers.md`): it drives
+/// both the rendered body's stream flag and the SSE-versus-JSON response parser choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -21,7 +21,7 @@ pub(crate) enum UpstreamStreaming {
     MatchClient,
 }
 
-/// The inference request descriptor of one provider definition (README §5.2).
+/// The inference request descriptor of one provider definition (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -49,8 +49,9 @@ pub(crate) struct Inference {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) render_options: Vec<RenderOption>,
 
-    /// The optional inference request body envelope (README §5.1): a typed JSON tree whose
-    /// [`TemplateNode::Body`] — appearing exactly once — is the codec-rendered upstream body.
+    /// The optional inference request body envelope (`docs/design/providers.md`): a typed JSON
+    /// tree whose [`TemplateNode::Body`] — appearing exactly once — is the codec-rendered
+    /// upstream body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) envelope: Option<TemplateNode>,
 

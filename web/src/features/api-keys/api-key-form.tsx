@@ -27,7 +27,7 @@ function generateApiKey(): string {
 
 /**
  * The inline error for a serving key's name, shown where it was typed. The
- * gateway's only name rule is non-empty (gateway README §7) — every
+ * gateway's only name rule is non-empty (`docs/reference/management-api.md`) — every
  * non-empty value is accepted verbatim, whitespace included, so nothing is
  * trimmed here: rejecting more than the gateway would block a legal name.
  */

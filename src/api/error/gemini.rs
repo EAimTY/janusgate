@@ -1,5 +1,5 @@
 //! Gemini error render: the wire payload types and the closed `render(&Error)` match for the
-//! Gemini wire format (README §6.7).
+//! Gemini wire format (`docs/reference/inference.md`).
 //!
 //! Gemini renders the official Status shape (google.aip.dev/193): `{"error": {code, message,
 //! status}}` whose `code` is the numeric HTTP status and whose `status` is the canonical

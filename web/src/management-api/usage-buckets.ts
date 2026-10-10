@@ -1,5 +1,5 @@
 /**
- * The bucket-key contract of a `usage:query` answer (gateway README §7.1): a
+ * The bucket-key contract of a `usage:query` answer (`docs/reference/management-api.md`): a
  * bucket key carries exactly the dimensions the request's `group_by` names.
  * Each aggregation dimension is paired with the wire field its key part rides
  * on, and a field the request's own dimension list guarantees is read as that

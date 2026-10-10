@@ -4,7 +4,7 @@ import type { ErrorCode } from "/src/management-api/generated/v0";
  * How a management call failed:
  *
  * - `gateway` — the gateway rendered its errno-shaped error body. Its `message`
- *   is the only message shown to the administrator (README §4.3).
+ *   is the only message shown to the administrator (`docs/reference/configuration.md`).
  * - `transport` — no management error body was available: a network failure, a
  *   non-JSON body, or an HTTP status the gateway did not shape. Only the status
  *   is reportable.

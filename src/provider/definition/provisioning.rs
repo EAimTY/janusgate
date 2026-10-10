@@ -1,14 +1,14 @@
 //! The provisioning descriptor: the optional ordered control-request sequence a provider
 //! definition runs after a successful token exchange — and, for the reprovisioning refresh mode,
-//! under the refresh lease (README §5.4).
+//! under the refresh lease (`docs/design/providers.md`).
 
 use super::template::{
     ControlRequest, ExtractionShape, ResponseEncoding, ResponsePath, ResponseTarget,
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
-/// One provisioning step (README §5.4): one control request, the extractions folding its
-/// response into the flow's working state, an optional slot guard, and an optional long-running
+/// One provisioning step (`docs/design/providers.md`): one control request, the extractions folding
+/// its response into the flow's working state, an optional slot guard, and an optional long-running
 /// operation poll.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -37,7 +37,7 @@ pub(crate) struct ProvisioningStep {
 
 /// One provisioning extraction: the value at `path` is folded into `target` when present. A
 /// missing required path fails the step; a missing optional path leaves its target unchanged; a
-/// present value of the wrong declared shape always fails (README §5.4).
+/// present value of the wrong declared shape always fails (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -55,9 +55,9 @@ pub(in crate::provider) struct ProvisionExtraction {
     pub(in crate::provider) required: bool,
 }
 
-/// The long-running operation poll of a provisioning step (README §5.4): the engine repeats the
-/// configured request — `extract` runs before the poll, so its request can reference an operation
-/// name placed in a slot — until the done path turns true, within the wall-clock budget.
+/// The long-running operation poll of a provisioning step (`docs/design/providers.md`): the engine
+/// repeats the configured request — `extract` runs before the poll, so its request can reference an
+/// operation name placed in a slot — until the done path turns true, within the wall-clock budget.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -75,7 +75,7 @@ pub(in crate::provider) struct Poll {
 
     /// The path carrying the terminal failure payload of a completed operation; the empty
     /// chain is the configured no-error-inspection, and the poll never fails on a payload
-    /// under it (README §5.4).
+    /// under it (`docs/design/providers.md`).
     pub(in crate::provider) error_path: ResponsePath,
 
     /// The extractions folding the completed operation's response into the working state.

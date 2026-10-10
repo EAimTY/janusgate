@@ -15,7 +15,7 @@ import type { ScreenNotice } from "./notices";
  *
  * Disposal is guarded here, in one home: a call answering after the screen
  * went away states nothing and lands nowhere, the way the OAuth flow and
- * the delete action guard by (README §6.4) — the creation calls pass no
+ * the delete action guard by (`web/docs/architecture.md`) — the creation calls pass no
  * signal, so the late answer is the one thing that must not act.
  */
 export function createCreateAction<TResult>(options: {

@@ -146,7 +146,7 @@ export const UPSTREAM_FORMAT = defineVocabulary<UpstreamFormat>(
 );
 
 /**
- * The remote-compaction mechanisms as the gateway declares them (README §5):
+ * The remote-compaction mechanisms as the gateway declares them (`docs/design/providers.md`):
  * the closed set of mechanism spellings the model rows' compaction facts and
  * the definition payloads' declarations are keyed by. The generated bindings
  * render the fact columns as index-signature maps, not as this union — the
@@ -253,7 +253,7 @@ export const DISCOVERY_STATE = defineVocabulary<DiscoveryState>(
 );
 
 /**
- * The reasoning levels as one vocabulary (gateway README §6.4): the closed
+ * The reasoning levels as one vocabulary (`docs/reference/inference.md`): the closed
  * set the gateway parses per surface and renders verbatim into the target
  * upstream's own parameter — and the value domain of the per-model
  * capability declarations, where the effective set (`override ?? base`) is

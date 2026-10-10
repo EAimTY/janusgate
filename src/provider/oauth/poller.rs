@@ -1,5 +1,6 @@
 //! The background device poller: one task resumes every unexpired pending device flow from its
-//! stored schedule at startup and keeps polling newly started flows (README §3, §7.2).
+//! stored schedule at startup and keeps polling newly started flows (`docs/design/storage.md` and
+//! `docs/reference/management-api.md`).
 //!
 //! Claiming a due flow is one conditional `UPDATE … RETURNING` — the conditional database lease —
 //! and a claim older than the claim-staleness window (`CLAIM_STALE_AFTER`, strictly beyond the
@@ -180,9 +181,10 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
     // previous claimant completed the exchange and died before its commit, and the stale-claim
     // recovery handed the flow here. Resuming from the checkpoint — never re-presenting the
     // device code — is what keeps a restart from turning the user-approved grant into a
-    // misleading upstream rejection (README §3, §7.2). A checkpoint the row carries but no
-    // longer parses is storage drift: it fails the flow terminally — clearing itself with the
-    // terminal persist — instead of looping the reclaim.
+    // misleading upstream rejection (`docs/design/storage.md` and
+    // `docs/reference/management-api.md`). A checkpoint the row carries but no longer parses is
+    // storage drift: it fails the flow terminally — clearing itself with the terminal persist —
+    // instead of looping the reclaim.
     if let Some(checkpoint) = &flow.device_exchange_checkpoint {
         let Ok(outcome) = serde_json::from_str::<ExchangeOutcome>(checkpoint) else {
             return persist_terminal(
@@ -219,7 +221,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         // consumed upstream whether or not the gateway could use the response — so the flow
         // records the gateway-owned terminal pair instead of scheduling a retry that could
         // only re-present the consumed code and lose the approved grant to a misleading
-        // upstream rejection (README §3, §7.2).
+        // upstream rejection (`docs/design/storage.md` and `docs/reference/management-api.md`).
         Err(ExchangeFailure::Consumed(error)) => {
             return persist_terminal(
                 database,
@@ -263,9 +265,10 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
 
         ExchangeProduct::Other(code) => {
             // A failure code outside the configured terminal codes is not a terminal outcome
-            // (README §5.3): only the configured codes — plus the engine-owned polling codes —
-            // end a flow. The retry rides the stored interval until the flow's own expiry
-            // bounds it, so a transient upstream rejection never kills the flow mid-window.
+            // (`docs/design/providers.md`): only the configured codes — plus the engine-owned
+            // polling codes — end a flow. The retry rides the stored interval until the
+            // flow's own expiry bounds it, so a transient upstream rejection never
+            // kills the flow mid-window.
             debug!(
                 "device flow {} received the non-terminal error `{code}`; retrying at the stored \
                  interval",
@@ -301,11 +304,12 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
     }
 }
 
-/// Persists one completed exchange's checkpoint before its commit (README §3, §7.2): the mapped
-/// token fields ride the flow row under the held claim, so a restart that recovers the claim
-/// resumes into provisioning and commit from the checkpoint instead of re-presenting the
-/// consumed device code. A lost claim is ordinary contention: the winner owns the row and its
-/// own exchange, so the discard is logged and the caller abandons its outcome.
+/// Persists one completed exchange's checkpoint before its commit (`docs/design/storage.md` and
+/// `docs/reference/management-api.md`): the mapped token fields ride the flow row under the held
+/// claim, so a restart that recovers the claim resumes into provisioning and commit from the
+/// checkpoint instead of re-presenting the consumed device code. A lost claim is ordinary
+/// contention: the winner owns the row and its own exchange, so the discard is logged and the
+/// caller abandons its outcome.
 ///
 /// # Errors
 ///
@@ -356,7 +360,7 @@ async fn checkpoint_completed_exchange(
 /// backoff never compounds across claims — and everything else keeps the stored interval. The
 /// cap bounds only the doubling from above; the stored interval bounds the delay from below,
 /// so a flow whose upstream interval exceeds the cap is never polled earlier than it asked
-/// (README §3).
+/// (`docs/design/storage.md`).
 async fn schedule_retry(
     database: &Database,
     flow: &OngoingFlow,
@@ -509,8 +513,8 @@ async fn commit_success(
     // the insert's unique-constraint failure to the spawn loop's warning would re-claim and
     // re-fail the flow until the expiry sweep deletes it, with the management client reading
     // "pending" the whole time; the conflict is terminal instead, with its gateway-owned
-    // failure pair (README §7.2). The constraint stays as the concurrent backstop behind this
-    // pre-check, and its loss is classified at the commit path below.
+    // failure pair (`docs/reference/management-api.md`). The constraint stays as the concurrent
+    // backstop behind this pre-check, and its loss is classified at the commit path below.
     if flow.purpose == FlowPurpose::Create && is_create_name_taken(database, flow).await? {
         return persist_terminal(
             database,
@@ -529,12 +533,13 @@ async fn commit_success(
     let product = match completion::complete_exchange(http, definition, outcome, flow).await {
         Ok(product) => product,
 
-        // A provisioning failure after a successful exchange fails the flow terminally (README
-        // §3, §7.2): the exchange result cannot be resumed — a retry would re-run the exchange
-        // against the upstream — so the gateway-owned pair persists with the claim the flow
-        // still holds (the failure short-circuits before the re-stamp below) and the poll loop
-        // stops at the terminal outcome. A claim stolen while provisioning ran matches no row
-        // and discards the outcome, like every persist.
+        // A provisioning failure after a successful exchange fails the flow terminally
+        // (`docs/design/storage.md` and `docs/reference/management-api.md`): the exchange result
+        // cannot be resumed — a retry would re-run the exchange against the upstream — so
+        // the gateway-owned pair persists with the claim the flow still holds (the failure
+        // short-circuits before the re-stamp below) and the poll loop stops at the terminal
+        // outcome. A claim stolen while provisioning ran matches no row and discards the
+        // outcome, like every persist.
         Err(error) => {
             return persist_terminal(
                 database,
@@ -579,9 +584,9 @@ async fn commit_success(
         // pre-check-to-write window makes the loss reachable. That loss is operator-fixable
         // (rename and retry), not an internal failure, so a create flow confirms it by
         // re-checking the name — mirroring the pre-check — and records the terminal
-        // `name_conflict` pair (README §7.2); a probe that fails or still finds the name free
-        // keeps the internal-failure diagnosis, so a genuine `commit_failed` is never
-        // mislabeled as the conflict.
+        // `name_conflict` pair (`docs/reference/management-api.md`); a probe that fails or still
+        // finds the name free keeps the internal-failure diagnosis, so a genuine
+        // `commit_failed` is never mislabeled as the conflict.
         let is_name_conflict = flow.purpose == FlowPurpose::Create
             && matches!(is_create_name_taken(database, flow).await, Ok(true));
 
@@ -616,9 +621,9 @@ async fn commit_success(
 
 /// Whether another stored provider row already holds the create flow's name: the pre-check
 /// ahead of the commit transaction and the commit path's constraint-loss confirmation share one
-/// probe, so both `name_conflict` diagnoses rest on the same fact (README §7.2). Every caller
-/// checks the create purpose before probing, so the name read rides the CHECK-pinned
-/// create-name contract.
+/// probe, so both `name_conflict` diagnoses rest on the same fact
+/// (`docs/reference/management-api.md`). Every caller checks the create purpose before probing, so
+/// the name read rides the CHECK-pinned create-name contract.
 ///
 /// # Errors
 ///
@@ -702,11 +707,11 @@ fn is_timeout(error: &Error) -> bool {
     matches!(error, Error::Timeout { .. })
 }
 
-/// The gateway-owned terminal message one completion-pipeline failure stores (README §7.2):
-/// the error's own rendering — transport, mapping, drift, and provisioning-poll details are
-/// gateway-authored at their source — except [`Error::Rejected`], whose `Display` embeds the
-/// truncated upstream body excerpt; it renders from the status alone, so no upstream body
-/// content ever lands in a terminal result.
+/// The gateway-owned terminal message one completion-pipeline failure stores
+/// (`docs/reference/management-api.md`): the error's own rendering — transport, mapping, drift, and
+/// provisioning-poll details are gateway-authored at their source — except [`Error::Rejected`],
+/// whose `Display` embeds the truncated upstream body excerpt; it renders from the status alone, so
+/// no upstream body content ever lands in a terminal result.
 fn provisioning_failure_message(error: &Error) -> String {
     match error {
         Error::Rejected { status, .. } => {

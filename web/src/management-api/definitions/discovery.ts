@@ -10,7 +10,7 @@ import {
 } from "../validation-primitives";
 import { expectControlRequest, expectResponsePath } from "./control";
 
-/** The page-list extraction of a discovery, rebuilt from its mode (README §5.5). */
+/** The page-list extraction of a discovery, rebuilt from its mode (`docs/design/providers.md`). */
 function expectDiscoveryExtract(value: unknown, context: string): DiscoveryExtract {
     const record = expectRecord(value, context);
     const mode = expectString(Reflect.get(record, "mode"), `${context}.mode`);
@@ -68,7 +68,7 @@ function expectDiscoveryExtract(value: unknown, context: string): DiscoveryExtra
     throw new ContractViolationError(`${context}.mode is not a discovery extraction: ${mode}`);
 }
 
-/** The pagination loop of a discovery, rebuilt from its mode (README §5.5). */
+/** The pagination loop of a discovery, rebuilt from its mode (`docs/design/providers.md`). */
 function expectPagination(value: unknown, context: string): Pagination {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -175,7 +175,7 @@ function expectPagination(value: unknown, context: string): Pagination {
     throw new ContractViolationError(`${context}.type is not a pagination mode: ${type}`);
 }
 
-/** The upstream model-list discovery of a definition (README §5.5). */
+/** The upstream model-list discovery of a definition (`docs/design/providers.md`). */
 export function expectDiscovery(value: unknown, context: string): Discovery {
     const record = expectRecord(value, context);
     expectDeclaredKeys(

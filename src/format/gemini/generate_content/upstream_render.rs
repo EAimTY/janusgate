@@ -1,7 +1,7 @@
 //! Upstream-request rendering for the Gemini GenerateContent codec: renders an IR request into
 //! the bare GenerateContentRequest upstream payload. The URL — including the envelope the
-//! Antigravity definition wraps the body in — belongs to the provider definition (README
-//! §5.2).
+//! Antigravity definition wraps the body in — belongs to the provider definition
+//! (`docs/design/providers.md`).
 
 use crate::{
     format,
@@ -19,7 +19,8 @@ fn is_empty_str(text: &&str) -> bool {
     text.is_empty()
 }
 
-/// The bare GenerateContentRequest an upstream `:generateContent` action carries (README §5.3).
+/// The bare GenerateContentRequest an upstream `:generateContent` action carries
+/// (`docs/design/providers.md`).
 #[derive(Debug, Serialize)]
 pub(crate) struct GenerateContentRequest<'a> {
     /// Conversation contents, in alternating-role runs.
@@ -294,10 +295,11 @@ impl GenerationConfig<'_> {
 /// Thinking configuration: the client's effort string verbatim in the `thinkingLevel` slot.
 ///
 /// The gateway never renders a token budget (`thinkingBudget`), so reasoning control reaches only
-/// Gemini 3 generation and later models; a budget is not this gateway's to invent (README §6.4).
+/// Gemini 3 generation and later models; a budget is not this gateway's to invent
+/// (`docs/reference/inference.md`).
 #[derive(Debug, Serialize)]
 struct ThinkingConfig<'a> {
-    /// Client's reasoning effort string, opaque and verbatim (README §6.4).
+    /// Client's reasoning effort string, opaque and verbatim (`docs/reference/inference.md`).
     #[serde(rename = "thinkingLevel")]
     thinking_level: &'a str,
 }
@@ -496,12 +498,12 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
         // the block's signature riding `thoughtSignature` — because the thinking docs
         // require clients to resend thought blocks exactly as received, and this is the
         // only slot the Interactions replay of a `thought` step can cross into
-        // (ai.google.dev/gemini-api/docs/thinking; README §5.7). The opaque payload is
-        // family-bound, so family membership is decided by it: a well-formed Interactions
-        // thought step (`type: "thought"`) is the Gemini-family credential, while a
-        // foreign-family payload — an Anthropic thinking block, an unattributable
+        // (ai.google.dev/gemini-api/docs/thinking; `docs/design/providers.md`). The opaque payload
+        // is family-bound, so family membership is decided by it: a well-formed
+        // Interactions thought step (`type: "thought"`) is the Gemini-family credential,
+        // while a foreign-family payload — an Anthropic thinking block, an unattributable
         // text-only block whose signature this upstream could not verify — keeps
-        // rendering nothing (README §6.4).
+        // rendering nothing (`docs/reference/inference.md`).
         IrPart::Reasoning {
             text,
             signature,
@@ -515,7 +517,7 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
         // Reasoning blocks of every other provenance carry no Gemini GenerateContent
         // history slot: the text is a response channel, not a replayable request part for
         // this family, and the opaque payload is family-bound — cross-family it is dropped
-        // (README §6.4).
+        // (`docs/reference/inference.md`).
         IrPart::Reasoning { .. } => Ok(Vec::new()),
     }
 }

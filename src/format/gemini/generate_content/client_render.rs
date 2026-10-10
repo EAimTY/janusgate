@@ -211,8 +211,9 @@ fn usage_to_gemini(usage: IrUsage) -> UsageMetadataOut {
 /// Renders an aggregated completion as a non-streaming GenerateContent response.
 pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> JsonResponse {
     // A prompt-level block renders the native blocked shape: `promptFeedback` with the
-    // verbatim upstream block reason and no candidates (README §6.3). The detail's presence
-    // is the block flag — the parser sets it exactly on the prompt-block finish.
+    // verbatim upstream block reason and no candidates (`docs/reference/inference.md`). The
+    // detail's presence is the block flag — the parser sets it exactly on the prompt-block
+    // finish.
     if let Some(block_reason) = &aggregation.prompt_block_reason {
         return JsonResponse {
             candidates: Vec::new(),
@@ -291,7 +292,7 @@ pub(super) struct SseRenderer {
     usage: Option<IrUsage>,
 
     /// Verbatim upstream prompt-block reason of a prompt-level block finish; rendered on the
-    /// terminal chunk (README §6.3).
+    /// terminal chunk (`docs/reference/inference.md`).
     prompt_block_reason: Option<String>,
     /// Actual emitted part continuation, enabled only for accepted pooled streaming results.
     projection: Option<crate::affinity::fingerprint::Projector>,
@@ -422,9 +423,9 @@ impl ClientSseRenderer for SseRenderer {
             }])],
 
             // A prompt-level block renders no candidate at all — the native blocked shape
-            // mirrors `promptFeedback` on the terminal chunk instead (README §6.3) — so the
-            // reason buffers here and the empty-candidate finish chunk renders only for a
-            // candidate-level filter.
+            // mirrors `promptFeedback` on the terminal chunk instead
+            // (`docs/reference/inference.md`) — so the reason buffers here and the
+            // empty-candidate finish chunk renders only for a candidate-level filter.
             IrEvent::Finish {
                 reason,
                 prompt_block_reason,

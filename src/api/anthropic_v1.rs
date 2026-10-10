@@ -1,7 +1,7 @@
 //! Anthropic inbound surface (`/api/anthropic-v1`).
 //!
 //! `POST /messages` (stream via body `stream: true`, `max_tokens` required per spec) and
-//! `GET /models` per README §6.3. Authentication is `x-api-key` only with the
+//! `GET /models` per `docs/reference/inference.md`. Authentication is `x-api-key` only with the
 //! `anthropic-version` header required present (value not validated). Request parsing and
 //! rendering go through [`crate::format::anthropic::messages`]; errors render through
 //! [`crate::api::error::anthropic`]; the model stays in the body for this surface, so parsing
@@ -93,7 +93,7 @@ struct ModelObject {
     /// display name.
     display_name: String,
 
-    /// Public routing ID (README §3).
+    /// Public routing ID (`docs/design/storage.md`).
     id: String,
 
     /// The official shape types `created_at` as an RFC 3339 date-time string; the gateway serves
@@ -102,13 +102,13 @@ struct ModelObject {
     /// `created: 0`.
     created_at: &'static str,
 
-    /// Effective maximum input tokens — the official `ModelInfo` member's own name (README
-    /// §6.5); omitted when unknown, never fabricated.
+    /// Effective maximum input tokens — the official `ModelInfo` member's own name
+    /// (`docs/design/routing.md`); omitted when unknown, never fabricated.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_input_tokens: Option<i64>,
 
     /// Effective maximum output tokens, rendered in the official `ModelInfo` member's own
-    /// spelling `max_tokens` (README §6.5); omitted when unknown.
+    /// spelling `max_tokens` (`docs/design/routing.md`); omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<i64>,
 

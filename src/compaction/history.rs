@@ -1,4 +1,4 @@
-//! History materialization (README §6.8): the restoration of the authenticated
+//! History materialization (`docs/design/compaction.md`): the restoration of the authenticated
 //! active window before every normal inference and re-compaction, the gateway
 //! checkpoint planner, and the sealing of gateway envelopes into carriers.
 //!
@@ -49,9 +49,9 @@ pub(super) enum RestoredBoundary {
     Native(NativeArtifact),
 }
 
-/// The gateway budgets of one routed request (README §5, §6.8): the
-/// definition's stated budgets, or the shipped defaults when the definition
-/// carries no compaction section.
+/// The gateway budgets of one routed request (`docs/design/providers.md` and
+/// `docs/design/compaction.md`): the definition's stated budgets, or the shipped defaults when the
+/// definition carries no compaction section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Budgets {
     /// The summary output budget in tokens.
@@ -61,7 +61,7 @@ pub(super) struct Budgets {
     pub(super) retention: u64,
 }
 
-/// The instruction items a checkpoint plan covers (README §6.8).
+/// The instruction items a checkpoint plan covers (`docs/design/compaction.md`).
 pub(super) enum CheckpointInstructions<'a> {
     /// The request's parsed instruction items. The client codecs join exactly
     /// these items into the request's instructions string, so the fresh
@@ -106,7 +106,7 @@ fn restore<'a>(
     // The active boundary's own state slot orders it among the state items
     // sharing its message offset: state the boundary's encounter order
     // precedes is covered, state that follows rides the fresh suffix
-    // (README §6.8's supersession rule).
+    // (`docs/design/compaction.md`'s supersession rule).
     let slot = preparation.active_state_slot(ir);
 
     match active {
@@ -177,7 +177,7 @@ pub(super) fn prepare_for_target<'a>(
         // The active boundary's own state slot orders it among the state items
         // sharing its message offset: same-offset state the boundary's
         // encounter order precedes is covered with the prefix, state that
-        // follows it is the fresh suffix (README §6.8's supersession rule).
+        // follows it is the fresh suffix (`docs/design/compaction.md`'s supersession rule).
         let slot = preparation.active_state_slot(ir);
         let mut exported = None;
         match active {
@@ -437,7 +437,7 @@ fn restore_gateway_summary(
 /// Computes the prefix identity of one request: digests of its system
 /// instructions and tool definitions — the signed-state-binding surface a
 /// producer verifies. Recorded on the wrap side and compared on replay
-/// (README §6.8's `required_prefix_identity`).
+/// (`docs/design/compaction.md`'s `required_prefix_identity`).
 ///
 /// # Panics
 ///
@@ -601,7 +601,7 @@ pub(super) fn native_continuation(
     Ok(continuation)
 }
 
-/// The gateway checkpoint plan (README §6.8): the eligible older prefix the
+/// The gateway checkpoint plan (`docs/design/compaction.md`): the eligible older prefix the
 /// summary will cover, the retained interaction units and the native state
 /// riding them, and the preserved instruction context with its coverage
 /// identities.
@@ -647,7 +647,7 @@ struct InteractionUnit {
     start: usize,
 }
 
-/// Plans a gateway checkpoint from the restored window (README §6.8): groups
+/// Plans a gateway checkpoint from the restored window (`docs/design/compaction.md`): groups
 /// the history into indivisible interaction units, retains recent complete
 /// units backward under the retention budget — the mandatory active turn never
 /// partially truncated — and leaves the older prefix for the summary.
@@ -962,7 +962,7 @@ fn seal_envelope(
     Ok((envelope, carrier))
 }
 
-/// Builds and seals the gateway summary checkpoint of one plan (README §6.8).
+/// Builds and seals the gateway summary checkpoint of one plan (`docs/design/compaction.md`).
 ///
 /// # Errors
 ///
@@ -990,7 +990,7 @@ pub(super) fn seal_gateway_checkpoint(
     seal_envelope(payload, replacement, visible_content)
 }
 
-/// Builds and seals a wrapped native window checkpoint (README §6.8): the exact
+/// Builds and seals a wrapped native window checkpoint (`docs/design/compaction.md`): the exact
 /// native artifact beside the provenance needed to replay it against its
 /// producer.
 ///

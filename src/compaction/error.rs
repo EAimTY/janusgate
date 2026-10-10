@@ -1,4 +1,4 @@
-//! Typed remote-compaction errors (README §6.8): one variant per failure
+//! Typed remote-compaction errors (`docs/design/compaction.md`): one variant per failure
 //! decision, each carrying its stable message code into the outward error
 //! envelopes.
 //!

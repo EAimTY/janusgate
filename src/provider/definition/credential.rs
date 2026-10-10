@@ -1,5 +1,5 @@
 //! The credential-acquisition descriptor: how a provider definition acquires and renews the
-//! credentials its instances carry (README §5.3).
+//! credentials its instances carry (`docs/design/providers.md`).
 //!
 //! A definition either describes a static API key — whose secret the instance carries outright —
 //! or a full OAuth recipe: the authorization grant, the token exchange, the identity-claim
@@ -9,9 +9,9 @@ use super::template::{ControlRequest, ParamRow, ResponseDescriptor, ResponsePath
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use vec1::Vec1;
-/// The credential acquisition a provider definition describes (README §5.3): the `type`
-/// discriminator is the only stored credential-kind representation for the definition, and it must
-/// match the provider row's credential kind at the management boundary.
+/// The credential acquisition a provider definition describes (`docs/design/providers.md`): the
+/// `type` discriminator is the only stored credential-kind representation for the definition, and
+/// it must match the provider row's credential kind at the management boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -29,8 +29,8 @@ pub(crate) enum CredentialAcquisition {
     ),
 }
 
-/// The OAuth recipe of one provider definition (README §5.3): the authorization grant, the token
-/// exchange, the identity-claim extraction, and the refresh mode.
+/// The OAuth recipe of one provider definition (`docs/design/providers.md`): the authorization
+/// grant, the token exchange, the identity-claim extraction, and the refresh mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -75,9 +75,9 @@ impl CredentialAcquisition {
     }
 }
 
-/// One durable slot initialized at flow start (README §5.3): a stable generated value any
-/// request stage of the flow can reference — a device ID used again during token polling and
-/// refresh, for example.
+/// One durable slot initialized at flow start (`docs/design/providers.md`): a stable generated
+/// value any request stage of the flow can reference — a device ID used again during token polling
+/// and refresh, for example.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -101,7 +101,7 @@ pub(in crate::provider) enum SlotGenerator {
     UuidHex,
 }
 
-/// The OAuth authorization grant a flow runs (README §5.3).
+/// The OAuth authorization grant a flow runs (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -166,7 +166,7 @@ pub(crate) enum Pkce {
 }
 
 /// The device authorization request of a device grant and the mapping decoding its response
-/// (README §5.3).
+/// (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -178,10 +178,10 @@ pub(crate) struct DeviceAuthorization {
     pub(in crate::provider) response: ResponseDescriptor,
 }
 
-/// The token exchange redeeming a grant's product for tokens (README §5.3). Under a device
-/// grant this same request is the polling request: the engine repeats it per the stored schedule
-/// until it succeeds, reports `authorization_pending` or `slow_down`, or fails with a terminal
-/// code.
+/// The token exchange redeeming a grant's product for tokens (`docs/design/providers.md`). Under a
+/// device grant this same request is the polling request: the engine repeats it per the stored
+/// schedule until it succeeds, reports `authorization_pending` or `slow_down`, or fails with a
+/// terminal code.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -199,7 +199,7 @@ pub(crate) struct Exchange {
     pub(in crate::provider) terminal_codes: Vec1<String>,
 }
 
-/// One JWT payload claim copied into a slot at exchange time (README §5.3).
+/// One JWT payload claim copied into a slot at exchange time (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -211,8 +211,8 @@ pub(in crate::provider) struct IdTokenClaim {
     pub(in crate::provider) slot: String,
 }
 
-/// How an OAuth-acquired credential renews (README §5.3). Even the no-refresh mode is the
-/// tagged `{"type": "none"}` object, never a bare string.
+/// How an OAuth-acquired credential renews (`docs/design/providers.md`). Even the no-refresh mode
+/// is the tagged `{"type": "none"}` object, never a bare string.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

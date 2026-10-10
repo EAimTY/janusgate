@@ -1,5 +1,5 @@
 //! Provider-definition persistence: immutable `(name, version)` rows, appended by the management
-//! surface and read by every engine (README §3, §6).
+//! surface and read by every engine (`docs/design/storage.md` and `docs/reference/inference.md`).
 //!
 //! Definitions are never updated or deleted here: an edit inserts the next version under the
 //! same name, and `ON DELETE RESTRICT` protects referenced versions at the database boundary.
@@ -290,7 +290,7 @@ pub(crate) async fn list_definitions(
 /// The stored latest version of one definition name inside a transaction, or `None` when the
 /// name is unknown. `MAX(version)` over an absent name aggregates to SQL `NULL`, which the
 /// optional read turns into `None` — the unknown name carries no version, and a successor
-/// insert maps that to the unknown-reference `NotFound` (README §7.1).
+/// insert maps that to the unknown-reference `NotFound` (`docs/reference/management-api.md`).
 ///
 /// # Errors
 ///

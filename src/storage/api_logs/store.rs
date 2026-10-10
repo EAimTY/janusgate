@@ -1,6 +1,6 @@
-//! The api-log store (README §3 *ApiLog Store*): the day-partitioned api-log files under its
-//! directory, the hot-file write cache over them, the retention sweep, and the INSERT write
-//! path. The management read engine over the same files lives in [`super::usage`].
+//! The api-log store (`docs/design/storage.md` *ApiLog Store*): the day-partitioned api-log files
+//! under its directory, the hot-file write cache over them, the retention sweep, and the INSERT
+//! write path. The management read engine over the same files lives in [`super::usage`].
 
 use super::ApiLog;
 use crate::{
@@ -141,9 +141,9 @@ impl ApiLogDay {
     }
 }
 
-/// The api-log store (README §3 *ApiLog Store*): the day-partitioned api-log files under its
-/// directory, the hot-file write cache over them, and the retention policy. Cloned handles
-/// share one directory, one retention, and one cache. The read-side methods live in
+/// The api-log store (`docs/design/storage.md` *ApiLog Store*): the day-partitioned api-log files
+/// under its directory, the hot-file write cache over them, and the retention policy. Cloned
+/// handles share one directory, one retention, and one cache. The read-side methods live in
 /// [`super::usage`].
 #[derive(Clone, Debug)]
 pub(crate) struct ApiLogStore {
@@ -271,10 +271,10 @@ impl ApiLogStore {
 
     /// Opens one day's api-log file for the write path, creating the file and its parent
     /// directory when absent and answering whether the file is newly created — the retention
-    /// sweep's only trigger (README §3 *ApiLog Store*). The open runs off the worker threads;
-    /// a drifted file, one the api_logs registry cannot interpret, answers [`Error::Drift`],
-    /// which the write path swallows as a best-effort recording failure like any other open
-    /// failure (README §8).
+    /// sweep's only trigger (`docs/design/storage.md` *ApiLog Store*). The open runs off the worker
+    /// threads; a drifted file, one the api_logs registry cannot interpret, answers
+    /// [`Error::Drift`], which the write path swallows as a best-effort recording failure like
+    /// any other open failure (`docs/reference/configuration.md`).
     ///
     /// # Errors
     ///
@@ -306,9 +306,9 @@ impl ApiLogStore {
     /// Opens one day's api-log file for the read paths, refusing to create: the open is
     /// [`Database::open_existing`], so a file absent at the open — one the retention sweep
     /// deleted between the directory listing and this open — reads as the empty partition it
-    /// became (README §3 *ApiLog Store*), and a read never recreates an api-log file or its
-    /// directory. The open runs off the worker threads like the write path's; a drifted file
-    /// answers [`Error::Drift`] — the explicit failure this read fails its request with,
+    /// became (`docs/design/storage.md` *ApiLog Store*), and a read never recreates an api-log file
+    /// or its directory. The open runs off the worker threads like the write path's; a drifted
+    /// file answers [`Error::Drift`] — the explicit failure this read fails its request with,
     /// never a process-killing panic. Reads hold no store lock: only the writers serialize.
     ///
     /// # Errors
@@ -339,8 +339,8 @@ impl ApiLogStore {
     /// composed ahead of either — happens off the async executor, in the future's own order.
     /// The open's failures are typed: a drifted file, one the api_logs registry cannot
     /// interpret, converts to [`Error::Drift`] — the write path swallows it as a recording
-    /// failure (README §8) and a read fails its request with it, a corrupt file never killing
-    /// the process (README §3 *ApiLog Store*).
+    /// failure (`docs/reference/configuration.md`) and a read fails its request with it, a corrupt
+    /// file never killing the process (`docs/design/storage.md` *ApiLog Store*).
     ///
     /// # Panics
     ///
@@ -489,8 +489,8 @@ impl ApiLogStore {
 
     /// The blocking body of [`ApiLogStore::retained_days`]: lists the directory and parses
     /// every api-log filename, ascending. Unparseable file names — non-UTF8 ones included — stay
-    /// skipped (README §3 *ApiLog Store*), while an entry the iteration fails to deliver
-    /// fails the listing: see [`Self::day_of_listing_entry`].
+    /// skipped (`docs/design/storage.md` *ApiLog Store*), while an entry the iteration fails to
+    /// deliver fails the listing: see [`Self::day_of_listing_entry`].
     ///
     /// # Errors
     ///
@@ -523,9 +523,9 @@ impl ApiLogStore {
     /// Classifies one entry of the store directory's listing: [`Some`] with the entry's
     /// [`ApiLogDay`] when its file name parses as an api-log file's, [`None`] for the names
     /// that are not api-log files' — unparseable names and non-UTF8 names alike, which the
-    /// listing leaves alone (README §3 *ApiLog Store*). An entry the iteration itself failed
-    /// to deliver — a transient failure on network storage, a permission blip — is an
-    /// [`Error`]: the entry's day must not read as absent, so the failure propagates into the
+    /// listing leaves alone (`docs/design/storage.md` *ApiLog Store*). An entry the iteration
+    /// itself failed to deliver — a transient failure on network storage, a permission blip —
+    /// is an [`Error`]: the entry's day must not read as absent, so the failure propagates into the
     /// read that consumes the listing, the same explicit failure a corrupt file fails its read
     /// with.
     fn day_of_listing_entry(

@@ -66,9 +66,9 @@ export function createProviderQuotaView(props: {
     readonly api: Accessor<ManagementApi>;
     readonly provider: Accessor<ProviderResponse | null>;
     /**
-     * Called once a quota observation succeeds (README §6.3.1): the
+     * Called once a quota observation succeeds (`web/docs/architecture.md`): the
      * observation reads independently of every other card, so the consumer
-     * may stamp the shell's freshness (§6.1) but must never re-run another
+     * may stamp the shell's freshness (`web/docs/architecture.md`) but must never re-run another
      * read. A failed or superseded observation never calls it.
      */
     readonly onQuotaReadComplete?: () => void;
@@ -173,7 +173,7 @@ export function createProviderQuotaView(props: {
         );
         // A completed read is the card's own business, but a succeeded quota
         // observation is a successful read of gateway-visible state: the
-        // consumer may stamp the shell's freshness with it (README §6.1). A
+        // consumer may stamp the shell's freshness with it (`web/docs/architecture.md`). A
         // failed observation states its diagnosis here and never reports — a
         // failure re-runs nothing and stamps nothing.
         if (shouldReadQuota && hasResolvedCapability) props.onQuotaReadComplete?.();

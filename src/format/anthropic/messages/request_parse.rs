@@ -4,7 +4,7 @@
 //! The surface parses request bodies strictly into IR (`max_tokens` required per the spec,
 //! streaming via body `stream: true`): unknown members are 400s, known semantic controls without
 //! gateway support are 400s, and presentation-only controls are accepted-and-ignored
-//! (README §6.6).
+//! (`docs/reference/inference.md`).
 
 use super::{TypedBlock, block_opaque};
 use crate::{
@@ -25,7 +25,7 @@ use serde_json::Value;
 
 /// Strictly parsed `POST /messages` request body: unknown members are 400s, known semantic
 /// controls without gateway support are 400s, and presentation-only controls are
-/// accepted-and-ignored (README §6.6).
+/// accepted-and-ignored (`docs/reference/inference.md`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InboundRequest {
@@ -55,18 +55,20 @@ struct InboundRequest {
     top_p: Option<f64>,
 
     /// Top-of-distribution truncation, known-but-unsupported: the IR has no top-k slot, so
-    /// present is a 400 naming the field (README §6.6).
+    /// present is a 400 naming the field (`docs/reference/inference.md`).
     #[serde(default)]
     top_k: Option<IgnoredAny>,
 
     /// Cross-request diagnostics (`diagnostics.previous_message_id` foremost),
     /// known-but-unsupported: it references a prior response's message state, which a stateless
-    /// gateway never carries, so present is a 400 naming the field (README §6.6).
+    /// gateway never carries, so present is a 400 naming the field
+    /// (`docs/reference/inference.md`).
     #[serde(default)]
     diagnostics: Option<IgnoredAny>,
 
     /// Inference-region routing constraint, known-but-unsupported: a stateless gateway cannot
-    /// honor a region pin downstream, so present is a 400 naming the field (README §6.6).
+    /// honor a region pin downstream, so present is a 400 naming the field
+    /// (`docs/reference/inference.md`).
     #[serde(default)]
     inference_geo: Option<IgnoredAny>,
 
@@ -99,31 +101,46 @@ struct InboundRequest {
 
     /// Summary control, accepted and ignored: summaries never enter the IR.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     thinking_summaries: Option<IgnoredAny>,
 
     /// Request metadata (`metadata.user_id` foremost), accepted and ignored: the gateway is
-    /// stateless and never persists request metadata (README §6.6).
+    /// stateless and never persists request metadata (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     metadata: Option<IgnoredAny>,
 
     /// Capacity-tier selection, accepted and ignored: a stateless gateway has no tier to honor
-    /// downstream (README §6.6).
+    /// downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     service_tier: Option<IgnoredAny>,
 
     /// Container reuse identifier, accepted and ignored: the gateway is stateless and never
-    /// chains containers (README §6.6).
+    /// chains containers (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     container: Option<IgnoredAny>,
 
     /// Top-level prompt-caching breakpoint, accepted and ignored: the stateless gateway renders
-    /// no caching markers downstream (README §6.6).
+    /// no caching markers downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     cache_control: Option<IgnoredAny>,
 }
 
@@ -156,15 +173,21 @@ enum InboundUserBlock {
         text: String,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
 
         /// Citations replayed from a citations-enabled upstream turn, accepted and ignored:
-        /// the stateless gateway renders no citations downstream (README §6.6).
+        /// the stateless gateway renders no citations downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         citations: Option<IgnoredAny>,
     },
 
@@ -174,9 +197,12 @@ enum InboundUserBlock {
         source: InboundImageSource,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
     },
 
@@ -193,15 +219,19 @@ enum InboundUserBlock {
         is_error: Option<bool>,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
     },
 }
 
 /// Content block of an assistant turn; placement is enforced by the type itself like the user
-/// blocks. `document` blocks parse only to be rejected as known-unsupported (README §6.6).
+/// blocks. `document` blocks parse only to be rejected as known-unsupported
+/// (`docs/reference/inference.md`).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum InboundAssistantBlock {
@@ -211,15 +241,21 @@ enum InboundAssistantBlock {
         text: String,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
 
         /// Citations replayed from a citations-enabled upstream turn, accepted and ignored:
-        /// the stateless gateway renders no citations downstream (README §6.6).
+        /// the stateless gateway renders no citations downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         citations: Option<IgnoredAny>,
     },
 
@@ -235,9 +271,12 @@ enum InboundAssistantBlock {
         input: Value,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
     },
 
@@ -279,9 +318,12 @@ enum InboundAssistantBlock {
         tool_changes: Option<Vec<Value>>,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
     },
 
@@ -307,15 +349,21 @@ struct InboundTextBlock {
     text: String,
 
     /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no caching
-    /// markers downstream (README §6.6).
+    /// markers downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     cache_control: Option<IgnoredAny>,
 
     /// Citations replayed from a citations-enabled upstream turn, accepted and ignored: the
-    /// stateless gateway renders no citations downstream (README §6.6).
+    /// stateless gateway renders no citations downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     citations: Option<IgnoredAny>,
 }
 
@@ -350,15 +398,21 @@ enum InboundToolResultPart {
         text: String,
 
         /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
-        /// caching markers downstream (README §6.6).
+        /// caching markers downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         cache_control: Option<IgnoredAny>,
 
         /// Citations replayed from a citations-enabled upstream turn, accepted and ignored:
-        /// the stateless gateway renders no citations downstream (README §6.6).
+        /// the stateless gateway renders no citations downstream (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         citations: Option<IgnoredAny>,
     },
 
@@ -380,7 +434,7 @@ struct InboundTool {
     name: String,
 
     /// Tool discriminator: `"custom"` marks a function tool; any other value names a
-    /// server-side tool and is a 400 naming `type` (README §6.6).
+    /// server-side tool and is a 400 naming `type` (`docs/reference/inference.md`).
     #[serde(default, rename = "type")]
     kind: Option<String>,
 
@@ -392,15 +446,21 @@ struct InboundTool {
     input_schema: Value,
 
     /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no caching
-    /// markers downstream (README §6.6).
+    /// markers downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     cache_control: Option<IgnoredAny>,
 
     /// Schema-validation guarantee, accepted and ignored: the gateway exposes no such control
-    /// downstream (README §6.6).
+    /// downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     strict: Option<bool>,
 }
 
@@ -418,18 +478,22 @@ struct InboundToolChoice {
 
     /// Parallel tool-use switch, accepted and ignored: the gateway exposes no such control.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     disable_parallel_tool_use: Option<bool>,
 }
 
 /// Legacy thinking control — the official `ThinkingConfig` union: `disabled` carries its `type`
 /// alone, while `enabled`/`adaptive` each add the display control, and only `enabled` adds the
-/// legacy budget (README §6.4).
+/// legacy budget (`docs/reference/inference.md`).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum InboundThinking {
-    /// The native off spelling: parses into `none` (§6.4). An empty struct variant rather than a
-    /// unit one: a unit variant would silently swallow unknown members instead of denying them.
+    /// The native off spelling: parses into `none` (`docs/reference/inference.md`). An empty struct
+    /// variant rather than a unit one: a unit variant would silently swallow unknown members
+    /// instead of denying them.
     Disabled {},
 
     /// Accepted and ignored; its `budget_tokens` is the legacy numeric mechanism, a 400 naming
@@ -442,7 +506,10 @@ enum InboundThinking {
 
         /// Display control, accepted and ignored: display never enters the IR.
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         display: Option<IgnoredAny>,
     },
 
@@ -450,7 +517,10 @@ enum InboundThinking {
     Adaptive {
         /// Display control, accepted and ignored: display never enters the IR.
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         display: Option<IgnoredAny>,
     },
 }
@@ -833,7 +903,7 @@ fn parse_compaction_controls(
         }
     };
 
-    // The two controls are mutually exclusive on the native contract (README §6.8).
+    // The two controls are mutually exclusive on the native contract (`docs/design/compaction.md`).
     if on_demand.is_some() && threshold.is_some() {
         return Err(InvalidRequest::field(
             "compaction",
@@ -845,8 +915,8 @@ fn parse_compaction_controls(
 }
 
 /// Parses a `POST /messages` request body into IR. `betas` carries the caller's `anthropic-beta`
-/// entries (README §6.5 route context), validated against the inbound beta requirements of the
-/// compaction controls and compaction blocks the request carries.
+/// entries (`docs/design/routing.md` route context), validated against the inbound beta
+/// requirements of the compaction controls and compaction blocks the request carries.
 ///
 /// # Errors
 ///
@@ -870,13 +940,14 @@ pub(super) fn parse_inbound_request(
     }
 
     // Known-but-unsupported sampling control: the IR carries no top-k slot, so present is a
-    // 400 naming the field rather than the generic unknown-field rejection (README §6.6).
+    // 400 naming the field rather than the generic unknown-field rejection
+    // (`docs/reference/inference.md`).
     if request.top_k.is_some() {
         return Err(InvalidRequest::field("top_k", "top_k is not supported"));
     }
 
     // Known-but-unsupported envelope controls: both are 400s naming their field rather than
-    // generic unknown-field rejections (README §6.6).
+    // generic unknown-field rejections (`docs/reference/inference.md`).
     if request.diagnostics.is_some() {
         return Err(InvalidRequest::field(
             "diagnostics",
@@ -1027,7 +1098,7 @@ pub(super) fn parse_inbound_request(
     // one's members into the IR without cloning.
     for tool in request.tools.take().unwrap_or_default() {
         // A non-`custom` discriminator names a server-side tool: function tools only, and
-        // the rejection names `type` (README §6.6).
+        // the rejection names `type` (`docs/reference/inference.md`).
         if let Some(other) = tool.kind.as_deref().filter(|kind| *kind != "custom") {
             return Err(InvalidRequest::field(
                 "type",
@@ -1081,7 +1152,7 @@ pub(super) fn parse_inbound_request(
         }
     };
 
-    // Forced tool use contradicts the on-demand contract (README §6.8).
+    // Forced tool use contradicts the on-demand contract (`docs/design/compaction.md`).
     if compaction_control.is_some()
         && matches!(
             tool_choice,
@@ -1095,7 +1166,8 @@ pub(super) fn parse_inbound_request(
     }
 
     // The legacy numeric budget mechanism survives parsing only on the variant where the
-    // official member exists: a 400 naming the field, like Gemini `thinkingBudget` (README §6.6).
+    // official member exists: a 400 naming the field, like Gemini `thinkingBudget`
+    // (`docs/reference/inference.md`).
     if let Some(InboundThinking::Enabled {
         budget_tokens: Some(_),
         ..
@@ -1110,7 +1182,7 @@ pub(super) fn parse_inbound_request(
     let thinking_effort = match &request.thinking {
         None => None,
 
-        // The native off spelling parses into `none` (§6.4).
+        // The native off spelling parses into `none` (`docs/reference/inference.md`).
         Some(InboundThinking::Disabled {}) => Some(ReasoningLevel::None),
 
         // Accepted and ignored: no replayable state, no IR slot.
@@ -1126,7 +1198,7 @@ pub(super) fn parse_inbound_request(
 
     // The structured-outputs member parses into the IR response format; a shape outside the
     // official `JSONOutputFormat` union — any other `type`, a missing or non-object `schema` —
-    // is a 400 naming `format` (README §6.6).
+    // is a 400 naming `format` (`docs/reference/inference.md`).
     let response_format = match &request.output_config {
         None => None,
 
@@ -1172,7 +1244,7 @@ pub(super) fn parse_inbound_request(
         ));
     }
 
-    // A structured-output format contradicts the on-demand contract (README §6.8).
+    // A structured-output format contradicts the on-demand contract (`docs/design/compaction.md`).
     if compaction_control.is_some() && response_format.is_some() {
         return Err(InvalidRequest::field(
             "format",
@@ -1227,7 +1299,11 @@ pub(super) fn parse_inbound_request(
         && !messages.iter().any(|message| {
             message.role == IrRole::Tool
                 && message.parts.iter().any(|part| {
-                    matches!(part, IrPart::ToolOutput { call_id: answered, .. } if answered == call_id)
+                    matches!(
+                        // Results pair by ID; their position in history is irrelevant here.
+                        part,
+                        IrPart::ToolOutput { call_id: answered, .. } if answered == call_id
+                    )
                 })
         })
     {
@@ -1341,8 +1417,9 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
                         })
                         .collect::<Result<Vec<_>, _>>()?;
 
-                    // The shared text-part flattening contract (README §6.6): a leading run of
-                    // empty parts carries no separator, and the rest joins on the blank line.
+                    // The shared text-part flattening contract (`docs/reference/inference.md`): a
+                    // leading run of empty parts carries no separator, and the
+                    // rest joins on the blank line.
                     join_text_parts(texts)
                 }
             };

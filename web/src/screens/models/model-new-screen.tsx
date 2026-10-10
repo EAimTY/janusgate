@@ -179,7 +179,7 @@ function ModelCreateForm(props: {
 
     const trimmedUpstream = (): string => upstreamId().trim();
 
-    /** Inline composition errors, shown where the value was typed (gateway README §7). */
+    /** Inline composition errors, shown where the value was typed (`docs/reference/management-api.md`). */
     const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "upstreamId");
 
     /** The creation's composition rules: an owned provider with a routable identity. */

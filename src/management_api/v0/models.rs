@@ -66,12 +66,12 @@ route! {
     }
 }
 
-/// One model listing entry in its management wire shape (README §7.1). `id` is the row identifier
-/// (`AUTOINCREMENT`, never recycled) that every row-addressed write goes through, while
-/// the physical account-local model carries its own inputs —
+/// One model listing entry in its management wire shape (`docs/reference/management-api.md`). `id`
+/// is the row identifier (`AUTOINCREMENT`, never recycled) that every row-addressed write goes
+/// through, while the physical account-local model carries its own inputs —
 /// `is_enabled`, `discovery_state` — and never the three-input effective verdict: the caller
 /// derives that from these plus the provider's `is_enabled`, which `providers:list` already
-/// returns (README §7.0 rule 7).
+/// returns (`docs/reference/management-api.md` response ownership).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct ModelResponse {
@@ -94,7 +94,7 @@ struct ModelResponse {
     discovery_state: DiscoveryState,
 
     /// Discovered thinking levels in the vocabulary spellings, canonicalized; `null` is unknown
-    /// — the latest upstream knowledge, never "none" (README §3).
+    /// — the latest upstream knowledge, never "none" (`docs/design/storage.md`).
     thinking_levels: Option<Vec<String>>,
 
     /// Discovered maximum input tokens; `null` is unknown.
@@ -104,7 +104,7 @@ struct ModelResponse {
     max_output_tokens: Option<i64>,
 
     /// Administrator's thinking-level override in the vocabulary spellings, canonicalized;
-    /// `null` keeps the discovered value (rule 2).
+    /// `null` keeps the discovered value (two-state fields).
     thinking_levels_override: Option<Vec<String>>,
 
     /// Administrator's maximum-input-tokens override; `null` keeps the discovered value.
@@ -114,16 +114,17 @@ struct ModelResponse {
     max_output_tokens_override: Option<i64>,
 
     /// Discovered compaction support facts — the per-mechanism known facts of the latest
-    /// refresh, keyed by the closed mechanism spellings; `null` is unknown (README §3).
+    /// refresh, keyed by the closed mechanism spellings; `null` is unknown
+    /// (`docs/design/storage.md`).
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" } | null")
     )]
     compaction_support: Option<CompactionSupportFacts>,
 
-    /// Administrator's compaction facts override; `null` keeps the discovered facts (rule 2).
-    /// An explicit `"unknown"` member is legal here and suppresses the lower layers for that
-    /// mechanism.
+    /// Administrator's compaction facts override; `null` keeps the discovered facts (two-state
+    /// fields). An explicit `"unknown"` member is legal here and suppresses the lower layers
+    /// for that mechanism.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
@@ -185,8 +186,9 @@ impl ModelResponse {
 }
 
 /// Strictly parsed `models:list` request: the empty request lists every provider's rows; the filter
-/// narrows the listing to one provider and is never `null` (README §7.0 rule 2) — an unknown
-/// `provider_id` yields an empty list, because a filter addresses no row.
+/// narrows the listing to one provider and is never `null` (`docs/reference/management-api.md`
+/// two-state fields) — an unknown `provider_id` yields an empty list, because a filter addresses no
+/// row.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -201,9 +203,9 @@ pub(super) struct ListModelsRequest {
     provider_id: Option<i64>,
 }
 
-/// The `models:list` success body (README §7.1): every row, `vanished` ones included; the caller
-/// derives the three-input effective status from the row's inputs and the provider's switch
-/// (rule 7).
+/// The `models:list` success body (`docs/reference/management-api.md`): every row, `vanished` ones
+/// included; the caller derives the three-input effective status from the row's inputs and the
+/// provider's switch (response ownership).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListModelsResponse {
@@ -211,8 +213,8 @@ pub(super) struct ListModelsResponse {
     models: Vec<ModelResponse>,
 }
 
-/// The `models:discover` success body (README §7.1): the provider's complete fresh rows — which
-/// `upstream_id`s appeared, which rows vanished are
+/// The `models:discover` success body (`docs/reference/management-api.md`): the provider's complete
+/// fresh rows — which `upstream_id`s appeared, which rows vanished are
 /// transaction-recomputed facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -230,11 +232,12 @@ pub(super) struct DiscoverModelsRequest {
     provider_id: i64,
 }
 
-/// Strictly parsed `models:create` request (README §7.1): the complete desired initial state of
-/// one manually added row, every field required (README §7.0 rule 3). The
-/// capability overrides are the required-nullable mirror columns (rule 2) — `null` means no
-/// override, exactly like the storage columns. Addressed by the natural key
-/// `(provider_id, upstream_id)` — the row does not exist yet.
+/// Strictly parsed `models:create` request (`docs/reference/management-api.md`): the complete
+/// desired initial state of one manually added row, every field required
+/// (`docs/reference/management-api.md` full-state writes). The capability overrides are the
+/// required-nullable mirror columns (two-state fields) — `null` means no override, exactly like the
+/// storage columns. Addressed by the natural key `(provider_id, upstream_id)` — the row does not
+/// exist yet.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -250,8 +253,8 @@ pub(super) struct CreateModelRequest {
     is_enabled: bool,
 
     /// Thinking-level override; `null` keeps the discovered value, an array replaces the
-    /// declaration wholesale — the empty array is the positive declaration of no levels (README
-    /// §3).
+    /// declaration wholesale — the empty array is the positive declaration of no levels
+    /// (`docs/design/storage.md`).
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "Array<string> | null")
@@ -274,7 +277,8 @@ pub(super) struct CreateModelRequest {
 
     /// Compaction support facts override; `null` keeps the discovered facts, an object replaces
     /// them wholesale — the mechanism spellings are the closed keys, `"unknown"` is a legal
-    /// explicit member value, and the base facts are never the request's to state (README §3).
+    /// explicit member value, and the base facts are never the request's to state
+    /// (`docs/design/storage.md`).
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "{ [key: string]: \"supported\" | \"unsupported\" | \"unknown\" } | null")
@@ -282,11 +286,11 @@ pub(super) struct CreateModelRequest {
     compaction_support_override: Nullable<BTreeMap<String, String>>,
 }
 
-/// Strictly parsed `models:update` request (README §7.1): the complete state of the row's
-/// writable columns, every field required (README §7.0 rule 3). The capability
-/// overrides are the required-nullable mirror columns (rule 2). Addressed by the row identifier
-/// `model_id`, like `api-keys:update`. The request cannot state `discovery_state` or a
-/// capability base column: this route writes only `is_enabled` and the
+/// Strictly parsed `models:update` request (`docs/reference/management-api.md`): the complete state
+/// of the row's writable columns, every field required (`docs/reference/management-api.md`
+/// full-state writes). The capability overrides are the required-nullable mirror columns (two-state
+/// fields). Addressed by the row identifier `model_id`, like `api-keys:update`. The request cannot
+/// state `discovery_state` or a capability base column: this route writes only `is_enabled` and the
 /// capability overrides, so it can never restore a vanished row — recovery is an upstream
 /// reappearance or a `models:create` claim.
 #[derive(Debug, Serialize, Deserialize)]
@@ -300,8 +304,8 @@ pub(super) struct UpdateModelRequest {
     is_enabled: bool,
 
     /// Thinking-level override; `null` keeps the discovered value, an array replaces the
-    /// declaration wholesale — the empty array is the positive declaration of no levels (README
-    /// §3).
+    /// declaration wholesale — the empty array is the positive declaration of no levels
+    /// (`docs/design/storage.md`).
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "Array<string> | null")
@@ -331,7 +335,8 @@ pub(super) struct UpdateModelRequest {
     compaction_support_override: Nullable<BTreeMap<String, String>>,
 }
 
-/// Strictly parsed `models:delete` request (README §7.1): addressed by the row identifier.
+/// Strictly parsed `models:delete` request (`docs/reference/management-api.md`): addressed by the
+/// row identifier.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -412,7 +417,7 @@ pub(super) async fn delete(
 /// Applies the management surface's discovery guard to a raw upstream model list: duplicates
 /// keep their first occurrence, and an empty set — an upstream anomaly — is refused with the 502
 /// upstream-error category before it can reach the storage layer, where an empty set would mark
-/// the provider's whole model list vanished (README §7.1).
+/// the provider's whole model list vanished (`docs/reference/management-api.md`).
 fn unique_discovered_models(
     discovered: Vec<DiscoveredModel>,
 ) -> Result<Vec<DiscoveredModel>, Error> {
@@ -433,12 +438,12 @@ fn unique_discovered_models(
     Ok(unique)
 }
 
-/// The parsed, validated form of one request's capability overrides (README §7.1): level
-/// values validated against the closed vocabulary and canonicalized — deduplicated,
-/// vocabulary-ordered, the empty set preserved as the positive declaration of no levels — token
-/// caps checked positive, and the compaction facts map's mechanism and support spellings
-/// validated against their closed vocabularies, the map canonicalized into the mechanism
-/// order.
+/// The parsed, validated form of one request's capability overrides
+/// (`docs/reference/management-api.md`): level values validated against the closed vocabulary and
+/// canonicalized — deduplicated, vocabulary-ordered, the empty set preserved as the positive
+/// declaration of no levels — token caps checked positive, and the compaction facts map's mechanism
+/// and support spellings validated against their closed vocabularies, the map canonicalized into
+/// the mechanism order.
 #[derive(Debug)]
 struct CapabilityOverrides {
     /// Validated, canonicalized thinking-level override; `None` keeps the discovered value.
@@ -456,10 +461,10 @@ struct CapabilityOverrides {
 }
 
 /// Validates one request's capability overrides: every level string parses against the closed
-/// vocabulary (README §6.4), the set canonicalizes (deduplicated, vocabulary-ordered), every
-/// present token cap is positive, and every compaction-facts key and value parses against the
-/// closed mechanism and support vocabularies — the map then canonicalizes into the mechanism
-/// order, an empty object normalizing to the no-override `None`.
+/// vocabulary (`docs/reference/inference.md`), the set canonicalizes (deduplicated,
+/// vocabulary-ordered), every present token cap is positive, and every compaction-facts key and
+/// value parses against the closed mechanism and support vocabularies — the map then canonicalizes
+/// into the mechanism order, an empty object normalizing to the no-override `None`.
 ///
 /// # Errors
 ///
@@ -534,8 +539,8 @@ fn parse_capability_overrides(
     })
 }
 
-/// Refreshes one provider's model rows from upstream: mark, flip, and insert (README §7.1),
-/// answering with the provider's complete fresh rows.
+/// Refreshes one provider's model rows from upstream: mark, flip, and insert
+/// (`docs/reference/management-api.md`), answering with the provider's complete fresh rows.
 ///
 /// `control_plane` is the bounded client used for the token refresh and the upstream discovery
 /// calls.

@@ -34,7 +34,7 @@ import { expectParamRows, expectStringExpr } from "./expressions";
  * One provisioning extraction: the path, its target, the shape, and the flag.
  * A form-encoded step's extractions address flat form fields, so a carried
  * path names exactly one member — the rule the gateway holds every
- * extraction to (README §5.4).
+ * extraction to (`docs/design/providers.md`).
  */
 function expectProvisionExtraction(
     value: unknown,
@@ -82,7 +82,7 @@ function expectProvisionExtractions(
 
 /**
  * The terminal status codes of an exchange or a grant-mode token refresh
- * (README §5.1): the carrying list is one the gateway's `Vec1` type parses,
+ * (`docs/design/providers.md`): the carrying list is one the gateway's `Vec1` type parses,
  * so it is never empty, and an empty code can never match a status.
  */
 function expectTerminalCodes(value: unknown, context: string): Array<string> {
@@ -103,7 +103,7 @@ function expectTerminalCodes(value: unknown, context: string): Array<string> {
     });
 }
 
-/** The long-running operation poll of a provisioning step (README §5.4). */
+/** The long-running operation poll of a provisioning step (`docs/design/providers.md`). */
 function expectPoll(value: unknown, context: string): Poll {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -156,7 +156,7 @@ function expectPoll(value: unknown, context: string): Poll {
     return poll;
 }
 
-/** One provisioning step, rebuilt with its guard, extractions, and poll (README §5.4). */
+/** One provisioning step, rebuilt with its guard, extractions, and poll (`docs/design/providers.md`). */
 function expectProvisioningStep(value: unknown, context: string): ProvisioningStep {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -204,14 +204,14 @@ function expectProvisioningStep(value: unknown, context: string): ProvisioningSt
     return step;
 }
 
-/** Validates one provisioning sequence with its polls (README §5.4). */
+/** Validates one provisioning sequence with its polls (`docs/design/providers.md`). */
 export function expectProvisioning(value: unknown, context: string): Array<ProvisioningStep> {
     return expectArray(value, context).map((step, index) =>
         expectProvisioningStep(step, `${context}[${index}]`),
     );
 }
 
-/** One durable slot initializer, rebuilt (README §5.3). */
+/** One durable slot initializer, rebuilt (`docs/design/providers.md`). */
 function expectSlotInitializer(
     value: unknown,
     context: string,
@@ -244,7 +244,7 @@ function expectSlotInitializer(
     };
 }
 
-/** The OAuth authorization grant a flow runs, rebuilt from its kind (README §5.3). */
+/** The OAuth authorization grant a flow runs, rebuilt from its kind (`docs/design/providers.md`). */
 function expectGrant(value: unknown, context: string): Grant {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -355,7 +355,7 @@ function expectGrant(value: unknown, context: string): Grant {
     throw new ContractViolationError(`${context}.type is not a grant kind: ${type}`);
 }
 
-/** The token exchange redeeming a grant's product (README §5.3). */
+/** The token exchange redeeming a grant's product (`docs/design/providers.md`). */
 function expectExchange(value: unknown, context: string): Exchange {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -378,7 +378,7 @@ function expectExchange(value: unknown, context: string): Exchange {
     };
 }
 
-/** How an OAuth-acquired credential renews, rebuilt from its mode (README §5.3). */
+/** How an OAuth-acquired credential renews, rebuilt from its mode (`docs/design/providers.md`). */
 function expectTokenRefresh(value: unknown, context: string): TokenRefresh {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -436,7 +436,7 @@ function expectTokenRefresh(value: unknown, context: string): TokenRefresh {
 
 /**
  * The credential acquisition of a definition, rebuilt from its kind
- * (README §5.3): an `api_key` credential is its tag alone, an `oauth`
+ * (`docs/design/providers.md`): an `api_key` credential is its tag alone, an `oauth`
  * credential the full recipe.
  */
 export function expectCredential(value: unknown, context: string): CredentialAcquisition {

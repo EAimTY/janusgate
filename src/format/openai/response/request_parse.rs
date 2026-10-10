@@ -76,7 +76,7 @@ struct RequestBody {
     // The remaining fields are stateless-idempotent envelope controls that typed clients — the
     // codex CLI serializes every one of them on each request — always carry, but that a stateless
     // gateway can never honor downstream; each is accepted and ignored, like the item-level
-    // carve-outs above (README §6.6).
+    // carve-outs above (`docs/reference/inference.md`).
     //
     // `stream_options` has no Responses-specific schema, and `client_metadata` and
     // `access_programs` are client-declared free-form values, so the three are ignored in whatever
@@ -84,40 +84,61 @@ struct RequestBody {
     /// Parallel tool-call switch; the downstream provider decides parallelism, so it is accepted
     /// and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     parallel_tool_calls: Option<bool>,
 
     /// Extra output content the client asks to have included (codex asks for
     /// `reasoning.encrypted_content`); the gateway renders its own output shapes, so it is
     /// accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     include: Option<Vec<String>>,
 
     /// Upstream prompt-cache placement key; cache placement is a downstream concern, so it is
     /// accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     prompt_cache_key: Option<String>,
 
     /// Streaming options; usage is always included, so it is accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     stream_options: IgnoredAny,
 
     /// Requested service tier; the gateway has no tier control, so it is accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     service_tier: Option<String>,
 
     /// Free-form client metadata; accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     client_metadata: IgnoredAny,
 
     /// Client-declared access programs; accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     access_programs: IgnoredAny,
 }
 
@@ -133,9 +154,12 @@ pub(super) enum ItemIn {
     /// Conversation message.
     Message {
         /// Gateway-rendered item identifier; accepted and ignored, because codex replays parsed
-        /// output items verbatim each turn (README §6.6).
+        /// output items verbatim each turn (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         id: Option<IgnoredAny>,
 
         /// Authoring role.
@@ -144,22 +168,31 @@ pub(super) enum ItemIn {
         /// Text or typed content.
         content: StringOrArray<PartIn>,
 
-        /// Gateway-rendered item phase; accepted and ignored (README §6.6).
+        /// Gateway-rendered item phase; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         phase: Option<IgnoredAny>,
 
-        /// Gateway-rendered item status; accepted and ignored (README §6.6).
+        /// Gateway-rendered item status; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         status: Option<IgnoredAny>,
     },
 
     /// A past tool invocation.
     FunctionCall {
-        /// Gateway-rendered item identifier; accepted and ignored (README §6.6).
+        /// Gateway-rendered item identifier; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         id: Option<IgnoredAny>,
 
         /// Invocation identifier.
@@ -172,9 +205,12 @@ pub(super) enum ItemIn {
         #[serde(default)]
         arguments: String,
 
-        /// Gateway-rendered item status; accepted and ignored (README §6.6).
+        /// Gateway-rendered item status; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         status: Option<IgnoredAny>,
 
         /// Thought signature to reattach across turns.
@@ -194,9 +230,12 @@ pub(super) enum ItemIn {
 
     /// A tool result.
     FunctionCallOutput {
-        /// Gateway-rendered item identifier; accepted and ignored (README §6.6).
+        /// Gateway-rendered item identifier; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         id: Option<IgnoredAny>,
 
         /// Identifier of the invocation being answered.
@@ -205,9 +244,12 @@ pub(super) enum ItemIn {
         /// Result content: a plain string or an array of text parts.
         output: StringOrArray<OutputPartIn>,
 
-        /// Gateway-rendered item status; accepted and ignored (README §6.6).
+        /// Gateway-rendered item status; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         status: Option<IgnoredAny>,
     },
 
@@ -231,9 +273,10 @@ pub(super) enum ItemIn {
 
 /// A replayed reasoning item's typed replayable members.
 ///
-/// Deserialization accepts the item in whatever shape it arrives (README §6.6); serialization
-/// re-renders the typed members with their presence preserved — an absent optional member stays
-/// absent — so an item carrying `encrypted_content` replays verbatim as an opaque state item.
+/// Deserialization accepts the item in whatever shape it arrives (`docs/reference/inference.md`);
+/// serialization re-renders the typed members with their presence preserved — an absent optional
+/// member stays absent — so an item carrying `encrypted_content` replays verbatim as an opaque
+/// state item.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct ReasoningItem {
@@ -334,14 +377,21 @@ pub(super) enum PartIn {
 
         /// Gateway-rendered annotations; accepted and ignored, because the gateway's own rendered
         /// `output_text` parts carry the member and replaying an aggregated response verbatim must
-        /// parse (README §6.6).
+        /// parse (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         annotations: Option<IgnoredAny>,
 
-        /// Gateway-rendered log probabilities; accepted and ignored (README §6.6).
+        /// Gateway-rendered log probabilities; accepted and ignored
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         logprobs: Option<IgnoredAny>,
     },
 
@@ -350,9 +400,12 @@ pub(super) enum PartIn {
         /// Remote or data URL of the image.
         image_url: String,
 
-        /// OpenAI image detail hint; accepted and ignored (README §6.6).
+        /// OpenAI image detail hint; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         detail: Option<IgnoredAny>,
     },
 }
@@ -378,7 +431,7 @@ pub(super) enum OutputPartIn {
         #[expect(dead_code, reason = "rejected by the conversion below")]
         image_url: Option<IgnoredAny>,
 
-        /// OpenAI image detail hint; accepted and ignored (README §6.6).
+        /// OpenAI image detail hint; accepted and ignored (`docs/reference/inference.md`).
         #[serde(default)]
         #[expect(dead_code, reason = "rejected by the conversion below")]
         detail: Option<IgnoredAny>,
@@ -444,7 +497,10 @@ struct ToolIn {
 
     /// OpenAI strictness flag; accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     strict: Option<bool>,
 }
 
@@ -471,7 +527,8 @@ enum ToolChoiceIn {
 #[serde(deny_unknown_fields)]
 struct ReasoningIn {
     /// Reasoning effort string, opaque to the gateway: the string type is the whole constraint,
-    /// and the value is carried verbatim into the upstream's own parameter (README §6.4).
+    /// and the value is carried verbatim into the upstream's own parameter
+    /// (`docs/reference/inference.md`).
     #[serde(default)]
     effort: Option<String>,
 
@@ -491,7 +548,10 @@ struct TextIn {
     /// Output verbosity hint (codex `TextControls`); the IR has no verbosity channel, so it is
     /// accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     verbosity: Option<String>,
 }
 
@@ -517,7 +577,10 @@ enum FormatIn {
 
         /// OpenAI strictness flag; accepted and ignored.
         #[serde(default)]
-        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        #[expect(
+            dead_code,
+            reason = "accepted and ignored per `docs/reference/inference.md`"
+        )]
         strict: Option<bool>,
     },
 }
@@ -557,7 +620,7 @@ pub(super) struct InputConversion {
 ///
 /// The explicit trigger control is validated here: a trigger must be the one
 /// and last input item, so any item after a trigger, and any second trigger,
-/// is a 400 (README §6.8).
+/// is a 400 (`docs/design/compaction.md`).
 ///
 /// # Errors
 ///
@@ -815,7 +878,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     // One explicit compaction control per request: a trigger beside the
     // automatic controls is ambiguous, and ambiguity is rejected instead of
-    // silently interpreted (README §6.8).
+    // silently interpreted (`docs/design/compaction.md`).
     if converted.has_trigger && context_management.is_some() {
         return Err(InvalidRequest::request(
             "compaction_trigger and context_management are ambiguous; state one compaction \
@@ -891,8 +954,8 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     };
 
     // The closed vocabulary is enforced here: an unknown effort string is a 400 naming the field,
-    // and the parsed enum renders verbatim into the upstream's own parameter (README §6.4).
-    // `summary` keeps its own validation above.
+    // and the parsed enum renders verbatim into the upstream's own parameter
+    // (`docs/reference/inference.md`). `summary` keeps its own validation above.
     let reasoning_effort = request
         .reasoning
         .and_then(|reasoning| reasoning.effort)

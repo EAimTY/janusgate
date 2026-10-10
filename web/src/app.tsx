@@ -82,7 +82,7 @@ export function App(): JSX.Element {
     // only when the root itself goes away. It reads the leave-guard registry
     // at event time, so screens arm and disarm it purely by reporting their
     // subjects' state; the connection screen, which mounts no tracked form,
-    // never trips it (README §6.3).
+    // never trips it (`web/docs/architecture.md`).
     window.addEventListener("beforeunload", guardLeaveOnGuardedSubjects);
     onCleanup(() => {
         window.removeEventListener("beforeunload", guardLeaveOnGuardedSubjects);
@@ -124,7 +124,7 @@ type LeaveEvent = {
 };
 
 /**
- * The one `beforeunload` guard (README §6.3): while a subject the registry
+ * The one `beforeunload` guard (`web/docs/architecture.md`): while a subject the registry
  * seats stands guarded — a form tracked as dirty, or a live OAuth flow — a
  * leave of the whole document — a tab close, a reload, a navigation off the
  * page — is marked for the browser's native leave confirmation instead of

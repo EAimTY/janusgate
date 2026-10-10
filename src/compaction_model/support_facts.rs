@@ -1,13 +1,13 @@
 //! The per-model compaction support facts: an ordered mechanism-to-support map stored as one
 //! JSON object on the model rows.
 //!
-//! The map is the storage and wire form of two model-row columns (README §3's capability-column
-//! ownership classes): the discovery-owned base and the administrator-owned override. The base
-//! column admits only known facts (`supported`/`unsupported`) — discovery extracts booleans, so
-//! it never produces `unknown` — while the override additionally admits an explicit `unknown`
-//! that suppresses every lower resolution layer for that mechanism. An absent member and a
-//! `NULL` column both mean *nothing known at that layer*; the domains themselves are enforced at
-//! the write boundaries, never in SQL.
+//! The map is the storage and wire form of two model-row columns (`docs/design/storage.md`'s
+//! capability-column ownership classes): the discovery-owned base and the administrator-owned
+//! override. The base column admits only known facts (`supported`/`unsupported`) — discovery
+//! extracts booleans, so it never produces `unknown` — while the override additionally admits an
+//! explicit `unknown` that suppresses every lower resolution layer for that mechanism. An absent
+//! member and a `NULL` column both mean *nothing known at that layer*; the domains themselves are
+//! enforced at the write boundaries, never in SQL.
 
 use super::mechanism::{Mechanism, MechanismSupport};
 use serde::{Deserialize, Serialize};

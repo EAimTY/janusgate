@@ -150,7 +150,7 @@ export function ModelDetailScreen(props: {
 }
 
 /**
- * One model's capability declarations (gateway README §3): each effective
+ * One model's capability declarations (`docs/design/storage.md`): each effective
  * value (`override ?? base`, derived client-side under rule 7) with the
  * provenance the listings render from — the administrator's override, the
  * latest discovery knowledge, or unknown, which every listing omits. A

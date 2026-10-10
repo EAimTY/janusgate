@@ -316,7 +316,7 @@ const API_KEY_ADDRESS = /^\/api-keys\/([^/]+)(\/edit)?$/;
  * route from the parsed row identifier, so the AppRoute construction stays
  * at the call; the edit constructor defaults to the detail constructor, the
  * shape of the pool and public-route families, whose `/edit` spelling
- * resolves to the same editor (README §6.2). An address whose segment is not
+ * resolves to the same editor (`web/docs/architecture.md`). An address whose segment is not
  * a row identifier is not-found, and a path outside the family answers
  * `null` so the next route gets a turn.
  */
@@ -372,7 +372,7 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
             name: "modelRouteNew",
             initialModelId: parseRowIdentifier(readQueryParameter(search, "model")),
         };
-    // Both spellings resolve to the pool editor (README §6.2), so one
+    // Both spellings resolve to the pool editor (`web/docs/architecture.md`), so one
     // constructor serves detail and edit alike.
     const poolRoute = matchEntityRoute(normalizedPath, /^\/pools\/([^/]+)(\/edit)?$/, (poolId) => ({
         name: "providerPoolEdit",

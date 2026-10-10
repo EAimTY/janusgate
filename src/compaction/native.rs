@@ -1,4 +1,4 @@
-//! Native compaction operation dispatches (README §5.9, §6.8): the two
+//! Native compaction operation dispatches (`docs/design/compaction.md`): the two
 //! native operations the executor coordinates — the Responses standalone
 //! compact endpoint described by its definition operation, and the Messages
 //! on-demand compaction riding the ordinary inference connection with its
@@ -288,7 +288,7 @@ pub(super) async fn responses_standalone(
 /// count body through the operation's own connection, always non-streaming,
 /// yielding the upstream-reported input-token measurement. The count is a
 /// measurement, never billed usage: it records no ledger iteration and
-/// no token totals (README §6.8).
+/// no token totals (`docs/design/compaction.md`).
 ///
 /// # Errors
 ///

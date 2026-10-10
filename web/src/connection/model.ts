@@ -2,7 +2,7 @@ import { appConfig } from "/src/config";
 
 /**
  * The pair a user enters on the connection screen: the gateway's origin and
- * its management token. The token is always sent verbatim (README §3.3) and is
+ * its management token. The token is always sent verbatim (`web/docs/architecture.md`) and is
  * never rendered back in full.
  */
 export type Connection = {

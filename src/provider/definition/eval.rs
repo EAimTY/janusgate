@@ -1,5 +1,5 @@
 //! The string-expression interpreter: the one evaluator every templated string in a descriptor
-//! runs through (README §5.1).
+//! runs through (`docs/design/providers.md`).
 //!
 //! A [`ValueEnv`] carries the values of one stage; evaluating an expression whose stage did not
 //! supply a referenced value is stored drift and fails fast — the management write boundary
@@ -87,9 +87,9 @@ pub(crate) struct ValueEnv<'a> {
 }
 
 impl<'a> ValueEnv<'a> {
-    /// Builds the stage environment of one inference dispatch (README §5.2): the stored base
-    /// URL, the credential secret, the stored slots, the dispatch's request UUID, and the routed
-    /// model are exactly the values the stage's expressions may reference.
+    /// Builds the stage environment of one inference dispatch (`docs/design/providers.md`): the
+    /// stored base URL, the credential secret, the stored slots, the dispatch's request UUID,
+    /// and the routed model are exactly the values the stage's expressions may reference.
     #[must_use]
     pub(crate) fn for_inference(
         slots: &'a BTreeMap<String, String>,
@@ -108,10 +108,11 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of an authorize-URL build (README §5.3): the configured
-    /// client credentials and the flow's state token are exactly the values the stage's
-    /// expressions may reference — the write-time validation bars the base URL and slots there.
-    /// The flow's slots still ride along because the environment always carries a slot map.
+    /// Builds the stage environment of an authorize-URL build (`docs/design/providers.md`): the
+    /// configured client credentials and the flow's state token are exactly the values the
+    /// stage's expressions may reference — the write-time validation bars the base URL and
+    /// slots there. The flow's slots still ride along because the environment always carries a
+    /// slot map.
     #[must_use]
     pub(in crate::provider) fn for_authorize_url(
         slots: &'a BTreeMap<String, String>,
@@ -128,9 +129,9 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of a device authorization request (README §5.3): the working
-    /// base URL, the flow's slots, and the configured client credentials are exactly the values
-    /// the stage's expressions may reference.
+    /// Builds the stage environment of a device authorization request (`docs/design/providers.md`):
+    /// the working base URL, the flow's slots, and the configured client credentials are
+    /// exactly the values the stage's expressions may reference.
     #[must_use]
     pub(in crate::provider) fn for_device_authorization(
         slots: &'a BTreeMap<String, String>,
@@ -147,9 +148,10 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of a token exchange (README §5.3): the working base URL, the
-    /// flow's slots, the configured client credentials, and the grant's authorization code, PKCE
-    /// verifier, and redirect URI are exactly the values the stage's expressions may reference.
+    /// Builds the stage environment of a token exchange (`docs/design/providers.md`): the working
+    /// base URL, the flow's slots, the configured client credentials, and the grant's
+    /// authorization code, PKCE verifier, and redirect URI are exactly the values the stage's
+    /// expressions may reference.
     #[must_use]
     pub(crate) fn for_exchange(
         slots: &'a BTreeMap<String, String>,
@@ -172,10 +174,10 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of one device-flow poll attempt (README §5.3): the working
-    /// base URL, the flow's slots, the configured client credentials, and the flow's device code
-    /// are exactly the values the stage's expressions may reference. The completion's
-    /// provisioning sequence rebuilds its own environment per request through
+    /// Builds the stage environment of one device-flow poll attempt (`docs/design/providers.md`):
+    /// the working base URL, the flow's slots, the configured client credentials, and the
+    /// flow's device code are exactly the values the stage's expressions may reference. The
+    /// completion's provisioning sequence rebuilds its own environment per request through
     /// [`ValueEnv::for_provisioning`], which additionally carries the credential secret.
     #[must_use]
     pub(in crate::provider) fn for_device_poll(
@@ -195,9 +197,9 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of a refresh grant (README §5.3): the working base URL, the
-    /// stored slots, the configured client credentials, and the stored refresh token are exactly
-    /// the values the stage's expressions may reference.
+    /// Builds the stage environment of a refresh grant (`docs/design/providers.md`): the working
+    /// base URL, the stored slots, the configured client credentials, and the stored refresh
+    /// token are exactly the values the stage's expressions may reference.
     #[must_use]
     pub(in crate::provider) fn for_refresh_grant(
         slots: &'a BTreeMap<String, String>,
@@ -216,11 +218,12 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of a provisioning step or poll (README §5.4): the working or
-    /// stored base URL, the working or stored slots, the credential secret when the caller has
-    /// one, and the configured client credentials are exactly the values the stage's expressions
-    /// may reference. The engine rebuilds the environment from the accumulated working state
-    /// before every request, so this constructor receives the stage constants alone.
+    /// Builds the stage environment of a provisioning step or poll (`docs/design/providers.md`):
+    /// the working or stored base URL, the working or stored slots, the credential secret when
+    /// the caller has one, and the configured client credentials are exactly the values the
+    /// stage's expressions may reference. The engine rebuilds the environment from the
+    /// accumulated working state before every request, so this constructor receives the stage
+    /// constants alone.
     #[must_use]
     pub(in crate::provider) fn for_provisioning(
         slots: &'a BTreeMap<String, String>,
@@ -240,8 +243,9 @@ impl<'a> ValueEnv<'a> {
     }
 
     /// Builds the stage environment of the stored-credential reads — upstream model discovery
-    /// (README §5.5) and the read-only quota query: the stored base URL, the credential secret,
-    /// and the stored slots are exactly the values the stage's expressions may reference.
+    /// (`docs/design/providers.md`) and the read-only quota query: the stored base URL, the
+    /// credential secret, and the stored slots are exactly the values the stage's expressions
+    /// may reference.
     #[must_use]
     pub(in crate::provider) fn for_stored_credential(
         slots: &'a BTreeMap<String, String>,
@@ -256,12 +260,12 @@ impl<'a> ValueEnv<'a> {
         }
     }
 
-    /// Builds the stage environment of one compaction operation dispatch (README §5): the
-    /// stored base URL, the credential secret, the stored slots, the dispatch's request UUID
-    /// (cached across every expression of the dispatch), and the routed model are exactly the
-    /// values the stage's expressions may reference — the same value set an inference dispatch
-    /// carries, without any streaming-specific member. The standalone compact operation and the
-    /// token-count operation evaluate through it.
+    /// Builds the stage environment of one compaction operation dispatch
+    /// (`docs/design/providers.md`): the stored base URL, the credential secret, the stored
+    /// slots, the dispatch's request UUID (cached across every expression of the dispatch), and
+    /// the routed model are exactly the values the stage's expressions may reference — the same
+    /// value set an inference dispatch carries, without any streaming-specific member. The
+    /// standalone compact operation and the token-count operation evaluate through it.
     #[must_use]
     pub(crate) fn for_compaction_operation(
         slots: &'a BTreeMap<String, String>,

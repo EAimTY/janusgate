@@ -1,5 +1,5 @@
 //! OpenAI error render: the wire payload types and the closed `render(&Error)` match for the
-//! OpenAI wire format (README §6.7).
+//! OpenAI wire format (`docs/reference/inference.md`).
 //!
 //! The OpenAI render keeps the existing `type`/`code`/`param` rows verbatim; the new contract rows
 //! (method, body limit, fixed-message internal) extend the same table.

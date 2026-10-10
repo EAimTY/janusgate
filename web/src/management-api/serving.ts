@@ -10,11 +10,11 @@ import { type CompactionMechanism, isOAuthProviderRow } from "/src/management-ap
 
 /**
  * The serving derivations the wire contract leaves to the client: rule 7
- * (§4.5 *Responses carry only what the caller cannot derive*) ships the
+ * (`docs/reference/configuration.md` *Responses carry only what the caller cannot derive*) ships the
  * model row's inputs — never the three-input verdict over them — and the
  * provider row's credential columns — never the standing over them — so the
  * verdicts and the counts taken over the first are computed here, under the
- * gateway's own definitions (root README §3). The generic row indexing these
+ * gateway's own definitions (`docs/design/storage.md`). The generic row indexing these
  * derivations' callers share lives outside the contract, in `/src/row-index`.
  */
 
@@ -61,7 +61,7 @@ export function isModelInventoryReady(
 }
 
 /**
- * One model's effective thinking-level declaration (gateway README §3):
+ * One model's effective thinking-level declaration (`docs/design/storage.md`):
  * the administrator's override when present, else the discovered set —
  * `null` when neither is known, the value every model listing omits. A
  * declaration, never an enforcement: dispatch never consults it.
@@ -70,12 +70,12 @@ export function effectiveThinkingLevels(model: ModelResponse): ReadonlyArray<str
     return model.thinking_levels_override ?? model.thinking_levels;
 }
 
-/** One model's effective maximum-input-tokens declaration (gateway README §3). */
+/** One model's effective maximum-input-tokens declaration (`docs/design/storage.md`). */
 export function effectiveMaxInputTokens(model: ModelResponse): number | null {
     return model.max_input_tokens_override ?? model.max_input_tokens;
 }
 
-/** One model's effective maximum-output-tokens declaration (gateway README §3). */
+/** One model's effective maximum-output-tokens declaration (`docs/design/storage.md`). */
 export function effectiveMaxOutputTokens(model: ModelResponse): number | null {
     return model.max_output_tokens_override ?? model.max_output_tokens;
 }
@@ -137,8 +137,8 @@ function resolveCompactionFact(
 }
 
 /**
- * One model's effective compaction facts, per mechanism (gateway README §3,
- * §5). The record carries every mechanism, so a caller asks for the facts it
+ * One model's effective compaction facts, per mechanism (`docs/design/storage.md`,
+ * `docs/design/providers.md`). The record carries every mechanism, so a caller asks for the facts it
  * presents instead of re-deriving them; a mechanism added to the vocabulary
  * fails to compile here until the resolution carries it.
  */

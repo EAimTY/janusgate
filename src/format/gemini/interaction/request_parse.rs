@@ -95,18 +95,27 @@ struct RequestBody {
     /// Storage request; the gateway is stateless, so the member is accepted and ignored in
     /// whatever shape it arrives.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     store: Option<serde::de::IgnoredAny>,
 
     /// Service tier hint; a stateless gateway cannot honor it downstream, so it is accepted and
     /// ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     service_tier: Option<serde::de::IgnoredAny>,
 
     /// Free-form labels; pure metadata the gateway never reads, so accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     labels: Option<serde::de::IgnoredAny>,
 
     /// Chained interaction resume; the gateway never chains, so a present member is a 400.
@@ -311,7 +320,7 @@ fn image_into_ir(
 
         // The IR helper names its rejections after the OpenAI member `image_url`; this
         // surface's own member is the block's `content`, so the rejection is re-wrapped here
-        // (README §6.6: every rejection names the field).
+        // (`docs/reference/inference.md`: every rejection names the field).
         return IrImage::from_url(&uri)
             .map_err(|error| InvalidRequest::field("content", error.to_string()));
     }
@@ -410,7 +419,10 @@ struct GenerationConfigIn {
 
     /// Summary verbosity hint; the IR has no summary channel, so it is accepted and ignored.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     thinking_summaries: Option<serde::de::IgnoredAny>,
 
     /// Sampling seed; out of scope, so a present member is a 400.

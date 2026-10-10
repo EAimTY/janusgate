@@ -38,10 +38,10 @@ pub(crate) struct UpstreamParser {
     /// Whether a live step event delivered content: content-bearing delivery silences the
     /// terminal frame's text and thought copies, so those kinds are never delivered twice. An
     /// opening — a bare `step.start`, an implicit open, a delta without a payload — carries no
-    /// content (README §6.3's content-bearing-event rule, as the Responses parser gates it) and
-    /// leaves their recovery live. The terminal frame's `function_call` copies answer to
-    /// [`Self::has_delivered_call`] instead, so a delivered text never silences an undelivered
-    /// call.
+    /// content (`docs/reference/inference.md`'s content-bearing-event rule, as the Responses
+    /// parser gates it) and leaves their recovery live. The terminal frame's `function_call`
+    /// copies answer to [`Self::has_delivered_call`] instead, so a delivered text never
+    /// silences an undelivered call.
     is_step_delivered: bool,
 
     /// Whether a function call was already delivered live: a closing done always carries the
@@ -710,7 +710,8 @@ impl UpstreamParser {
                 // dropped rather than misattributed to foreign content.
                 if matches!(self.find_open(frame.index), Some(OpenStep::Output { .. })) {
                     // Only delivered bytes count as live delivery; a payload-less delta delivered
-                    // nothing and leaves the terminal fallback live (README §6.3).
+                    // nothing and leaves the terminal fallback live
+                    // (`docs/reference/inference.md`).
                     if !text.is_empty() {
                         self.is_step_delivered = true;
                     }
@@ -735,7 +736,8 @@ impl UpstreamParser {
                     open.push(content.text.clone());
 
                     // Only delivered bytes count as live delivery; a payload-less delta
-                    // delivered nothing and leaves the terminal fallback live (README §6.3).
+                    // delivered nothing and leaves the terminal fallback live
+                    // (`docs/reference/inference.md`).
                     if !content.text.is_empty() {
                         self.is_step_delivered = true;
                     }
@@ -781,8 +783,9 @@ impl UpstreamParser {
                     open.push_str(&arguments);
 
                     // Only delivered bytes count as live delivery; a payload-less delta
-                    // delivered nothing and leaves the terminal fallback live (README §6.3).
-                    // The flag applies after the step borrow ends.
+                    // delivered nothing and leaves the terminal fallback live
+                    // (`docs/reference/inference.md`). The flag applies after
+                    // the step borrow ends.
                     is_payload_delivered = !arguments.is_empty();
 
                     events.push(IrEvent::ToolCallDelta {
@@ -848,9 +851,10 @@ impl UpstreamParser {
                 let opaque = serde_json::to_value(step).expect("the thought step serializes");
 
                 // The done's text stays empty: the deltas are the authoritative bytes and the
-                // empty-text done merely closes the block they delivered — the §6.2
-                // deltas-then-empty-done pairing, exactly as the GenerateContent parser pairs
-                // them — so no surface ever renders a summary byte twice.
+                // empty-text done merely closes the block they delivered — the
+                // `docs/reference/inference.md` deltas-then-empty-done pairing,
+                // exactly as the GenerateContent parser pairs them — so no surface
+                // ever renders a summary byte twice.
                 events.push(IrEvent::ReasoningDone {
                     text: String::new(),
                     signature,

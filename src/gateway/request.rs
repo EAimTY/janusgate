@@ -64,8 +64,8 @@ pub(crate) fn build_internal_request<T: serde::Serialize>(
 }
 
 /// Builds the upstream HTTP request for one dispatch, entirely from the provider definition
-/// (README §5.2): the evaluated URL (the streaming URL when this dispatch streams and
-/// the definition carries one), the codec-rendered body attached through the definition's
+/// (`docs/design/providers.md`): the evaluated URL (the streaming URL when this dispatch streams
+/// and the definition carries one), the codec-rendered body attached through the definition's
 /// envelope, the engine-owned `Accept` with the definition's header rows overriding it, and one
 /// request-UUID cached across every expression of the dispatch.
 ///
@@ -98,7 +98,8 @@ pub(super) fn build_upstream_request(
         &routing.model.upstream_id,
     );
 
-    // The streaming URL only when this dispatch streams and one is configured (README §5.2).
+    // The streaming URL only when this dispatch streams and one is configured
+    // (`docs/design/providers.md`).
     let url_expr = if is_upstream_streaming {
         inference.stream_url.as_ref().unwrap_or(&inference.url)
     } else {
@@ -135,7 +136,7 @@ pub(super) fn build_upstream_request(
 }
 
 /// Renders the upstream body through the definition format's codec and attaches it to the
-/// dispatch's request builder (README §5.2).
+/// dispatch's request builder (`docs/design/providers.md`).
 ///
 /// # Errors
 ///

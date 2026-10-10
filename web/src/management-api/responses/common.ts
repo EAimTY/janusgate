@@ -21,7 +21,7 @@ const ERROR_CODES: ReadonlySet<number> = new Set(
 /**
  * Reads an errno-shaped error body. A body that is not one — a foreign
  * service's HTML error page, say — reads as `null`, and the caller reports the
- * HTTP status alone (README §4.2).
+ * HTTP status alone (`docs/reference/configuration.md`).
  */
 export function parseErrorResponse(value: unknown): ErrorResponse | null {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {

@@ -246,7 +246,8 @@ enum StartBlock {
     /// Redacted block carrying its whole payload up front.
     RedactedThinking {
         /// Redacted payload string, verbatim from the family; absent or null carries none, and
-        /// any other JSON kind contradicts the protocol and fails the frame (README §6.2).
+        /// any other JSON kind contradicts the protocol and fails the frame
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
         data: Option<String>,
     },
@@ -409,7 +410,8 @@ enum ResponseBlock {
     /// Complete redacted block.
     RedactedThinking {
         /// Redacted payload string, verbatim from the family; absent or null carries none, and
-        /// any other JSON kind contradicts the protocol and fails the body (README §6.2).
+        /// any other JSON kind contradicts the protocol and fails the body
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
         data: Option<String>,
     },
@@ -425,7 +427,8 @@ enum ResponseBlock {
         name: Option<String>,
 
         /// JSON arguments object; absent or null is the accepted empty-arguments form, and any
-        /// other JSON kind contradicts the protocol and fails the body (README §6.2).
+        /// other JSON kind contradicts the protocol and fails the body
+        /// (`docs/reference/inference.md`).
         #[serde(default)]
         input: Option<Map<String, Value>>,
     },
@@ -480,7 +483,7 @@ impl UpstreamParser {
 
     /// Emits the stream-opening [`IrEvent::MessageStart`] with empty identity on the recovery
     /// paths that never saw the head announcement: every event stream opens with it exactly
-    /// once, first (README §6.2).
+    /// once, first (`docs/reference/inference.md`).
     fn ensure_open(&mut self) -> Vec<IrEvent> {
         message_start_once(&mut self.is_started, String::new(), String::new())
     }
@@ -797,7 +800,8 @@ impl UpstreamParser {
             OpenBlockKind::Thinking => {
                 // The signature rides the opaque payload, not the separate done field alone:
                 // consumers render the opaque verbatim, and a thinking block replayed to
-                // Anthropic without its signature is rejected with a 400 (README §6.1).
+                // Anthropic without its signature is rejected with a 400
+                // (`docs/reference/inference.md`).
                 let signature = open.signature;
 
                 vec![IrEvent::ReasoningDone {
@@ -1094,11 +1098,11 @@ impl UpstreamEventParser for UpstreamParser {
     /// Ends a cleanly terminated stream: the buffered cross-frame block state flushes before
     /// the terminal events — every open block closes exactly as its `content_block_stop` would,
     /// so an upstream that ended cleanly without the closing frames still delivers the content
-    /// it streamed (README §6.3) — a usage-bearing stream that never published a report still
-    /// publishes its columns with a zero output observation, and a stream that ends without a
-    /// finish degrades through [`crate::format::degrade_finish_once`]. Pending compaction
-    /// blocks are the exception: their stop is the completeness boundary of native compaction
-    /// state, so an unterminated one stays withheld.
+    /// it streamed (`docs/reference/inference.md`) — a usage-bearing stream that never published a
+    /// report still publishes its columns with a zero output observation, and a stream that
+    /// ends without a finish degrades through [`crate::format::degrade_finish_once`]. Pending
+    /// compaction blocks are the exception: their stop is the completeness boundary of native
+    /// compaction state, so an unterminated one stays withheld.
     fn finish(&mut self) -> Vec<IrEvent> {
         let mut events = Vec::new();
 

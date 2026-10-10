@@ -1,5 +1,5 @@
 //! The gateway-generated compaction checkpoints: the outward carrier values the compaction
-//! workflows splice into client payloads (README §6.8).
+//! workflows splice into client payloads (`docs/design/compaction.md`).
 //!
 //! Checkpoints keep their concrete types until the HTTP/SSE serialization boundary; only
 //! producer-owned native state retains arbitrary JSON. The iteration reports and native control

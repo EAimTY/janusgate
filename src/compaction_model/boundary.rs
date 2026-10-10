@@ -1,4 +1,4 @@
-//! Boundary preparation (README §6.8): target-independent authentication of
+//! Boundary preparation (`docs/design/compaction.md`): target-independent authentication of
 //! the request's compaction boundaries and latest usable boundary selection,
 //! the content-free client-visible routing projection, and the authenticated
 //! native producer requirement.
@@ -64,16 +64,16 @@ pub(crate) enum BoundaryError {
 }
 
 impl BoundaryError {
-    /// Stable failure code of the missing sealing configuration (README §6.8), shared with the
-    /// executor-level failure vocabulary.
+    /// Stable failure code of the missing sealing configuration (`docs/design/compaction.md`),
+    /// shared with the executor-level failure vocabulary.
     pub(crate) const CONFIGURATION_MISSING_CODE: &'static str = "compaction_configuration_missing";
 
     /// Stable failure code of a failed gateway-carrier verification or an impossible boundary
-    /// (README §6.8), shared with the executor-level failure vocabulary.
+    /// (`docs/design/compaction.md`), shared with the executor-level failure vocabulary.
     pub(crate) const INVALID_GATEWAY_STATE_CODE: &'static str = "compaction_invalid_gateway_state";
 
-    /// Stable failure code of native state no candidate target can access (README §6.8), shared
-    /// with the executor-level failure vocabulary.
+    /// Stable failure code of native state no candidate target can access
+    /// (`docs/design/compaction.md`), shared with the executor-level failure vocabulary.
     pub(crate) const INACCESSIBLE_STATE_CODE: &'static str = "compaction_inaccessible_state";
 
     /// Builds the invalid-gateway-state failure.

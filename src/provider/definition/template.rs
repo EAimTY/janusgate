@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
-/// One ordered part of a string expression (README §5.1).
+/// One ordered part of a string expression (`docs/design/providers.md`).
 ///
 /// The serde and TypeScript names are the descriptor wire names; every expression part is a
 /// `{"type": …}`-tagged object.
@@ -110,7 +110,8 @@ impl ValueExpr {
     }
 }
 
-/// An ordered sequence of [`ValueExpr`] parts concatenated into one string (README §5.1).
+/// An ordered sequence of [`ValueExpr`] parts concatenated into one string
+/// (`docs/design/providers.md`).
 ///
 /// The empty sequence is the empty string; a literal string is the one-part expression carrying a
 /// single [`ValueExpr::Literal`].
@@ -143,7 +144,7 @@ pub(crate) struct ParamRow {
 }
 
 /// A typed JSON template tree: the shape of a control request's JSON body and of an inference
-/// envelope (README §5.1).
+/// envelope (`docs/design/providers.md`).
 ///
 /// [`TemplateNode::Body`] is the codec-rendered upstream body. It is the one node whose content the
 /// engine supplies, so a control request — whose body is fully described — never carries it, and an
@@ -197,7 +198,8 @@ pub(in crate::provider) enum ControlMethod {
     Post,
 }
 
-/// The body of a control request (README §5.1): a form-encoded field set or a typed JSON tree.
+/// The body of a control request (`docs/design/providers.md`): a form-encoded field set or a typed
+/// JSON tree.
 ///
 /// The executor sets the request's `Content-Type` from the carried variant; every other header,
 /// `Accept` included, is an explicit row of the request.
@@ -220,7 +222,7 @@ pub(in crate::provider) enum ControlBody {
 }
 
 /// One shared HTTP request description for the OAuth device authorization, token exchange,
-/// refresh, provisioning, polling, and discovery stages (README §5.1).
+/// refresh, provisioning, polling, and discovery stages (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -258,8 +260,8 @@ pub(in crate::provider) enum ResponseEncoding {
 }
 
 /// A response path: the closed mini-vocabulary addressing one value of a decoded control response
-/// (README §5.1) — an object member chain, rendered as the ordered member names, with the empty
-/// chain denoting the root.
+/// (`docs/design/providers.md`) — an object member chain, rendered as the ordered member names,
+/// with the empty chain denoting the root.
 ///
 /// Arrays are not addressed by value paths: discovery locates its array and per-entry field
 /// explicitly through its own extraction shape, and form-encoded responses are flat, so a path
@@ -274,9 +276,9 @@ pub(in crate::provider) struct ResponsePath(
 
 impl ResponsePath {
     /// Resolves the member chain into the JSON value it addresses: the empty chain is the root,
-    /// and a missing member or a non-object intermediate value yields [`None`] (README §5.1).
-    /// Arrays are not addressed by value paths, so an array met mid-chain is a `None` like any
-    /// other non-object.
+    /// and a missing member or a non-object intermediate value yields [`None`]
+    /// (`docs/design/providers.md`). Arrays are not addressed by value paths, so an array met
+    /// mid-chain is a `None` like any other non-object.
     #[must_use]
     pub(in crate::provider) fn resolve<'a>(&self, json: &'a Json) -> Option<&'a Json> {
         let mut value = json;
@@ -289,7 +291,7 @@ impl ResponsePath {
     }
 }
 
-/// The declared shape of one extracted response value (README §5.1).
+/// The declared shape of one extracted response value (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -311,7 +313,7 @@ pub(in crate::provider) enum ExtractionShape {
 /// One name-to-value mapping of a decoded control response: the value at `path` is stored into the
 /// stage's `target` when present. A missing required path fails the stage; a missing optional path
 /// leaves its target unchanged; a present value of the wrong declared shape always fails
-/// (README §5.1).
+/// (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -326,7 +328,7 @@ pub(in crate::provider) struct ResponseField {
     pub(in crate::provider) required: bool,
 }
 
-/// The declared encoding and field mappings of one control response (README §5.1).
+/// The declared encoding and field mappings of one control response (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -339,8 +341,8 @@ pub(in crate::provider) struct ResponseDescriptor {
 }
 
 /// The merged working-state targets of a decoded control response: one closed vocabulary shared
-/// by every stage, whose per-stage subsets the write-time validation pins (README §5.3, §5.4).
-/// A stage's mapping may only carry the targets its stage produces.
+/// by every stage, whose per-stage subsets the write-time validation pins
+/// (`docs/design/providers.md`). A stage's mapping may only carry the targets its stage produces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

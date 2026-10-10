@@ -4,7 +4,7 @@ import type { DefinitionPayload } from "./types";
 /**
  * Whether one string expression carries the `base` value part, directly or
  * through a `coalesce` — the one compound part, whose arguments the walk
- * descends into (README §5.1).
+ * descends into (`docs/design/providers.md`).
  */
 function expressionReferencesBase(expression: StringExpr): boolean {
     return expression.some(
@@ -79,7 +79,7 @@ function requestReferencesBase(request: ControlRequest): boolean {
 
 /**
  * Whether any URL-bearing member of this payload references the instance
- * base URL — the `base` value part (gateway README §3). The browser-side
+ * base URL — the `base` value part (`docs/design/storage.md`). The browser-side
  * mirror of the gateway's `DefinitionPayload::references_base`, so a page
  * asks for a base URL exactly when the gateway would reject the write or
  * flow start naming this definition without one. The walk covers exactly
@@ -94,7 +94,7 @@ function requestReferencesBase(request: ControlRequest): boolean {
  * Messages overlay headers — each directly or through a `coalesce`. The
  * authorize URL and its extra parameters are excluded: the write-time
  * validation bars the base reference at the authorize-URL stage (gateway
- * README §5.1), so those expressions can never evaluate against a base URL.
+ * `docs/design/providers.md`), so those expressions can never evaluate against a base URL.
  */
 export function hasBaseReference(payload: DefinitionPayload): boolean {
     if (expressionReferencesBase(payload.inference.url)) {

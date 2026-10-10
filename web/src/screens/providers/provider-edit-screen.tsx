@@ -61,11 +61,11 @@ export function ProviderEditScreen(props: {
     // The held row with its save-settling latch: an open form with unsaved
     // edits holds its row against refreshes, so an operator's input can never
     // silently vanish, and a succeeded save holds it until its own reload
-    // lands (README §6.3).
+    // lands (`web/docs/architecture.md`).
     const edit = createEditRow(latestProvider, isSameProviderRow);
 
     // The notice is also the save's reported outcome, so only a new failure
-    // replaces it — a successful read keeps it (README §6.3).
+    // replaces it — a successful read keeps it (`web/docs/architecture.md`).
     const read = createScreenRead({
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
@@ -291,14 +291,14 @@ function DetailsCard(props: {
 
     /** Whether the trimmed field is a legal wire value: a routable URL, or
      * empty exactly when the stored row's `null` proves the definition never
-     * references the base (gateway README §7) — in which case no URL may be
+     * references the base (`docs/reference/management-api.md`) — in which case no URL may be
      * demanded here nor invented for the row. */
     const isBaseUrlLegal = (): boolean => {
         const trimmed = trimmedBaseUrl();
         return isBaseUrl(trimmed) || (trimmed === "" && baseline().base_url === null);
     };
 
-    /** Inline composition errors, shown where the value was typed (gateway README §7). */
+    /** Inline composition errors, shown where the value was typed (`docs/reference/management-api.md`). */
 
     /**
      * The inline error the field states where the value was typed: a cleared
@@ -334,8 +334,7 @@ function DetailsCard(props: {
         );
     };
 
-    // A name is the administrator's choice, stored verbatim (gateway README
-    // §7): the only rule is non-empty — an emptied field must not reach the
+    // A name is the administrator's choice, stored verbatim (`docs/reference/management-api.md`): the only rule is non-empty — an emptied field must not reach the
     // gateway as a 400 — and nothing is trimmed, because rejecting more than
     // the gateway would block a legal name.
     const isNamePresent = (): boolean => name() !== "";

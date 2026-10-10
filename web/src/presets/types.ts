@@ -1,7 +1,7 @@
 import type { DefinitionPayload } from "../management-api/definitions/types";
 
 /**
- * The preset catalog (gateway README §5.6): hardcoded, versioned definition documents
+ * The preset catalog (`docs/design/providers.md`): hardcoded, versioned definition documents
  * — one per researched product — that prefill the provider-definition form.
  * The catalog is the only home for presets: the gateway ships no
  * provider-specific anything, and an operator without this frontend authors

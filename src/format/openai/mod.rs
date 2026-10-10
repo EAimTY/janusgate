@@ -4,11 +4,11 @@
 //! items, and each protocol parent holds the families speaking that one protocol plus the items
 //! its families share. This module groups the Chat Completions family ([`chat_completion`]) and
 //! the Responses family ([`response`]) — the two codecs over the OpenAI client protocol and the
-//! two OpenAI upstream wires (README §1, §6; the outward error render both surfaces share lives
-//! in [`crate::api::error::openai`], README §6.7) — with the `tool_choice` mode vocabulary's
-//! inbound parse ([`parse_tool_choice_mode`]) and outbound render ([`render_tool_choice`]), and
-//! the official usage detail objects ([`PromptTokensDetails`], [`CompletionTokensDetails`]) both
-//! codecs share.
+//! two OpenAI upstream wires (`docs/design/architecture.md` and `docs/reference/inference.md`; the
+//! outward error render both surfaces share lives in [`crate::api::error::openai`],
+//! `docs/reference/inference.md`) — with the `tool_choice` mode vocabulary's inbound parse
+//! ([`parse_tool_choice_mode`]) and outbound render ([`render_tool_choice`]), and the official
+//! usage detail objects ([`PromptTokensDetails`], [`CompletionTokensDetails`]) both codecs share.
 
 pub(crate) mod chat_completion;
 pub(crate) mod response;
@@ -81,11 +81,12 @@ fn render_tool_choice<'a, NamedToolChoice>(
     }
 }
 
-/// The official input-side usage detail object both OpenAI products speak (README §6.2): Chat
-/// Completions carries it as `prompt_tokens_details`, Responses as `input_tokens_details`. Its
-/// official member set is `cached_tokens`, the input tokens served from the upstream prompt cache,
-/// plus `cache_write_tokens`, an official member some upstreams omit; every member is optional and
-/// the parsing codec reads each member the upstream carries.
+/// The official input-side usage detail object both OpenAI products speak
+/// (`docs/reference/inference.md`): Chat Completions carries it as `prompt_tokens_details`,
+/// Responses as `input_tokens_details`. Its official member set is `cached_tokens`, the input
+/// tokens served from the upstream prompt cache, plus `cache_write_tokens`, an official member some
+/// upstreams omit; every member is optional and the parsing codec reads each member the upstream
+/// carries.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct PromptTokensDetails {
     /// Input tokens served from the upstream prompt cache.
@@ -97,10 +98,10 @@ pub(crate) struct PromptTokensDetails {
     pub(crate) cache_write_tokens: Option<u64>,
 }
 
-/// The official output-side usage detail object both OpenAI products speak (README §6.2): Chat
-/// Completions carries it as `completion_tokens_details`, Responses as `output_tokens_details`.
-/// Its official member set is `reasoning_tokens`, the output tokens spent on model reasoning, and
-/// every member is optional.
+/// The official output-side usage detail object both OpenAI products speak
+/// (`docs/reference/inference.md`): Chat Completions carries it as `completion_tokens_details`,
+/// Responses as `output_tokens_details`. Its official member set is `reasoning_tokens`, the output
+/// tokens spent on model reasoning, and every member is optional.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct CompletionTokensDetails {
     /// Output tokens spent on model reasoning.

@@ -1,5 +1,5 @@
 /**
- * The OAuth flow state machine every provider screen shares (README §6.3):
+ * The OAuth flow state machine every provider screen shares (`web/docs/architecture.md`):
  * the live flow and its pasted callback, the begin of a flow, the completion
  * of both grants, and the dead-flow resets. The screens parameterize it by
  * the action names the diagnoses specialize on, what a succeeded completion
@@ -8,16 +8,16 @@
  *
  * The flow's failures are the fragment's own: it states them on the signal
  * the flow card renders, beside the step and buttons that took the action —
- * never on the screen's read-level notice above the page (README §6.4). The
+ * never on the screen's read-level notice above the page (`web/docs/architecture.md`). The
  * two channels share no write path, so one outcome cannot render twice.
  *
  * Disposal and flow identity are guarded here, in one home: a call answering
  * after the screen went away — or for a flow that is no longer the live one —
  * states nothing, navigates nowhere, and re-arms no poll, so the device
  * step's loop, which schedules only on the fragment's `"pending"`, stops by
- * itself (README §6.4).
+ * itself (`web/docs/architecture.md`).
  *
- * The live flow also seats itself in the leave-guard registry (README §6.3):
+ * The live flow also seats itself in the leave-guard registry (`web/docs/architecture.md`):
  * the approval happens in another tab, so stepping elsewhere in the console
  * while authorizing is natural — and the flow's state lives in this
  * fragment, so any in-app navigation discards it silently. A tab close or a
@@ -180,7 +180,7 @@ function goneFlowNotice(diagnosis: Diagnosis): ScreenNotice {
 
 /**
  * The OAuth flow state machine, shared by the provider creation and
- * reauthorization screens (README §6.3).
+ * reauthorization screens (`web/docs/architecture.md`).
  */
 export function createOauthFlow(options: {
     /** The management API the flow's completion calls run against. */
@@ -232,7 +232,7 @@ export function createOauthFlow(options: {
     // step's loop honors it through the "done" the polled asks return.
     const isDisposed = createDisposalGuard();
 
-    // The live flow's seat in the leave-guard registry (README §6.3), armed
+    // The live flow's seat in the leave-guard registry (`web/docs/architecture.md`), armed
     // beside the begin's success below and disarmed by `discardFlow`; the
     // cleanup releases the seat when the consuming screen goes away, so a
     // flow abandoned live cannot leave the `beforeunload` guard armed behind
@@ -277,7 +277,7 @@ export function createOauthFlow(options: {
     /**
      * Discards the live flow: a consumed state is never retried — a failed
      * exchange burns the flow, and a terminal device outcome is consumed by
-     * the one read that observed it (gateway README §7.2) — so only a fresh
+     * the one read that observed it (`docs/reference/management-api.md`) — so only a fresh
      * flow can retry. The stated failure and the paste's refusal gate go
      * with the flow; a failure stated afresh after a discard rewrites the
      * cleared signal. Every path that ends a flow — a manual discard, a
@@ -435,7 +435,7 @@ export function createOauthFlow(options: {
 
         if (settlement.kind === "pending") {
             // The ask carried the `authorization_code` grant, whose exchange the
-            // gateway answers synchronously (gateway README §7.2); `pending` is
+            // gateway answers synchronously (`docs/reference/management-api.md`); `pending` is
             // the device grant's answer alone, so receiving it here breaks the
             // contract and is fatal rather than silently ignored.
             throw new Error("The authorization-code completion answered pending.");
@@ -450,7 +450,7 @@ export function createOauthFlow(options: {
             return "done";
         }
 
-        // The flow's own expiry bounds the polling (gateway README §7.2):
+        // The flow's own expiry bounds the polling (`docs/reference/management-api.md`):
         // past it the gateway can only answer 404, so the loop stops here and
         // says so instead of asking forever.
         if (nowMicros() >= startedFlow.expires_at) {

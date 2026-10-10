@@ -1,6 +1,6 @@
 //! The discovery descriptor: the optional upstream model-list request, extraction, and pagination
-//! a provider definition configures (README §5.5). An absent discovery means manual models
-//! only.
+//! a provider definition configures (`docs/design/providers.md`). An absent discovery means manual
+//! models only.
 //!
 //! Discovery configures a request, a response extraction, and a pagination loop; it discovers
 //! upstream model identifiers and never assigns protocol capabilities. A discovered model that
@@ -9,8 +9,8 @@
 use super::template::{ControlRequest, ResponsePath};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
-/// The model-list extraction of a discovery (README §5.5): the orthogonal fields covering
-/// `data[].id`, `items[].slug`, `models[].name`, and map keys.
+/// The model-list extraction of a discovery (`docs/design/providers.md`): the orthogonal fields
+/// covering `data[].id`, `items[].slug`, `models[].name`, and map keys.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
@@ -32,8 +32,8 @@ pub(in crate::provider) enum DiscoveryExtract {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         strip_prefix: Option<String>,
 
-        /// The per-entry capability extraction (README §5.5); absent means the discovery
-        /// extracts identifiers only.
+        /// The per-entry capability extraction (`docs/design/providers.md`); absent means the
+        /// discovery extracts identifiers only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capabilities: Option<CapabilityExtraction>,
     },
@@ -47,9 +47,9 @@ pub(in crate::provider) enum DiscoveryExtract {
     },
 }
 
-/// The per-entry capability extraction a discovery may declare (README §5.5): the optional
-/// facts each listed model entry carries beside its identifier. Every member is optional — a
-/// descriptor that declares none discovers identifiers only, and an entry whose configured
+/// The per-entry capability extraction a discovery may declare (`docs/design/providers.md`): the
+/// optional facts each listed model entry carries beside its identifier. Every member is optional —
+/// a descriptor that declares none discovers identifiers only, and an entry whose configured
 /// path is absent or `null` leaves that capability unknown (`NULL` storage), never a default;
 /// a present value of the wrong shape fails the refresh as an upstream error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,9 +73,9 @@ pub(in crate::provider) struct CapabilityExtraction {
     pub(in crate::provider) compaction: Option<CompactionCapabilityExtraction>,
 }
 
-/// The compaction-flag extraction of a discovery (README §5.5): each configured mechanism
-/// reads one boolean flag out of one addressed object of every entry. A `true` flag extracts
-/// the mechanism's `supported` fact, a `false` flag its `unsupported` fact, and an
+/// The compaction-flag extraction of a discovery (`docs/design/providers.md`): each configured
+/// mechanism reads one boolean flag out of one addressed object of every entry. A `true` flag
+/// extracts the mechanism's `supported` fact, a `false` flag its `unsupported` fact, and an
 /// absent-or-null object or flag extracts nothing — the mechanism stays unknown. The shape is
 /// format-agnostic: the descriptor names upstream paths, and what a mechanism means upstream
 /// is the descriptor author's business.
@@ -108,7 +108,7 @@ pub(in crate::provider) struct FlaggedMemberExtraction {
     pub(in crate::provider) flag_field: ResponsePath,
 }
 
-/// The two wire shapes a thinking-level set is extracted from (README §5.5).
+/// The two wire shapes a thinking-level set is extracted from (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
@@ -136,8 +136,8 @@ pub(in crate::provider) enum ThinkingLevelsExtraction {
     },
 }
 
-/// The pagination loop of a discovery (README §5.5). Even the no-pagination mode is the tagged
-/// `{"type": "none"}` object, never a bare string.
+/// The pagination loop of a discovery (`docs/design/providers.md`). Even the no-pagination mode is
+/// the tagged `{"type": "none"}` object, never a bare string.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -176,7 +176,7 @@ pub(in crate::provider) enum Pagination {
     },
 }
 
-/// The upstream model-list discovery of one provider definition (README §5.5).
+/// The upstream model-list discovery of one provider definition (`docs/design/providers.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]

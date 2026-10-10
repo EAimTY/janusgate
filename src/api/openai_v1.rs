@@ -60,12 +60,12 @@ struct ModelList {
 }
 
 /// One served model in the official OpenAI model shape, extended with the effective capability
-/// declarations (README §6.5): `max_input_tokens`, `max_output_tokens`, the gateway-extension
-/// `reasoning_levels`, and the gateway-extension `compaction` facts each render only when their
-/// effective value is known — an unknown capability is omitted, never fabricated.
+/// declarations (`docs/design/routing.md`): `max_input_tokens`, `max_output_tokens`, the
+/// gateway-extension `reasoning_levels`, and the gateway-extension `compaction` facts each render
+/// only when their effective value is known — an unknown capability is omitted, never fabricated.
 #[derive(Debug, Serialize)]
 struct ModelObject {
-    /// Public routing ID (README §3).
+    /// Public routing ID (`docs/design/storage.md`).
     id: String,
 
     /// Always `model`.
@@ -86,8 +86,8 @@ struct ModelObject {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<i64>,
 
-    /// Effective reasoning levels in the vocabulary spellings — a gateway extension (README
-    /// §6.5); omitted when unknown.
+    /// Effective reasoning levels in the vocabulary spellings — a gateway extension
+    /// (`docs/design/routing.md`); omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_levels: Option<Vec<&'static str>>,
 
@@ -98,7 +98,7 @@ struct ModelObject {
 }
 
 /// Builds one listing entry from an effectively enabled model: the public routing ID beside
-/// its effective capability declarations, each omitted when unknown (README §6.5).
+/// its effective capability declarations, each omitted when unknown (`docs/design/routing.md`).
 fn model_object(entry: crate::storage::models::EnabledModel) -> ModelObject {
     ModelObject {
         id: entry.public_id,
@@ -181,7 +181,7 @@ async fn responses(
 }
 
 /// Handles `POST /responses/compact`, the Responses standalone compact
-/// endpoint (README §6.8): its body carries no generation-only controls
+/// endpoint (`docs/design/compaction.md`): its body carries no generation-only controls
 /// and its success body is always a non-streaming `response.compaction`
 /// object, so the handler skips the streaming machinery of `responses`
 /// entirely.

@@ -16,7 +16,7 @@ import {
     expectTemplateNode,
 } from "./expressions";
 
-/** The upstream streaming mode a definition pins (README §5.2). */
+/** The upstream streaming mode a definition pins (`docs/design/providers.md`). */
 function expectUpstreamStreaming(value: unknown, context: string): UpstreamStreaming {
     return expectOneOf(
         value,
@@ -29,7 +29,7 @@ function expectUpstreamStreaming(value: unknown, context: string): UpstreamStrea
     );
 }
 
-/** The closed render-option vocabulary of the format codecs (README §5.2). */
+/** The closed render-option vocabulary of the format codecs (`docs/design/providers.md`). */
 function expectRenderOption(value: unknown, context: string): RenderOption {
     return expectOneOf(
         value,
@@ -43,7 +43,7 @@ function expectRenderOption(value: unknown, context: string): RenderOption {
 
 /**
  * The per-format closed render-option sets, the wire mirror of the gateway's
- * codec sets (README §5.2): a codec rejects options outside its set at write
+ * codec sets (`docs/design/providers.md`): a codec rejects options outside its set at write
  * time. The record's type is exhaustive, so a format added to the generated
  * union fails to compile until its set is stated here.
  */
@@ -58,7 +58,7 @@ const ALLOWED_RENDER_OPTIONS: Readonly<Record<UpstreamFormat, ReadonlyArray<Rend
 };
 
 /**
- * The inference request descriptor (README §5.2), rebuilt with every optional
+ * The inference request descriptor (`docs/design/providers.md`), rebuilt with every optional
  * section the operator supplied and `null` normalized to absence. The walk
  * holds the descriptor to the gateway's write boundary: non-empty URLs, the
  * render options of the definition's own format's set, the envelope carrying

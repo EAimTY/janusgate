@@ -15,7 +15,7 @@
     // be replaced with real files before deployment. Relative paths resolve
     // against this configuration file's directory. Changes to the
     // configuration file and to these files are watched and applied without a
-    // restart; see README §8.
+    // restart; see `docs/reference/configuration.md`.
     "tls": {
         // PEM certificate chain file path, leaf certificate first.
         "certificate": "certificate.pem",
@@ -77,7 +77,7 @@
             "allow_private_network": false
         },
 
-        // Request accounting (README §3 ApiLog Store). Defaults as a whole:
+        // Request accounting (`docs/design/storage.md` ApiLog Store). Defaults as a whole:
         // recording on, the day files under the "api_logs" directory beside
         // this configuration file, 90 days of retention.
         "logs": {
@@ -107,13 +107,13 @@
         "sticky_maximum_entries": 100000
     }
 
-    // Remote-compaction sealing keys (README §6.8). The presence of this
+    // Remote-compaction sealing keys (`docs/design/compaction.md`). The presence of this
     // section is the switch for the gateway's sealed compaction artifacts:
     // present, gateway summaries and wrapped native windows are sealed under
     // these keys; absent, any operation that would produce or consume a
     // sealed carrier fails while native passthrough keeps working. The first
     // key seals; every configured key unseals by its carrier-carried id, so
-    // keys rotate by appending and removing a key intentionally invalidates
+    // rotation prepends a new active key; removing a key intentionally invalidates
     // its artifacts. Key changes apply at the next compaction operation — no
     // restart required. Each id must be non-empty, unique, and free of ".";
     // each key is standard base64 of exactly 32 bytes

@@ -1,14 +1,27 @@
-This file applies to the entire repository.
+# Repository working rules
 
-This repository is JanusGate. It is a self-hosted, lightweight AI gateway written in Rust with an in-process SQLite-compatible database (Turso). The repository also hosts the gateway's administration frontend as the `web/` workspace (janusgate-web, a statically-hosted SPA over the management API); its working rules live in `web/AGENTS.md`.
+Applies to the entire JanusGate repository. JanusGate is a self-hosted Rust AI gateway with in-process Turso storage and a separately hosted administration SPA in `web/`.
 
-## Global Working Rules
+## Read by task
 
-### Language-agnostic
+Start with [README.md](README.md) and the [documentation map](docs/README.md). Read only the contracts needed for the task, following their links when crossing domain boundaries.
+
+| Area | Authoritative reading |
+| --- | --- |
+| Overall design and persistence | [Architecture](docs/design/architecture.md), [storage](docs/design/storage.md) |
+| Accounts and routing | [Provider definitions](docs/design/providers.md), [routing and quota](docs/design/routing.md) |
+| Protocols and compaction | [Inference interface](docs/reference/inference.md), [compaction](docs/design/compaction.md) |
+| Management | [Management contract](docs/reference/management-api.md), [generated schemas](docs/reference/management-api/README.md), [local rules](src/management_api/AGENTS.md) |
+| Configuration and tooling | [Configuration](docs/reference/configuration.md), [development](docs/development.md) |
+| Frontend | [Web README](web/README.md), [local rules](web/AGENTS.md), [product](PRODUCT.md), [design](web/DESIGN.md) |
+
+`AGENTS.md` owns working guidance, not system behavior or implementation inventories. Keep a contract in one authoritative document and link to it from other contexts.
+
+## Shared authoring rules
 
 - English is the repository's written language: documentation, code, and comments always use it. User-facing UI text in another language is deliberate and stays untranslated.
 - In document files, insert line breaks only where the break itself carries meaning, never to limit line length.
-- Read `README.md` before starting non-trivial work. Treat `README.md` as the source of truth for the whole system's design and architecture. Follow a documentation-first approach: update documentation alongside every change.
+- Read `README.md` before non-trivial work, then follow `docs/README.md` to the owning design or interface contract. The root README is the source-of-truth entry point; linked contracts supply the normative detail. Follow a documentation-first approach: update the owning documentation alongside every change, and regenerate interface references when payloads change.
 - Be strict. Avoid fuzzy, ambiguous, or weakly specified behavior; make semantics explicit.
 - Do not preserve backward compatibility in code. This project is new; implement the design in the most elegant and idiomatic form available. Avoid historical debt.
 - Name booleans with predicate-style name prefixes such as `is`, `can`, `has`, or `should`.
@@ -20,7 +33,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Follow test-driven development (TDD): write tests before implementing functionality.
 - Quality gates are per-area: the Rust sources require the cargo matrix below, and the `web/` workspace's gates live in `web/AGENTS.md`.
 
-### Rust
+## Rust
 
 - Declare every external dependency in `[dependencies]` with `default-features = false` and declare required features there.
 - Model every JSON payload as a concrete type deriving `Serialize` and `Deserialize`; never handle JSON dynamically — no `serde_json::json!`, hand-built `Map`s, `.get("key")` walks, or `serde_json::Value`. `Value` is allowed only for fragments whose shape is not the gateway's to define, such as an enum's `Other` variant.
@@ -32,7 +45,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Rustdoc is mandatory for the crate and every item, private ones included; intra-doc links must resolve. Add `# Panics` and `# Safety` sections where the corresponding Clippy lints apply. Lint policy is configured centrally in `[lints]` in `Cargo.toml` and in `clippy.toml`.
 - After every Rust code modification, run `cargo fmt --all`, `cargo check --workspace --all-targets`, and `cargo clippy --workspace --all-targets`. Run each twice: once with default features (the shipped server configuration) and once with `--all-features`, so feature-gated code and `required-features` binaries are always covered.
 
-### SQL (SQLite)
+## SQL (SQLite)
 
 - The database schema lives in `src/database/schema/`. Every schema modification is a new `version_x.rs` module — hand-written SQL DDL whose only item is `const SCHEMA: Schema` — plus the migration text upgrading the previous version. Register the module in `SCHEMAS` in `src/database/schema/mod.rs`. Never edit an existing version module; existing versions are immutable history.
 - Migrations run under foreign key enforcement and must never rely on disabling it: `PRAGMA foreign_keys` is a no-op inside a SQLite transaction, and Turso's mid-transaction acceptance of it is a divergence that may be aligned at any time. Author every migration to hold under enforcement statement by statement; order table-rebuild steps so referential integrity holds at every intermediate state.

@@ -7,7 +7,7 @@ import { hrefs } from "/src/router";
 import { noStoredExpirySentence } from "../providers/credential-presentation";
 
 /**
- * The overview's attention derivations (README §7): the pure calculations
+ * The overview's attention derivations (`web/docs/architecture.md`): the pure calculations
  * that turn the entity listings into the "Needs attention" lines — which
  * providers need a human, why, and the action that answers the cause. The
  * screen renders the lines; this module decides there is one to render.

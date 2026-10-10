@@ -151,13 +151,13 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
     }
 
     for call in &aggregation.tool_calls {
-        // The official `function_call` step carries no signature member (README §5.7), so a
-        // tool call carrying one — a GenerateContent upstream reports the replayable
-        // signature on the `functionCall` part — synthesizes the signature-bearing thought
-        // step beside its call, the step the official wire designates for replayable
-        // signatures. `summary` is optional on the official ThoughtStep
-        // (`ai.google.dev/api/interactions-api`), so the honest minimal form carries the
-        // signature alone.
+        // The official `function_call` step carries no signature member
+        // (`docs/design/providers.md`), so a tool call carrying one — a GenerateContent
+        // upstream reports the replayable signature on the `functionCall` part —
+        // synthesizes the signature-bearing thought step beside its call, the step the
+        // official wire designates for replayable signatures. `summary` is optional on the
+        // official ThoughtStep (`ai.google.dev/api/interactions-api`), so the honest
+        // minimal form carries the signature alone.
         if let Some(signature) = &call.thought_signature {
             steps.push(RenderStep::Typed(super::TypedStep::Thought {
                 summary: Vec::new(),
@@ -796,10 +796,11 @@ impl ClientSseRenderer for SseRenderer {
             } => {
                 let mut frames = self.ensure_created();
 
-                // The official function_call step carries no signature member (README §5.7),
-                // so a signature-bearing done streams the signature-only thought step ahead of
-                // the call's frames — the step the official wire designates for replayable
-                // signatures, opened and closed around the signature delta just as a streamed
+                // The official function_call step carries no signature member
+                // (`docs/design/providers.md`), so a signature-bearing done streams
+                // the signature-only thought step ahead of the call's frames — the
+                // step the official wire designates for replayable signatures,
+                // opened and closed around the signature delta just as a streamed
                 // thought step closes.
                 if let Some(signature) = thought_signature {
                     let thought_index = self.next_index();

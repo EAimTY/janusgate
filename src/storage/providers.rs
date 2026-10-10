@@ -110,7 +110,7 @@ async fn find_provider(database: &Database, name: &str) -> Result<Option<Provide
 /// name-taken check behind creation: `providers:create` and `oauth:start` map its affirmative to
 /// their clean 409 before any write or upstream round-trip, and the device poller's success
 /// commit maps it to the flow's terminal `name_conflict` outcome. The database's UNIQUE
-/// constraint stays the concurrent backstop behind all three (README §7.1, §7.2).
+/// constraint stays the concurrent backstop behind all three (`docs/reference/management-api.md`).
 ///
 /// # Errors
 ///
@@ -296,7 +296,7 @@ pub(crate) async fn update_provider(
         // The base-URL requirement pairs the written base URL with the write's own effective
         // definition — the rebind target when one is named, else the row's definition re-read
         // inside this transaction — so no commit can leave a base-addressing provider without its
-        // base URL, however a concurrent write interleaves (README §3).
+        // base URL, however a concurrent write interleaves (`docs/design/storage.md`).
         let effective_definition = rebind_target.as_ref().unwrap_or(&provider.definition);
 
         if effective_definition.payload.references_base() && update.base_url.is_none() {
@@ -360,9 +360,9 @@ pub(crate) async fn update_provider(
 /// after `lease_stale_before`. Returns the acquired lease stamp, or `None` when no lease was
 /// granted — another holder owns a live lease, the stored expiry is still beyond the freshness
 /// margin, or the stored expiry is `null`, the no-scheduled-refresh state for which no lease
-/// can ever be granted. The `null` case is the caller's dispatch-as-is contract (README §3):
-/// the engine's loop decides it from the freshly read row before waiting, so `None` there
-/// always means a live holder.
+/// can ever be granted. The `null` case is the caller's dispatch-as-is contract
+/// (`docs/design/storage.md`): the engine's loop decides it from the freshly read row before
+/// waiting, so `None` there always means a live holder.
 ///
 /// The raw [`DatabaseError`] is returned instead of an [`Error`] because the caller must classify
 /// a stale-snapshot busy failure — a concurrent commit invalidating the read-then-write upgrade —
@@ -427,7 +427,8 @@ pub(crate) async fn persist_renewed_credentials_for_lease(
 /// the members every reprovisioning rewrites, plus the optional rotation. The patch is a typed
 /// document whose `refresh_token` member is present only when the provisioning sequence
 /// extracted a rotation — merge-patch semantics leave an absent member untouched, so an absent
-/// extraction patches nothing, exactly like an omitted rotation in the grant path (README §3).
+/// extraction patches nothing, exactly like an omitted rotation in the grant path
+/// (`docs/design/storage.md`).
 #[derive(Serialize)]
 struct ReprovisionPatch<'a> {
     /// The renewed access token.
@@ -450,9 +451,10 @@ struct ReprovisionPatch<'a> {
 /// Persists a reprovisioning outcome — the new access token, its expiry, a refresh-token
 /// rotation the sequence extracted when it carried one, and optionally a new base URL — while
 /// the caller still owns the refresh lease stamped `lease_started_at`. An absent rotation
-/// omits the patch's `refresh_token` member, leaving the stored token untouched (README §3).
-/// The merge happens in SQL over the stored document, so the durable slots and refresh token a
-/// concurrent write renewed are never read stale into Rust and overwritten.
+/// omits the patch's `refresh_token` member, leaving the stored token untouched
+/// (`docs/design/storage.md`). The merge happens in SQL over the stored document, so the durable
+/// slots and refresh token a concurrent write renewed are never read stale into Rust and
+/// overwritten.
 ///
 /// # Errors
 ///

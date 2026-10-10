@@ -3,7 +3,7 @@ import { isModelInventoryReady } from "/src/management-api/serving";
 
 /**
  * The gateway's structural serving ladder for one account-model pair (root
- * README §3's three-input effective serving state): the account's existence
+ * `web/docs/architecture.md`'s three-input effective serving state): the account's existence
  * and switch, then the model's existence and switch, then the row's
  * discovery state. Independent of quota restrictions and of any pool or
  * route switch authored above the pair.
@@ -22,7 +22,7 @@ export type StructuralAvailability =
  * model row is even consulted, and `undefined` answers the join's absence
  * verdicts — an account or model row the caller's listing does not hold.
  * The terminal rung answers through the contract's own
- * `isModelInventoryReady` verdict (root README §3's effective-serving rule),
+ * `isModelInventoryReady` verdict (`docs/design/storage.md`'s effective-serving rule),
  * so the three-input conjunction is spelled once, in the contract layer.
  * `src/features/provider-pools/pool-availability.ts` and the API-key access
  * inventory's structural status render their own labels over this one

@@ -47,13 +47,14 @@ route! {
     }
 }
 
-/// The `providers:list` request body (README §7.1): the empty request of a no-argument route.
+/// The `providers:list` request body (`docs/reference/management-api.md`): the empty request of a
+/// no-argument route.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListProvidersRequest {}
 
-/// The `providers:list` success body (README §7.1).
+/// The `providers:list` success body (`docs/reference/management-api.md`).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(super) struct ListProvidersResponse {
@@ -62,8 +63,8 @@ pub(super) struct ListProvidersResponse {
 }
 
 /// Strictly parsed `providers:create` request: the complete state of one static-key provider
-/// (rule 3). The request references one exact definition version, whose credential recipe must
-/// be the static-key one — OAuth credentials are minted by `oauth:complete` alone.
+/// (full-state writes). The request references one exact definition version, whose credential
+/// recipe must be the static-key one — OAuth credentials are minted by `oauth:complete` alone.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -90,9 +91,9 @@ pub(super) struct CreateProviderRequest {
     api_key: String,
 }
 
-/// Strictly parsed `providers:update` request (rule 3): the complete desired readable state of
-/// one provider row. The write-only `api_key` is the absent-keeps exception — absent keeps the
-/// stored key, present replaces it. An explicit definition rebind names both parts of the
+/// Strictly parsed `providers:update` request (full-state writes): the complete desired readable
+/// state of one provider row. The write-only `api_key` is the absent-keeps exception — absent keeps
+/// the stored key, present replaces it. An explicit definition rebind names both parts of the
 /// target reference; the write validates the target version's existence and the credential-kind
 /// agreement atomically. A rebind onto an api_key-target definition requires the replacement
 /// `api_key` in the same request, whatever the row's current kind, while an OAuth-target
@@ -222,7 +223,8 @@ async fn handle_create(
     }
 
     // A definition whose URLs reference the base requires the instance base URL: every dispatch
-    // evaluates those references against the stored row (README §3, §7.1).
+    // evaluates those references against the stored row (`docs/design/storage.md` and
+    // `docs/reference/management-api.md`).
     if definition.payload.references_base() && request.base_url.is_none() {
         return Err(super::base_url_required(&definition));
     }
@@ -379,12 +381,13 @@ async fn handle_update(
         Some(&existing.definition)
     };
 
-    // A replacement key serves an api_key-target definition alone (README §3): an OAuth
-    // definition's credentials are minted by flows, so a keyed write aimed at one — the stored
-    // definition on the no-rebind path, the named target on a rebind — is a client fault. A keyed
-    // write against an api_key target is accepted regardless of the row's current kind — the
-    // documented static-key write that converts an OAuth provider onto a static-key definition —
-    // with the storage write's transactional kind check as the backstop.
+    // A replacement key serves an api_key-target definition alone (`docs/design/storage.md`): an
+    // OAuth definition's credentials are minted by flows, so a keyed write aimed at one — the
+    // stored definition on the no-rebind path, the named target on a rebind — is a client
+    // fault. A keyed write against an api_key target is accepted regardless of the row's
+    // current kind — the documented static-key write that converts an OAuth provider onto a
+    // static-key definition — with the storage write's transactional kind check as the
+    // backstop.
     if let Some(definition) = effective_definition
         && credentials.is_some()
         && definition.credential_kind() != CredentialKind::ApiKey
@@ -441,7 +444,8 @@ async fn handle_update(
     // The base-URL requirement's pre-check mirrors the write's transactional one with the
     // cleaner 400: on the no-rebind path it holds against the stored definition, so a full-state
     // write can never null out the base URL a base-addressing provider's every dispatch
-    // evaluates; on a named rebind it holds against the resolved target (README §3, §7.1).
+    // evaluates; on a named rebind it holds against the resolved target (`docs/design/storage.md`
+    // and `docs/reference/management-api.md`).
     if let Some(definition) = effective_definition
         && definition.payload.references_base()
         && request.base_url.is_none()

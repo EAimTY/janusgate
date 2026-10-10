@@ -5,10 +5,10 @@
 //! module mounts this router at [`PREFIX`] and applies the cross-version CORS policy, while
 //! authentication, the body limit, and the errno-shaped 404 fallback belong to the version itself.
 //!
-//! Version 0's wire surface follows the seven design rules README §7.0 states: one action per
-//! route, two-state fields (never tri-state), full-state updates, type-discriminated unions,
-//! `<entity>_id` request references, POST-with-a-JSON-body everywhere, and responses that carry
-//! only facts the caller cannot know.
+//! Version 0's wire surface follows the seven design rules `docs/reference/management-api.md`
+//! states: one action per route, two-state fields (never tri-state), full-state updates,
+//! type-discriminated unions, `<entity>_id` request references, POST-with-a-JSON-body everywhere,
+//! and responses that carry only facts the caller cannot know.
 //!
 //! Handlers follow axum's own shape: a request body extracts through `Json` wrapped in
 //! `WithRejection` with `Error` as the rejection type, and every handler returns
@@ -67,7 +67,8 @@ use self::{
     usage::{ListUsage, QueryUsage},
 };
 /// The private import through which this version's payloads declare required-nullable fields
-/// (README §7.0 rule 2), defined once in the shared crate-root module `crate::serde_helpers`.
+/// (`docs/reference/management-api.md` two-state fields), defined once in the shared
+/// crate-root module `crate::serde_helpers`.
 use crate::serde_helpers::Nullable;
 /// The private import of the one shared usage filter this version's usage payloads declare,
 /// defined with the storage reads it configures in `crate::storage::api_logs`.
@@ -263,7 +264,8 @@ where
 }
 
 /// Validates a management request identifier. Identifier content — its characters, case, and length
-/// — is the caller's choice; the backend enforces only structural non-emptiness (README §7).
+/// — is the caller's choice; the backend enforces only structural non-emptiness
+/// (`docs/reference/management-api.md`).
 ///
 /// # Errors
 ///
@@ -276,10 +278,10 @@ fn validate_identifier(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validates a machine-consumed secret (README §7): gateway API key secrets (`key`) and upstream
-/// static keys (`api_key`). The value must be non-empty printable ASCII without whitespace — an
-/// empty value is [`Error::EmptyIdentifier`], any other composition failure
-/// [`Error::InvalidIdentifier`].
+/// Validates a machine-consumed secret (`docs/reference/management-api.md`): gateway API key
+/// secrets (`key`) and upstream static keys (`api_key`). The value must be non-empty printable
+/// ASCII without whitespace — an empty value is [`Error::EmptyIdentifier`], any other composition
+/// failure [`Error::InvalidIdentifier`].
 ///
 /// # Errors
 ///
@@ -332,8 +334,8 @@ fn validate_routing_token(param: &'static str, value: &str) -> Result<(), Error>
 }
 
 /// Validates a static-key provider's base URL against the shared base-URL contract of
-/// [`crate::routing_text::is_base_url`] (README §7): routing-safe text plus the non-empty
-/// `http://` or `https://` scheme — the same composition the provisioning boundary enforces on
+/// [`crate::routing_text::is_base_url`] (`docs/reference/management-api.md`): routing-safe text
+/// and a non-empty `http://` or `https://` scheme. Provisioning applies the same contract to
 /// upstream-reported URLs.
 ///
 /// # Errors
@@ -385,9 +387,9 @@ fn definition_rebind_invalid() -> Error {
     ))
 }
 
-/// Resolves one definition reference (README §7.1): the version must be a positive number and
-/// the exact `(name, version)` pair must exist — the latest version is never substituted. A
-/// non-positive version renders [`definition_version_invalid`], an unknown pair
+/// Resolves one definition reference (`docs/reference/management-api.md`): the version must be a
+/// positive number and the exact `(name, version)` pair must exist — the latest version is never
+/// substituted. A non-positive version renders [`definition_version_invalid`], an unknown pair
 /// [`Error::DefinitionNotFound`].
 ///
 /// # Errors
@@ -409,10 +411,10 @@ async fn resolve_definition(
         })
 }
 
-/// Builds the shared base-URL 400 template (README §3, §7.1): the effective definition's URLs
-/// reference the base, and `tail` states why the calling path cannot satisfy the requirement —
-/// a request-supplied base means the provider row must still carry one, a row-stored base means
-/// the row carries none.
+/// Builds the shared base-URL 400 template (`docs/design/storage.md` and
+/// `docs/reference/management-api.md`): the effective definition's URLs reference the base, and
+/// `tail` states why the calling path cannot satisfy the requirement — a request-supplied base
+/// means the provider row must still carry one, a row-stored base means the row carries none.
 fn base_url_validation(definition: &crate::provider::ProviderDefinition, tail: &str) -> Error {
     Error::Validation {
         param: "base_url",
@@ -438,8 +440,9 @@ fn stored_base_url_required(definition: &crate::provider::ProviderDefinition) ->
     base_url_validation(definition, "but the provider row carries none")
 }
 
-/// The success body of a route whose operation produces no fact the caller cannot know (README §7.0
-/// rule 7): an empty JSON object, shared by reference like every other response shape.
+/// The success body of a route whose operation produces no fact the caller cannot know
+/// (`docs/reference/management-api.md` response ownership): an empty JSON object, shared by
+/// reference like every other response shape.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct EmptyResponse {}
@@ -528,8 +531,8 @@ struct SharedProviderFields {
     base_url: Option<String>,
 }
 
-/// The `providers:create` success body (README §7.1); the response states the server-assigned row
-/// identity — the fact the caller cannot know.
+/// The `providers:create` success body (`docs/reference/management-api.md`); the response states
+/// the server-assigned row identity — the fact the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 struct ProviderEnvelope {

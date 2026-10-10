@@ -8,7 +8,7 @@ import { Skeleton } from "./feedback";
 import { ReadNotice } from "./read-notice";
 
 /**
- * The row screens' shared frame (README §6.3): the standing read notice, the
+ * The row screens' shared frame (`web/docs/architecture.md`): the standing read notice, the
  * first read's skeleton window, the failed first read's own presentation, the
  * read-but-gone not-found state, and the keyed row content — the presentation
  * every detail and edit screen states around its row, with the branches

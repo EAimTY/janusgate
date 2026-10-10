@@ -56,9 +56,9 @@ impl OperationKind {
 /// kind in every log line the pipeline records ([`OperationKind`]), composed through
 /// [`OperationKind::as_str`] into `{operation} request`, `{operation} for model …`, and
 /// `{operation} for model … via provider …`. `endpoint_type` names the outward completion
-/// endpoint the request arrived on, recorded in the request's accounting row (README §3
-/// *ApiLog*) — each call site names its own surface's endpoint, the way `operation` names the
-/// request kind.
+/// endpoint the request arrived on, recorded in the request's accounting row
+/// (`docs/design/storage.md` *ApiLog*) — each call site names its own surface's endpoint, the way
+/// `operation` names the request kind.
 ///
 /// Every failure that reaches this boundary is logged exactly once here, with the request context
 /// available at each stage: a parse rejection names only the endpoint, a routing rejection names
@@ -69,10 +69,10 @@ impl OperationKind {
 /// [`gateway::execute`] for the dispatch mark. Exactly one current finalization owner then
 /// records the row: the owned account-attempt boundary for a post-dispatch failure, the detached
 /// non-streaming aggregation task for a non-streaming response, or the SSE render task for a
-/// streaming one (README §3 *ApiLog*). The non-streaming task outlives this handler — hyper
-/// drops the handler the moment the client departs — so a departure mid-generation finalizes the
-/// row as `client_aborted` instead of losing it, and a departure after the aggregated body was
-/// handed off stays the accepted unobservable edge (§3 *ApiLog*).
+/// streaming one (`docs/design/storage.md` *ApiLog*). The non-streaming task outlives this handler
+/// — hyper drops the handler the moment the client departs — so a departure mid-generation
+/// finalizes the row as `client_aborted` instead of losing it, and a departure after the aggregated
+/// body was handed off stays the accepted unobservable edge (`docs/design/storage.md` *ApiLog*).
 ///
 /// # Panics
 ///
@@ -163,7 +163,7 @@ where
 
     // The accounting draft: every fact known before dispatch, built from the authenticated key,
     // the routing row, and the surface's endpoint type; `gateway::execute` stamps the dispatch
-    // instant into it (README §3 *ApiLog*).
+    // instant into it (`docs/design/storage.md` *ApiLog*).
     let log = ApiLogDraft::predispatch(
         api_key_id,
         routing.provider.id,
@@ -175,7 +175,7 @@ where
 
     // A request carrying compaction controls or compaction state routes
     // through the compaction pipeline: restore, strategy, and the outcome
-    // renderings README §6.8 pins. Every other request runs the ordinary
+    // renderings `docs/design/compaction.md` pins. Every other request runs the ordinary
     // path unchanged. The pipeline logs its own final failure through
     // `render.log_context`, keeping this boundary's one-log-per-failure
     // contract with the resolved provider named.
@@ -429,7 +429,7 @@ struct CheckpointContinuation {
 }
 
 /// The compaction pipeline for one parsed completion request: restore, resolve
-/// strategy and native operations (README §6.8), and render the outcome —
+/// strategy and native operations (`docs/design/compaction.md`), and render the outcome —
 /// the ordinary path for replays and below-threshold generations, the
 /// codec-shaped compaction lifecycles for everything else.
 ///
@@ -441,7 +441,7 @@ struct CheckpointContinuation {
 /// Streaming note: a checkpoint-continue lifecycle renders the checkpoint from
 /// the executor's artifact ahead of the live continuation events, so a
 /// streaming client waits for the compaction to complete before its answer
-/// streams — the gateway-emulated threshold contract (README §6.8).
+/// streams — the gateway-emulated threshold contract (`docs/design/compaction.md`).
 ///
 /// The pipeline is the one logging site for its final failure: an error outcome
 /// is logged exactly once through `render.log_context` — the operation, model,
@@ -517,7 +517,7 @@ where
 
     // The ledger's billed totals stamp the accounting row for every outcome
     // that carries one; the executor has already recorded each dispatch into
-    // it (README §6.8).
+    // it (`docs/design/compaction.md`).
     let stamp_billed = |draft: &mut ApiLogDraft, ledger: &CompactionLedger| {
         draft.stamp_billed_usage(ledger.reported_billed_totals());
     };
@@ -793,7 +793,7 @@ where
 /// execute-and-render path while the executor's checkpoint renders ahead of
 /// it — prefix items on the Responses surface, prefix blocks beside the
 /// lifecycle's vendor-shaped iteration entries on the Messages surface
-/// (README §6.8).
+/// (`docs/design/compaction.md`).
 ///
 /// # Errors
 ///
@@ -971,7 +971,7 @@ fn compaction_only_responses_response(
 }
 
 /// Renders the Messages compact-only outcome: one compaction block with
-/// `stop_reason: "compaction"` and the iteration usage (README §6.8).
+/// `stop_reason: "compaction"` and the iteration usage (`docs/design/compaction.md`).
 fn compaction_only_messages_response(
     pipeline: &mut Pipeline<'_>,
     block: &crate::format::compaction_wire::Checkpoint,
@@ -1075,7 +1075,7 @@ where
     }
 }
 
-/// Routes one Responses standalone compact request (README §6.8): parse
+/// Routes one Responses standalone compact request (`docs/design/compaction.md`): parse
 /// the compact body, resolve routing, and hand the operation to the compaction
 /// executor. The compact endpoint is Responses-only, so this entry — unlike
 /// [`run_completion`] — is not format-generic.
@@ -1084,7 +1084,7 @@ where
 /// `response.compaction` object the codec owns. The accounting draft is built
 /// from the routing facts but never stamped until a dispatch occurs: while the
 /// executor placeholder answers, the request fails before dispatch and records
-/// no row (README §3 *ApiLog*, README §6.8).
+/// no row (`docs/design/storage.md` *ApiLog*, `docs/design/compaction.md`).
 ///
 /// Every failure that reaches this boundary is logged exactly once here, with
 /// the stage's context: a parse rejection names only the endpoint, a routing
@@ -1149,7 +1149,7 @@ pub(in crate::api) async fn run_compact(
     // The accounting draft: every fact known before dispatch. The executor
     // stamps the dispatch instant at each internal send and the billed totals
     // on success, so a row exists exactly when a dispatch occurred and the
-    // finalized row carries the participating calls' totals (README §3
+    // finalized row carries the participating calls' totals (`docs/design/storage.md`
     // *ApiLog*).
     let log = ApiLogDraft::predispatch(
         api_key_id,

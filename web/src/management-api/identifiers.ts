@@ -3,8 +3,7 @@ import { ContractViolationError } from "/src/management-api/errors";
 import { expectNonEmptyString } from "/src/management-api/validation-primitives";
 
 /**
- * Composition rules for machine-consumed management fields (gateway README
- * §7): routing identifiers, bearer secrets, and base URLs.
+ * Composition rules for machine-consumed management fields (`docs/reference/management-api.md`): routing identifiers, bearer secrets, and base URLs.
  * Every predicate mirrors the gateway's boundary validation alone, so the
  * app rejects exactly what the gateway would reject — before the round
  * trip, with the field named.

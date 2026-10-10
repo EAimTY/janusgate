@@ -1,10 +1,10 @@
 //! Model row persistence: routing resolution, listing, discovery application, manual creation and
 //! claiming, override updates, and deletion.
 //!
-//! Addressing follows one rule (README §7.1): a row that exists is addressed by its row `id` —
-//! update and delete — while a row that does not exist yet is addressed by its natural key
-//! `(provider_id, upstream_id)` — creation. Discovery addresses rows by their natural key inside
-//! one provider's refresh.
+//! Addressing follows one rule (`docs/reference/management-api.md`): a row that exists is addressed
+//! by its row `id` — update and delete — while a row that does not exist yet is addressed by its
+//! natural key `(provider_id, upstream_id)` — creation. Discovery addresses rows by their natural
+//! key inside one provider's refresh.
 
 use super::Error;
 use crate::{
@@ -77,10 +77,10 @@ pub(crate) struct ModelUpdate<'a> {
 }
 
 /// One effectively enabled model with its effective capability declarations — the outward
-/// listings' entry (README §6.5): every value is the effective `override ?? base` composition,
-/// and an unknown (`None`) capability is omitted by every listing rather than fabricated. The
-/// compaction facts resolve against the row's definition's declared defaults, carrying only the
-/// mechanisms whose effective support is known.
+/// listings' entry (`docs/design/routing.md`): every value is the effective `override ?? base`
+/// composition, and an unknown (`None`) capability is omitted by every listing rather than
+/// fabricated. The compaction facts resolve against the row's definition's declared defaults,
+/// carrying only the mechanisms whose effective support is known.
 #[derive(Debug, Clone)]
 pub(crate) struct EnabledModel {
     /// Public routing ID.
@@ -158,9 +158,9 @@ async fn find_model_entry_in_transaction(
 
 /// Lists the stored models with their provider identity, narrowed to one provider's rows when
 /// `provider_id` is `Some`; an unknown provider yields an empty list, because a filter addresses no
-/// row (README §7.1). Every row is listed — `vanished` included — ordered by provider ID and
-/// upstream ID; the row's own inputs let the caller derive the three-input status (rule 7), which
-/// tells serving rows apart.
+/// row (`docs/reference/management-api.md`). Every row is listed — `vanished` included — ordered by
+/// provider ID and upstream ID; the row's own inputs let the caller derive the three-input status
+/// (response ownership), which tells serving rows apart.
 ///
 /// # Errors
 ///
@@ -252,8 +252,9 @@ pub(crate) async fn apply_discovered_models(
         // One upsert per discovered row: an existing natural key flips its state back to
         // `discovered` and rewrites its capability base columns to this refresh's facts —
         // `NULL` for a fact this refresh did not extract, so a stored value is always the
-        // latest upstream knowledge, never stale residue (README §3) — while the serving switch
-        // and the overrides are never touched; an absent key inserts enabled and discovered.
+        // latest upstream knowledge, never stale residue (`docs/design/storage.md`) — while the
+        // serving switch and the overrides are never touched; an absent key inserts enabled
+        // and discovered.
         for model in discovered {
             transaction
                 .execute(
@@ -331,7 +332,7 @@ pub(crate) async fn insert_model_checked(
         match stored {
             None => {
                 // A fresh manual row starts unknown: every capability base column stores `NULL`
-                // (README §3) while the requested overrides apply.
+                // (`docs/design/storage.md`) while the requested overrides apply.
                 transaction
                     .execute(
                         "INSERT INTO models (provider_id, upstream_id, is_enabled, \
@@ -356,7 +357,8 @@ pub(crate) async fn insert_model_checked(
 
             Some(existing) if existing.discovery_state == DiscoveryState::Vanished => {
                 // The claim writes the administrator-owned columns only: the capability base
-                // columns keep the last discovery's facts, whatever they were (README §3).
+                // columns keep the last discovery's facts, whatever they were
+                // (`docs/design/storage.md`).
                 transaction
                     .execute(
                         "UPDATE models SET is_enabled = ?1, \
@@ -576,11 +578,11 @@ fn discovery_state_from_value(value: Value) -> Result<DiscoveryState, Error> {
     }
 }
 
-/// Reads a thinking-level set column (README §3): `NULL` is the unknown state ([`None`]); a JSON
-/// array of vocabulary strings is the canonicalized set; anything else — non-JSON text, a JSON
-/// value that is not an array, an array element that is not a string or not a vocabulary member —
-/// is storage drift, because both write paths (discovery ingestion and the management override)
-/// write only canonicalized vocabulary sets.
+/// Reads a thinking-level set column (`docs/design/storage.md`): `NULL` is the unknown state
+/// ([`None`]); a JSON array of vocabulary strings is the canonicalized set; anything else —
+/// non-JSON text, a JSON value that is not an array, an array element that is not a string or not a
+/// vocabulary member — is storage drift, because both write paths (discovery ingestion and the
+/// management override) write only canonicalized vocabulary sets.
 fn levels_from_column(
     value: Option<String>,
     column: &str,
@@ -606,8 +608,8 @@ fn levels_from_column(
 
 /// Renders a thinking-level set column value for a statement parameter: [`Value::Null`] for the
 /// unknown state, else the set's canonical JSON array text. The caller passes a canonicalized set
-/// (both write paths canonicalize before storage, README §3), so the rendering needs no
-/// re-canonicalization.
+/// (both write paths canonicalize before storage, `docs/design/storage.md`), so the rendering needs
+/// no re-canonicalization.
 fn levels_into_value(levels: Option<&[ReasoningLevel]>) -> Result<Value, TursoError> {
     let Some(levels) = levels else {
         return Ok(Value::Null);

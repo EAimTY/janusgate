@@ -32,7 +32,7 @@ import {
     expectTemplateNode,
 } from "./expressions";
 
-/** The tagged compaction strategy a definition follows (README §5). */
+/** The tagged compaction strategy a definition follows (`docs/design/providers.md`). */
 function expectCompactionStrategy(value: unknown, context: string): CompactionStrategy {
     return expectOneOf(
         value,
@@ -67,7 +67,7 @@ function expectDefaultSupport(value: unknown, context: string): MechanismSupport
 }
 
 /**
- * One typed positive unsupported-response classifier (README §5): the
+ * One typed positive unsupported-response classifier (`docs/design/providers.md`): the
  * statuses are non-success HTTP statuses only — the classifier inspects
  * rejected native calls alone, so a success status or a value outside the
  * HTTP status range is a criterion no response can ever carry — and the code
@@ -142,7 +142,7 @@ function expectUnsupportedClassifier(value: unknown, context: string): Unsupport
 }
 
 /**
- * One operation-shaped connection surface's shared members (README §5): the
+ * One operation-shaped connection surface's shared members (`docs/design/providers.md`): the
  * non-empty URL, the header rows, the envelope carrying exactly one body
  * placeholder, and the response-unwrap member — the browser-side mirror of
  * the gateway's operation-surface walk, shared by the standalone compact
@@ -198,7 +198,7 @@ function expectOperationConnection(
     return connection;
 }
 
-/** The standalone compact connection of a Responses definition (README §5). */
+/** The standalone compact connection of a Responses definition (`docs/design/providers.md`). */
 function expectStandaloneOperation(value: unknown, context: string): StandaloneCompactOperation {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -224,7 +224,7 @@ function expectStandaloneOperation(value: unknown, context: string): StandaloneC
     return operation;
 }
 
-/** The optional native token-count operation of a Messages definition (README §5). */
+/** The optional native token-count operation of a Messages definition (`docs/design/providers.md`). */
 function expectCountTokensOperation(value: unknown, context: string): CountTokensOperation {
     const record = expectRecord(value, context);
     expectDeclaredKeys(
@@ -244,7 +244,7 @@ function expectCountTokensOperation(value: unknown, context: string): CountToken
 /**
  * Rejects a compaction declaration (or operation) the payload's format can
  * never speak: the declaration is an operation the definition could not
- * render, whatever its content (README §5).
+ * render, whatever its content (`docs/design/providers.md`).
  */
 function requireCompactionFormat(
     format: UpstreamFormat,
@@ -259,7 +259,7 @@ function requireCompactionFormat(
     }
 }
 
-/** The Responses standalone-compact declaration (README §5). */
+/** The Responses standalone-compact declaration (`docs/design/providers.md`). */
 function expectStandaloneDeclaration(
     value: unknown,
     context: string,
@@ -310,7 +310,7 @@ function expectStandaloneDeclaration(
 
 /**
  * The trigger-shaped declarations — the Responses explicit trigger and the
- * automatic threshold compaction (README §5): the mechanism rides the
+ * automatic threshold compaction (`docs/design/providers.md`): the mechanism rides the
  * ordinary inference connection, so no operation data exists to require.
  */
 function expectTriggerLikeDeclaration(value: unknown, context: string): RideAlongDeclaration {
@@ -342,7 +342,7 @@ function expectTriggerLikeDeclaration(value: unknown, context: string): RideAlon
 
 /**
  * The Messages declarations — the on-demand and the threshold compaction
- * (README §5): the beta overlay headers the operation requires, present and
+ * (`docs/design/providers.md`): the beta overlay headers the operation requires, present and
  * non-empty whenever the declaration declares support.
  */
 function expectOverlayDeclaration(
@@ -400,7 +400,7 @@ function expectOverlayDeclaration(
 
 /**
  * One mechanism's declaration walk, beside the one upstream format that can
- * speak it (README §5), in the mechanisms record's declared-key order. Each
+ * speak it (`docs/design/providers.md`), in the mechanisms record's declared-key order. Each
  * walk parses the present declaration into the section's rebuilt record; the
  * overlay walks restate the mechanism key their rejection message names.
  */
@@ -462,7 +462,7 @@ const MECHANISM_DECLARATIONS: ReadonlyArray<{
     },
 ];
 
-/** The per-mechanism support declarations of one compaction section (README §5). */
+/** The per-mechanism support declarations of one compaction section (`docs/design/providers.md`). */
 function expectMechanismDeclarations(
     value: unknown,
     context: string,
@@ -491,7 +491,7 @@ function expectMechanismDeclarations(
 
 /**
  * The remote-compaction section of one provider definition payload
- * (README §5), rebuilt field by field: the strategy, the positive budgets,
+ * (`docs/design/providers.md`), rebuilt field by field: the strategy, the positive budgets,
  * the export policy, the per-format-gated mechanism declarations, and the
  * optional token-count operation. Every member the operator omitted lands
  * on its shipped default, the exact members the gateway's serde defaults

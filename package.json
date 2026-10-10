@@ -9,7 +9,9 @@
         "dev:web": "npm run dev -w web --",
         "build:web": "npm run build -w web --",
         "check": "biome check && npm run typecheck -w web && npm run check:i18n -w web",
-        "fix": "biome check --write --unsafe && npm run typecheck -w web"
+        "fix": "biome check --write --unsafe && npm run typecheck -w web",
+        "docs:generate": "node scripts/generate-management-reference.mjs",
+        "docs:check": "node scripts/generate-management-reference.mjs --check"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.5.14"

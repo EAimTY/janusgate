@@ -31,7 +31,7 @@ pub(crate) struct UpstreamParser {
 
     /// Indexes of the calls a flush already completed: the flush completes exactly the calls
     /// opened but not yet completed — including calls opened after the finish chunk — and never
-    /// re-completes an already-completed call index (README §6.2).
+    /// re-completes an already-completed call index (`docs/reference/inference.md`).
     flushed_call_indexes: BTreeSet<usize>,
 }
 
@@ -51,7 +51,7 @@ struct PendingToolCall {
     arguments: String,
 
     /// Upstream thought signature carried on the delta entries; the gateway extension must survive
-    /// into the completion (README §5).
+    /// into the completion (`docs/design/providers.md`).
     thought_signature: Option<String>,
 }
 
@@ -75,7 +75,7 @@ struct UpstreamResponse {
     #[serde(default)]
     usage: Option<UpstreamUsage>,
 
-    /// Failure an upstream may embed in a 2xx body (README §6.7).
+    /// Failure an upstream may embed in a 2xx body (`docs/reference/inference.md`).
     #[serde(default)]
     error: Option<UpstreamError>,
 }
@@ -127,7 +127,7 @@ struct MessageFields {
     /// Legacy function invocation — deprecated by the protocol in favor of `tool_calls` but still
     /// specified and still emitted by older OpenAI-compatible upstreams. A delta carries name and
     /// argument fragments, a message the complete call; the modern `tool_calls` member takes
-    /// precedence when a payload carries both (README §6.2).
+    /// precedence when a payload carries both (`docs/reference/inference.md`).
     #[serde(default)]
     function_call: Option<FunctionFields>,
 }
@@ -147,7 +147,7 @@ struct ToolCallEntry {
     #[serde(default)]
     function: Option<FunctionFields>,
 
-    /// Upstream thought signature the gateway extension carries (README §5).
+    /// Upstream thought signature the gateway extension carries (`docs/design/providers.md`).
     #[serde(default)]
     thought_signature: Option<String>,
 }
@@ -168,8 +168,8 @@ struct FunctionFields {
 /// upstream reports them — `prompt_tokens_details.cached_tokens` and
 /// `completion_tokens_details.reasoning_tokens`, plus
 /// `prompt_tokens_details.cache_write_tokens`, an official member some upstreams omit — ride
-/// into the IR breakdowns (README §6.2), while the members the gateway does not read are
-/// ignored.
+/// into the IR breakdowns (`docs/reference/inference.md`), while the members the gateway does not
+/// read are ignored.
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamUsage {
     /// Tokens consumed by the input.
@@ -214,7 +214,8 @@ impl UpstreamParser {
                 }
 
                 // The legacy member rides the same assembly when the delta carries no modern
-                // entry: `tool_calls` takes precedence when both are present (README §6.2).
+                // entry: `tool_calls` takes precedence when both are present
+                // (`docs/reference/inference.md`).
                 if delta.tool_calls.is_empty()
                     && let Some(function_call) = &delta.function_call
                 {
@@ -240,7 +241,7 @@ impl UpstreamParser {
         Ok(events)
     }
 
-    /// Rejects a body carrying a non-null embedded `error` (README §6.7).
+    /// Rejects a body carrying a non-null embedded `error` (`docs/reference/inference.md`).
     ///
     /// # Errors
     ///
@@ -354,11 +355,12 @@ impl UpstreamParser {
 
     /// Emits [`IrEvent::ToolCallDone`] for every pending call opened but not yet completed, and
     /// records the completed indexes: the calls buffered when the finish chunk arrives complete
-    /// there, and the calls opened after it complete at the clean end-of-stream flush (README
-    /// §6.3). A delta that reopens an already-completed index keeps streaming deltas into a
-    /// pending entry no flush ever completes — its [`IrEvent::ToolCallDone`] already streamed and
-    /// a repeated one is contract-forbidden (README §6.2) — so the reopened entry is retained
-    /// only to keep accumulating such deltas.
+    /// there, and the calls opened after it complete at the clean end-of-stream flush
+    /// (`docs/reference/inference.md`). A delta that reopens an already-completed index keeps
+    /// streaming deltas into a pending entry no flush ever completes — its
+    /// [`IrEvent::ToolCallDone`] already streamed and a repeated one is contract-forbidden
+    /// (`docs/reference/inference.md`) — so the reopened entry is retained only to keep
+    /// accumulating such deltas.
     fn flush_pending_calls(&mut self) -> Vec<IrEvent> {
         let mut events = Vec::new();
         let mut reopened = Vec::new();
@@ -445,8 +447,8 @@ impl UpstreamEventParser for UpstreamParser {
 
     fn finish(&mut self) -> Vec<IrEvent> {
         // A clean end-of-stream still flushes the buffered tool-call state before the terminal
-        // `Done` event (README §6.3); the degraded finish itself is `degrade_finish_once`'s
-        // contract.
+        // `Done` event (`docs/reference/inference.md`); the degraded finish itself is
+        // `degrade_finish_once`'s contract.
         let mut events = self.flush_pending_calls();
 
         events.extend(format::degrade_finish_once(&mut self.is_finished));
@@ -477,8 +479,8 @@ fn usage_event(usage: &UpstreamUsage) -> IrEvent {
 
 /// Emits the text-bearing events of one upstream delta or complete message object into `events`:
 /// reasoning first, then the object's content text, then its refusal text. Refusal text rides the
-/// ordinary text channel after any content text of the same object (README §6.2); this helper is
-/// the single home of that ordering contract.
+/// ordinary text channel after any content text of the same object (`docs/reference/inference.md`);
+/// this helper is the single home of that ordering contract.
 fn push_text_events(fields: &MessageFields, events: &mut Vec<IrEvent>) {
     // Both `reasoning` (OpenRouter, vLLM) and `reasoning_content` (the DeepSeek de-facto standard
     // for OpenAI-compatible reasoners) are accepted; when both keys are present, `reasoning` wins.

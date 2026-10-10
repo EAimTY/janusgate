@@ -1,5 +1,5 @@
 //! Anthropic error render: the wire payload types and the closed `render(&Error)` match for
-//! the Anthropic wire format (README §6.7).
+//! the Anthropic wire format (`docs/reference/inference.md`).
 //!
 //! Anthropic renders `{"type": "error", "error": {type, message}}`, mapping each rendered HTTP
 //! status onto the official status↔type table: 400/405 `invalid_request_error`, 401

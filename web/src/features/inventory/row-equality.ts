@@ -96,7 +96,7 @@ function isSameNullableRecord<TValue extends string>(
  * Whether a fresh read answers the same provider row the screen already
  * holds, content and all. An equal row keeps its identity, so a refresh that
  * changes nothing never remounts — and never resets — a form opened on the
- * row (README §6.3's one-pattern reads must not cost an operator input).
+ * row (`web/docs/architecture.md`'s one-pattern reads must not cost an operator input).
  */
 export function isSameProviderRow(previous: ProviderResponse, fresh: ProviderResponse): boolean {
     return isSameRowFields(previous, fresh);

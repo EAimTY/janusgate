@@ -1,5 +1,5 @@
 //! The shared control-request executor: one engine drives the OAuth device authorization, token
-//! exchange, refresh, provisioning, polling, and discovery requests (README §5.1).
+//! exchange, refresh, provisioning, polling, and discovery requests (`docs/design/providers.md`).
 //!
 //! The executor evaluates the request's string expressions against the stage's [`ValueEnv`],
 //! sets `Content-Type` from the body variant (every other header is an explicit row), sends, and
@@ -198,8 +198,8 @@ fn hex_value(byte: u8) -> Option<u8> {
 /// Percent-encodes one URL query component with the RFC 3986 unreserved set: every byte outside
 /// `A–Z a–z 0–9 - . _ ~` renders as `%XX`, so a space renders `%20` and a literal plus `%2B`.
 /// This strict encoding is the one vocabulary every descriptor-rendered query component uses —
-/// the authorize-URL builder (README §5.3) and the control-request query rows built here alike —
-/// because RFC 3986 §3.4 defines `+` in a query as a literal plus. The
+/// the authorize-URL builder (`docs/design/providers.md`) and the control-request query rows built
+/// here alike — because RFC 3986 §3.4 defines `+` in a query as a literal plus. The
 /// `application/x-www-form-urlencoded` body variant keeps its own `+`-for-space rule, which is
 /// the content type's, not the URL query's.
 #[must_use]
@@ -406,11 +406,11 @@ fn decode_body(
 }
 
 /// Whether an upstream boolean flag reads as true. The truthy spellings such a flag — a
-/// provisioning poll's `done_path` (README §5.4) or a cursor pagination's `has_more` path
-/// (README §5.5) — may arrive in on a JSON body are the boolean `true`, the number `1`, or the
-/// string `"true"`; every other shape reads as false. The flat form encoding surfaces the same
-/// two non-boolean scalars in their string spellings, which each consumer reads at its own call
-/// site.
+/// provisioning poll's `done_path` (`docs/design/providers.md`) or a cursor pagination's `has_more`
+/// path (`docs/design/providers.md`) — may arrive in on a JSON body are the boolean `true`, the
+/// number `1`, or the string `"true"`; every other shape reads as false. The flat form encoding
+/// surfaces the same two non-boolean scalars in their string spellings, which each consumer reads
+/// at its own call site.
 #[must_use]
 pub(super) fn is_truthy_scalar(value: &Json) -> bool {
     match value {
@@ -423,8 +423,8 @@ pub(super) fn is_truthy_scalar(value: &Json) -> bool {
 
 /// Extracts one declared response field from a decoded body: a missing required path fails the
 /// stage, a missing optional path yields `None`, and a present value of the wrong declared
-/// shape always fails (README §5.1). The text shape reads a JSON string or number — a number
-/// renders as its decimal text (RFC 6749 §5.1) — and rejects every other JSON kind.
+/// shape always fails (`docs/design/providers.md`). The text shape reads a JSON string or number —
+/// a number renders as its decimal text (RFC 6749 §5.1) — and rejects every other JSON kind.
 ///
 /// # Errors
 ///
@@ -439,7 +439,8 @@ pub(super) fn extract_field(
     match body {
         DecodedBody::Json(json) => {
             // An unresolvable path — a missing member or a non-object intermediate — is a
-            // missing path (README §5.1): the caller decides required versus optional.
+            // missing path (`docs/design/providers.md`): the caller decides required versus
+            // optional.
             let Some(value) = path.resolve(json) else {
                 return Ok(None);
             };
@@ -578,9 +579,9 @@ impl ResponseMapping for ProvisionExtraction {
 }
 
 /// Folds one decoded response's declared field mappings into the caller's state through `apply`
-/// (README §5.1): every field is extracted through [`extract_field`], a missing required path
-/// fails the stage naming the offending path, and a missing optional path leaves its target
-/// unchanged.
+/// (`docs/design/providers.md`): every field is extracted through [`extract_field`], a missing
+/// required path fails the stage naming the offending path, and a missing optional path leaves its
+/// target unchanged.
 ///
 /// # Errors
 ///

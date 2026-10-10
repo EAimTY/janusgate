@@ -18,10 +18,11 @@ const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 
 /// Maximum number of bytes read from one upstream success body before the read fails as
 /// oversized. A success body is one complete non-streaming completion document or a discovery
-/// listing, so the bound sits at the outward request-body cap of 64 MiB (README §4) — the
-/// largest single exchange the gateway already buffers per request — far above any legitimate
-/// JSON while giving the JSON transport the same hostile-upstream posture the 16 MiB per-frame
-/// `MAX_FRAME_BYTES` bound gives the SSE transport (`crate::sse`).
+/// listing, so the bound sits at the outward request-body cap of 64 MiB
+/// (`docs/reference/configuration.md`) — the largest single exchange the gateway already buffers
+/// per request — far above any legitimate JSON while giving the JSON transport the same
+/// hostile-upstream posture the 16 MiB per-frame `MAX_FRAME_BYTES` bound gives the SSE transport
+/// (`crate::sse`).
 const MAX_SUCCESS_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum number of characters an upstream body excerpt carries in an error message.

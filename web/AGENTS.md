@@ -1,6 +1,13 @@
-This file applies to the entire `web/` workspace. The repository root's `AGENTS.md` applies unchanged alongside it; only the web-specific rules live here.
+# Console working rules
 
-This workspace is janusgate-web, the standalone, statically-hosted web frontend for the JanusGate management API: on first visit it asks for a JanusGate management API base URL and token, then administers that JanusGate instance entirely through cross-origin `/management-api/v0/*` JSON calls. The management API's wire contract is not hand-written here — it is generated from the gateway sources at the repository root into a gitignored TypeScript file (`npm run generate-bindings`, run from `web/`), and application code compiles against it.
+Applies to `web/` alongside the [global rules](../AGENTS.md). Read [README.md](README.md), [architecture](docs/architecture.md), and the affected [management contract](../docs/reference/management-api.md). For interface work also read [PRODUCT.md](../PRODUCT.md), [DESIGN.md](DESIGN.md), and the [surface brief](.impeccable/surfaces/web.md). Read [localization](docs/localization.md) when changing copy or language behavior.
+
+## Documentation and boundaries
+
+- Generated management bindings own wire shapes. Regenerate with `npm run generate-bindings -w web` from the repository root; do not edit or hand-copy the ignored generated files.
+- Keep product intent, visual guidance, browser state contracts, and localization in their owning documents. Update the design sidecar whenever changing DESIGN.md; its tokens come from the frontmatter, and its narrative mirrors the Markdown.
+- Preserve dedicated page ownership, explicit complete writes, stale-response guards, held dirty drafts, and locale-independent form lifetime. These contracts live in the architecture document rather than here.
+- Put authored UI copy in all supported typed catalogs; preserve foreign messages and values. Run the catalog gate through the normal quality check.
 
 ## TypeScript and TSX
 

@@ -37,7 +37,7 @@ type ReportActionOptions = {
     /**
      * Runs when the diagnosis says the row the call addressed is gone — the
      * screen's reload, usually, so the not-found state takes over instead of
-     * a ghost form accepting re-saves forever (README §6.4).
+     * a ghost form accepting re-saves forever (`web/docs/architecture.md`).
      */
     readonly onGone?: (() => void) | undefined;
 };
@@ -45,14 +45,14 @@ type ReportActionOptions = {
 /**
  * Runs a read cycle's calls in parallel under one signal, answering every
  * result in call order. An aborted call ends the cycle ahead of any failure
- * (README §6.4); the first failed call in call order becomes the cycle's
+ * (`web/docs/architecture.md`); the first failed call in call order becomes the cycle's
  * `ReadCallFailure`, exactly as the call list is written. A failure that is
  * itself a nested read's `ReadCallFailure` — a composite read call runs an
  * inner `readAll` — is adopted whole rather than re-wrapped: its notice
  * already carries the leaf call's diagnosis, and adoption at every level lets
  * that diagnosis survive any nesting depth, where a re-wrap would bury it
  * under the generic "The call failed." rendering and lose the gateway's
- * verbatim message (README §6.4).
+ * verbatim message (`web/docs/architecture.md`).
  */
 export async function readAll<TResults extends readonly unknown[]>(
     signal: AbortSignal,
@@ -153,10 +153,10 @@ export type ScreenRead = {
 };
 
 /**
- * The screen read harness (README §6.3): one read per mount, repeated when
+ * The screen read harness (`web/docs/architecture.md`): one read per mount, repeated when
  * *refresh* is pressed, cancelled when the screen goes away, with the first
  * failure diagnosed where failures are stated. A route-identity move is a
- * keyed remount (README §6.3) — the fresh mount runs its own first read — so
+ * keyed remount (`web/docs/architecture.md`) — the fresh mount runs its own first read — so
  * this harness follows the refresh pulse alone. The screen owns its data
  * signals and the `load` body — what this screen loads and where each answer
  * goes — while the harness owns the signals every screen redeclared, the
@@ -165,7 +165,7 @@ export type ScreenRead = {
  * A failed cycle replaces the standing notice with its diagnosis. A
  * successful cycle clears it — except where `isNoticeKeptOnSuccess` holds,
  * for screens whose notice is also an action's reported outcome. The
- * exception is an origin rule, not a blanket (README §6.3): the policy keeps
+ * exception is an origin rule, not a blanket (`web/docs/architecture.md`): the policy keeps
  * only what an action stated, so a save's outcome survives the reload the
  * save itself triggered, while a read-failure notice diagnoses the last read
  * cycle and is cleared by the first read that succeeds, on kept screens too
@@ -224,7 +224,7 @@ export function createScreenRead(options: {
 
         setIsReading(false);
 
-        // The two-origin rule (README §6.3): the keep policy exists so a
+        // The two-origin rule (`web/docs/architecture.md`): the keep policy exists so a
         // save's reported outcome survives the reload the save itself
         // triggered, so it shields only a notice an action stated. A
         // read-failure notice diagnoses the last read cycle — this one,

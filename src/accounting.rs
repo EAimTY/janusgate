@@ -1,5 +1,6 @@
 //! The request-accounting vocabulary: the closed sets the accounting layer records and the
-//! management surface publishes (README §3 *ApiLog*, §7.1).
+//! management surface publishes (`docs/design/storage.md` *ApiLog*,
+//! `docs/reference/management-api.md`).
 //!
 //! One home for [`ApiLogEndpointType`], [`ApiLogOutcome`], and [`UsageGroupBy`]: every layer
 //! that names a recorded fact — the outward surfaces stamping the accounting draft, the
@@ -8,15 +9,16 @@
 //! internals to name a vocabulary word.
 //!
 //! The serde and TypeScript names of the stored sets are the storage names — the `CHECK`
-//! vocabulary of the `api_logs` columns and the `as_str` renderings are one vocabulary (README
-//! §3 *ApiLog*); [`UsageGroupBy`]'s names are the management wire names (README §7.1).
+//! vocabulary of the `api_logs` columns and the `as_str` renderings are one vocabulary
+//! (`docs/design/storage.md` *ApiLog*); [`UsageGroupBy`]'s names are the management wire names
+//! (`docs/reference/management-api.md`).
 
 use serde::{Deserialize, Serialize};
 
 /// The outward completion endpoint a request arrived on, as recorded in `api_logs.endpoint_type`.
 ///
 /// The serde and TypeScript names are the storage names — the `CHECK` vocabulary of the column
-/// and [`ApiLogEndpointType::as_str`] are one vocabulary (README §3 *ApiLog*).
+/// and [`ApiLogEndpointType::as_str`] are one vocabulary (`docs/design/storage.md` *ApiLog*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(crate) enum ApiLogEndpointType {
@@ -86,7 +88,7 @@ impl ApiLogEndpointType {
 /// The recorded outcome of one dispatched request, as stored in `api_logs.outcome`.
 ///
 /// The serde and TypeScript names are the storage names — the `CHECK` vocabulary of the column
-/// and [`ApiLogOutcome::as_str`] are one vocabulary (README §3 *ApiLog*).
+/// and [`ApiLogOutcome::as_str`] are one vocabulary (`docs/design/storage.md` *ApiLog*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(crate) enum ApiLogOutcome {
@@ -142,9 +144,9 @@ impl ApiLogOutcome {
     }
 }
 
-/// The bucketing dimension of the usage aggregation (README §7.1 `usage:query`): a closed,
-/// unordered set — the element type is the validation, so any other value is rejected while the
-/// request payload parses. The serde and TypeScript names are the wire names.
+/// The bucketing dimension of the usage aggregation (`docs/reference/management-api.md`
+/// `usage:query`): a closed, unordered set — the element type is the validation, so any other value
+/// is rejected while the request payload parses. The serde and TypeScript names are the wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub(crate) enum UsageGroupBy {

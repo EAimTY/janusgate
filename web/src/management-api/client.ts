@@ -111,10 +111,10 @@ function passthrough<TRequest>(request: TRequest): TRequest {
     return request;
 }
 
-/** The providers listing's empty request body (README §4.2). */
+/** The providers listing's empty request body (`docs/reference/configuration.md`). */
 const emptyProvidersRequest: ListProvidersRequest = {};
 
-/** The api-keys listing's empty request body (README §4.2). */
+/** The api-keys listing's empty request body (`docs/reference/configuration.md`). */
 const emptyApiKeysRequest: ListApiKeysRequest = {};
 
 /** The definitions listing's empty request body. */
@@ -125,7 +125,7 @@ const emptyRoutesRequest: ListModelRoutesRequest = {};
 /**
  * The whole dispatch table: one row per route of the generated route table.
  * The routes whose callers send no arguments build their fixed empty body
- * here (README §4.2); every other route sends the caller's request verbatim;
+ * here (`docs/reference/configuration.md`); every other route sends the caller's request verbatim;
  * the writes whose generated answer is the empty record parse through
  * `parseEmptyResponse` and resolve as `void` below.
  */
@@ -298,7 +298,7 @@ type RouteTable = typeof routeTable;
  * The promise one client method resolves: the route's own response, or `void`
  * for the routes whose generated answer is the empty record — the writes
  * whose answer carries no fact the row is not already refetched for
- * (README §4.5).
+ * (`docs/reference/configuration.md`).
  */
 type MethodPromise<P extends Path> = Promise<
     EmptyResponse extends RouteResponse<P, Method<P>> ? void : RouteResponse<P, Method<P>>
@@ -309,7 +309,7 @@ type MethodPromise<P extends Path> = Promise<
  * the generated route table, derived from the dispatch table above — the
  * method names, the request payloads, and the response types are the table's
  * own, so nothing restates the bindings. Every method is a `POST` to
- * `{baseUrl}/management-api/v0{path}` (README §3.2, §4.2), rejects with a
+ * `{baseUrl}/management-api/v0{path}` (`docs/design/storage.md` and `docs/reference/configuration.md`), rejects with a
  * `ManagementApiError` whose category and errno drive the caller's reaction,
  * and takes an `AbortSignal` that cancels the call at the transport.
  */
@@ -326,7 +326,7 @@ export type ManagementApi = {
 type ManagementApiOptions = {
     /**
      * Called when a call is answered with the version's `unauthorized` errno:
-     * the stored pair is proven dead (README §3.1), and the caller continues
+     * the stored pair is proven dead (`docs/design/storage.md`), and the caller continues
      * to see the failure as usual.
      */
     readonly onUnauthorized?: (notice: string) => void;
@@ -380,7 +380,7 @@ export function createManagementApi(
      * Raises a failure the way every `post` failure is raised: retaining the
      * address the call went to, so the diagnosis of a failure whose
      * connection is already cleared — a 401's siblings still in flight, a
-     * disconnect mid-read — still names a real origin (README §6.4).
+     * disconnect mid-read — still names a real origin (`docs/reference/inference.md`).
      */
     function failure(
         category: ManagementFailureCategory,
@@ -403,7 +403,7 @@ export function createManagementApi(
                 method: "POST",
                 headers: {
                     // The management token travels verbatim: no `Bearer` prefix
-                    // (README §3.3).
+                    // (`docs/design/storage.md`).
                     Authorization: connection.token,
                     "Content-Type": "application/json",
                 },
@@ -452,7 +452,7 @@ export function createManagementApi(
 
             if (errorResponse === null) {
                 // Not the management API's error domain: only the status is
-                // reportable (README §4.2).
+                // reportable (`docs/reference/configuration.md`).
                 throw failure("transport", `HTTP ${response.status}`, {
                     httpStatus: response.status,
                 });
@@ -507,7 +507,7 @@ export function createManagementApi(
     /**
      * One route whose validated answer carries no fact: the empty record is
      * still parsed — a foreign body is a contract violation — then dropped,
-     * so the method resolves as `void` (README §4.5).
+     * so the method resolves as `void` (`docs/reference/configuration.md`).
      */
     function voidResponseMethod<TRequest>(
         path: Path,

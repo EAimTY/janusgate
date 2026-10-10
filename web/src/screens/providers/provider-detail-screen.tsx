@@ -61,7 +61,7 @@ export function ProviderDetailScreen(props: {
     const [isDiscovering, setIsDiscovering] = createSignal(false);
     // The discovery's progress and outcome are stated where the action was
     // taken — on the Models card — never in the read-level notice above the
-    // page (README §6.4). The read scope stays the read's alone.
+    // page (`web/docs/architecture.md`). The read scope stays the read's alone.
     const [discoveryNotice, setDiscoveryNotice] = createSignal<ScreenNotice | null>(null);
 
     // The provider whose empty list already triggered its one automatic
@@ -70,7 +70,7 @@ export function ProviderDetailScreen(props: {
     let autoDiscoveredFor: number | null = null;
 
     // Discovery is an action, not the screen read: it carries its own
-    // controller, so navigating away mid-discovery cancels it (README §6.4).
+    // controller, so navigating away mid-discovery cancels it (`web/docs/architecture.md`).
     let discoveryController: AbortController | null = null;
 
     onCleanup(() => {
@@ -168,7 +168,7 @@ export function ProviderDetailScreen(props: {
         const rows = outcome.result.models;
 
         // The answer carries the provider's complete fresh rows — the rows it
-        // already held included (README §7.1 models:discover) — so the
+        // already held included (`web/docs/architecture.md` models:discover) — so the
         // headline counts only the `upstream_id`s the pre-discovery listing
         // did not hold. A refresh of an unchanged upstream announces nothing.
         const knownUpstreamIds = new Set(before.map((row) => row.upstream_id));
@@ -202,7 +202,7 @@ export function ProviderDetailScreen(props: {
     const quota = createProviderQuotaView({
         // A quota observation is the one read on this page outside the
         // screen read: it reports success to the shell's freshness stamp
-        // (README §6.3.1) without re-running the page's reads.
+        // (`web/docs/architecture.md`) without re-running the page's reads.
         onQuotaReadComplete: reportRefresh,
         api: () => props.api,
         provider,

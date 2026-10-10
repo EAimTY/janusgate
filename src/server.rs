@@ -248,7 +248,8 @@ fn router(context: Context) -> Router {
     let mut router = Router::new().nest("/api", api::router(context.database.clone()));
 
     // The management API exists only while its section is configured: the mount is decided at
-    // startup, so adding or removing the section applies after a restart (README §8).
+    // startup, so adding or removing the section applies after a restart
+    // (`docs/reference/configuration.md`).
     if crate::CONFIG.management_api.is_some() {
         router = router.nest("/management-api", management_api::router());
     }

@@ -54,7 +54,7 @@ pub(crate) enum Error {
     /// unknown schema version, a foreign `PRAGMA application_id` stamp, or a schema batch
     /// that failed to apply. Stored file state, not a first-party contract violation: the
     /// main database's startup open turns it fatal, while an api-log day file answers it
-    /// through the failing request instead (README §3).
+    /// through the failing request instead (`docs/design/storage.md`).
     #[error("database schema drift: {detail}")]
     SchemaDrift {
         /// Human-readable drift detail naming the file, its stored state, and the expectation.
@@ -164,11 +164,11 @@ impl Database {
     }
 
     /// Opens the existing database at the specified path without creating anything: a missing
-    /// file is `Ok(None)` — the empty partition a missing api-log file reads as (README §3
-    /// *ApiLog Store*) — and neither the file nor its parent directory is ever created.
-    /// Otherwise the open is exactly [`Database::open`]: the same pool sizing, wait, schema
-    /// verification, and forward migration, so an outdated file a read opens first walks to
-    /// the latest schema version before it serves.
+    /// file is `Ok(None)` — the empty partition a missing api-log file reads as
+    /// (`docs/design/storage.md` *ApiLog Store*) — and neither the file nor its parent
+    /// directory is ever created. Otherwise the open is exactly [`Database::open`]: the same
+    /// pool sizing, wait, schema verification, and forward migration, so an outdated file a
+    /// read opens first walks to the latest schema version before it serves.
     ///
     /// The existence check sits directly before the engine open, and the engine's open itself is
     /// create-on-open: a file that still vanishes between the two is replaced by a fresh, empty

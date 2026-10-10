@@ -13,7 +13,7 @@ pub(crate) struct Context {
 
     /// The api-log store, constructed once at startup from the resolved `api.logs` configuration
     /// section. `api.logs.is_enabled` is the live recording switch read per dispatched request,
-    /// while the store's directory is consumed here (README §3 *ApiLog Store*).
+    /// while the store's directory is consumed here (`docs/design/storage.md` *ApiLog Store*).
     pub(crate) api_log_store: ApiLogStore,
 
     /// Data-plane upstream client streaming long-lived completions.

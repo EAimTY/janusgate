@@ -9,7 +9,7 @@ type ApiKeySaveFacts = {
 };
 
 /**
- * The serving-key edit page's save outcome (README §6.3): the saved key's
+ * The serving-key edit page's save outcome (`web/docs/architecture.md`): the saved key's
  * name, stating the rotation's consequence where the secret changed — the
  * previous secret stopped working on this save — composed with the
  * last-enabled line where the same save also turns off the last enabled key.

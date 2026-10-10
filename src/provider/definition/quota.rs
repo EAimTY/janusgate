@@ -1,4 +1,4 @@
-//! Product-independent quota descriptor vocabulary (README §5.10).
+//! Product-independent quota descriptor vocabulary (`docs/design/providers.md`).
 //!
 //! A [`QuotaDescriptor`] is one read-only control request plus an ordered list of extraction
 //! sources. Extraction is atomic and strict: absent or null optional sources and entries are

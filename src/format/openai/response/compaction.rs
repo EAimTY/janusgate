@@ -3,7 +3,7 @@
 //! builders shared by parsing and rendering, and the trigger lifecycle's
 //! streaming renderer.
 //!
-//! The compact endpoint (README §2.2) is not a generation request at a
+//! The compact endpoint (`docs/design/architecture.md`) is not a generation request at a
 //! different URL: its body carries no generation-only controls and no `stream`
 //! member, its upstream framing is always non-streaming, and its success body
 //! is a `response.compaction` object whose output is the canonical next
@@ -39,8 +39,7 @@ enum CompactedResponseObject {
 /// The endpoint carries no generation-only controls — no tools, sampling,
 /// reasoning, text, or streaming members — so a body carrying one is rejected
 /// by the strict shape itself. The caching and tiering conventions are the
-/// ordinary Responses envelope's accepted-and-ignored controls (README
-/// §4.1).
+/// ordinary Responses envelope's accepted-and-ignored controls (`docs/reference/configuration.md`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompactRequestBody {
@@ -59,26 +58,36 @@ struct CompactRequestBody {
     #[serde(default)]
     previous_response_id: Option<String>,
 
-    /// Upstream prompt-cache placement key; accepted and ignored (README
-    /// §6.6).
+    /// Upstream prompt-cache placement key; accepted and ignored (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     prompt_cache_key: Option<String>,
 
-    /// Upstream prompt-cache options; accepted and ignored (README §6.6).
+    /// Upstream prompt-cache options; accepted and ignored (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     prompt_cache_options: Option<PromptCacheOptions>,
 
-    /// Upstream prompt-cache retention hint; accepted and ignored (README
-    /// §6.6).
+    /// Upstream prompt-cache retention hint; accepted and ignored (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     prompt_cache_retention: Option<String>,
 
-    /// Requested service tier; accepted and ignored (README §6.6).
+    /// Requested service tier; accepted and ignored (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     service_tier: Option<String>,
 }
 
@@ -88,12 +97,18 @@ struct CompactRequestBody {
 struct PromptCacheOptions {
     /// Cache placement mode.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     mode: Option<String>,
 
     /// Cache time-to-live hint.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     ttl: Option<String>,
 }
 
@@ -249,9 +264,9 @@ pub(super) fn reasoning_item_json(reasoning: &super::request_parse::ReasoningIte
 
 /// The standalone compact endpoint's success body: the `response.compaction`
 /// object. The output is the canonical next window — the complete ordered
-/// vendor-shaped item list — never reduced to its compaction item (README
-/// §4.1). The body is render-only: the gateway constructs it, anchors it, and
-/// serializes it outward, never parsing it back.
+/// vendor-shaped item list — never reduced to its compaction item
+/// (`docs/reference/configuration.md`). The body is render-only: the gateway constructs it, anchors
+/// it, and serializes it outward, never parsing it back.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CompactedResponseBody {
     /// Gateway-issued response identifier.
@@ -420,7 +435,7 @@ pub(crate) fn render_gateway_compacted_response(
 /// Renders the explicit trigger lifecycle's complete SSE frame sequence:
 /// `response.created`, `response.in_progress`, one `output_item.added` and
 /// `output_item.done` pair per prefix item, then `response.completed` carrying
-/// `usage` — the framing Codex requires (README §6.8), rendered through
+/// `usage` — the framing Codex requires (`docs/design/compaction.md`), rendered through
 /// the ordinary [`SseRenderer`] so the envelope, item, and usage shapes cannot
 /// drift from the ordinary lifecycle's.
 pub(crate) fn render_trigger_stream_frames(

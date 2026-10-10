@@ -4,7 +4,7 @@
  * wrapper owning the flight flag, the disposal-guard check, and the settle
  * every answered begin runs identically. The callers keep their own gates
  * and success tails; an aborted call states nothing and a begin answering
- * after the screen went away states nothing and lands nowhere (README §6.4).
+ * after the screen went away states nothing and lands nowhere (`web/docs/architecture.md`).
  */
 import { type Accessor, createSignal } from "solid-js";
 import type { ActionName } from "../management-api/diagnosis";

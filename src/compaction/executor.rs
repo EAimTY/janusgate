@@ -1,5 +1,5 @@
 //! The compaction executor: strategy selection and multi-call coordination for
-//! compaction operations (README §6.8's decision order).
+//! compaction operations (`docs/design/compaction.md`'s decision order).
 //!
 //! One entry point per client surface, each resolving the decision order for
 //! its request: consume the boundary authenticated before account selection, check its
@@ -60,11 +60,11 @@ use crate::{
 };
 use std::future::Future;
 
-/// The shipped default summary-output budget (README §5): applied when the
+/// The shipped default summary-output budget (`docs/design/providers.md`): applied when the
 /// definition carries no compaction section to state its own.
 const DEFAULT_SUMMARY_BUDGET_TOKENS: u64 = 4096;
 
-/// The shipped default retained-input target (README §5): applied when the
+/// The shipped default retained-input target (`docs/design/providers.md`): applied when the
 /// definition carries no compaction section to state its own.
 const DEFAULT_RETENTION_BUDGET_TOKENS: u64 = 8192;
 
@@ -150,7 +150,7 @@ fn replay_overlay_headers(
 }
 
 /// Combines two overlay-header declarations into one row set for one dispatch
-/// (README §5.9: the same headers serve the replay of a returned compaction
+/// (`docs/design/compaction.md`: the same headers serve the replay of a returned compaction
 /// block, wherever the block later travels). The merge rule: a row whose name
 /// both sides carry joins its two values into one comma-separated row — the
 /// vocabulary multi-valued headers such as `anthropic-beta` define — keeping
@@ -203,9 +203,9 @@ fn effective_support(
         .map_or(MechanismSupport::Unknown, |(_mechanism, support)| support)
 }
 
-/// The gateway budgets of one routed request (README §5, §6.8): the
-/// definition's stated budgets, or the shipped defaults when the definition
-/// carries no compaction section.
+/// The gateway budgets of one routed request (`docs/design/providers.md` and
+/// `docs/design/compaction.md`): the definition's stated budgets, or the shipped defaults when the
+/// definition carries no compaction section.
 fn budgets(section: Option<&CompactionSection>) -> Budgets {
     match section {
         Some(section) => Budgets {
@@ -930,7 +930,7 @@ pub(crate) async fn execute_responses_compact(
     if let NativeAttempt::Committed(native) = native_window {
         // This flow's rendered body carries no ledger, so the accounting row
         // is stamped here; every ledger-carrying outcome is stamped by the
-        // serving layer from the returned ledger instead (README §6.8).
+        // serving layer from the returned ledger instead (`docs/design/compaction.md`).
         log.stamp_billed_usage(ledger.reported_billed_totals());
 
         return Ok(render_compacted_response(native));
@@ -1413,7 +1413,7 @@ async fn responses_automatic_flow(
 /// Measures the active input tokens of the restored window for one gateway
 /// threshold evaluation: the definition's native counter when one is
 /// configured and its dispatch succeeds, else the documented text estimator
-/// (README §6.8). The counter refines the measurement — its count is never
+/// (`docs/design/compaction.md`). The counter refines the measurement — its count is never
 /// billed usage and records no ledger iteration — and its failure falls back
 /// to the estimator, so it never gates the request on its own.
 ///
@@ -1767,7 +1767,7 @@ async fn messages_threshold_flow(
             // overlay, and a restored block replaying beside the control rides
             // its source mechanism's overlay on the same request — same-named
             // rows join, so the restored block never travels under the
-            // threshold beta alone (README §5.9, §6.8).
+            // threshold beta alone (`docs/design/compaction.md`).
             overlay_headers: combine_overlay_rows(threshold_overlay, replay_overlay),
         });
     }

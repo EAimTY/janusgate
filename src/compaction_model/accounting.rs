@@ -1,4 +1,4 @@
-//! The per-request compaction accounting ledger (README §6.8): the
+//! The per-request compaction accounting ledger (`docs/design/compaction.md`): the
 //! numerical record of every actual data-plane dispatch an outer compaction
 //! request performs, one iteration at a time.
 //!

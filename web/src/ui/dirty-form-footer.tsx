@@ -5,7 +5,7 @@ import { Button } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 
 /**
- * The one footer every edit screen's settings form closes with (README §6.3):
+ * The one footer every edit screen's settings form closes with (`web/docs/architecture.md`):
  * the save button, the way back, and the status that says edits stand. The
  * form owns its dirt, its save, and its revert; this owns only the trio's
  * shape, byte-identical across the three edit screens.
@@ -48,7 +48,7 @@ export function DirtyFormFooter(props: {
 
 /**
  * The notice every edit screen states while its row is held against a
- * refresh (README §6.3), parameterized by the one word that differs between
+ * refresh (`web/docs/architecture.md`), parameterized by the one word that differs between
  * the screens: Save writes the edits over the gateway's version, Revert
  * picks the gateway's version up.
  */

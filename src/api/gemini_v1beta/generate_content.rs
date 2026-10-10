@@ -2,7 +2,7 @@
 //!
 //! Implements `GET /models`, `POST /models/{model}:generateContent` (non-streaming), and
 //! `POST /models/{model}:streamGenerateContent?alt=sse` (streaming — only the `alt=sse` form
-//! is supported, else 400) per README §§6.3–6.6.
+//! is supported, else 400) per `docs/reference/inference.md`–6.6.
 //!
 //! Routing notes: axum 0.8 does not support partial-segment parameters such as
 //! `/models/{model}:generateContent` — constructing such a route panics with "Only one
@@ -54,7 +54,7 @@ struct ModelList {
 }
 
 /// One served model in the native Gemini shape, carrying the official token-limit members
-/// when their effective values are known (README §6.5) — `inputTokenLimit` and
+/// when their effective values are known (`docs/design/routing.md`) — `inputTokenLimit` and
 /// `outputTokenLimit` — and omitting each when unknown, never fabricating a value, with the
 /// gateway-extension `compaction` facts beside them rendering only the known mechanisms.
 #[derive(Debug, Serialize)]
@@ -105,10 +105,10 @@ async fn models(
 /// public model plus its action's streaming mode. The extractor runs ahead of the body
 /// extractor, so every URL-determined rejection — an unrouteable capture, or a streaming
 /// action missing its `alt=sse` query — is decided before any body byte is buffered (the
-/// outward body cap is 64 MiB, README §4). A matched single-capture wildcard route always
-/// carries its capture, so the capture arm of the rejection — the surface's unmapped-path
-/// 404 over the request's own path — is unrepresentable in practice and exists only to keep
-/// the surface's error wire should that contract change.
+/// outward body cap is 64 MiB, `docs/reference/configuration.md`). A matched single-capture
+/// wildcard route always carries its capture, so the capture arm of the rejection — the surface's
+/// unmapped-path 404 over the request's own path — is unrepresentable in practice and exists only
+/// to keep the surface's error wire should that contract change.
 struct WildcardCapture(ModelAction);
 
 impl<S> FromRequestParts<S> for WildcardCapture
@@ -198,7 +198,7 @@ struct ModelAction {
 ///
 /// The capture must be `<model>:generateContent` or `<model>:streamGenerateContent`
 /// with a non-empty model containing no `/` (the URL path cannot carry such a public
-/// ID; README §6.5). The model is the substring before the first `:`, so a public ID
+/// ID; `docs/design/routing.md`). The model is the substring before the first `:`, so a public ID
 /// carrying `:` is not separately rejected — its remainder fails the action match and
 /// lands in the same surface 404, the URL path simply cannot address it. Anything
 /// outside the two action shapes is an unmapped path and returns the surface 404, so

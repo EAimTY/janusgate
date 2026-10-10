@@ -119,9 +119,9 @@ impl From<control::ControlFailure> for Error {
     }
 }
 
-/// The plaintext credentials a provider row stores (README §3): a tagged JSON enum whose
-/// `type` discriminator is the only stored credential-kind representation, and which must match
-/// the credential kind of the provider's definition version.
+/// The plaintext credentials a provider row stores (`docs/design/storage.md`): a tagged JSON enum
+/// whose `type` discriminator is the only stored credential-kind representation, and which must
+/// match the credential kind of the provider's definition version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -283,7 +283,7 @@ impl DiscoveryState {
 }
 
 /// A stored upstream provider: one account instance bound to one exact, immutable definition
-/// version (README §3).
+/// version (`docs/design/storage.md`).
 #[derive(Debug, Clone)]
 pub(crate) struct Provider {
     /// Row identifier.
@@ -340,9 +340,9 @@ pub(crate) struct Model {
     pub(crate) discovery_state: DiscoveryState,
 
     /// Discovered thinking levels — the latest upstream knowledge in the shared vocabulary
-    /// (README §6.4), canonicalized. `None` is *unknown* (nothing extracted), never "none";
-    /// an empty set is the positive declaration that no level is supported. Discovery-owned:
-    /// every refresh rewrites it for a listed row.
+    /// (`docs/reference/inference.md`), canonicalized. `None` is *unknown* (nothing extracted),
+    /// never "none"; an empty set is the positive declaration that no level is supported.
+    /// Discovery-owned: every refresh rewrites it for a listed row.
     pub(crate) thinking_levels: Option<Vec<ReasoningLevel>>,
 
     /// Discovered maximum input tokens; `None` is unknown. Discovery-owned.
@@ -375,8 +375,8 @@ pub(crate) struct Model {
     pub(crate) compaction_support_override: Option<CompactionSupportFacts>,
 }
 
-/// One upstream-discovered model with its extracted capability facts (README §5.5): every
-/// fact `None` when the descriptor extracts no such capability or the entry carries none —
+/// One upstream-discovered model with its extracted capability facts (`docs/design/providers.md`):
+/// every fact `None` when the descriptor extracts no such capability or the entry carries none —
 /// *unknown*, never "none". The discovered set is canonicalized and vocabulary-filtered at
 /// extraction; the gateway never dispatches against any of these values.
 #[derive(Debug, Clone, PartialEq)]
@@ -427,19 +427,20 @@ impl Model {
 
     /// The model's effective thinking-level declaration: the override when present, else the
     /// discovered set — `None` when neither is known, the value the outward listings omit
-    /// (README §3/§6.5). A declaration, never an enforcement: dispatch never consults it.
+    /// (`docs/design/storage.md`/`docs/design/routing.md`). A declaration, never an enforcement:
+    /// dispatch never consults it.
     pub(crate) fn effective_thinking_levels(&self) -> Option<&[ReasoningLevel]> {
         self.thinking_levels_override
             .as_deref()
             .or(self.thinking_levels.as_deref())
     }
 
-    /// The model's effective maximum-input-tokens declaration (README §3).
+    /// The model's effective maximum-input-tokens declaration (`docs/design/storage.md`).
     pub(crate) fn effective_max_input_tokens(&self) -> Option<i64> {
         self.max_input_tokens_override.or(self.max_input_tokens)
     }
 
-    /// The model's effective maximum-output-tokens declaration (README §3).
+    /// The model's effective maximum-output-tokens declaration (`docs/design/storage.md`).
     pub(crate) fn effective_max_output_tokens(&self) -> Option<i64> {
         self.max_output_tokens_override.or(self.max_output_tokens)
     }

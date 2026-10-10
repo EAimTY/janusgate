@@ -1,6 +1,6 @@
 /**
  * The gateway's outward serving surfaces: the client dialects one model set
- * answers, each at its own path (README §1 *Outward Protocols*). Routing is
+ * answers, each at its own path (`web/docs/architecture.md` *Outward Protocols*). Routing is
  * by public model ID alone, so every surface serves every upstream kind and
  * the paths are the only thing that distinguishes them from a client's side.
  */

@@ -134,7 +134,7 @@ impl ItemIdentity {
 }
 
 /// Renders the SHA-256 of `bytes` as lowercase hex — the binding and identity
-/// digest form every carrier comparison uses (README §6.8).
+/// digest form every carrier comparison uses (`docs/design/compaction.md`).
 #[must_use]
 pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     hex_digest(&Sha256::digest(bytes))

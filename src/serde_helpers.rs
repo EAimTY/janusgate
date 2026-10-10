@@ -1,6 +1,6 @@
-//! The serde adapters of the two-state field rule (README §7.0 rule 2): a wire field is either
-//! always present — required, and nullable only when it mirrors a nullable storage column — or
-//! absent-keeps, and never both `null` and a value at once.
+//! The serde adapters of the two-state field rule (`docs/reference/management-api.md` two-state
+//! fields): a wire field is either always present — required, and nullable only when it mirrors a
+//! nullable storage column — or absent-keeps, and never both `null` and a value at once.
 //!
 //! The two adapters are crate-neutral on purpose: the management API payloads declare both, and
 //! the storage tier's shared [`UsageFilter`](crate::storage::api_logs::UsageFilter) declares the
@@ -45,15 +45,15 @@ where
     })
 }
 
-/// A required, nullable wire field (README §7.0 rule 2): its value may be `null`, mirroring a
-/// nullable storage column exactly, and the TypeScript bindings render the key as required (`T |
-/// null`). A field of this type carries `#[ts(type = "<T's TypeScript spelling> | null")]`, because
-/// the generic parameter has no TypeScript rendering of its own.
+/// A required, nullable wire field (`docs/reference/management-api.md` two-state fields): its value
+/// may be `null`, mirroring a nullable storage column exactly, and the TypeScript bindings render
+/// the key as required (`T | null`). A field of this type carries `#[ts(type = "<T's TypeScript
+/// spelling> | null")]`, because the generic parameter has no TypeScript rendering of its own.
 ///
 /// One tolerance is documented rather than fought: serde routes both a missing key and an explicit
 /// `null` through the same none path, so the parser reads an omitted key as `null`. Under
-/// full-state update semantics (rule 3) the two spellings share the one meaning — "no override" —
-/// and the bindings keep well-typed clients honest by requiring the key.
+/// full-state update semantics (full-state writes) the two spellings share the one meaning — "no
+/// override" — and the bindings keep well-typed clients honest by requiring the key.
 ///
 /// The struct is `pub(crate)` only because the management API's wire payloads use it as a field
 /// type; the defining module sits at the crate root, so the crate is the narrowest scope that
@@ -124,10 +124,10 @@ where
     }
 }
 
-/// The field adapter of an absent-keeps field (README §7.0 rule 2): the key may be omitted, but an
-/// explicit `null` is rejected — absence and `null` are not two spellings of one state. Pair with
-/// `#[serde(default)]` so a missing key defaults rather than errors, and `#[ts(optional)]` so the
-/// bindings render `field?: T`.
+/// The field adapter of an absent-keeps field (`docs/reference/management-api.md` two-state
+/// fields): the key may be omitted, but an explicit `null` is rejected — absence and `null` are not
+/// two spellings of one state. Pair with `#[serde(default)]` so a missing key defaults rather than
+/// errors, and `#[ts(optional)]` so the bindings render `field?: T`.
 pub(crate) mod absent_keeps {
     use serde::{
         Deserialize, Deserializer,

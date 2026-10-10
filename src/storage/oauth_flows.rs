@@ -1,5 +1,5 @@
 //! OAuth authorization-flow persistence: the unconsumed-flow lifecycle of
-//! `ongoing_oauth_flows` (README §3, §5.6).
+//! `ongoing_oauth_flows` (`docs/design/storage.md` and `docs/design/providers.md`).
 //!
 //! *Ongoing* means unconsumed: a flow row is deleted by its completion (an authorization-code
 //! exchange, or the management client retrieving a terminal device result) or by the expiry
@@ -9,7 +9,8 @@
 //! concurrently; the lease alone cannot cover a poller that dies after its exchange completed,
 //! so the claimant persists the exchange checkpoint the moment the exchange completes, and a
 //! restart that recovers the claim resumes from it into provisioning and commit instead of
-//! re-presenting the consumed device code (README §3, §7.2).
+//! re-presenting the consumed device code (`docs/design/storage.md` and
+//! `docs/reference/management-api.md`).
 
 use super::Error;
 use crate::{
@@ -267,8 +268,8 @@ impl OngoingFlow {
     /// The new provider's name of a create flow.
     ///
     /// The schema's cross-column `CHECK`s pin `provider_name` non-null exactly while `purpose`
-    /// is `create` (README §3), so only a create flow reads it; any other read is storage drift
-    /// and fails fast instead of completing a flow under an empty name.
+    /// is `create` (`docs/design/storage.md`), so only a create flow reads it; any other read is
+    /// storage drift and fails fast instead of completing a flow under an empty name.
     ///
     /// # Panics
     ///
@@ -303,8 +304,9 @@ impl OngoingFlow {
     /// The target provider row of a reauthorize flow.
     ///
     /// The schema's cross-column `CHECK`s pin `target_provider_id` non-null exactly while
-    /// `purpose` is `reauthorize` (README §3), so only a reauthorize flow reads it; any other
-    /// read is storage drift and fails fast instead of attributing the completion to row `0`.
+    /// `purpose` is `reauthorize` (`docs/design/storage.md`), so only a reauthorize flow reads it;
+    /// any other read is storage drift and fails fast instead of attributing the completion to
+    /// row `0`.
     ///
     /// # Panics
     ///
@@ -323,8 +325,8 @@ impl OngoingFlow {
     /// The result provider row of a succeeded flow.
     ///
     /// The schema's cross-column `CHECK`s pin `result_provider_id` non-null exactly while
-    /// `outcome` is `succeeded` (README §3), so only a succeeded outcome reads it; any other
-    /// read is storage drift and fails fast instead of resolving row `0`.
+    /// `outcome` is `succeeded` (`docs/design/storage.md`), so only a succeeded outcome reads it;
+    /// any other read is storage drift and fails fast instead of resolving row `0`.
     ///
     /// # Panics
     ///
@@ -343,8 +345,8 @@ impl OngoingFlow {
     /// The gateway-owned failure code and message of a failed flow.
     ///
     /// The schema's cross-column `CHECK`s pin the failure pair non-null exactly while `outcome`
-    /// is `failed` (README §3), so only a failed outcome reads it; any other read is storage
-    /// drift and fails fast instead of surfacing empty failure facts.
+    /// is `failed` (`docs/design/storage.md`), so only a failed outcome reads it; any other read is
+    /// storage drift and fails fast instead of surfacing empty failure facts.
     ///
     /// # Panics
     ///
@@ -677,9 +679,9 @@ pub(crate) async fn sweep_expired_flows(database: &Database, now: i64) -> Result
 /// claim older than `claim_stale_before` is recovered — stealable by this claim — covering a
 /// poller that died mid-exchange once its claim ages past the caller's staleness window (the
 /// poller passes a window strictly beyond the control-request timeout that bounds every
-/// exchange, README §3) or between its completed exchange and its commit. The claimed row may
-/// carry an exchange checkpoint (see [`persist_exchange_checkpoint`]), which the claimant
-/// resumes from instead of exchanging again.
+/// exchange, `docs/design/storage.md`) or between its completed exchange and its commit. The
+/// claimed row may carry an exchange checkpoint (see [`persist_exchange_checkpoint`]), which the
+/// claimant resumes from instead of exchanging again.
 ///
 /// # Errors
 ///
@@ -705,8 +707,8 @@ pub(crate) async fn claim_due_device_flow(
 /// longer than the claim-staleness window would hand the claim to another poller tick before
 /// the commit; the re-stamp after provisioning returns refreshes ownership for the commit, so
 /// a provisioning sequence longer than the staleness window cannot be stolen mid-commit
-/// (README §3, §5.4). `None` — no row matched — means the claim was stolen: the winner owns
-/// the row and the caller must abandon instead of committing.
+/// (`docs/design/storage.md` and `docs/design/providers.md`). `None` — no row matched — means the
+/// claim was stolen: the winner owns the row and the caller must abandon instead of committing.
 ///
 /// The statement stamps the claim exactly like [`claim_due_device_flow`] and conditions on it
 /// exactly like [`commit_device_success_in_transaction`], whose commit the freshened stamp
@@ -736,8 +738,9 @@ pub(crate) async fn restamp_claim(
 /// Persists the checkpoint of one completed exchange while the caller still owns the claim
 /// stamped `claim_started_at`: the mapped token fields ride the flow row, so a restart that
 /// recovers the claim resumes into provisioning and commit instead of re-presenting the
-/// consumed device code to the upstream (README §3, §7.2). `false` means the claim was lost —
-/// the winner owns the row, and the caller discards its outcome like every persist.
+/// consumed device code to the upstream (`docs/design/storage.md` and
+/// `docs/reference/management-api.md`). `false` means the claim was lost — the winner owns the row,
+/// and the caller discards its outcome like every persist.
 ///
 /// # Errors
 ///
@@ -763,12 +766,12 @@ pub(crate) async fn persist_exchange_checkpoint(
 /// `claim_started_at`: either the next schedule (an `authorization_pending` or backoff retry, the
 /// interval optionally raised permanently), or the terminal failure with its gateway-owned code
 /// and message. A terminal persist also drops the next-poll instant, which a device flow carries
-/// exactly while it is pending (README §3). Both arms clear any exchange checkpoint: a retry is
-/// only ever scheduled for an exchange that did not complete, and a terminal outcome ends the
-/// flow, so the recorded exchange is never resumed — the row a released claim or a terminal
-/// outcome leaves behind carries no checkpoint, exactly as the schema pins it. `None` means the
-/// claim was lost — a concurrent commit superseded this poller — and the computed schedule was
-/// discarded.
+/// exactly while it is pending (`docs/design/storage.md`). Both arms clear any exchange checkpoint:
+/// a retry is only ever scheduled for an exchange that did not complete, and a terminal outcome
+/// ends the flow, so the recorded exchange is never resumed — the row a released claim or a
+/// terminal outcome leaves behind carries no checkpoint, exactly as the schema pins it. `None`
+/// means the claim was lost — a concurrent commit superseded this poller — and the computed
+/// schedule was discarded.
 ///
 /// # Errors
 ///
@@ -843,8 +846,8 @@ pub(crate) enum DevicePollOutcome {
 /// Commits a successful device flow inside the caller's transaction: the outcome update is part
 /// of the same transaction as the provider write, so the provider and the consumable result
 /// appear together. The commit also drops the next-poll instant, which a device flow carries
-/// exactly while it is pending (README §3), and the exchange checkpoint, whose recorded
-/// exchange the commit itself completes — a terminal row carries neither.
+/// exactly while it is pending (`docs/design/storage.md`), and the exchange checkpoint, whose
+/// recorded exchange the commit itself completes — a terminal row carries neither.
 ///
 /// The update conditions on the claim stamp, so only the poller that won the exchange can commit
 /// the success; `false` means the claim was lost and the caller's provider write must be

@@ -1,6 +1,6 @@
 //! Anthropic Messages codec: the `anthropic_messages` upstream format and the inbound
-//! `/api/anthropic-v1/messages` client surface (README §§5.8, 6.2–6.6) — the Messages family of
-//! the Anthropic protocol under [`crate::format::anthropic`].
+//! `/api/anthropic-v1/messages` client surface (`docs/design/providers.md`, 6.2–6.6) — the Messages
+//! family of the Anthropic protocol under [`crate::format::anthropic`].
 //!
 //! The family splits by concern: `request_parse` parses the inbound body, `client_render` renders
 //! native Messages completions, `upstream_render` renders the upstream request, and
@@ -231,8 +231,8 @@ struct OpaqueKind {
 /// A `thinking` fragment qualifies only with a non-blank `signature`: the official
 /// `ThinkingBlockParam` requires the upstream's own signature, so a missing or blank one is not
 /// replayable state and both render surfaces degrade it exactly like a foreign-family fragment
-/// (README §5.8). A `redacted_thinking` fragment carries `data` and no signature member by
-/// design, so it always qualifies.
+/// (`docs/design/providers.md`). A `redacted_thinking` fragment carries `data` and no signature
+/// member by design, so it always qualifies.
 fn is_anthropic_block(opaque: &Value) -> bool {
     // Deserializing from the borrowed value copies only the tag and signature Strings, never the
     // stored thinking text or redacted blob.

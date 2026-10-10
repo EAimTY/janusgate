@@ -7,7 +7,7 @@ import type { ScreenRead } from "./read";
 
 /**
  * The save-and-dirt wiring of one settings form, shared by the five edit
- * screens (README §6.3): a submit runs the caller's write through the save
+ * screens (`web/docs/architecture.md`): a submit runs the caller's write through the save
  * gate, reports its outcome through the screen's notice — a failed or aborted
  * save stops there, leaving the success tail unrun — and a succeeded save
  * runs the caller's re-baseline, latches the row hold until the save's own
@@ -35,7 +35,7 @@ export function createEditForm<TResult>(options: {
      * sent — or the returned row where the write recomposes one.
      */
     readonly onSucceeded: (result: TResult) => ScreenNotice;
-    /** Reports the form's dirt to the row hold (README §6.3). */
+    /** Reports the form's dirt to the row hold (`web/docs/architecture.md`). */
     readonly onDirtyChange: (isDirty: boolean) => void;
     /** Reports a succeeded save: the hold stands until the save's reload lands. */
     readonly onSaved: () => void;
@@ -47,7 +47,7 @@ export function createEditForm<TResult>(options: {
 } {
     const [isSaving, setIsSaving] = createSignal(false);
 
-    // The screen holds the form's row while this dirt stands (README §6.3).
+    // The screen holds the form's row while this dirt stands (`web/docs/architecture.md`).
     createEffect(
         () => options.isDirty(),
         (isDirtyValue) => {
@@ -115,7 +115,7 @@ export function createEditForm<TResult>(options: {
 /**
  * One danger card's delete action: the confirmed call, its outcome reported
  * through the screen's notice — a gone answer first reloading the listing, so
- * the not-found state takes over instead of a ghost form (§6.4) — and the
+ * the not-found state takes over instead of a ghost form (`web/docs/architecture.md`) — and the
  * boolean the confirmation card reads, answering whether the row is gone. The
  * call, its action name, and where a confirmed deletion goes are the
  * caller's.
@@ -132,7 +132,7 @@ export function createDeleteAction(options: {
 }): () => Promise<boolean> {
     // The one disposal guard, set when the consuming screen goes away: a
     // call answering afterwards must state nothing, reload nothing, and
-    // navigate nowhere (README §6.4).
+    // navigate nowhere (`web/docs/architecture.md`).
     const isDisposed = createDisposalGuard();
 
     return async (): Promise<boolean> => {

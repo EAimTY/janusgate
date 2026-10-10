@@ -1,6 +1,6 @@
 //! Outward client API routing: the `/api` parent router, the shared error domain every
-//! format surface renders through its own wire shape (README §6.7), and the shared outward
-//! serving pipeline every format surface runs through ([`serving`]).
+//! format surface renders through its own wire shape (`docs/reference/inference.md`), and the
+//! shared outward serving pipeline every format surface runs through ([`serving`]).
 
 use super::{context::Context, database::Database, router_fallback};
 use axum::Router;

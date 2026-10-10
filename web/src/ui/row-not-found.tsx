@@ -105,7 +105,7 @@ const KIND_COPY: Record<
 };
 
 /**
- * The row screens' shared not-found state (README §6.3, §6.4): the screen's
+ * The row screens' shared not-found state (`web/docs/architecture.md`): the screen's
  * own header kept over the state announcing that the addressed row does not
  * exist, with the way back to the listing — in the header and as the primary
  * action — and, where creating a replacement is a way forward, the creation

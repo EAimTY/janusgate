@@ -107,7 +107,10 @@ struct PartIn {
     /// Reasoning marker the gateway itself emits on thought parts; accepted-and-ignored,
     /// mapping to plain text (this surface never originates reasoning blocks).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     thought: Option<bool>,
 
     /// Inline image data.
@@ -191,20 +194,27 @@ struct FunctionResponseIn {
     id: Option<String>,
 
     /// The official media channel on tool results, known-but-unsupported: presence is a
-    /// 400 naming the field (the IR tool output has no media channel; README §6.6).
+    /// 400 naming the field (the IR tool output has no media channel;
+    /// `docs/reference/inference.md`).
     #[serde(default)]
     parts: Option<IgnoredAny>,
 
     /// Non-blocking scheduling control for resumable calls, accepted-and-ignored: the
-    /// stateless gateway schedules nothing downstream (README §6.6).
+    /// stateless gateway schedules nothing downstream (`docs/reference/inference.md`).
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     scheduling: Option<String>,
 
     /// Continuation marker for multi-part results, accepted-and-ignored: the stateless
-    /// gateway never continues a tool result across turns (README §6.6).
+    /// gateway never continues a tool result across turns (`docs/reference/inference.md`).
     #[serde(default, alias = "willContinue")]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    #[expect(
+        dead_code,
+        reason = "accepted and ignored per `docs/reference/inference.md`"
+    )]
     will_continue: Option<bool>,
 }
 
@@ -547,7 +557,7 @@ fn parse_user_content(
 ) -> Result<(), InvalidRequest> {
     // `functionCall` parts belong to `model` contents alone; an image beside a tool result is
     // an ordinary image part, and only media inside a `functionResponse` itself is rejected
-    // below (README §6.6).
+    // below (`docs/reference/inference.md`).
     if content
         .parts
         .iter()
@@ -570,7 +580,8 @@ fn parse_user_content(
             text_parts.push(shared);
         } else if let Some(response) = part.function_response.as_ref() {
             // `parts` is the official media channel on tool results; the IR tool output has
-            // no media channel, so any present member is a 400 naming it (README §6.6).
+            // no media channel, so any present member is a 400 naming it
+            // (`docs/reference/inference.md`).
             if response.parts.is_some() {
                 return Err(InvalidRequest::field(
                     "parts",
@@ -717,8 +728,8 @@ fn parse_shared_payload(part: &PartIn) -> Result<Option<IrPart>, InvalidRequest>
     if let Some(file) = part.file_data.as_ref() {
         return Ok(Some(IrPart::Image {
             // The IR helper names its rejections after the OpenAI member `image_url`; this
-            // surface's own member is `fileData`, so the rejection is re-wrapped here (README
-            // §6.6: every rejection names the field).
+            // surface's own member is `fileData`, so the rejection is re-wrapped here
+            // (`docs/reference/inference.md`: every rejection names the field).
             image: IrImage::from_url(&file.file_uri)
                 .map_err(|error| InvalidRequest::field("fileData", error.to_string()))?,
         }));

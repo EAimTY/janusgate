@@ -22,7 +22,7 @@ import {
 } from "./validation-primitives";
 
 /**
- * Object-member paths share the existing descriptor language (README §5.1),
+ * Object-member paths share the existing descriptor language (`docs/design/providers.md`),
  * with every member named and none empty: a quota identity segment is never
  * the empty string.
  */

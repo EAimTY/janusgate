@@ -4,10 +4,12 @@
 //! items, and each protocol parent holds the families speaking that one protocol plus the items
 //! its families share. This module groups the GenerateContent family ([`generate_content`]) and
 //! the Interactions family ([`interaction`]) — the two codecs over the Gemini client protocol and
-//! the two Gemini upstream wires (README §1, §5.7, §6) — beside their shared mid-stream error
-//! frame helper ([`error_data_frame`], rendering through [`crate::api::error::gemini`],
-//! README §6.7), response-format decision, usage fold and split, tool-output name resolution, and
-//! the thought-step family predicate deciding replay membership for both codecs (README §6.4).
+//! the two Gemini upstream wires (`docs/design/architecture.md` and `docs/design/providers.md` and
+//! `docs/reference/inference.md`) — beside their shared mid-stream error frame helper
+//! ([`error_data_frame`], rendering through [`crate::api::error::gemini`], `docs/reference/
+//! inference.md`), response-format decision, usage fold and split, tool-output name resolution, and
+//! the thought-step family predicate deciding replay membership for both codecs
+//! (`docs/reference/inference.md`).
 
 pub(crate) mod generate_content;
 pub(crate) mod interaction;
@@ -19,8 +21,8 @@ use serde_json::Value;
 /// Renders a mid-stream stream failure as the Gemini terminal SSE data frame — the one recipe
 /// both Gemini codecs' SSE renderers emit when a stream aborts, shared here so the two cannot
 /// drift: the Gemini error render ([`crate::api::error::gemini`]) classifies the API error into
-/// the official Status envelope (README §6.7), which is serialized and framed as the single
-/// `data:` frame that terminates the stream.
+/// the official Status envelope (`docs/reference/inference.md`), which is serialized and framed as
+/// the single `data:` frame that terminates the stream.
 fn error_data_frame(error: &crate::api::Error) -> String {
     let (_, envelope) = crate::api::error::gemini::render(error);
 
@@ -57,7 +59,7 @@ fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, Inv
 /// Step type tag of a model reasoning step in the official Interactions vocabulary
 /// (ai.google.dev/api/interactions-api): the protocol-pinned discriminant both Gemini codecs must
 /// agree on, because an opaque replay payload carrying it is the credential for Gemini-family
-/// membership on either wire (README §6.4).
+/// membership on either wire (`docs/reference/inference.md`).
 const STEP_THOUGHT: &str = "thought";
 
 /// Answers the Gemini-family membership of a reasoning block's opaque replay payload: an object
@@ -67,9 +69,9 @@ const STEP_THOUGHT: &str = "thought";
 /// The predicate is the one family membership check of both Gemini codecs, shared so the two can
 /// never drift: the Interactions codec replays an accepted payload verbatim onto its own wire,
 /// while the GenerateContent codec bridges the same payload onto its thinking part
-/// (`thought: true` text, the signature riding `thoughtSignature`) — the README §6.4 bridge only
-/// round-trips if both codecs answer membership identically, and one shared predicate makes a
-/// one-directional drift unrepresentable.
+/// (`thought: true` text, the signature riding `thoughtSignature`) — the
+/// `docs/reference/inference.md` bridge only round-trips if both codecs answer membership
+/// identically, and one shared predicate makes a one-directional drift unrepresentable.
 ///
 /// The probe is a typed struct rather than a member lookup, so the payload is modelled, never
 /// walked ad hoc.
@@ -166,7 +168,8 @@ fn fold_gemini_usage(
 /// subtracting the thought tokens — `saturating_sub`, the mirror of the fold's `saturating_add`
 /// — restoring exactly the members the fold consumed; each renderer rebuilds its wire members
 /// from the components and renders its official total as the sum of the members it emits
-/// (README §6.3). The components line up position-for-position with the fold's inputs.
+/// (`docs/reference/inference.md`). The components line up position-for-position with the fold's
+/// inputs.
 fn split_gemini_usage(usage: &IrUsage) -> (u64, u64, Option<u64>, Option<u64>) {
     let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0);
 

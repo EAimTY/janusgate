@@ -1,6 +1,6 @@
 //! The completion pipeline shared by the synchronous authorization-code completion and the
-//! background device poller (README §5.3, §5.4): one routine folds a completed exchange — the
-//! identity-token claims, the response's slots, its extracted base URL, and the provisioning
+//! background device poller (`docs/design/providers.md`): one routine folds a completed exchange —
+//! the identity-token claims, the response's slots, its extracted base URL, and the provisioning
 //! sequence — into the working state and builds the stored OAuth credentials, and one routine
 //! writes the flow's provider row inside the caller's transaction. The callers differ only in
 //! transaction discipline: the poller commits the provider write together with the flow's
@@ -31,9 +31,10 @@ pub(crate) struct CompletionProduct {
 
     /// Whether [`CompletionProduct::base_url`] is an upstream-derived replacement — the
     /// exchange's `base_url` fold or a provisioning extraction — rather than the flow's
-    /// begin-time base. Only a derived base joins a reauthorize flow's write (README §7.1); a
-    /// create flow stores the working base either way, the begin-time base being the
-    /// operator-supplied initial value there (README §7.1's `oauth:start` contract).
+    /// begin-time base. Only a derived base joins a reauthorize flow's write
+    /// (`docs/reference/management-api.md`); a create flow stores the working base either way,
+    /// the begin-time base being the operator-supplied initial value there
+    /// (`docs/reference/management-api.md`'s `oauth:start` contract).
     is_base_url_derived: bool,
 }
 
@@ -68,12 +69,12 @@ pub(crate) fn completed_outcome(product: ExchangeProduct) -> Result<ExchangeOutc
     }
 }
 
-/// Runs the completion pipeline over one flow's completed exchange (README §5.3, §5.4): the
-/// flow's working slots absorb the identity-token claims and the exchange's slots, the
+/// Runs the completion pipeline over one flow's completed exchange (`docs/design/providers.md`):
+/// the flow's working slots absorb the identity-token claims and the exchange's slots, the
 /// exchange's extracted base URL replaces the flow's stored one, the provisioning sequence
 /// folds its extractions over the working state, and the stored credentials are built from the
-/// result. Per README §5.3 the access token may be supplied by a later provisioning step
-/// instead of the exchange, but must exist before the provider write, and the expiry resolves
+/// result. Per `docs/design/providers.md` the access token may be supplied by a later provisioning
+/// step instead of the exchange, but must exist before the provider write, and the expiry resolves
 /// from a provisioning extraction, else the response's token data.
 ///
 /// # Errors
@@ -95,17 +96,18 @@ pub(crate) async fn complete_exchange(
     // value outside the routing-safety contract fails the flow like any other fold.
     let working_slots = absorb_exchange_slots(&flow.slots, &outcome, &recipe.id_token_claims)?;
 
-    // The working base URL follows the slots' precedence (README §5.3): the exchange's
-    // extracted `base_url` replaces the flow's stored one, and a provisioning extraction
-    // replaces it again when one runs below.
+    // The working base URL follows the slots' precedence (`docs/design/providers.md`): the
+    // exchange's extracted `base_url` replaces the flow's stored one, and a provisioning
+    // extraction replaces it again when one runs below.
     let mut state = WorkingState::new(
         working_slots,
         outcome.base_url.clone().or_else(|| flow.base_url.clone()),
     );
 
-    // Provenance (README §7.1): only an upstream-derived base URL — the exchange's fold here,
-    // or a provisioning extraction below — replaces the stored base at the provider write; the
-    // begin-time base the flow echoed is never a reauthorize write candidate.
+    // Provenance (`docs/reference/management-api.md`): only an upstream-derived base URL — the
+    // exchange's fold here, or a provisioning extraction below — replaces the stored base at
+    // the provider write; the begin-time base the flow echoed is never a reauthorize write
+    // candidate.
     state.is_base_url_derived = outcome.base_url.is_some();
 
     // The stage constants thread the exchange's access token — the secret `Secret` references
@@ -220,12 +222,13 @@ pub(crate) async fn write_completion_provider(
                 return Ok(None);
             }
 
-            // The stored base joins the write only when the flow derived a replacement (README
-            // §3): the begin-time base the product otherwise carries is a stale echo by
-            // completion time, and rewriting it would clobber a base a concurrent
-            // `providers:update` stored while the user approved. A derived base lands in the
-            // same transaction as the rebind, so a rebind to a base-referencing definition
-            // never sits on a missing base (README §7.1).
+            // The stored base joins the write only when the flow derived a replacement
+            // (`docs/design/storage.md`): the begin-time base the product otherwise carries is a
+            // stale echo by completion time, and rewriting it would clobber a base a
+            // concurrent `providers:update` stored while the user approved. A derived
+            // base lands in the same transaction as the rebind, so a rebind to a
+            // base-referencing definition never sits on a missing base
+            // (`docs/reference/management-api.md`).
             if product.is_base_url_derived {
                 let Some(base_url) = &product.base_url else {
                     return Err(Error::Internal {

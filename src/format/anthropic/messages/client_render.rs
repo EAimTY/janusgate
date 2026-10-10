@@ -27,8 +27,8 @@ pub(crate) struct MessagesResponse {
     role: &'static str,
 
     /// Response content: reasoning blocks first — replayable same-family blocks verbatim,
-    /// every other reasoning block's text as an ordinary text block (README §5.8) — then the
-    /// answer text, then tool calls.
+    /// every other reasoning block's text as an ordinary text block (`docs/design/providers.md`) —
+    /// then the answer text, then tool calls.
     content: Vec<OutBlock>,
 
     /// Public model name the client addressed.
@@ -65,7 +65,7 @@ struct ResponseUsage {
     cache_read_input_tokens: Option<u64>,
 
     /// Output token breakdown, when the upstream reported one — the native spelling of the IR
-    /// reasoning column, omitted when absent (README §5.8).
+    /// reasoning column, omitted when absent (`docs/design/providers.md`).
     #[serde(skip_serializing_if = "Option::is_none")]
     output_tokens_details: Option<OutputTokensDetails>,
 
@@ -113,7 +113,7 @@ impl ResponseUsage {
 
     /// Opens the streamed message from a stream-head partial report: its input and cache
     /// columns ride the opening usage, while the output stays zero until a terminal report
-    /// overwrites the partial one (README §6.2).
+    /// overwrites the partial one (`docs/reference/inference.md`).
     fn from_head_report(usage: IrUsage) -> Self {
         Self {
             input_tokens: usage.input_tokens,
@@ -202,7 +202,8 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             // Not family-replayable — a foreign-family block, or a signature-less `thinking`
             // shape the official schema forbids — so the reasoning text rides the ordinary text
             // channel: conformant on every surface and replayable without a trap, where a
-            // synthesized `thinking` block without its signature is neither (README §5.8).
+            // synthesized `thinking` block without its signature is neither
+            // (`docs/design/providers.md`).
             content.push(OutBlock::Typed(TypedBlock::Text {
                 text: block.text.clone(),
             }));
@@ -274,7 +275,7 @@ pub(super) fn render_json_response_with_prefix_blocks(
 
     // A prefixed body is a compact-and-continue lifecycle: the compaction
     // iterations ride beside the message stage's own entry, whose usage is the
-    // aggregated observation (README §6.8).
+    // aggregated observation (`docs/design/compaction.md`).
     let mut iterations = iterations.to_vec();
 
     if !aggregation.compaction_iterations.is_empty() {
@@ -411,7 +412,7 @@ pub(crate) struct SseRenderer {
 
     /// Whether the `message_start` frame is buffered awaiting the one-event lookahead: the
     /// frame emits when the next event resolves it, folding the stream-head partial usage
-    /// report when that event is exactly the report (README §6.2).
+    /// report when that event is exactly the report (`docs/reference/inference.md`).
     is_start_buffered: bool,
 
     /// Compaction blocks rendered as the stream's leading prefix, whole block per
@@ -439,7 +440,7 @@ pub(crate) struct SseRenderer {
     usage: Option<IrUsage>,
 
     /// The vendor-shaped iteration entries of a compaction lifecycle, rendered
-    /// under the terminal delta's `usage.iterations` (README §6.8).
+    /// under the terminal delta's `usage.iterations` (`docs/design/compaction.md`).
     compaction_iterations: Vec<crate::ir::compaction::UsageIteration>,
 
     /// Whether the renderer carries a compaction lifecycle — a prefix, a
@@ -537,7 +538,7 @@ enum StartBlockOut {
 
     /// Thinking block opening empty; the signature streams later as a delta. The official
     /// `ThinkingBlock` shape requires the `signature` member, so the start frame carries it
-    /// empty until the `signature_delta` lands (README §5.8).
+    /// empty until the `signature_delta` lands (`docs/design/providers.md`).
     Thinking {
         /// Always empty at the start.
         thinking: &'static str,
@@ -724,7 +725,7 @@ impl SseRenderer {
     }
 
     /// Carries the lifecycle's vendor-shaped iteration entries into the
-    /// terminal `message_delta`'s `usage.iterations` (README §6.8) and
+    /// terminal `message_delta`'s `usage.iterations` (`docs/design/compaction.md`) and
     /// marks the stream a compaction lifecycle.
     #[must_use]
     pub(crate) fn with_usage_iterations(
@@ -987,7 +988,7 @@ impl SseRenderer {
 
         // A streamed compact-and-continue lifecycle reports the message
         // stage's usage at its terminal: its entry closes the rendered
-        // iterations (README §6.8). A compact-only lifecycle reports no
+        // iterations (`docs/design/compaction.md`). A compact-only lifecycle reports no
         // usage observation, and an ordinary stream is no lifecycle at all —
         // neither fabricates an entry.
         if self.is_compaction_lifecycle
@@ -1016,9 +1017,10 @@ impl SseRenderer {
     fn render_frames(&mut self, event: &IrEvent) -> Vec<String> {
         // One-event lookahead: the head stays buffered until the next event resolves it, so
         // the stream-head partial usage report — published immediately after
-        // [`IrEvent::MessageStart`] per the IR contract (README §6.2) — folds its input and
-        // cache columns into the opening usage; every other event resolves the buffer with
-        // zeros first, keeping `message_start` exactly once and first in every stream.
+        // [`IrEvent::MessageStart`] per the IR contract (`docs/reference/inference.md`) — folds its
+        // input and cache columns into the opening usage; every other event resolves the
+        // buffer with zeros first, keeping `message_start` exactly once and first in every
+        // stream.
         let mut frames = Vec::new();
         self.prefix_boundary = None;
 
@@ -1291,10 +1293,10 @@ impl SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal `error` event, classified once through the
-    /// shared API error (README §6.7). A failure while the `message_start` head is still
-    /// buffered flushes it ahead of the error frame — exactly once and first — so a stream
-    /// that fails between the start and its first resolving event still opens natively; the
-    /// two frames ride one body write, which SSE clients split on the blank-line delimiter.
+    /// shared API error (`docs/reference/inference.md`). A failure while the `message_start` head
+    /// is still buffered flushes it ahead of the error frame — exactly once and first — so a
+    /// stream that fails between the start and its first resolving event still opens natively;
+    /// the two frames ride one body write, which SSE clients split on the blank-line delimiter.
     fn render_error_frame(&mut self, error: &crate::api::Error) -> String {
         let mut head = String::new();
 

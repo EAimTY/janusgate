@@ -1,8 +1,9 @@
 //! Client-response rendering for the Responses codec: renders IR events as Responses SSE events or
 //! an aggregated non-streaming body.
 //!
-//! Every rendered payload is a first-party type in the official Responses shape (README §6.3), so
-//! the wire contract lives in the type system rather than in assembled JSON.
+//! Every rendered payload is a first-party type in the official Responses shape
+//! (`docs/reference/inference.md`), so the wire contract lives in the type system rather than in
+//! assembled JSON.
 
 use super::upstream_parse::UpstreamUsage;
 use crate::{
@@ -597,7 +598,7 @@ impl SseRenderer {
     /// `output_item.done` pair at its own output position once the response
     /// has opened, and the terminal response object's output array opens with
     /// them in the same order — the checkpoint-before-answer ordering the
-    /// automatic and trigger compaction flows require (README §6.8).
+    /// automatic and trigger compaction flows require (`docs/design/compaction.md`).
     pub(crate) fn with_prefix_items(
         mut self,
         items: Vec<crate::format::compaction_wire::Checkpoint>,
@@ -842,7 +843,7 @@ impl ClientSseRenderer for SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal `response.failed` event, classified once through
-    /// the shared API error (README §6.7).
+    /// the shared API error (`docs/reference/inference.md`).
     ///
     /// Strict clients validate the embedded response object like any other, so it carries the full
     /// required shell rather than a bare id/status/error subset.
@@ -997,7 +998,7 @@ impl SseRenderer {
 
             // A done carrying text opens its block when no deltas preceded it; an empty-text done
             // only marks the block the deltas already delivered. The opaque payload is dropped on
-            // OpenAI surfaces (README §6.2); block closure happens on Finish via
+            // OpenAI surfaces (`docs/reference/inference.md`); block closure happens on Finish via
             // `close_open_items`.
             IrEvent::ReasoningDone { text, .. } => {
                 if text.is_empty() {
@@ -1170,8 +1171,9 @@ impl SseRenderer {
                     None => {
                         // A third-party upstream may deliver `output_item.done` for a call it never
                         // revealed with `output_item.added` or argument deltas — the recovery class
-                        // of README §6.3. The done payload carries the complete call, so the item
-                        // is opened here exactly as a live delta would have opened it; dropping it
+                        // of `docs/reference/inference.md`. The done payload carries the complete
+                        // call, so the item is opened here exactly as a
+                        // live delta would have opened it; dropping it
                         // would lose the call only on the streaming path, while aggregation keeps
                         // it.
                         let item_id = format!("fc_{}", ids::new_uuid());
@@ -1384,7 +1386,7 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
 /// Renders an aggregated completion whose output opens with the given
 /// vendor-shaped compaction items: the checkpoint-before-answer ordering of
-/// the automatic and trigger compaction flows (README §6.8), rendered as
+/// the automatic and trigger compaction flows (`docs/design/compaction.md`), rendered as
 /// the same item values the streaming path's prefix frames carry.
 pub(super) fn render_json_response_with_prefix_items(
     model: &str,

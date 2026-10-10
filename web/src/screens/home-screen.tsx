@@ -158,7 +158,7 @@ export function HomeScreen(props: {
         }),
     );
 
-    // An enabled provider with no ready inventory (README §3) needs
+    // An enabled provider with no ready inventory (`web/docs/architecture.md`) needs
     // a human: its rows are all vanished, disabled, or absent — the vanished
     // case is the quietest failure there is, and a raw row count would hide
     // it. A deliberately disabled provider is the operator's choice, not a

@@ -162,9 +162,9 @@ pub(crate) enum Error {
     /// Stored data violated an invariant written by the validated management path — database
     /// drift — or a database file is not interpretable under its schema registry: an api-log
     /// day file carrying an unknown schema version or another registry's application-id stamp
-    /// answers drift here, so its write is swallowed as a recording failure (README §8) and
-    /// its read fails that one request instead of killing the process (README §3 *ApiLog
-    /// Store*).
+    /// answers drift here, so its write is swallowed as a recording failure
+    /// (`docs/reference/configuration.md`) and its read fails that one request instead of
+    /// killing the process (`docs/design/storage.md` *ApiLog Store*).
     #[error("{message}")]
     Drift {
         /// Human-readable failure message.
@@ -276,15 +276,16 @@ fn in_placeholders(count: usize) -> String {
     numbered_placeholders(count, 1)
 }
 
-/// The documented wire wording for a rejected provider name (README §7.1), owned once here so the
-/// checked rename and both management name-taken pre-checks render a taken name identically.
+/// The documented wire wording for a rejected provider name (`docs/reference/management-api.md`),
+/// owned once here so the checked rename and both management name-taken pre-checks render a taken
+/// name identically.
 pub(crate) fn provider_name_taken_message(name: &str) -> String {
     format!("Provider name `{name}` is already taken")
 }
 
-/// The wire wording for an unknown provider id (README §7 404 `not_found`), owned once here so the
-/// transactional writes that re-read the row and the management lookups that pre-check it render a
-/// missing provider identically.
+/// The wire wording for an unknown provider id (`docs/reference/management-api.md` 404
+/// `not_found`), owned once here so the transactional writes that re-read the row and the
+/// management lookups that pre-check it render a missing provider identically.
 pub(crate) fn provider_not_found_message(id: i64) -> String {
     format!("Provider {id} does not exist")
 }
@@ -296,8 +297,9 @@ pub(crate) fn provider_definition_not_found_message(name: &str, version: i64) ->
     format!("Provider definition `{name}` version {version} does not exist")
 }
 
-/// The wire wording for an unknown model row id (README §7 404 `not_found`), owned once here so the
-/// row-addressed writes that re-read the row render a missing model identically.
+/// The wire wording for an unknown model row id (`docs/reference/management-api.md` 404
+/// `not_found`), owned once here so the row-addressed writes that re-read the row render a missing
+/// model identically.
 fn model_not_found_message(id: i64) -> String {
     format!("Model {id} does not exist")
 }
