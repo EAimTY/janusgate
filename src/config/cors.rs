@@ -13,10 +13,14 @@ impl ConfigLoader {
     }
 
     /// The CORS layer for the management API sub-router (`/management-api`); like
-    /// [`ConfigLoader::api_cors_layer`] it reflects the startup configuration, because the routers
-    /// are constructed once.
+    /// [`ConfigLoader::api_cors_layer`] it reflects the startup configuration, because the
+    /// routers are constructed once. When the management API section is absent at startup the
+    /// router is not mounted at all, and this is merely the restrictive default value.
     pub(crate) fn management_api_cors_layer(&self) -> CorsLayer {
-        cors_layer(&self.management_api.cors)
+        match self.management_api.as_ref() {
+            Some(section) => cors_layer(&section.cors),
+            None => cors_layer(&CorsConfig::default()),
+        }
     }
 }
 

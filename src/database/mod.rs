@@ -22,6 +22,27 @@ pub(crate) mod schema;
 /// concurrent writers block each other instead of failing immediately with a busy error.
 const CONNECTION_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The fixed main-database connection pool size; a performance choice, not configuration: the
+/// engine serializes writers on the whole-file lock ([`CONNECTION_BUSY_TIMEOUT`]), so extra
+/// connections serve only concurrent short reads — per-request authorization lookups, quota
+/// checks, and management queries — for which eight leave ample headroom at negligible
+/// in-process cost.
+///
+/// # Panics
+///
+/// Never: the literal 8 is nonzero, and the `expect` states that invariant.
+pub(crate) fn main_pool_connections() -> NonZero<usize> {
+    #[expect(clippy::expect_used, reason = "the literal 8 is nonzero")]
+    let connections = NonZero::new(8).expect("8 is nonzero");
+
+    connections
+}
+
+/// The fixed main-database pool wait, paired with [`CONNECTION_BUSY_TIMEOUT`]: a checkout whose
+/// holders are parked on engine work bounded by that busy timeout almost never converts into
+/// success by waiting longer.
+pub(crate) const MAIN_POOL_WAIT: Duration = Duration::from_secs(5);
+
 /// Database operation, connection pool, and storage engine errors.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -104,7 +125,7 @@ struct Manager {
 impl Database {
     /// Opens the in-process SQLite database at the specified path, creating the file and its
     /// parent directory when absent, and initializes a connection pool with at most
-    /// `max_connections` concurrent connections, waiting at most `pool_timeout` for a free
+    /// `max_connections` concurrent connections, waiting at most `pool_wait` for a free
     /// connection when every connection is checked out. The `registry` names the schema version
     /// registry the database migrates under — the main control-plane schema, or the api_logs
     /// schema for api-log files.
@@ -125,7 +146,7 @@ impl Database {
         path: impl AsRef<Path>,
         registry: schema::Registry,
         max_connections: NonZero<usize>,
-        pool_timeout: Duration,
+        pool_wait: Duration,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
 
@@ -139,7 +160,7 @@ impl Database {
             fs::create_dir_all(parent)?;
         }
 
-        Self::open_pooled(path_str, registry, max_connections, pool_timeout).await
+        Self::open_pooled(path_str, registry, max_connections, pool_wait).await
     }
 
     /// Opens the existing database at the specified path without creating anything: a missing
@@ -164,7 +185,7 @@ impl Database {
         path: impl AsRef<Path>,
         registry: schema::Registry,
         max_connections: NonZero<usize>,
-        pool_timeout: Duration,
+        pool_wait: Duration,
     ) -> Result<Option<Self>, Error> {
         let path_str = database_path(path.as_ref())?;
 
@@ -172,7 +193,7 @@ impl Database {
             return Ok(None);
         }
 
-        Self::open_pooled(path_str, registry, max_connections, pool_timeout)
+        Self::open_pooled(path_str, registry, max_connections, pool_wait)
             .await
             .map(Some)
     }
@@ -190,7 +211,7 @@ impl Database {
         path_str: &str,
         registry: schema::Registry,
         max_connections: NonZero<usize>,
-        pool_timeout: Duration,
+        pool_wait: Duration,
     ) -> Result<Self, Error> {
         let database = TursoBuilder::new_local(path_str).build().await?;
 
@@ -200,7 +221,7 @@ impl Database {
 
         let pool = match Pool::builder(manager)
             .max_size(max_connections.get())
-            .wait_timeout(Some(pool_timeout))
+            .wait_timeout(Some(pool_wait))
             .runtime(Runtime::Tokio1)
             .build()
         {

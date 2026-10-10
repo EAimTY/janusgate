@@ -33,7 +33,6 @@
 
 mod api_logs_version_1;
 mod version_1;
-mod version_2;
 
 use super::Error;
 use log::{debug, info};
@@ -68,7 +67,7 @@ struct Schema {
 
 /// Every schema version of the main database, ordered by ascending version starting at 1 with no
 /// gaps.
-const MAIN_SCHEMAS: &[Schema] = &[version_1::SCHEMA, version_2::SCHEMA];
+const MAIN_SCHEMAS: &[Schema] = &[version_1::SCHEMA];
 
 /// Every schema version of an api-log file, ordered by ascending version starting at 1 with no
 /// gaps. Api-log versions are immutable history: a column added later is a new version whose

@@ -2,26 +2,42 @@
 //! serde attributes.
 
 use log::LevelFilter;
-use std::{num::NonZero, time::Duration};
-
-/// Default maximum number of concurrent database pool connections.
-pub(super) fn max_connections() -> NonZero<usize> {
-    positive_usize::<4>()
-}
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    num::NonZero,
+    path::PathBuf,
+};
 
 /// Default minimum log severity.
 pub(super) fn log_level() -> LevelFilter {
     LevelFilter::Info
 }
 
-/// Default connection pool wait in milliseconds.
-pub(super) fn pool_timeout() -> Duration {
-    Duration::from_millis(5000)
+/// Default listen address: loopback only, so a defaulted gateway is never exposed beyond its
+/// host. The port is four-digit, unassigned in the IANA registry, and echoes the development
+/// configuration's port.
+pub(super) fn listen() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4718)
+}
+
+/// Default request-accounting recording switch.
+pub(super) fn logs_is_enabled() -> bool {
+    true
+}
+
+/// Default request-accounting directory: a relative path resolved beside the configuration file.
+pub(super) fn logs_path() -> PathBuf {
+    PathBuf::from("api_logs")
 }
 
 /// Default request-accounting retention, in whole days.
-pub(super) fn api_logs_retention_days() -> NonZero<u32> {
+pub(super) fn logs_retention_days() -> NonZero<u32> {
     positive::<90>()
+}
+
+/// Default main database file path: a relative path resolved beside the configuration file.
+pub(super) fn database_path() -> PathBuf {
+    PathBuf::from("janusgate.db")
 }
 
 /// Constructs one positive first-party default constant.

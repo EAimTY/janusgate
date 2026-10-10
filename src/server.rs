@@ -245,9 +245,15 @@ async fn drive_tls_connection(
 
 /// Constructs the Axum root router configured with the shared request context.
 fn router(context: Context) -> Router {
-    Router::new()
-        .nest("/api", api::router(context.database.clone()))
-        .nest("/management-api", management_api::router())
+    let mut router = Router::new().nest("/api", api::router(context.database.clone()));
+
+    // The management API exists only while its section is configured: the mount is decided at
+    // startup, so adding or removing the section applies after a restart (README §8).
+    if crate::CONFIG.management_api.is_some() {
+        router = router.nest("/management-api", management_api::router());
+    }
+
+    router
         .fallback(router_fallback::fallback)
         .with_state(context)
 }

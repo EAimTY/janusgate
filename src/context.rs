@@ -11,10 +11,10 @@ pub(crate) struct Context {
     /// Database handle all handlers execute against.
     pub(crate) database: Database,
 
-    /// The api-log store, constructed at startup when the `api_logs` configuration section
-    /// was present. `None` records nothing and reads as the empty store (README §3 *ApiLog
-    /// Store*).
-    pub(crate) api_log_store: Option<ApiLogStore>,
+    /// The api-log store, constructed once at startup from the resolved `api.logs` configuration
+    /// section. `api.logs.is_enabled` is the live recording switch read per dispatched request,
+    /// while the store's directory is consumed here (README §3 *ApiLog Store*).
+    pub(crate) api_log_store: ApiLogStore,
 
     /// Data-plane upstream client streaming long-lived completions.
     pub(crate) data_plane: Client,

@@ -431,13 +431,7 @@ pub(super) async fn list(
     let limit = resolve_limit(request.limit)?;
     let filter = resolve_filter(request.filter)?;
 
-    let logs = list_api_logs(
-        context.api_log_store.as_ref(),
-        limit,
-        request.before,
-        &filter,
-    )
-    .await?;
+    let logs = list_api_logs(&context.api_log_store, limit, request.before, &filter).await?;
 
     Ok(Json(ListUsageResponse {
         api_logs: logs.iter().map(ApiLogResponse::from_log).collect(),
@@ -453,7 +447,7 @@ pub(super) async fn query(
     let filter = resolve_filter(request.filter)?;
 
     let aggregates = query_usage(
-        context.api_log_store.as_ref(),
+        &context.api_log_store,
         &api_logs::UsageSelection {
             group_by: group_by.clone(),
             filter,

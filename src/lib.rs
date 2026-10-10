@@ -4,7 +4,7 @@
 use crate::{
     config::ConfigLoader,
     context::Context,
-    database::{Database, schema::Registry},
+    database::{Database, MAIN_POOL_WAIT, main_pool_connections, schema::Registry},
     server::Server,
     storage::api_logs::ApiLogStore,
 };
@@ -78,28 +78,25 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
 
     tokio::spawn(watcher);
 
-    let database_configuration = &CONFIG.database;
-
     #[expect(
         clippy::expect_used,
         reason = "opening database at startup is fatal on failure"
     )]
     let database = Database::open(
-        &database_configuration.path,
+        &CONFIG.database.path,
         Registry::Main,
-        database_configuration.max_connections,
-        database_configuration.pool_timeout,
+        main_pool_connections(),
+        MAIN_POOL_WAIT,
     )
     .await
     .expect("failed to open database");
 
-    // The api-log store is constructed once at startup from the `api_logs` section; its
-    // presence is the recording switch, and the section's absence is the empty store (README
-    // §3 *ApiLog Store*).
-    let api_log_store = CONFIG
-        .api_logs
-        .as_ref()
-        .map(|api_logs| ApiLogStore::new(api_logs.path.clone(), api_logs.retention_days));
+    // The api-log store is constructed once at startup from the resolved `api.logs` section;
+    // `api.logs.is_enabled` is the live recording switch the write path reads per dispatched
+    // request, while the store's directory is consumed here, so a changed path applies after
+    // restart (README §3 *ApiLog Store*).
+    let api_log_store =
+        ApiLogStore::new(CONFIG.api.logs.path.clone(), CONFIG.api.logs.retention_days);
 
     // One control-plane client is built per startup, and every short upstream round-trip — the
     // context handlers' and the device poller's alike — shares its connection pool (README §4).

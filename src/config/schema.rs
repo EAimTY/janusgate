@@ -3,24 +3,26 @@
 
 use log::LevelFilter;
 use serde::Deserialize;
-use serde_with::{As, DurationMilliSeconds};
 use std::{
     fmt::{self, Formatter},
     net::SocketAddr,
     num::NonZero,
     path::PathBuf,
-    time::Duration,
 };
 use tower_http::cors::AllowOrigin;
 use vec1::Vec1;
 
 /// Root gateway configuration schema.
 ///
-/// Required fields state operational facts or secrets the gateway must
-/// never invent: `listen`, `database.path`, and `management_api.token`.
-/// Gateway API keys live in the database and are managed through the
-/// management API. Every other field carries the default documented on it and
-/// may be omitted. Unknown fields are strictly rejected.
+/// Every field carries the default documented on it and may be omitted: the empty object is a
+/// valid configuration serving the outward API with request recording on and the management API
+/// disabled. The management API exists only while its section is configured, and its `token` is
+/// then required — it is a secret the gateway must never invent. Gateway API keys live in the
+/// database and are managed through the management API. Unknown fields are strictly rejected.
+///
+/// Every relative path in the schema — `database.path`, `api.logs.path`, and the TLS material —
+/// resolves against the configuration file's directory, never against the process's current
+/// directory.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
@@ -33,7 +35,9 @@ pub(crate) struct Config {
     /// connections — an IP literal, never a DNS name, because a listener
     /// address is a local binding fact, not a name to resolve; the
     /// listener speaks TLS when `tls` is configured and plaintext HTTP
-    /// otherwise.
+    /// otherwise. Defaults to `127.0.0.1:4718`: loopback only, so a
+    /// defaulted gateway is never exposed beyond its host.
+    #[serde(default = "super::defaults::listen")]
     pub(crate) listen: SocketAddr,
 
     /// Inbound TLS termination; when this section is present the listener
@@ -41,23 +45,21 @@ pub(crate) struct Config {
     /// HTTP.
     pub(super) tls: Option<TlsConfig>,
 
-    /// In-process SQLite database configuration.
+    /// In-process SQLite database configuration. Defaults as a whole.
+    #[serde(default)]
     pub(crate) database: DatabaseConfig,
 
-    /// Administrative management API configuration.
-    pub(crate) management_api: ManagementApiConfig,
-
-    /// Outward client API configuration.
-    pub(super) api: ApiConfig,
-
-    /// Request accounting (`api_logs`) configuration. The section's presence is the recording
-    /// switch: present, dispatched requests are recorded into the day-partitioned api-log
-    /// store (README §3 *ApiLog Store*); absent, none are, while existing api-log files stay
-    /// readable. The write path reads the presence live per dispatched request, so a reload
-    /// applies to the next dispatch; the section itself is consumed once at startup when the
-    /// api-log store is constructed, so adding it applies after restart.
+    /// Administrative management API configuration. The section's presence is the switch for
+    /// the whole management API: present, `/management-api/*` is mounted and its `token` is
+    /// required; absent, the management API does not exist. The mount is decided at startup —
+    /// adding or removing the section applies after a restart — while a configured token
+    /// reloads live.
     #[serde(default)]
-    pub(crate) api_logs: Option<ApiLogsConfig>,
+    pub(crate) management_api: Option<ManagementApiConfig>,
+
+    /// Outward client API configuration. Defaults as a whole.
+    #[serde(default)]
+    pub(crate) api: ApiConfig,
 
     /// Remote-compaction sealing keys. The section's presence is the switch for the gateway's
     /// sealed compaction artifacts: present, gateway summaries and wrapped native windows are
@@ -154,11 +156,12 @@ impl fmt::Debug for CompactionKeyConfig {
 #[serde(deny_unknown_fields)]
 pub(crate) struct TlsConfig {
     /// File path of the PEM certificate chain served to TLS clients, leaf
-    /// certificate first.
+    /// certificate first; resolved beside the configuration file when
+    /// relative.
     pub(super) certificate: PathBuf,
 
     /// File path of the PEM private key matching the leaf certificate of
-    /// the chain.
+    /// the chain; resolved beside the configuration file when relative.
     pub(super) private_key: PathBuf,
 }
 
@@ -166,25 +169,26 @@ pub(crate) struct TlsConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DatabaseConfig {
-    /// File path to the in-process SQLite database file.
+    /// File path to the in-process SQLite database file; resolved beside the
+    /// configuration file when relative. Defaults to `janusgate.db`.
+    #[serde(default = "super::defaults::database_path")]
     pub(crate) path: PathBuf,
+}
 
-    /// Maximum number of concurrent database connections in the connection
-    /// pool. Defaults to 4.
-    #[serde(default = "super::defaults::max_connections")]
-    pub(crate) max_connections: NonZero<usize>,
-
-    /// Maximum time in milliseconds to wait for a free connection from the
-    /// connection pool when every connection is checked out. Defaults to
-    /// 5000.
-    #[serde(
-        with = "As::<DurationMilliSeconds>",
-        default = "super::defaults::pool_timeout"
-    )]
-    pub(crate) pool_timeout: Duration,
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            path: super::defaults::database_path(),
+        }
+    }
 }
 
 /// Administrative management API configuration.
+///
+/// The section's presence is the switch for the whole management API: the routes are mounted
+/// only when the section is configured at startup, so adding or removing the section applies
+/// after a restart, while the token reloads live. Its absence disables the management API
+/// entirely.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManagementApiConfig {
@@ -238,31 +242,59 @@ pub(super) struct CorsConfig {
     pub(super) allow_private_network: bool,
 }
 
-/// Outward client protocol configuration: CORS only. Client authorization
-/// secrets are database-managed API keys, not configuration.
-#[derive(Debug, Deserialize)]
+/// Outward client protocol configuration: CORS and request accounting.
+/// Client authorization secrets are database-managed API keys, not
+/// configuration.
+#[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ApiConfig {
+pub(crate) struct ApiConfig {
     /// Cross-Origin Resource Sharing (CORS) configuration for `/api/*`.
     /// Defaults to no cross-origin requests and no Private Network Access.
     #[serde(default)]
     pub(super) cors: CorsConfig,
+
+    /// Request accounting configuration (`api.logs`, README §3 *ApiLog Store*). Defaults as a
+    /// whole: recording on, the day files under `api_logs` beside the configuration file, and
+    /// 90 days of retention.
+    #[serde(default)]
+    pub(crate) logs: LogsConfig,
 }
 
-/// Request accounting configuration (`api_logs`, README §3 *ApiLog Store*).
+/// Request accounting configuration (`api.logs`, README §3 *ApiLog Store*).
 ///
-/// Unknown fields are strictly rejected. The section itself is the recording switch and carries
-/// no further switch field: present, rows are written; absent, none are.
+/// `is_enabled` is the recording switch: `true`, dispatched requests are recorded into the
+/// day-partitioned api-log store; `false`, none are, while existing api-log files stay readable
+/// through the management usage reads. The switch is read live per dispatched request, so a
+/// reload applies to the very next dispatch; the directory is consumed once at startup when the
+/// api-log store is constructed, so a changed path applies after restart.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ApiLogsConfig {
-    /// Directory holding the day-partitioned api-log files (`YYYY-MM-DD.db`). Consumed once at
-    /// startup when the api-log store is constructed; a changed path applies after restart.
+pub(crate) struct LogsConfig {
+    /// Whether dispatched requests are recorded into the day-partitioned
+    /// api-log store. Defaults to `true`.
+    #[serde(default = "super::defaults::logs_is_enabled")]
+    pub(crate) is_enabled: bool,
+
+    /// Directory holding the day-partitioned api-log files (`YYYY-MM-DD.db`);
+    /// resolved beside the configuration file when relative. Consumed once at
+    /// startup when the api-log store is constructed; a changed path applies
+    /// after restart. Defaults to `api_logs`.
+    #[serde(default = "super::defaults::logs_path")]
     pub(crate) path: PathBuf,
 
     /// Retention of the api-log files, in whole days: when a new api-log file is created, the
     /// sweep deletes files whose day-end is strictly older than now minus this many days.
     /// Defaults to 90.
-    #[serde(default = "super::defaults::api_logs_retention_days")]
+    #[serde(default = "super::defaults::logs_retention_days")]
     pub(crate) retention_days: NonZero<u32>,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            is_enabled: super::defaults::logs_is_enabled(),
+            path: super::defaults::logs_path(),
+            retention_days: super::defaults::logs_retention_days(),
+        }
+    }
 }

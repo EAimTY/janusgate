@@ -24,8 +24,7 @@ const UNIX_EPOCH_JULIAN_DAY: i32 = 2_440_588;
 /// lazily opens the existing file.
 const HOT_FILE_CAPACITY: usize = 3;
 
-/// Wait for a free api-log file pool connection, matching the main database's connection
-/// configuration.
+/// Wait for a free api-log file pool connection, matching the main database's fixed pool wait.
 const FILE_POOL_WAIT: Duration = Duration::from_secs(5);
 
 /// The fixed api-log file connection pool size for writes; a performance choice, not

@@ -1,4 +1,5 @@
-//! Initial main database schema: account inventory, public routes, and quota restrictions.
+//! Initial main database schema: provider definitions, accounts, models, pools, public routes,
+//! quota blocks, OAuth flows, API keys, and per-key model permissions.
 
 use super::Schema;
 
@@ -74,11 +75,11 @@ CREATE TABLE models (
     UNIQUE (provider_id, upstream_id)
 ) STRICT;
 
-
 CREATE TABLE provider_pools (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     name TEXT NOT NULL UNIQUE,
-    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1))
+    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+    model_prefix TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 CREATE TABLE provider_pool_members (
@@ -97,7 +98,6 @@ CREATE TABLE model_routes (
     model_id INTEGER NULL REFERENCES models (id) ON DELETE CASCADE,
     pool_id INTEGER NULL REFERENCES provider_pools (id) ON DELETE RESTRICT,
     upstream_id TEXT NULL,
-    CHECK (is_automatic = 0 OR model_id IS NOT NULL),
     CHECK (
         (model_id IS NOT NULL AND pool_id IS NULL AND upstream_id IS NULL)
         OR
@@ -106,7 +106,10 @@ CREATE TABLE model_routes (
 ) STRICT;
 
 CREATE UNIQUE INDEX idx_model_routes_automatic_model_id
-    ON model_routes (model_id) WHERE is_automatic = 1;
+    ON model_routes (model_id) WHERE is_automatic = 1 AND model_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_model_routes_automatic_pool_model
+    ON model_routes (pool_id, upstream_id) WHERE is_automatic = 1 AND pool_id IS NOT NULL;
 
 CREATE INDEX idx_model_routes_model_id ON model_routes (model_id);
 CREATE INDEX idx_model_routes_pool_id ON model_routes (pool_id);
@@ -202,8 +205,35 @@ CREATE TABLE api_keys (
     name TEXT NOT NULL,
     key TEXT NOT NULL UNIQUE,
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    default_access TEXT NOT NULL DEFAULT 'deny' CHECK (default_access IN ('allow', 'deny'))
 ) STRICT;
+
+CREATE TABLE api_key_provider_defaults (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, provider_id)
+) STRICT;
+
+CREATE TABLE api_key_pool_defaults (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    pool_id INTEGER NOT NULL REFERENCES provider_pools(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, pool_id)
+) STRICT;
+
+CREATE TABLE api_key_model_route_overrides (
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    model_route_id INTEGER NOT NULL REFERENCES model_routes(id) ON DELETE CASCADE,
+    access TEXT NOT NULL CHECK (access IN ('allow', 'deny')),
+    PRIMARY KEY (api_key_id, model_route_id)
+) STRICT;
+
+CREATE INDEX idx_api_key_provider_defaults_provider_id ON api_key_provider_defaults (provider_id);
+CREATE INDEX idx_api_key_pool_defaults_pool_id ON api_key_pool_defaults (pool_id);
+CREATE INDEX idx_api_key_model_route_overrides_model_route_id
+    ON api_key_model_route_overrides (model_route_id);
 "###,
     migration: "",
 };

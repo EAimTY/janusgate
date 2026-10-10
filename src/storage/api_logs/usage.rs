@@ -222,43 +222,32 @@ impl ApiLogStore {
     }
 }
 
-/// Lists accounting rows through the api-log store; `None` — the gateway started without an
-/// `api_logs` section — is the empty store, answering an empty page. See [`ApiLogStore::list`]
+/// Lists accounting rows through the api-log store. See [`ApiLogStore::list`]
 /// for the merge semantics (README §7.1).
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when a file cannot be opened, a query fails, or a row is malformed.
 pub(crate) async fn list_api_logs(
-    store: Option<&ApiLogStore>,
+    store: &ApiLogStore,
     limit: i64,
     before: Option<i64>,
     filter: &UsageFilter,
 ) -> Result<Vec<ApiLog>, Error> {
-    match store {
-        Some(store) => store.list(limit, before, filter).await,
-        None => Ok(Vec::new()),
-    }
+    store.list(limit, before, filter).await
 }
 
-/// Aggregates accounting rows through the api-log store; `None` — the gateway started without
-/// an `api_logs` section — is the empty store, answering one zeroed total bucket for an empty
-/// grouping and no buckets otherwise. See [`ApiLogStore::query`] for the merge semantics.
+/// Aggregates accounting rows through the api-log store. See [`ApiLogStore::query`] for the
+/// merge semantics.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when a file cannot be opened, a query fails, or a row is malformed.
 pub(crate) async fn query_usage(
-    store: Option<&ApiLogStore>,
+    store: &ApiLogStore,
     selection: &UsageSelection,
 ) -> Result<Vec<UsageAggregate>, Error> {
-    match store {
-        Some(store) => store.query(selection).await,
-
-        None if selection.group_by.is_empty() => Ok(vec![UsageAggregate::default()]),
-
-        None => Ok(Vec::new()),
-    }
+    store.query(selection).await
 }
 
 /// The shared filter of both management reads (README §7.1): every present field narrows the

@@ -127,8 +127,8 @@ pub(crate) struct ApiLog {
 ///
 /// The module's single invariant: **`started_at` is stamped ⇔ the request was dispatched with
 /// accounting enabled**. Who stamps, who finalizes, and whether a row is written are all decided
-/// by that one variable — [`ApiLogDraft::stamp`] reads the live presence of the `api_logs`
-/// configuration section, and [`finalize_api_log`] writes if and only if a stamp is present.
+/// by that one variable — [`ApiLogDraft::stamp`] reads the live `api.logs.is_enabled` switch,
+/// and [`finalize_api_log`] writes if and only if a stamp is present.
 #[derive(Debug, Clone)]
 pub(crate) struct ApiLogDraft {
     /// Stable requested public route identity.
@@ -192,8 +192,8 @@ impl ApiLogDraft {
     }
 
     /// Advances data-plane progress immediately before `send()`. The first stage fixes duration
-    /// origin and the live recording switch: `started_at` is stamped only when `api_logs` is
-    /// present then. Later stages preserve that origin and switch, including across reloads.
+    /// origin and the live recording switch: `started_at` is stamped only when recording is
+    /// enabled then. Later stages preserve that origin and switch, including across reloads.
     /// Progress remains active when recording is disabled.
     pub(crate) fn stamp(&mut self) {
         let is_first_dispatch = matches!(self.progress, AttemptProgress::Predispatch);
@@ -210,7 +210,7 @@ impl ApiLogDraft {
                 has_accepted,
             },
         };
-        if is_first_dispatch && crate::CONFIG.api_logs.is_some() {
+        if is_first_dispatch && crate::CONFIG.api.logs.is_enabled {
             self.started_at = Some(unix_time::unix_now_micros());
         }
     }
@@ -271,13 +271,13 @@ pub(crate) struct ApiLogGuard {
     /// The current attempt's draft; absent once taken or explicitly finalized.
     draft: Option<ApiLogDraft>,
     /// Store retained independently of the request handler's lifetime.
-    store: Option<ApiLogStore>,
+    store: ApiLogStore,
 }
 
 impl ApiLogGuard {
     /// Starts owning `draft`, retaining `store` independently of the request handler's lifetime —
     /// a departing client drops the handler, never the finalization.
-    pub(crate) fn new(store: Option<ApiLogStore>, draft: ApiLogDraft) -> Self {
+    pub(crate) fn new(store: ApiLogStore, draft: ApiLogDraft) -> Self {
         Self {
             draft: Some(draft),
             store,
@@ -347,15 +347,14 @@ impl Drop for ApiLogGuard {
 }
 
 /// Starts a cancellation-independent writer only when dispatch enabled recording for this draft.
-/// The dispatch stamp, not the current configuration or store presence, decides whether to run:
-/// a reload cannot retract an existing row, and a stamped draft without a startup store must still
-/// log its missing-store diagnostic. Dropping the returned handle never cancels the writer.
+/// The dispatch stamp, not the current configuration, decides whether to run: a reload cannot
+/// retract an existing row. Dropping the returned handle never cancels the writer.
 ///
 /// # Panics
 ///
 /// Panics if recording is enabled and this call runs outside the Tokio runtime.
 pub(crate) fn spawn_api_log_finalization(
-    store: Option<ApiLogStore>,
+    store: ApiLogStore,
     draft: ApiLogDraft,
     outcome: ApiLogOutcome,
     http_status: Option<i64>,
@@ -363,7 +362,7 @@ pub(crate) fn spawn_api_log_finalization(
 ) -> Option<tokio::task::JoinHandle<()>> {
     draft.started_at?;
     Some(tokio::spawn(async move {
-        finalize_api_log(store.as_ref(), &draft, outcome, http_status, usage).await;
+        finalize_api_log(&store, &draft, outcome, http_status, usage).await;
     }))
 }
 
@@ -383,7 +382,7 @@ pub(crate) fn spawn_api_log_finalization(
 /// construction. `usage` is the terminal usage report when one exists; without it the five token
 /// columns stay `NULL`.
 pub(crate) async fn finalize_api_log(
-    store: Option<&ApiLogStore>,
+    store: &ApiLogStore,
     draft: &ApiLogDraft,
     outcome: ApiLogOutcome,
     http_status: Option<i64>,
@@ -427,19 +426,6 @@ pub(crate) async fn finalize_api_log(
         cached_tokens,
         cache_write_tokens,
         reasoning_tokens,
-    };
-
-    let Some(store) = store else {
-        // Reachable only when the `api_logs` section was added by a reload after a startup
-        // without it: the stamp read the live switch, but the api-log store is constructed at
-        // startup alone (README §8). The row is dropped with a logged attribution.
-        error!(
-            "api log recording is configured but the api-log store was not constructed at \
-             startup; dropping the row for API key {} (provider {}, model {})",
-            draft.api_key_id, draft.provider_id, draft.model_id,
-        );
-
-        return;
     };
 
     if let Err(failure) = store.record(write).await {

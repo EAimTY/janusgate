@@ -26,7 +26,7 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 /// Panics if the prerendered SSE response cannot build — impossible for a
 /// static status, header, and string body.
 pub(super) fn finalize_buffered<T: Serialize>(
-    api_log_store: Option<api_logs::ApiLogStore>,
+    api_log_store: api_logs::ApiLogStore,
     log: ApiLogDraft,
     body: &T,
 ) -> Response {
@@ -56,7 +56,7 @@ pub(super) fn finalize_buffered<T: Serialize>(
 /// impossible for a fixed literal.
 pub(super) fn prerendered_sse_response(
     frames: Vec<String>,
-    api_log_store: Option<api_logs::ApiLogStore>,
+    api_log_store: api_logs::ApiLogStore,
     log: ApiLogDraft,
 ) -> Response {
     let body = frames.concat();
@@ -129,7 +129,7 @@ pub(super) enum AggregationRender {
 pub(super) async fn detached_aggregation<TFormat>(
     events: IrEventStream,
     public_id: String,
-    api_log_store: Option<api_logs::ApiLogStore>,
+    api_log_store: api_logs::ApiLogStore,
     log: ApiLogDraft,
     log_context: String,
     render: AggregationRender,
@@ -185,7 +185,7 @@ where
 async fn aggregated_response_task<TFormat>(
     events: IrEventStream,
     public_id: String,
-    api_log_store: Option<api_logs::ApiLogStore>,
+    api_log_store: api_logs::ApiLogStore,
     log: ApiLogDraft,
     log_context: String,
     outcome_sender: tokio::sync::oneshot::Sender<Result<Response, Error>>,
@@ -230,7 +230,7 @@ async fn aggregated_response_task<TFormat>(
             if outcome_sender.send(Ok(response)).is_ok() {
                 // The handler received the response: the client was still there.
                 api_logs::finalize_api_log(
-                    api_log_store.as_ref(),
+                    &api_log_store,
                     &log,
                     ApiLogOutcome::Completed,
                     Some(i64::from(StatusCode::OK.as_u16())),
@@ -241,7 +241,7 @@ async fn aggregated_response_task<TFormat>(
                 // The handler is gone — the client departed mid-generation — and no response was
                 // ever produced for it.
                 api_logs::finalize_api_log(
-                    api_log_store.as_ref(),
+                    &api_log_store,
                     &log,
                     ApiLogOutcome::ClientAborted,
                     None,
@@ -256,14 +256,8 @@ async fn aggregated_response_task<TFormat>(
             // the usage the stream delivered before it failed — `None` when it delivered none.
             let (outcome, http_status) = error.accounting();
 
-            api_logs::finalize_api_log(
-                api_log_store.as_ref(),
-                &log,
-                outcome,
-                Some(http_status),
-                usage,
-            )
-            .await;
+            api_logs::finalize_api_log(&api_log_store, &log, outcome, Some(http_status), usage)
+                .await;
 
             // A failed hand-off returns the outcome: the handler is gone, so no response
             // boundary will render this failure and this task is its single logger (README §8).
@@ -339,7 +333,7 @@ const SSE_BODY_CHANNEL_BUFFER: usize = 64;
 pub(super) fn sse_response(
     events: IrEventStream,
     mut renderer: Box<dyn ClientSseRenderer + Send>,
-    api_log_store: Option<api_logs::ApiLogStore>,
+    api_log_store: api_logs::ApiLogStore,
     log: ApiLogDraft,
     mut affinity: Option<crate::affinity::Accepted>,
 ) -> Response {
@@ -414,7 +408,7 @@ pub(super) fn sse_response(
                             // The client's body channel is gone: a client abort, keyed only on
                             // what was actually enqueued before it broke.
                             api_logs::finalize_api_log(
-                                api_log_store.as_ref(),
+                                &api_log_store,
                                 &log,
                                 ApiLogOutcome::ClientAborted,
                                 declared_status(is_status_declared),
@@ -441,7 +435,7 @@ pub(super) fn sse_response(
                         // The channel broke before the error frame could be enqueued: the client
                         // left, so the disconnect rules decide alone.
                         api_logs::finalize_api_log(
-                            api_log_store.as_ref(),
+                            &api_log_store,
                             &log,
                             ApiLogOutcome::ClientAborted,
                             declared_status(is_status_declared),
@@ -455,7 +449,7 @@ pub(super) fn sse_response(
                     // The error frame never changes the status already declared; only the
                     // outcome moves to the classified failure (README §3 *ApiLog*).
                     api_logs::finalize_api_log(
-                        api_log_store.as_ref(),
+                        &api_log_store,
                         &log,
                         outcome,
                         Some(i64::from(StatusCode::OK.as_u16())),
@@ -470,7 +464,7 @@ pub(super) fn sse_response(
 
         if sender.is_closed() {
             api_logs::finalize_api_log(
-                api_log_store.as_ref(),
+                &api_log_store,
                 &log,
                 ApiLogOutcome::ClientAborted,
                 declared_status(is_status_declared),
@@ -488,7 +482,7 @@ pub(super) fn sse_response(
 
         // A clean end of stream: every event rendered and the body closed normally.
         api_logs::finalize_api_log(
-            api_log_store.as_ref(),
+            &api_log_store,
             &log,
             ApiLogOutcome::Completed,
             Some(i64::from(StatusCode::OK.as_u16())),

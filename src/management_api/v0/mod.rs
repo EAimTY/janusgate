@@ -194,16 +194,21 @@ pub(super) fn router() -> Router<Context> {
     .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
-/// Authenticates the request against the bearer-less management token. The token is read from the
-/// live configuration, so a reload rotates it immediately. A rejected request renders
-/// [`Error::Unauthorized`] through the shared boundary, which logs it.
+/// Authenticates the request against the bearer-less management token. The token is read from
+/// the live configuration, so a reload rotates it immediately; a reload that removed the section
+/// while the routes remain mounted — the mount is decided at startup — leaves no token to match,
+/// so every request is rejected until the restart unmounts the routes. A rejected request
+/// renders [`Error::Unauthorized`] through the shared boundary, which logs it.
 async fn authenticate(request: Request, next: Next) -> Response {
     let is_authorized = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|token| {
-            security::constant_time_eq(token, &crate::CONFIG.management_api.token)
+            crate::CONFIG
+                .management_api
+                .as_ref()
+                .is_some_and(|section| security::constant_time_eq(token, &section.token))
         });
 
     if is_authorized {

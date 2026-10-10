@@ -3,15 +3,17 @@
     // trace). Defaults to "info" when omitted.
     "log_level": "info",
 
-    // Listen IP address and port (IP:port, e.g. "127.0.0.1:8080"). An IP
-    // literal only: DNS names are rejected, because a listener address is a
-    // local binding fact.
-    "listen": "0.0.0.0:8080",
+    // Listen IP address and port (IP:port). An IP literal only: DNS names are
+    // rejected, because a listener address is a local binding fact. Defaults
+    // to "127.0.0.1:4718" (loopback only) when omitted, so a defaulted
+    // gateway is never exposed beyond its host.
+    "listen": "0.0.0.0:4718",
 
     // Inbound TLS termination. When present, the listener serves HTTPS using
     // the PEM certificate chain and private key loaded from these paths; when
     // absent, the listener serves plaintext HTTP. Placeholder paths that MUST
-    // be replaced with real files before deployment. Changes to the
+    // be replaced with real files before deployment. Relative paths resolve
+    // against this configuration file's directory. Changes to the
     // configuration file and to these files are watched and applied without a
     // restart; see README §8.
     "tls": {
@@ -21,21 +23,26 @@
         "private_key": "private-key.pem"
     },
 
+    // The whole database object may be omitted. The connection pool is fixed
+    // by the gateway and not configurable.
     "database": {
-        // Path to the in-process Turso SQLite database file.
-        "path": "janusgate.db",
-        // Maximum number of concurrent database connections in the pool.
-        // Defaults to 4 when omitted.
-        "max_connections": 4,
-        // Maximum time in milliseconds to wait for a free pool connection.
-        // Defaults to 5000 when omitted.
-        "pool_timeout": 5000
+        // Path to the in-process Turso SQLite database file. Relative paths
+        // resolve against this configuration file's directory. Defaults to
+        // "janusgate.db" when omitted.
+        "path": "janusgate.db"
     },
 
+    // Administrative management API. The presence of this section is the
+    // switch for the whole management API: present, /management-api/* is
+    // mounted and requires the token; absent, the management API does not
+    // exist and the admin frontend has nothing to talk to. Adding or removing
+    // the section applies after a restart.
     "management_api": {
         // Management token for /management-api/* (Authorization: <token>).
-        // Placeholder value that MUST be replaced with a real secret before
-        // deployment; the gateway performs no placeholder detection.
+        // Required when the section is present, and the only required leaf of
+        // the whole schema. Placeholder value that MUST be replaced with a
+        // real secret before deployment; the gateway performs no placeholder
+        // detection. Rotates live on reload.
         "token": "CHANGE_ME_MANAGEMENT_TOKEN",
         // Both cors fields — and the whole cors object — may be omitted:
         // allowed_origin then defaults to [] (no cross-origin requests) and
@@ -51,9 +58,12 @@
         }
     },
 
+    // Outward client API configuration. The whole object may be omitted: the
+    // outward API then serves with no cross-origin requests and request
+    // recording on under the default directory. Outward endpoints (under
+    // /api/*) authorize against database-managed API keys (see the management
+    // api-keys routes); no secret lives in this section.
     "api": {
-        // Outward protocol endpoints (under /api/*) authorize against database-managed API
-        // keys (see the management api-keys routes); no secret lives in this section.
         // Both cors fields — and the whole cors object — may be omitted:
         // allowed_origin then defaults to [] (no cross-origin requests) and
         // allow_private_network to false.
@@ -65,24 +75,28 @@
             "allowed_origin": "*",
             // Whether to allow requests from private networks (Private Network Access).
             "allow_private_network": false
-        }
-    },
+        },
 
-    // Request accounting (README §3 ApiLog Store). The presence of this
-    // section is the recording switch: present, one accounting row is recorded
-    // per dispatched inference request into the day-partitioned api-log files;
-    // absent, none are, while existing api-log files stay readable. Omitting
-    // the whole section turns recording off. The path is consumed once at
-    // startup, so adding the section or changing its path applies after
-    // restart.
-    "api_logs": {
-        // Directory holding the api-log files (YYYY-MM-DD.db, one per UTC day
-        // of the dispatch instant). Created lazily on the first recorded
-        // request.
-        "path": "api-logs",
-        // Retention of the api-log files in whole days: when a new file is
-        // created, older files are deleted file-and-all. Defaults to 90.
-        "retention_days": 90
+        // Request accounting (README §3 ApiLog Store). Defaults as a whole:
+        // recording on, the day files under the "api_logs" directory beside
+        // this configuration file, 90 days of retention.
+        "logs": {
+            // The recording switch: false, dispatched requests are not
+            // recorded, while existing api-log files stay readable through
+            // the management usage reads. Read live per dispatched request,
+            // so a reload applies to the very next dispatch. Defaults to
+            // true.
+            "is_enabled": true,
+            // Directory holding the api-log files (YYYY-MM-DD.db, one per UTC
+            // day of the dispatch instant). Relative paths resolve against
+            // this configuration file's directory. Created lazily on the
+            // first recorded request. Consumed once at startup, so a changed
+            // path applies after restart. Defaults to "api_logs".
+            "path": "api_logs",
+            // Retention of the api-log files in whole days: when a new file is
+            // created, older files are deleted file-and-all. Defaults to 90.
+            "retention_days": 90
+        }
     },
 
     // Positive runtime limits, defaulted as a whole and field by field.

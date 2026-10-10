@@ -228,11 +228,16 @@ fn read_inputs(path: &Path) -> Result<AppliedConfig, Error> {
         source,
     })?;
 
-    let schema: Config = serde_json::from_reader(StripComments::new(configuration.as_slice()))
+    let mut schema: Config = serde_json::from_reader(StripComments::new(configuration.as_slice()))
         .map_err(|source| Error::Parse {
             path: path.to_path_buf(),
             source,
         })?;
+
+    // Every relative path in the schema — the database file, the api-log directory, and the TLS
+    // material — resolves against the configuration file's directory, never against the process's
+    // current directory (README §8).
+    schema.resolve_relative_paths(parent_directory(path));
 
     let tls_server_config = self::tls::resolve(&schema)?;
 
@@ -283,6 +288,29 @@ fn parent_directory(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
+}
+
+impl Config {
+    /// Resolves every relative path in the schema in place against `base` — the configuration
+    /// file's directory: the main database file, the api-log directory, and the TLS material.
+    /// Absolute paths are kept.
+    fn resolve_relative_paths(&mut self, base: &Path) {
+        anchor(&mut self.database.path, base);
+        anchor(&mut self.api.logs.path, base);
+
+        if let Some(tls) = self.tls.as_mut() {
+            anchor(&mut tls.certificate, base);
+            anchor(&mut tls.private_key, base);
+        }
+    }
+}
+
+/// Replaces a relative path in place with the same path joined under `base`; an absolute path is
+/// kept.
+fn anchor(path: &mut PathBuf, base: &Path) {
+    if path.is_relative() {
+        *path = base.join(&*path);
+    }
 }
 
 /// Directories to watch for the inputs of a schema: the parent directories of the configuration
