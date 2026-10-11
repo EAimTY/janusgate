@@ -162,3 +162,144 @@ fn hex_digest(bytes: &[u8]) -> String {
 
     rendered
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking on its own assertions; a # Panics section on every \
+                  test would document nothing its name does not"
+    )]
+
+    use super::{InstructionRole, ItemIdentity, hex_sha256};
+    use std::error::Error as StdError;
+
+    /// The occurrence index counts only items of the instruction's own role, so interleaving
+    /// another role's items never changes an item's identity: the developer identity is stable
+    /// whether system items precede it or not, while a second same-role item digests differently
+    /// from the first.
+    #[test]
+    fn occurrence_indices_are_per_role() -> Result<(), Box<dyn StdError>> {
+        let interleaved = ItemIdentity::for_instruction_window([
+            (InstructionRole::System, "system one"),
+            (InstructionRole::Developer, "developer rule"),
+            (InstructionRole::System, "system two"),
+        ]);
+
+        let plain = ItemIdentity::for_instruction_window([
+            (InstructionRole::Developer, "developer rule"),
+            (InstructionRole::System, "system two"),
+        ]);
+
+        let [system_one, developer_interleaved, system_two] = interleaved.as_slice() else {
+            return Err("the interleaved window yields exactly three identities".into());
+        };
+
+        let [developer_plain, _] = plain.as_slice() else {
+            return Err("the plain window yields exactly two identities".into());
+        };
+
+        // The developer item is the role's first occurrence in both windows: interleaving system
+        // items leaves its digest untouched.
+        assert!(developer_interleaved.matches(developer_plain));
+
+        // The second system item is that role's second occurrence, distinct from the first even
+        // though every other window fact is shared.
+        assert!(!system_two.matches(system_one));
+
+        Ok(())
+    }
+
+    /// Two identities match on equal non-empty source identifiers regardless of their digests, on
+    /// equal digests when the identifiers differ, and never on a text-similarity guess.
+    #[test]
+    fn matching_prefers_source_id_and_falls_back_to_digest() {
+        let digest_of =
+            |role, occurrence, text| ItemIdentity::for_instruction(role, occurrence, text, None);
+
+        let sourced = ItemIdentity::for_instruction(
+            InstructionRole::System,
+            0,
+            "current text",
+            Some(String::from("src-1")),
+        );
+
+        let other_sourced = ItemIdentity::for_instruction(
+            InstructionRole::System,
+            0,
+            "covered text",
+            Some(String::from("src-1")),
+        );
+
+        assert!(
+            sourced.matches(&other_sourced),
+            "equal source identifiers match across different texts"
+        );
+
+        let conflicting_sourced = ItemIdentity::for_instruction(
+            InstructionRole::System,
+            0,
+            "covered text",
+            Some(String::from("src-2")),
+        );
+
+        assert!(
+            !sourced.matches(&conflicting_sourced),
+            "different source identifiers and different digests never match"
+        );
+
+        let same_text_unsourced = digest_of(InstructionRole::System, 0, "current text");
+
+        assert!(
+            sourced.matches(&same_text_unsourced),
+            "an equal digest matches even when only one side carries a source identifier"
+        );
+
+        let covered_unsourced = digest_of(InstructionRole::System, 0, "covered text");
+
+        assert!(
+            !sourced.matches(&covered_unsourced),
+            "a source-carrying side never falls to a text-similarity match"
+        );
+    }
+
+    /// An empty source identifier normalizes to absent at construction, so an empty-identifier
+    /// identity behaves exactly like an unsourced one: it matches only on digest.
+    #[test]
+    fn empty_source_id_normalizes_to_absent() {
+        let empty_sourced = ItemIdentity::for_instruction(
+            InstructionRole::Developer,
+            0,
+            "same text",
+            Some(String::new()),
+        );
+
+        let unsourced =
+            ItemIdentity::for_instruction(InstructionRole::Developer, 0, "same text", None);
+
+        assert!(empty_sourced.matches(&unsourced));
+
+        let other_text =
+            ItemIdentity::for_instruction(InstructionRole::Developer, 0, "other text", None);
+
+        assert!(
+            !empty_sourced.matches(&other_text),
+            "a normalized-absent identifier matches on digest alone"
+        );
+    }
+
+    /// The digest rendering is the documented lowercase hex SHA-256: the empty input's known
+    /// digest pins the spelling, and a changed input changes the digest.
+    #[test]
+    fn hex_sha256_renders_lowercase_hex() {
+        assert_eq!(
+            hex_sha256(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+
+        assert_eq!(
+            hex_sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+}

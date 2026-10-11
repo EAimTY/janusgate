@@ -32,6 +32,9 @@ use reqwest::Client;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+mod tests;
+
 /// Lifetime of a pending authorization-code flow, in database-clock microseconds.
 const AUTHORIZATION_CODE_TTL: i64 = 600 * unix_time::MICROS_PER_SEC;
 

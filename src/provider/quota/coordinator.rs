@@ -18,6 +18,9 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[cfg(test)]
+mod tests;
+
 /// Closed content-free failure categories shown by availability administration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]

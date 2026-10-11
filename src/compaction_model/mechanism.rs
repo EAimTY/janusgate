@@ -95,3 +95,64 @@ impl MechanismSupport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking on its own assertions; a # Panics section on every \
+                  test would document nothing its name does not"
+    )]
+
+    use super::{Mechanism, MechanismSupport};
+
+    /// Every mechanism's canonical spelling parses back to itself, the declared order is the
+    /// closed `ALL` order, and an unknown spelling parses to nothing.
+    #[test]
+    fn mechanism_spellings_round_trip_in_declaration_order() {
+        let canonical = [
+            "responses_standalone_compact",
+            "responses_explicit_trigger",
+            "responses_automatic_compaction",
+            "messages_on_demand_compaction",
+            "messages_threshold_compaction",
+        ];
+
+        for (mechanism, spelling) in Mechanism::ALL.into_iter().zip(canonical) {
+            assert_eq!(mechanism.as_str(), spelling);
+
+            assert_eq!(Mechanism::from_str(spelling), Some(mechanism));
+        }
+
+        assert_eq!(Mechanism::from_str("responses_compact"), None);
+
+        assert_eq!(Mechanism::from_str(""), None);
+    }
+
+    /// The support vocabulary parses exactly its three canonical spellings, and the absent-fact
+    /// default is `unknown` — the positive no-fact state that must stay distinct from
+    /// `unsupported`.
+    #[test]
+    fn support_vocabulary_parses_and_defaults_to_unknown() {
+        assert_eq!(
+            MechanismSupport::from_str("supported"),
+            Some(MechanismSupport::Supported)
+        );
+
+        assert_eq!(
+            MechanismSupport::from_str("unsupported"),
+            Some(MechanismSupport::Unsupported)
+        );
+
+        assert_eq!(
+            MechanismSupport::from_str("unknown"),
+            Some(MechanismSupport::Unknown)
+        );
+
+        assert_eq!(MechanismSupport::from_str("Supported"), None);
+
+        assert_eq!(MechanismSupport::from_str(""), None);
+
+        assert_eq!(MechanismSupport::default(), MechanismSupport::Unknown);
+    }
+}

@@ -75,3 +75,176 @@ pub(crate) fn resolve_mechanism(
         .or_else(|| base.and_then(|facts| facts.get(mechanism)))
         .unwrap_or(definition_default)
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{CompactionSupportFacts, resolve_mechanism};
+    use crate::compaction_model::mechanism::{Mechanism, MechanismSupport};
+    use std::error::Error as StdError;
+
+    /// An empty pair set is the nothing-known state — `None`, the form every producer stores as
+    /// `NULL` — while any fact yields a map that answers its members and no others.
+    #[test]
+    fn empty_pairs_are_the_nothing_known_state() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(CompactionSupportFacts::from_pairs(Vec::new()), None);
+
+        let facts = CompactionSupportFacts::from_pairs([(
+            Mechanism::MessagesOnDemandCompaction,
+            MechanismSupport::Supported,
+        )])
+        .ok_or("a non-empty pair set yields facts")?;
+
+        assert_eq!(
+            facts.get(Mechanism::MessagesOnDemandCompaction),
+            Some(MechanismSupport::Supported)
+        );
+
+        assert_eq!(facts.get(Mechanism::ResponsesStandaloneCompact), None);
+
+        Ok(())
+    }
+
+    /// `carries_unknown` distinguishes the explicit suppression fact from known states, and the
+    /// canonical iteration order is the declaration order of `Mechanism::ALL` regardless of
+    /// construction order.
+    #[test]
+    fn unknown_detection_and_canonical_order() -> Result<(), Box<dyn StdError>> {
+        let facts = CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::MessagesThresholdCompaction,
+                MechanismSupport::Unsupported,
+            ),
+            (
+                Mechanism::ResponsesStandaloneCompact,
+                MechanismSupport::Supported,
+            ),
+        ])
+        .ok_or("a non-empty pair set yields facts")?;
+
+        assert!(!facts.carries_unknown());
+
+        let ordered: Vec<_> = facts.iter().map(|(mechanism, _)| mechanism).collect();
+
+        assert_eq!(
+            ordered,
+            [
+                Mechanism::ResponsesStandaloneCompact,
+                Mechanism::MessagesThresholdCompaction
+            ],
+            "the map iterates in canonical mechanism order"
+        );
+
+        let suppressed = CompactionSupportFacts::from_pairs([(
+            Mechanism::MessagesThresholdCompaction,
+            MechanismSupport::Unknown,
+        )])
+        .ok_or("a non-empty pair set yields facts")?;
+
+        assert!(suppressed.carries_unknown());
+
+        Ok(())
+    }
+
+    /// The storage form is the bare JSON object keyed by the canonical mechanism spellings; it
+    /// round-trips transparently in both serde directions.
+    #[test]
+    fn storage_form_is_the_bare_canonical_object() -> Result<(), Box<dyn StdError>> {
+        let facts = CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::ResponsesStandaloneCompact,
+                MechanismSupport::Supported,
+            ),
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Unsupported,
+            ),
+        ])
+        .ok_or("a non-empty pair set yields facts")?;
+
+        let body = serde_json::to_value(&facts)?;
+
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "responses_standalone_compact": "supported",
+                "messages_on_demand_compaction": "unsupported"
+            })
+        );
+
+        assert_eq!(
+            serde_json::from_value::<CompactionSupportFacts>(body)?,
+            facts
+        );
+
+        Ok(())
+    }
+
+    /// The three resolution layers apply in order — override, then discovery-owned base, then the
+    /// definition default — and an explicit `unknown` override suppresses both lower layers for
+    /// that mechanism alone.
+    #[test]
+    fn resolution_layers_apply_in_order_with_unknown_suppression() -> Result<(), Box<dyn StdError>>
+    {
+        let mechanism = Mechanism::ResponsesStandaloneCompact;
+
+        let base = CompactionSupportFacts::from_pairs([
+            (
+                Mechanism::ResponsesStandaloneCompact,
+                MechanismSupport::Supported,
+            ),
+            (
+                Mechanism::MessagesOnDemandCompaction,
+                MechanismSupport::Supported,
+            ),
+        ])
+        .ok_or("a non-empty pair set yields facts")?;
+
+        let override_ = CompactionSupportFacts::from_pairs([(
+            Mechanism::ResponsesStandaloneCompact,
+            MechanismSupport::Unknown,
+        )])
+        .ok_or("a non-empty pair set yields facts")?;
+
+        assert_eq!(
+            resolve_mechanism(MechanismSupport::Unsupported, None, None, mechanism),
+            MechanismSupport::Unsupported,
+            "the definition default answers when no stored layer knows the mechanism"
+        );
+
+        assert_eq!(
+            resolve_mechanism(MechanismSupport::Unsupported, Some(&base), None, mechanism),
+            MechanismSupport::Supported,
+            "a discovered base fact beats the definition default"
+        );
+
+        assert_eq!(
+            resolve_mechanism(
+                MechanismSupport::Unsupported,
+                Some(&base),
+                Some(&override_),
+                mechanism
+            ),
+            MechanismSupport::Unknown,
+            "an explicit unknown override suppresses both lower layers"
+        );
+
+        assert_eq!(
+            resolve_mechanism(
+                MechanismSupport::Unsupported,
+                Some(&base),
+                Some(&override_),
+                Mechanism::MessagesOnDemandCompaction
+            ),
+            MechanismSupport::Supported,
+            "the suppression covers only the overridden mechanism"
+        );
+
+        Ok(())
+    }
+}

@@ -206,3 +206,6 @@ async fn models(
     })
     .await
 }
+
+#[cfg(test)]
+mod tests;

@@ -12,6 +12,9 @@ use serde::Serialize;
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+mod tests;
+
 /// A rendered provider-authored JSON template, retaining the codec body as a concrete borrow.
 #[derive(Serialize)]
 #[serde(untagged)]

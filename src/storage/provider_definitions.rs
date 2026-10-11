@@ -13,6 +13,9 @@ use crate::{
 };
 use std::{num::NonZeroI64, sync::LazyLock};
 
+#[cfg(test)]
+mod tests;
+
 /// Column order of definition selects, consumed positionally by
 /// [`definition_from_row_offset`].
 const DEFINITION_COLUMNS: &str = "name, version, format, inference, credential, \

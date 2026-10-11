@@ -15,6 +15,9 @@ use crate::{
 };
 use std::{collections::HashSet, num::NonZeroU64};
 
+#[cfg(test)]
+mod tests;
+
 /// A request-local scan; every account comes from one released database snapshot.
 struct Selection {
     /// Complete coherent route snapshot, retaining missing/disabled pool targets for bindings.

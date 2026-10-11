@@ -22,6 +22,9 @@ use crate::{
 use serde::Serialize;
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 /// Fixed synthesis constant rendered as `max_tokens` when the client sent no
 /// `max_output_tokens`: the API requires the field, so the gateway documents this stand-in
 /// rather than inventing a caller-specific budget (`docs/design/providers.md`).

@@ -19,6 +19,9 @@ use serde::Serialize;
 mod generate_content;
 mod interactions;
 
+#[cfg(test)]
+mod tests;
+
 /// The Gemini prefix surface's identity for the shared pipeline: `x-goog-api-key` credentials
 /// (header only — no `?key=` query form) and the Gemini error envelope.
 struct Surface;

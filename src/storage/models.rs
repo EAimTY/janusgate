@@ -15,6 +15,9 @@ use crate::{
 };
 use std::sync::LazyLock;
 
+#[cfg(test)]
+mod tests;
+
 /// One model row with the provider identity needed for listing.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelEntry {

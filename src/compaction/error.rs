@@ -195,3 +195,173 @@ impl From<CompactionError> for GatewayError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::CompactionError;
+    use crate::{
+        compaction_model::{boundary::BoundaryError, sealing::UnsealError},
+        gateway::Error as GatewayError,
+    };
+    use reqwest::StatusCode;
+    use std::error::Error as StdError;
+
+    /// The text before the first colon of a failure's rendering: its stable code.
+    fn stable_code(error: &CompactionError) -> String {
+        error
+            .to_string()
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Every client-state failure renders its documented stable code — the shared boundary codes
+    /// spelled through the boundary vocabulary's constants — and converts into an invalid-request
+    /// gateway error carrying that code, the 400 taxonomy the failures table pins.
+    #[test]
+    fn client_state_failures_render_their_stable_codes_as_invalid_requests()
+    -> Result<(), Box<dyn StdError>> {
+        let failures = [
+            (
+                CompactionError::unusable_history("an orphan tool result"),
+                "compaction_unusable_history",
+            ),
+            (
+                CompactionError::inaccessible_native_state("another producer's state"),
+                BoundaryError::INACCESSIBLE_STATE_CODE,
+            ),
+            (
+                CompactionError::invalid_gateway_state("a tampered carrier"),
+                BoundaryError::INVALID_GATEWAY_STATE_CODE,
+            ),
+            (
+                CompactionError::budget_exceeded("no older prefix remains"),
+                "compaction_budget_exceeded",
+            ),
+            (
+                CompactionError::UnsupportedMeasurement,
+                "compaction_unsupported_measurement",
+            ),
+            (
+                CompactionError::UnknownCapacity {
+                    model: String::from("public-model"),
+                },
+                "compaction_unknown_capacity",
+            ),
+        ];
+
+        for (failure, code) in failures {
+            assert_eq!(stable_code(&failure), code, "{failure}");
+
+            assert!(
+                failure.to_string().contains(code),
+                "the stable code rides the rendered message"
+            );
+
+            match GatewayError::from(failure) {
+                GatewayError::InvalidRequest(_) => {}
+
+                other => {
+                    return Err(format!(
+                        "a client-state failure is an invalid request, got {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+
+        let capacity = CompactionError::UnknownCapacity {
+            model: String::from("public-model"),
+        };
+
+        assert!(
+            capacity.to_string().contains("public-model"),
+            "the unknown-capacity failure names the public model"
+        );
+
+        Ok(())
+    }
+
+    /// The non-client failures map onto their own taxonomy entries: an unusable summary is an
+    /// upstream-unavailable failure (the dispatch happened, the result is unusable), the missing
+    /// sealing configuration is the server's internal gap, and a dispatched upstream failure
+    /// passes through unchanged with its own semantics.
+    #[test]
+    fn non_client_failures_keep_their_own_taxonomy_entries() -> Result<(), Box<dyn StdError>> {
+        let summary = CompactionError::unusable_summary("the summary was truncated");
+
+        assert_eq!(stable_code(&summary), "compaction_summary_unusable");
+
+        match GatewayError::from(summary) {
+            GatewayError::Unavailable { detail } => {
+                assert!(detail.contains("compaction_summary_unusable"));
+            }
+
+            other => {
+                return Err(format!("an unusable summary is unavailable, got {other:?}").into());
+            }
+        }
+
+        match GatewayError::from(CompactionError::ConfigurationMissing {
+            message: String::from("no sealing keys"),
+        }) {
+            GatewayError::Internal { message } => {
+                assert_eq!(message, "no sealing keys");
+            }
+
+            other => {
+                return Err(format!("a configuration gap is internal, got {other:?}").into());
+            }
+        }
+
+        let upstream = GatewayError::Upstream {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            detail: String::from("overloaded"),
+        };
+
+        assert!(matches!(
+            GatewayError::from(CompactionError::Upstream(upstream)),
+            GatewayError::Upstream { .. }
+        ));
+
+        Ok(())
+    }
+
+    /// The unseal vocabulary maps losslessly onto the boundary semantics: a carrier naming a key
+    /// the configuration no longer knows, a malformed carrier, and failed authentication are all
+    /// client-state invalid-gateway-state failures — removing a key invalidates its artifacts —
+    /// while the missing sealing configuration stays the server's own gap.
+    #[test]
+    fn unseal_failures_map_onto_the_boundary_semantics() -> Result<(), Box<dyn StdError>> {
+        for unseal in [
+            UnsealError::UnknownKey,
+            UnsealError::Malformed,
+            UnsealError::AuthenticationFailed,
+        ] {
+            let mapped = CompactionError::from(unseal);
+
+            assert_eq!(
+                stable_code(&mapped),
+                BoundaryError::INVALID_GATEWAY_STATE_CODE,
+                "carrier state the client presented is always invalid gateway state"
+            );
+        }
+
+        let missing = CompactionError::from(UnsealError::ConfigurationMissing);
+
+        assert_eq!(
+            stable_code(&missing),
+            BoundaryError::CONFIGURATION_MISSING_CODE,
+            "the absent sealing configuration stays the configuration-missing failure"
+        );
+
+        Ok(())
+    }
+}

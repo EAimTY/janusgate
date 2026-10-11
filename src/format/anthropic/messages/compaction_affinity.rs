@@ -7,6 +7,9 @@ use crate::affinity::{
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 /// Closed discriminator of a replayable compaction block.
 #[derive(Serialize, Deserialize)]
 enum Kind {

@@ -151,20 +151,6 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
     }
 
     for call in &aggregation.tool_calls {
-        // The official `function_call` step carries no signature member
-        // (`docs/design/providers.md`), so a tool call carrying one — a GenerateContent
-        // upstream reports the replayable signature on the `functionCall` part —
-        // synthesizes the signature-bearing thought step beside its call, the step the
-        // official wire designates for replayable signatures. `summary` is optional on the
-        // official ThoughtStep (`ai.google.dev/api/interactions-api`), so the honest
-        // minimal form carries the signature alone.
-        if let Some(signature) = &call.thought_signature {
-            steps.push(RenderStep::Typed(super::TypedStep::Thought {
-                summary: Vec::new(),
-                signature: Some(signature.clone()),
-            }));
-        }
-
         steps.push(RenderStep::Typed(super::TypedStep::FunctionCall {
             id: call.call_id.clone(),
             name: call.name.clone(),
@@ -172,6 +158,23 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
             // renders the empty object, never failing a healthy stream.
             arguments: Value::Object(format::arguments_to_object_or_empty(&call.arguments)),
         }));
+
+        // The official `function_call` step carries no signature member
+        // (`docs/design/providers.md`), so a tool call carrying one — a GenerateContent
+        // upstream reports the replayable signature on the `functionCall` part —
+        // synthesizes the signature-bearing thought step beside its call, the step the
+        // official wire designates for replayable signatures. `summary` is optional on the
+        // official ThoughtStep (`ai.google.dev/api/interactions-api`), so the honest
+        // minimal form carries the signature alone. The step follows the call so the
+        // aggregated order matches the streamed transport's first-seen step order — the
+        // call opens before its done-carried signature streams — and both transports of
+        // one response fingerprint one history (`docs/reference/inference.md`).
+        if let Some(signature) = &call.thought_signature {
+            steps.push(RenderStep::Typed(super::TypedStep::Thought {
+                summary: Vec::new(),
+                signature: Some(signature.clone()),
+            }));
+        }
     }
 
     JsonResponse {

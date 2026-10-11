@@ -24,6 +24,9 @@ mod poller;
 mod provisioning;
 mod refresh;
 
+#[cfg(test)]
+pub(crate) mod tests_support;
+
 pub(crate) use completion::{complete_exchange, completed_outcome, write_completion_provider};
 pub(crate) use exchange::execute_exchange;
 pub(crate) use flow::{BeganFlow, BeginFacts, BeginPurpose, begin_flow, initialize_slots};

@@ -30,6 +30,9 @@ use crate::{
 use serde::Deserialize as _;
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 /// The restored active boundary of a prepared request: the checkpoint the
 /// window was reconstructed from, when one stands.
 #[derive(Debug, Clone, PartialEq)]

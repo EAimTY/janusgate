@@ -422,3 +422,331 @@ impl BoundaryPreparation {
         Ok(preparation)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{ActiveBoundary, BoundaryError, BoundaryPreparation};
+    use crate::{
+        compaction_model::{
+            envelope::{
+                EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, NativeReplayWindow,
+                NativeWindowPayload, ReplacementMode,
+            },
+            identity::hex_sha256,
+            mechanism::Mechanism,
+            sealing::{self, UnsealError},
+        },
+        format::{
+            BoundaryPlacement, CompactionBoundary, NativeArtifact, ParsedCompaction, UpstreamFormat,
+        },
+        ir::{IrRequest, StateFamily, StateItem},
+        test_support,
+    };
+    use std::error::Error as StdError;
+
+    /// Seals the fixture summary envelope under the installed shared test configuration into a
+    /// gateway carrier, optionally binding a visible-content digest.
+    fn sealed_carrier(visible_content: Option<&str>) -> Result<String, UnsealError> {
+        let binding = visible_content.map(|content| hex_sha256(content.as_bytes()));
+
+        let envelope = EnvelopeV1::new(
+            String::from("cmp_boundary_fixture"),
+            ReplacementMode::CanonicalWindow,
+            EnvelopePayload::GatewaySummary(GatewaySummaryPayload {
+                summary_text: String::from("Boundary fixture summary."),
+                preserved_instructions: Vec::new(),
+                retained_units: Vec::new(),
+                retained_state_items: Vec::new(),
+                overlap_identities: Vec::new(),
+            }),
+            binding.clone(),
+        );
+
+        sealing::seal_with_live_config(
+            &envelope,
+            binding.as_deref().map(|digest| digest.as_bytes()),
+        )
+    }
+
+    /// The gateway boundary of one carrier at one message offset.
+    fn gateway_boundary(offset: usize, carrier: String) -> CompactionBoundary {
+        CompactionBoundary::Gateway {
+            offset,
+            carrier,
+            visible_content: None,
+        }
+    }
+
+    /// The native non-null Messages compaction block boundary at one message offset.
+    fn native_boundary(offset: usize) -> CompactionBoundary {
+        CompactionBoundary::Native {
+            offset,
+            artifact: NativeArtifact::MessagesCompactionBlock {
+                is_null_no_op: false,
+                placement: BoundaryPlacement::Historical,
+            },
+        }
+    }
+
+    /// Authenticates a boundary list under the installed shared test configuration.
+    fn prepare(boundaries: Vec<CompactionBoundary>) -> Result<BoundaryPreparation, BoundaryError> {
+        let parsed = ParsedCompaction {
+            control: None,
+            boundaries,
+            instruction_items: Vec::new(),
+        };
+
+        BoundaryPreparation::authenticate(&parsed)
+    }
+
+    /// A history without usable boundaries leaves no active boundary: an empty list, and a native
+    /// null/no-op block both establish nothing.
+    #[test]
+    fn no_usable_boundary_stands_without_one() -> Result<(), Box<dyn StdError>> {
+        let _lock = test_support::configuration_lock();
+        test_support::install_configuration();
+
+        assert!(prepare(Vec::new())?.active().is_none());
+
+        let no_op = CompactionBoundary::Native {
+            offset: 1,
+            artifact: NativeArtifact::MessagesCompactionBlock {
+                is_null_no_op: true,
+                placement: crate::format::BoundaryPlacement::Leading,
+            },
+        };
+
+        assert!(
+            prepare(vec![no_op])?.active().is_none(),
+            "a null/no-op native block retains its no-op meaning and establishes no boundary"
+        );
+
+        Ok(())
+    }
+
+    /// The latest usable boundary wins: a later gateway carrier supersedes an earlier one, and a
+    /// later native artifact supersedes an authenticated carrier.
+    #[test]
+    fn the_latest_usable_boundary_wins() -> Result<(), Box<dyn StdError>> {
+        let _lock = test_support::configuration_lock();
+        test_support::install_configuration();
+
+        let first = sealed_carrier(None)?;
+        let second = sealed_carrier(None)?;
+
+        let preparation = prepare(vec![
+            gateway_boundary(0, first),
+            gateway_boundary(2, second),
+        ])?;
+
+        let Some(ActiveBoundary::Gateway { offset, envelope }) = preparation.active() else {
+            return Err("the later carrier is the active gateway boundary".into());
+        };
+
+        assert_eq!(offset, 2);
+        assert_eq!(envelope.artifact_id, "cmp_boundary_fixture");
+
+        let preparation = prepare(vec![
+            gateway_boundary(0, sealed_carrier(None)?),
+            native_boundary(3),
+        ])?;
+
+        assert!(
+            matches!(
+                preparation.active(),
+                Some(ActiveBoundary::Native { offset: 3, .. })
+            ),
+            "a later native artifact supersedes an authenticated carrier"
+        );
+
+        Ok(())
+    }
+
+    /// A recognizable but damaged marker fails the request explicitly — even when a later valid
+    /// carrier would supersede it — and an unknown key id fails the same way: damaged state is
+    /// never reclassified as native data and never skipped.
+    #[test]
+    fn damaged_markers_fail_even_when_superseded() -> Result<(), Box<dyn StdError>> {
+        let _lock = test_support::configuration_lock();
+        test_support::install_configuration();
+
+        let damaged = format!("{}damaged.!!!not-base64!!!", sealing::CARRIER_NAMESPACE);
+
+        let outcome = prepare(vec![
+            gateway_boundary(0, damaged),
+            gateway_boundary(2, sealed_carrier(None)?),
+        ]);
+
+        assert!(
+            matches!(outcome, Err(BoundaryError::InvalidGatewayState { .. })),
+            "a damaged marker before a valid carrier still fails the request"
+        );
+
+        let unknown_key = format!(
+            "{}rotated-away.{}",
+            sealing::CARRIER_NAMESPACE,
+            "cGF5bG9hZC1ieXRlcy1iZXlvbmQtdGhlLW5vbmNlLWxlbmd0aA"
+        );
+
+        let outcome = prepare(vec![gateway_boundary(0, unknown_key)]);
+
+        assert!(matches!(
+            outcome,
+            Err(BoundaryError::InvalidGatewayState { .. })
+        ));
+
+        Ok(())
+    }
+
+    /// The Messages visible-content binding is verified against the envelope's authenticated
+    /// digest: matching content authenticates, and any mismatch fails as invalid gateway state.
+    #[test]
+    fn visible_content_bindings_are_verified() -> Result<(), Box<dyn StdError>> {
+        let _lock = test_support::configuration_lock();
+        test_support::install_configuration();
+
+        let carrier = sealed_carrier(Some("the visible summary"))?;
+
+        let bound = ParsedCompaction {
+            control: None,
+            boundaries: vec![CompactionBoundary::Gateway {
+                offset: 1,
+                carrier: carrier.clone(),
+                visible_content: Some(String::from("the visible summary")),
+            }],
+            instruction_items: Vec::new(),
+        };
+
+        assert!(BoundaryPreparation::authenticate(&bound).is_ok());
+
+        let mismatched = ParsedCompaction {
+            control: None,
+            boundaries: vec![CompactionBoundary::Gateway {
+                offset: 1,
+                carrier,
+                visible_content: Some(String::from("tampered visible summary")),
+            }],
+            instruction_items: Vec::new(),
+        };
+
+        assert!(matches!(
+            BoundaryPreparation::authenticate(&mismatched),
+            Err(BoundaryError::InvalidGatewayState { .. })
+        ));
+
+        Ok(())
+    }
+
+    /// A gateway envelope wrapping a native window carries the authenticated producer
+    /// requirement; a summary envelope and a raw native boundary impose none.
+    #[test]
+    fn native_requirements_come_only_from_wrapped_windows() -> Result<(), Box<dyn StdError>> {
+        let _lock = test_support::configuration_lock();
+        test_support::install_configuration();
+
+        assert!(
+            prepare(Vec::new())?.native_requirement().is_none(),
+            "no boundary imposes no requirement"
+        );
+
+        let summary = sealed_carrier(None)?;
+
+        assert!(
+            prepare(vec![gateway_boundary(0, summary)])?
+                .native_requirement()
+                .is_none(),
+            "a gateway summary imposes no producer requirement"
+        );
+
+        let producer_instance = NativeWindowPayload::producer_instance(3);
+
+        let native_envelope = EnvelopeV1::new(
+            String::from("cmp_native"),
+            ReplacementMode::CanonicalWindow,
+            EnvelopePayload::NativeWindow(NativeWindowPayload {
+                producer_instance_id: producer_instance,
+                upstream_model_id: String::from("upstream-model"),
+                mechanism: Mechanism::MessagesOnDemandCompaction,
+                native_format: UpstreamFormat::AnthropicMessages,
+                required_prefix_identity: None,
+                retained_messages: Vec::new(),
+                retained_state_items: Vec::new(),
+                window: NativeReplayWindow::AnthropicOnDemandBlock {
+                    block: serde_json::json!({"type": "compaction"}),
+                },
+            }),
+            None,
+        );
+
+        let carrier = sealing::seal_with_live_config(&native_envelope, None)?;
+
+        let preparation = prepare(vec![gateway_boundary(0, carrier)])?;
+
+        let requirement = preparation
+            .native_requirement()
+            .ok_or("a wrapped native window carries its producer requirement")?;
+
+        assert_eq!(requirement.producer_instance_id, "provider:3");
+
+        assert_eq!(requirement.upstream_model_id, "upstream-model");
+
+        Ok(())
+    }
+
+    /// The active boundary's own state slot is its compaction state item's vector index — the
+    /// ordering fact that sorts same-offset state into covered and fresh.
+    #[test]
+    fn the_active_state_slot_is_the_boundarys_own_state_item() -> Result<(), Box<dyn StdError>> {
+        let _lock = test_support::configuration_lock();
+        test_support::install_configuration();
+
+        let first = sealed_carrier(None)?;
+        let second = sealed_carrier(None)?;
+
+        let preparation = prepare(vec![
+            gateway_boundary(0, first),
+            gateway_boundary(1, second),
+        ])?;
+
+        let ir = IrRequest {
+            state_items: vec![
+                StateItem {
+                    offset: 0,
+                    item: serde_json::json!({"type": "compaction"}),
+                    is_gateway: true,
+                    is_compaction: true,
+                    family: StateFamily::Responses,
+                },
+                StateItem {
+                    offset: 0,
+                    item: serde_json::json!({"opaque": "reasoning"}),
+                    is_gateway: false,
+                    is_compaction: false,
+                    family: StateFamily::Responses,
+                },
+                StateItem {
+                    offset: 1,
+                    item: serde_json::json!({"type": "compaction"}),
+                    is_gateway: true,
+                    is_compaction: true,
+                    family: StateFamily::Responses,
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        assert_eq!(
+            preparation.active_state_slot(&ir),
+            2,
+            "the second boundary pairs with the second compaction-typed state item"
+        );
+
+        Ok(())
+    }
+}

@@ -7,6 +7,9 @@
 
 use serde::Deserialize;
 
+#[cfg(test)]
+mod tests;
+
 /// The fixed carrier description rendered as a gateway compaction block's `content` when the
 /// sealed envelope carries no readable summary — wrapped native state with no exported text. It
 /// is a transport marker, never text sent to a model and never a substitute summary.

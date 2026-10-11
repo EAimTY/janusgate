@@ -188,3 +188,199 @@ impl Accepted {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for request-owned account commitment and the accepted-render continuation handles:
+    //! a fresh operation accepts exactly once, established and direct ownership ignore
+    //! acceptance, and the accepted history's boundary decisions
+    //! (`docs/design/routing.md` *Conversation affinity*).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        clippy::panic,
+        reason = "a test fails by panicking; classification matches panic on the wrong decision \
+                  and a # Panics section on every test would restate that"
+    )]
+
+    use super::{
+        Accepted, Anchor, Cache, Decision, Digest, Evidence, FreshLease, Namespace, Ownership,
+        Projection, RetryFingerprint,
+        fingerprint::{Projector, Role},
+    };
+    use crate::test_support::{configuration_lock, install_configuration};
+    use std::sync::Arc;
+
+    /// A fixed process-local digest standing in for one projected conversation identity.
+    fn digest() -> Digest {
+        Digest([9; 32])
+    }
+
+    /// A complete exact-projection retry fingerprint over one fixed digest.
+    fn retry_evidence() -> Evidence {
+        Evidence {
+            retry: Some(RetryFingerprint {
+                projection: Projection::Exact,
+                digest: digest(),
+            }),
+            ..Evidence::default()
+        }
+    }
+
+    /// A namespace of the fixed test pool under the given API key.
+    fn namespace(api_key_id: i64) -> Namespace {
+        Namespace {
+            api_key_id,
+            pool_id: 70,
+        }
+    }
+
+    /// The fresh lease of a fresh decision; a test expecting a fresh decision fails otherwise.
+    fn fresh(decision: Decision) -> FreshLease {
+        match decision {
+            Decision::Fresh(lease) => lease,
+            _ => panic!("the test expected a fresh decision"),
+        }
+    }
+
+    /// The provider of a bound decision, and nothing for any other decision.
+    fn bound_provider(decision: &Decision) -> Option<i64> {
+        match decision {
+            Decision::Bound(lease) => Some(lease.provider_id()),
+            _ => None,
+        }
+    }
+
+    /// A fresh operation accepts its committed account exactly once: acceptance turns fresh
+    /// ownership bound, further acceptance is a no-op, and established or direct ownership never
+    /// changes.
+    #[test]
+    fn fresh_ownership_accepts_once_and_established_ownership_ignores_acceptance() {
+        let _guard = configuration_lock();
+
+        install_configuration();
+
+        let cache = Arc::new(Cache::default());
+        let namespace = namespace(1);
+        let evidence = retry_evidence();
+
+        let mut ownership = match cache.acquire(namespace, &evidence) {
+            Decision::Fresh(lease) => Ownership::Fresh(lease),
+            _ => panic!("the test expected a fresh decision"),
+        };
+
+        assert!(ownership.is_fresh());
+        ownership.accept(5);
+        assert!(!ownership.is_fresh());
+
+        let Ownership::Bound(bound) = &ownership else {
+            panic!("acceptance binds fresh ownership");
+        };
+
+        assert_eq!(bound.provider_id(), 5);
+
+        ownership.accept(6);
+
+        let Ownership::Bound(bound) = &ownership else {
+            panic!("established ownership stays bound");
+        };
+
+        assert_eq!(bound.provider_id(), 5);
+
+        let mut direct = Ownership::Direct;
+
+        assert!(!direct.is_fresh());
+        direct.accept(1);
+
+        assert!(matches!(direct, Ownership::Direct));
+    }
+
+    /// Acceptance commits the retry hint: a later lookup for the same request binds to the
+    /// accepted account, so followers of a fresh leader share its establishment decision.
+    #[test]
+    fn acceptance_commits_the_retry_hint_for_later_lookups() {
+        let _guard = configuration_lock();
+
+        install_configuration();
+
+        let cache = Arc::new(Cache::default());
+        let namespace = namespace(1);
+        let evidence = retry_evidence();
+
+        let mut ownership = match cache.acquire(namespace, &evidence) {
+            Decision::Fresh(lease) => Ownership::Fresh(lease),
+            _ => panic!("the test expected a fresh decision"),
+        };
+
+        ownership.accept(5);
+
+        assert_eq!(
+            bound_provider(&cache.acquire(namespace, &evidence)),
+            Some(5)
+        );
+    }
+
+    /// The accepted history's prepared-prefix boundary is the codec's own boundary only once
+    /// completed artifact anchors await release; without artifacts there is no boundary to
+    /// report.
+    #[test]
+    fn accepted_reports_its_prepared_prefix_boundary_only_with_artifacts() {
+        let _guard = configuration_lock();
+
+        install_configuration();
+
+        let cache = Arc::new(Cache::default());
+        let lease = fresh(cache.acquire(namespace(1), &retry_evidence()));
+        let accepted = Accepted::new(lease.commit(5), Projector::new());
+
+        assert_eq!(accepted.prepared_prefix_boundary(Some(3)), None);
+        assert_eq!(accepted.prepared_prefix_boundary(None), None);
+
+        let anchored = accepted.completed_prefix(vec![Anchor::Artifact(digest())]);
+
+        assert_eq!(anchored.prepared_prefix_boundary(Some(3)), Some(3));
+        assert_eq!(anchored.prepared_prefix_boundary(None), None);
+    }
+
+    /// Completing the accepted projection registers its completed output anchors only when the
+    /// projection's retry digest moved: re-completing the already-accepted history registers
+    /// nothing, while a completed extension registers its new tail and binds later lookups to
+    /// the accepted account.
+    #[test]
+    fn completed_projections_register_anchors_only_when_the_retry_digest_moves() {
+        let _guard = configuration_lock();
+
+        install_configuration();
+
+        let cache = Arc::new(Cache::default());
+        let namespace = namespace(1);
+
+        let mut accepted_history = Projector::new();
+        accepted_history.text(Role::User, b"prompt");
+        accepted_history.text(Role::Assistant, b"answer");
+
+        let lease = fresh(cache.acquire(namespace, &retry_evidence()));
+        let mut accepted = Accepted::new(lease.commit(5), accepted_history.clone());
+
+        // Re-completing the accepted history keeps the retry digest, so even a two-turn prefix
+        // carrying completed assistant output stays unregistered and unbound.
+        accepted.complete_projection(accepted_history.clone());
+
+        assert_eq!(
+            bound_provider(&cache.acquire(namespace, &accepted_history.evidence())),
+            None
+        );
+
+        let mut extended = accepted_history.clone();
+        extended.text(Role::User, b"follow-up");
+        extended.text(Role::Assistant, b"reply");
+        let extended_evidence = extended.evidence();
+
+        accepted.complete_projection(extended);
+
+        assert_eq!(
+            bound_provider(&cache.acquire(namespace, &extended_evidence)),
+            Some(5)
+        );
+    }
+}

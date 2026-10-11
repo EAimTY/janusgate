@@ -51,6 +51,610 @@ pub(crate) mod compaction_wire;
 pub(crate) mod gemini;
 pub(crate) mod openai;
 
+#[cfg(test)]
+mod tests {
+    //! Tests for the shared format machinery: the cross-layer vocabulary tables, the role-run
+    //! accumulator, the once-only event helpers, the aggregation synthesis, the string-or-array
+    //! and upstream-error wire shapes, and the strict parse and reject helpers every codec shares.
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{
+        PayloadError, RenderOption, RoleRun, StringOrArray, UpstreamError, UpstreamFormat,
+        compaction_control::ThresholdEdit,
+    };
+    use crate::{
+        ir::{
+            InvalidRequest, IrAggregatedToolCall, IrAggregation, IrEvent, IrFinishReason,
+            IrMessage, IrPart, IrReasoningBlock, IrRole, IrUsage,
+            compaction::ThresholdEdit as IrThresholdEdit,
+        },
+        sse::SseFrame,
+    };
+    use serde::Deserialize;
+    use serde_json::{Value, json};
+    use std::error::Error as StdError;
+
+    /// Builds one text part carrying the given text.
+    fn text_part(text: &str) -> IrPart {
+        IrPart::Text {
+            text: text.to_string(),
+        }
+    }
+
+    /// Builds one tool-output part answering the given invocation.
+    fn tool_output_part(call_id: &str, content: &str) -> IrPart {
+        IrPart::ToolOutput {
+            call_id: call_id.to_string(),
+            content: content.to_string(),
+            is_error: false,
+        }
+    }
+
+    /// Extracts a validation rejection, failing the test when the fixture unexpectedly parsed.
+    fn rejected<T>(result: Result<T, InvalidRequest>) -> Result<InvalidRequest, Box<dyn StdError>> {
+        result
+            .err()
+            .ok_or("the fixture must have been rejected".into())
+    }
+
+    /// Every format's canonical wire name parses back onto its variant, and no other name parses.
+    #[test]
+    fn upstream_format_wire_names_round_trip() -> Result<(), Box<dyn StdError>> {
+        for format in [
+            UpstreamFormat::OpenAiResponse,
+            UpstreamFormat::OpenAiChatCompletion,
+            UpstreamFormat::GeminiGenerateContent,
+            UpstreamFormat::GeminiInteraction,
+            UpstreamFormat::AnthropicMessages,
+        ] {
+            assert_eq!(UpstreamFormat::parse(format.as_str()), Some(format));
+
+            let wire: UpstreamFormat = serde_json::from_value(json!(format.as_str()))?;
+            assert_eq!(wire, format);
+        }
+
+        assert_eq!(UpstreamFormat::parse("openai_responses"), None);
+
+        Ok(())
+    }
+
+    /// The render option's wire spelling matches its canonical name.
+    #[test]
+    fn render_option_wire_name() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(
+            RenderOption::OmitMaxOutputTokens.as_str(),
+            "omit_max_output_tokens"
+        );
+
+        let option: RenderOption = serde_json::from_value(json!("omit_max_output_tokens"))?;
+        assert_eq!(option, RenderOption::OmitMaxOutputTokens);
+
+        Ok(())
+    }
+
+    /// The role-run accumulator merges same-role contributions, splits on a role change, and
+    /// finishes the open run into messages.
+    #[test]
+    fn role_run_merges_and_splits_runs() {
+        let mut runs: RoleRun<IrRole, IrPart> = RoleRun::default();
+
+        runs.push(IrRole::User, vec![text_part("a")]);
+        runs.push(IrRole::User, vec![text_part("b")]);
+        runs.push(IrRole::Tool, vec![tool_output_part("c1", "r1")]);
+        runs.push(IrRole::Assistant, vec![text_part("x")]);
+
+        let messages = runs.finish();
+
+        assert_eq!(
+            messages,
+            vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![text_part("a"), text_part("b")],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![tool_output_part("c1", "r1")],
+                },
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![text_part("x")],
+                },
+            ]
+        );
+    }
+
+    /// A contribution carrying no parts is transparent: it neither extends nor splits the open
+    /// run, so same-role contributions merge across it.
+    #[test]
+    fn role_run_treats_empty_contributions_as_transparent() {
+        let mut runs: RoleRun<IrRole, IrPart> = RoleRun::default();
+
+        runs.push(IrRole::Tool, vec![tool_output_part("c1", "r1")]);
+        runs.push(IrRole::User, Vec::new());
+        runs.push(IrRole::Assistant, Vec::new());
+        runs.push(IrRole::Tool, vec![tool_output_part("c2", "r2")]);
+
+        assert_eq!(
+            runs.into_runs(),
+            vec![(
+                IrRole::Tool,
+                vec![tool_output_part("c1", "r1"), tool_output_part("c2", "r2")]
+            )]
+        );
+    }
+
+    /// The degraded finish emits exactly one stop finish on the first call for an unfinished
+    /// parser and never again.
+    #[test]
+    fn degrade_finish_emits_stop_once() {
+        let mut is_finished = false;
+
+        assert_eq!(
+            super::degrade_finish_once(&mut is_finished),
+            vec![IrEvent::finish(IrFinishReason::Stop)]
+        );
+
+        assert!(is_finished);
+        assert!(super::degrade_finish_once(&mut is_finished).is_empty());
+
+        let mut already_finished = true;
+
+        assert!(super::degrade_finish_once(&mut already_finished).is_empty());
+    }
+
+    /// The once-only message start emits exactly one opening event carrying the response identity.
+    #[test]
+    fn message_start_emitted_exactly_once() {
+        let mut is_started = false;
+
+        assert_eq!(
+            super::message_start_once(&mut is_started, "up-1".to_string(), "m".to_string()),
+            vec![IrEvent::MessageStart {
+                id: "up-1".to_string(),
+                model: "m".to_string(),
+            }]
+        );
+
+        assert!(
+            super::message_start_once(&mut is_started, "again".to_string(), String::new())
+                .is_empty()
+        );
+    }
+
+    /// The complete-call announcement is the canonical delta-plus-done pair carrying identical
+    /// payloads, with the signature only on the done.
+    #[test]
+    fn complete_call_pair_carries_identical_payloads() {
+        let [delta, done] = super::complete_call_events(
+            2,
+            "call_9".to_string(),
+            "find".to_string(),
+            "{\"q\":1}".to_string(),
+            Some("sig".to_string()),
+        );
+
+        assert_eq!(
+            delta,
+            IrEvent::ToolCallDelta {
+                index: 2,
+                call_id: Some("call_9".to_string()),
+                name: Some("find".to_string()),
+                arguments_delta: "{\"q\":1}".to_string(),
+            }
+        );
+
+        assert_eq!(
+            done,
+            IrEvent::ToolCallDone {
+                index: 2,
+                call_id: "call_9".to_string(),
+                name: "find".to_string(),
+                arguments: "{\"q\":1}".to_string(),
+                thought_signature: Some("sig".to_string()),
+            }
+        );
+    }
+
+    /// The aggregation synthesis emits every present stage in canonical order: opening, compaction
+    /// states, reasoning blocks, text, tool calls, finish, compaction metadata, usage, terminal.
+    #[test]
+    fn aggregation_events_render_in_canonical_order() {
+        let aggregation = IrAggregation {
+            text: "hi".to_string(),
+            reasoning_blocks: vec![IrReasoningBlock {
+                text: "think".to_string(),
+                signature: None,
+                opaque: Value::Null,
+            }],
+            tool_calls: vec![IrAggregatedToolCall {
+                call_id: "call_1".to_string(),
+                name: "find".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+            finish: Some(IrFinishReason::Stop),
+            usage: Some(IrUsage::default()),
+            is_compaction_paused: true,
+            compaction_states: vec![json!({"native": true})],
+            ..IrAggregation::default()
+        };
+
+        let events = super::aggregation_events(&aggregation, "model-x");
+
+        assert!(matches!(
+            &events[..],
+            [
+                IrEvent::MessageStart { id, model },
+                IrEvent::CompactionState { payload },
+                IrEvent::ReasoningDone { text, .. },
+                IrEvent::TextDelta(delta),
+                IrEvent::ToolCallDone { index: 0, .. },
+                IrEvent::Finish {
+                    reason: IrFinishReason::Stop,
+                    ..
+                },
+                IrEvent::CompactionMetadata {
+                    is_paused: true,
+                    ..
+                },
+                IrEvent::Usage(_),
+                IrEvent::Done,
+            ]
+            if model == "model-x" && !id.is_empty()
+                && payload == &json!({"native": true})
+                && text == "think" && delta == "hi"
+        ));
+        assert_eq!(events.len(), 9);
+    }
+
+    /// The aggregation synthesis omits every absent stage and the compaction metadata when no
+    /// compaction lifecycle participated, but always opens and terminates the stream.
+    #[test]
+    fn aggregation_events_skip_absent_stages() {
+        let events = super::aggregation_events(&IrAggregation::default(), "m");
+
+        assert!(matches!(
+            &events[..],
+            [IrEvent::MessageStart { model, .. }, IrEvent::Done] if model == "m"
+        ));
+
+        let usage_only = IrAggregation {
+            usage: Some(IrUsage::default()),
+            ..IrAggregation::default()
+        };
+
+        assert!(matches!(
+            &super::aggregation_events(&usage_only, "m")[..],
+            [
+                IrEvent::MessageStart { .. },
+                IrEvent::Usage(_),
+                IrEvent::Done
+            ]
+        ));
+    }
+
+    /// The string-or-array shape accepts both forms.
+    #[test]
+    fn string_or_array_accepts_both_shapes() -> Result<(), Box<dyn StdError>> {
+        /// Deserialization fixture carrying one string-or-array member.
+        #[derive(Debug, Deserialize)]
+        struct Fixture {
+            /// The member under test.
+            content: StringOrArray<String>,
+        }
+
+        let text: Fixture = serde_json::from_str("{\"content\": \"plain\"}")?;
+        assert!(matches!(text.content, StringOrArray::Text(text) if text == "plain"));
+
+        let array: Fixture = serde_json::from_str("{\"content\": [\"a\", \"b\"]}")?;
+        assert!(matches!(array.content, StringOrArray::Array(items) if items.len() == 2));
+
+        Ok(())
+    }
+
+    /// A failing array element propagates its own rejection, naming the offending member, instead
+    /// of collapsing into a shape mismatch.
+    #[test]
+    fn string_or_array_propagates_item_rejections() -> Result<(), Box<dyn StdError>> {
+        /// Deserialization fixture requiring one member of every element.
+        #[derive(Debug, Deserialize)]
+        struct ItemFixture {
+            /// Required member of every element, never read: the rejection is the subject.
+            #[expect(dead_code, reason = "read through serde only")]
+            name: String,
+        }
+
+        /// Deserialization fixture carrying one array of strict items.
+        #[derive(Debug, Deserialize)]
+        struct Fixture {
+            /// The member under test, never read: the rejection is the subject.
+            #[expect(dead_code, reason = "read through serde only")]
+            content: StringOrArray<ItemFixture>,
+        }
+
+        let error = serde_json::from_str::<Fixture>("{\"content\": [{\"name\": \"a\"}, {}]}")
+            .err()
+            .ok_or("the empty item must be rejected")?;
+
+        assert!(error.to_string().contains("missing field `name`"));
+        assert!(!error.to_string().contains("did not match any variant"));
+
+        Ok(())
+    }
+
+    /// Every embedded upstream error shape parses, a present-but-null member is success, and the
+    /// failure detail carries the text and code.
+    #[test]
+    fn upstream_error_forms_and_failure_detail() -> Result<(), Box<dyn StdError>> {
+        /// Deserialization fixture carrying an optional embedded upstream error.
+        #[derive(Debug, Deserialize)]
+        struct Fixture {
+            /// The embedded error member.
+            error: Option<UpstreamError>,
+        }
+
+        let absent: Fixture = serde_json::from_str("{}")?;
+        assert!(absent.error.is_none());
+
+        let null: Fixture = serde_json::from_str("{\"error\": null}")?;
+        assert!(null.error.is_none());
+
+        let text: Fixture = serde_json::from_str("{\"error\": \"plain\"}")?;
+        assert!(matches!(text.error, Some(UpstreamError::Text(_))));
+        assert_eq!(
+            text.error.map(|error| error.failure().to_string()),
+            Some("plain".to_string())
+        );
+
+        let object: Fixture =
+            serde_json::from_str("{\"error\": {\"message\": \"boom\", \"code\": \"x\"}}")?;
+        assert!(matches!(object.error, Some(UpstreamError::Object { .. })));
+        assert_eq!(
+            object.error.map(|error| error.failure().to_string()),
+            Some("boom (upstream error code: \"x\")".to_string())
+        );
+
+        let codeless: Fixture = serde_json::from_str("{\"error\": {\"message\": \"boom\"}}")?;
+        assert_eq!(
+            codeless.error.map(|error| error.failure().to_string()),
+            Some("boom".to_string())
+        );
+
+        let raw: Fixture = serde_json::from_str("{\"error\": [\"odd\"]}")?;
+        assert_eq!(
+            raw.error.map(|error| error.failure().to_string()),
+            Some("[\"odd\"]".to_string())
+        );
+
+        Ok(())
+    }
+
+    /// The strict body parser rejects unknown members and malformed JSON, and both rejections
+    /// carry no parameter name.
+    #[test]
+    fn strict_body_parse_rejections() -> Result<(), Box<dyn StdError>> {
+        /// Deserialization fixture for the strict body parser.
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fixture {
+            /// Required member.
+            model: String,
+        }
+
+        let unknown = rejected(super::parse_client_request::<Fixture>(
+            b"{\"model\": \"m\", \"extra\": 1}",
+        ))?;
+
+        assert_eq!(unknown.param, None);
+        assert!(unknown.to_string().contains("unknown field `extra`"));
+
+        let malformed = rejected(super::parse_client_request::<Fixture>(b"{\"model\": "))?;
+
+        assert_eq!(malformed.param, None);
+        assert!(malformed.to_string().starts_with("Invalid JSON body:"));
+
+        assert_eq!(
+            super::parse_client_request::<Fixture>(b"{\"model\": \"m\"}")?.model,
+            "m"
+        );
+
+        Ok(())
+    }
+
+    /// Tool arguments parse as objects, treat blanks as empty objects, and reject anything else
+    /// naming `arguments`.
+    #[test]
+    fn arguments_as_object_reject_policy() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(
+            super::arguments_as_object("   ").unwrap_or_default().len(),
+            0
+        );
+
+        let object = super::arguments_as_object("{\"a\": 1}").unwrap_or_default();
+        assert_eq!(object.len(), 1);
+
+        for malformed in ["[]", "{\"a\": 1", "null"] {
+            let error = rejected(super::arguments_as_object(malformed))?;
+
+            assert_eq!(error.param.clone().unwrap_or_default(), "arguments");
+        }
+
+        Ok(())
+    }
+
+    /// The render-time arguments degrade policy falls back to the empty object instead of failing
+    /// the stream.
+    #[test]
+    fn arguments_render_degrades_to_empty_object() {
+        assert!(super::arguments_to_object_or_empty("[]").is_empty());
+        assert!(super::arguments_to_object_or_empty("not json").is_empty());
+        assert_eq!(super::arguments_to_object_or_empty("{\"a\": 1}").len(), 1);
+    }
+
+    /// Text parts join with the blank-line separator, skipping only a leading run of empty parts.
+    #[test]
+    fn text_parts_join_with_blank_line_separator() {
+        assert_eq!(super::join_text_parts([]), "");
+        assert_eq!(super::join_text_parts(["", ""]), "");
+        assert_eq!(super::join_text_parts(["", "", "a", "", "b"]), "a\n\n\n\nb");
+        assert_eq!(super::join_text_parts(["a", "b"]), "a\n\nb");
+    }
+
+    /// Frame and body parsing accept valid upstream payloads and reject malformed ones with the
+    /// shared failure wording.
+    #[test]
+    fn upstream_payload_parse() -> Result<(), Box<dyn StdError>> {
+        let value = super::parse_frame::<Value>(&SseFrame {
+            data: "{\"x\": 1}".to_string(),
+            event: None,
+        })?;
+
+        assert_eq!(value, json!({"x": 1}));
+
+        let frame_error = rejected_frame(super::parse_frame::<Value>(&SseFrame {
+            data: "not json".to_string(),
+            event: None,
+        }))?;
+
+        assert_eq!(frame_error, "malformed upstream payload in SSE frame");
+
+        let body = super::parse_body::<Value>(b"{\"y\": 2}")?;
+
+        assert_eq!(body, json!({"y": 2}));
+
+        let body_error = rejected_frame(super::parse_body::<Value>(b"nope"))?;
+
+        assert!(body_error.starts_with("malformed upstream payload: "));
+
+        Ok(())
+    }
+
+    /// Extracts a payload-parse failure message, failing the test when the payload parsed.
+    fn rejected_frame<T>(result: Result<T, PayloadError>) -> Result<String, Box<dyn StdError>> {
+        result
+            .err()
+            .map(|error| error.to_string())
+            .ok_or("the payload must have been rejected".into())
+    }
+
+    /// The primary-entry selection prefers the predicate match and falls back to the first entry.
+    #[test]
+    fn primary_selection_prefers_predicate_then_first() {
+        let entries = [10, 20, 30];
+
+        assert_eq!(super::primary(&entries, |entry| *entry == 20), Some(&20));
+        assert_eq!(super::primary(&entries, |_| false), Some(&10));
+
+        let empty: [i32; 0] = [];
+
+        assert!(super::primary(&empty, |entry: &i32| entry % 2 == 1).is_none());
+    }
+
+    /// The shared OpenAI-family rejections name their parameter and context.
+    #[test]
+    fn shared_openai_rejections() -> Result<(), Box<dyn StdError>> {
+        assert!(super::reject_non_function_type("function", "tool").is_ok());
+
+        let error = rejected(super::reject_non_function_type("builtin", "tool"))?;
+
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported tool type `builtin`")
+        );
+        assert_eq!(error.param.clone().unwrap_or_default(), "type");
+
+        let choice_error = rejected(super::reject_non_function_type("builtin", "tool_choice"))?;
+
+        assert!(
+            choice_error
+                .to_string()
+                .contains("Unsupported tool_choice type `builtin`")
+        );
+
+        let without_tools = rejected(super::reject_tool_choice_without_tools(true))?;
+
+        assert_eq!(
+            without_tools.param.clone().unwrap_or_default(),
+            "tool_choice"
+        );
+        assert!(super::reject_tool_choice_without_tools(false).is_ok());
+
+        Ok(())
+    }
+
+    /// The shared sampling ranges accept the official bounds and reject anything outside them,
+    /// including a NaN temperature, naming the caller's nucleus-parameter spelling in a
+    /// rejection.
+    #[test]
+    fn sampling_range_validation() -> Result<(), Box<dyn StdError>> {
+        assert!(super::validate_sampling_ranges(Some(0.0), Some(1.0), "top_p").is_ok());
+        assert!(super::validate_sampling_ranges(Some(2.0), Some(0.0), "top_p").is_ok());
+        assert!(super::validate_sampling_ranges(None, None, "top_p").is_ok());
+
+        let hot = rejected(super::validate_sampling_ranges(Some(2.01), None, "top_p"))?;
+
+        assert_eq!(hot.param.clone().unwrap_or_default(), "temperature");
+
+        let wide = rejected(super::validate_sampling_ranges(None, Some(1.01), "top_p"))?;
+
+        assert_eq!(wide.param.clone().unwrap_or_default(), "top_p");
+
+        let gemini_wide = rejected(super::validate_sampling_ranges(None, Some(1.01), "topP"))?;
+
+        assert_eq!(gemini_wide.param.clone().unwrap_or_default(), "topP");
+
+        let nan = rejected(super::validate_sampling_ranges(
+            Some(f64::NAN),
+            None,
+            "top_p",
+        ))?;
+
+        assert_eq!(nan.param.clone().unwrap_or_default(), "temperature");
+
+        Ok(())
+    }
+
+    /// The parsed threshold edit converts into the IR's vendor-shaped edit: the trigger maps onto
+    /// the typed trigger, and the pause flag carries only when requested.
+    #[test]
+    fn threshold_edit_conversion() {
+        let converted = IrThresholdEdit::from(&ThresholdEdit {
+            trigger: Some(150_000),
+            pause_after_compaction: true,
+            instructions: Some("Summarize.".to_string()),
+        });
+
+        assert_eq!(
+            converted.trigger.map(|trigger| trigger.value),
+            Some(150_000)
+        );
+        assert_eq!(converted.should_pause_after_compaction, Some(true));
+        assert_eq!(converted.instructions.unwrap_or_default(), "Summarize.");
+
+        let plain = IrThresholdEdit::from(&ThresholdEdit {
+            trigger: None,
+            pause_after_compaction: false,
+            instructions: None,
+        });
+
+        assert!(plain.trigger.is_none());
+        assert_eq!(plain.should_pause_after_compaction, None);
+        assert_eq!(plain.instructions, None);
+    }
+
+    /// The rendered wire payload serializes to its exact JSON text.
+    #[test]
+    fn rendered_json_serializes_totally() {
+        assert_eq!(super::render_json(&super::EmptyObject {}), "{}");
+    }
+}
+
 /// A JSON object whose declared protocol shape has no members. Render-only: the gateway
 /// constructs and serializes it outward, never parsing it back.
 #[derive(Debug, Clone, Serialize)]
@@ -1044,7 +1648,8 @@ fn reject_tool_choice_without_tools(is_tools_empty: bool) -> Result<(), InvalidR
 }
 
 /// Validates the sampling parameter ranges the OpenAI and Gemini request shapes share: both
-/// protocols' client surfaces accept `temperature` and `top_p` with the same official bounds.
+/// protocols' client surfaces accept `temperature` and a nucleus-sampling threshold with the same
+/// official bounds, and a rejection names the calling surface's own wire spelling.
 ///
 /// # Errors
 ///
@@ -1052,6 +1657,7 @@ fn reject_tool_choice_without_tools(is_tools_empty: bool) -> Result<(), InvalidR
 fn validate_sampling_ranges(
     temperature: Option<f64>,
     top_p: Option<f64>,
+    top_p_param: &str,
 ) -> Result<(), InvalidRequest> {
     if temperature.is_some_and(|temperature| !(0.0..=2.0).contains(&temperature)) {
         return Err(InvalidRequest::field(
@@ -1062,8 +1668,8 @@ fn validate_sampling_ranges(
 
     if top_p.is_some_and(|top_p| !(0.0..=1.0).contains(&top_p)) {
         return Err(InvalidRequest::field(
-            "top_p",
-            "top_p must be between 0 and 1",
+            top_p_param,
+            format!("{top_p_param} must be between 0 and 1"),
         ));
     }
 

@@ -29,6 +29,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+mod tests;
+
 /// The polling interval a device authorization response implies when it reports none: five
 /// seconds per RFC 8628 §3.2.
 pub(super) const DEFAULT_DEVICE_INTERVAL_SECONDS: i64 = 5;

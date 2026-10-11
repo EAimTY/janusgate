@@ -17,6 +17,8 @@ mod client_render;
 mod compaction;
 mod json_affinity;
 mod request_parse;
+#[cfg(test)]
+mod tests;
 mod upstream_parse;
 mod upstream_render;
 mod window_affinity;

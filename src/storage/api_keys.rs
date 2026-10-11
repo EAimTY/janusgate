@@ -10,6 +10,9 @@ use crate::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+#[cfg(test)]
+mod tests;
+
 /// Column order shared by complete-key reads.
 const API_KEY_COLUMNS: &str = "id, name, key, is_enabled, created_at, default_access";
 

@@ -852,7 +852,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         ));
     }
 
-    format::validate_sampling_ranges(request.temperature, request.top_p)?;
+    format::validate_sampling_ranges(request.temperature, request.top_p, "top_p")?;
 
     let context_management = match &request.context_management {
         None => None,

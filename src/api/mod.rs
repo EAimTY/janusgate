@@ -11,6 +11,9 @@ mod gemini_v1beta;
 mod openai_v1;
 mod serving;
 
+#[cfg(test)]
+pub(crate) mod tests_support;
+
 pub(crate) use self::error::{Error, log_error};
 
 /// Constructs the outward client API router, configured with CORS middleware.

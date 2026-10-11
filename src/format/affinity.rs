@@ -445,3 +445,481 @@ fn identity(call_id: &str, has_wire_id: bool) -> Identity<'_> {
         Identity::Synthetic(call_id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the content-free source projection: the replay-family table, the wire-source
+    //! facts the codecs record beside their parse, the canonicalization of call identities and
+    //! result shapes, the wire-order channel of the regrouping codec, and the state-window
+    //! splicing — all observed through the projector's digest identities.
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{ResultShape, Sources, project_call, replay_family};
+    use crate::{
+        affinity::{
+            Digest,
+            fingerprint::{Identity, Projector, ReplayFamily, ResultContent, Role, StateKind},
+        },
+        format::UpstreamFormat,
+        ir::{IrMessage, IrPart, IrRole, StateFamily, StateItem},
+    };
+    use serde_json::{Value, json};
+    use std::error::Error as StdError;
+
+    /// A user text message.
+    fn user_text(text: &str) -> IrMessage {
+        IrMessage {
+            role: IrRole::User,
+            parts: vec![IrPart::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    /// An assistant message carrying one tool invocation with the given wire identity.
+    fn assistant_call(call_id: &str, has_signature: bool) -> IrMessage {
+        IrMessage {
+            role: IrRole::Assistant,
+            parts: vec![IrPart::ToolCall {
+                call_id: call_id.to_string(),
+                name: "find".to_string(),
+                arguments: "{\"q\":1}".to_string(),
+                thought_signature: has_signature.then(|| "sig".to_string()),
+            }],
+        }
+    }
+
+    /// A tool message answering one invocation.
+    fn tool_result(call_id: &str, content: &str) -> IrMessage {
+        IrMessage {
+            role: IrRole::Tool,
+            parts: vec![IrPart::ToolOutput {
+                call_id: call_id.to_string(),
+                content: content.to_string(),
+                is_error: false,
+            }],
+        }
+    }
+
+    /// An assistant message carrying one reasoning block.
+    fn reasoning_message() -> IrMessage {
+        IrMessage {
+            role: IrRole::Assistant,
+            parts: vec![IrPart::Reasoning {
+                text: "thinking".to_string(),
+                signature: None,
+                opaque: Value::Null,
+            }],
+        }
+    }
+
+    /// Projects the messages through the source facts and reads the retry digest.
+    fn projected_digest(sources: &Sources, messages: &[IrMessage]) -> Option<Digest> {
+        sources
+            .project(messages)
+            .evidence()
+            .retry
+            .map(|retry| retry.digest)
+    }
+
+    /// Projects the messages directly onto a fresh projector and reads the retry digest.
+    fn direct_digest(project: impl FnOnce(&mut Projector)) -> Option<Digest> {
+        let mut projector = Projector::new();
+
+        project(&mut projector);
+
+        projector.evidence().retry.map(|retry| retry.digest)
+    }
+
+    /// Every client family maps onto its replay family, and Chat Completions — which discards
+    /// reasoning and state on replay — maps onto none.
+    #[test]
+    fn replay_family_table() {
+        assert!(replay_family(UpstreamFormat::OpenAiChatCompletion).is_none());
+        assert!(matches!(
+            replay_family(UpstreamFormat::OpenAiResponse),
+            Some(ReplayFamily::Responses)
+        ));
+        assert!(matches!(
+            replay_family(UpstreamFormat::AnthropicMessages),
+            Some(ReplayFamily::Messages)
+        ));
+        assert!(matches!(
+            replay_family(UpstreamFormat::GeminiGenerateContent),
+            Some(ReplayFamily::GenerateContent)
+        ));
+        assert!(matches!(
+            replay_family(UpstreamFormat::GeminiInteraction),
+            Some(ReplayFamily::Interactions)
+        ));
+    }
+
+    /// Asserts two projections carry the same retry digest.
+    fn assert_same_digest(
+        left: Option<Digest>,
+        right: Option<Digest>,
+    ) -> Result<(), Box<dyn StdError>> {
+        let is_same = match (left, right) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => true,
+            _ => false,
+        };
+
+        if is_same {
+            Ok(())
+        } else {
+            Err("the projections must carry the same retry digest".into())
+        }
+    }
+
+    /// Asserts two projections carry different retry digests or only one is fingerprintable.
+    fn assert_different_digest(
+        left: Option<Digest>,
+        right: Option<Digest>,
+    ) -> Result<(), Box<dyn StdError>> {
+        let is_different = match (left, right) {
+            (Some(left), Some(right)) => left != right,
+            (Some(_), None) | (None, Some(_)) => true,
+            (None, None) => false,
+        };
+
+        if is_different {
+            Ok(())
+        } else {
+            Err("the projections must not carry the same retry digest".into())
+        }
+    }
+
+    /// The recorded source format reads back unchanged from both constructors.
+    #[test]
+    fn sources_record_the_client_format() {
+        for format in [
+            UpstreamFormat::OpenAiChatCompletion,
+            UpstreamFormat::OpenAiResponse,
+            UpstreamFormat::GeminiGenerateContent,
+        ] {
+            assert_eq!(Sources::new(format).client_format(), format);
+            assert_eq!(
+                Sources::from_wire_messages(format, &[]).client_format(),
+                format
+            );
+        }
+    }
+
+    /// The wire-message constructor and the incremental record-and-project path produce identical
+    /// fingerprints for the same accepted conversation.
+    #[test]
+    fn from_wire_messages_matches_incremental_recording() -> Result<(), Box<dyn StdError>> {
+        let messages = vec![
+            user_text("hi"),
+            assistant_call("call_1", true),
+            tool_result("call_1", "ok"),
+        ];
+
+        let via_wire = Sources::from_wire_messages(UpstreamFormat::OpenAiChatCompletion, &messages);
+
+        assert_same_digest(
+            projected_digest(&via_wire, &messages),
+            direct_digest(|projector| {
+                projector.text(Role::User, b"hi");
+                projector.call(
+                    Role::Assistant,
+                    Identity::Wire("call_1"),
+                    "find",
+                    &json!({"q": 1}),
+                    Some("sig"),
+                );
+                projector.result(
+                    Role::Tool,
+                    Identity::Wire("call_1"),
+                    ResultContent::Text("ok"),
+                    false,
+                );
+            }),
+        )
+    }
+
+    /// A codec-synthesized identity never fingerprints as the real wire ID it happens to equal.
+    #[test]
+    fn synthetic_identity_differs_from_equal_wire_id() -> Result<(), Box<dyn StdError>> {
+        let mut wire_sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        wire_sources.call(true);
+
+        let mut synthetic_sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        synthetic_sources.call(false);
+
+        let messages = vec![assistant_call("call_0", false)];
+
+        assert_eq!(
+            wire_sources.client_format(),
+            synthetic_sources.client_format()
+        );
+
+        assert_different_digest(
+            projected_digest(&wire_sources, &messages),
+            projected_digest(&synthetic_sources, &messages),
+        )
+    }
+
+    /// A duplicated unresolved wire identity makes the suffix unfingerprintable instead of
+    /// double-counting the call.
+    #[test]
+    fn duplicate_wire_identity_stops_the_projection() {
+        let mut sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        sources.call(true);
+        sources.call(true);
+
+        let messages = vec![
+            assistant_call("call_1", false),
+            assistant_call("call_1", false),
+        ];
+
+        assert!(projected_digest(&sources, &messages).is_none());
+    }
+
+    /// A result recorded as foreign JSON fingerprints differently from bytes with an equal
+    /// rendering recorded as plain text: the accepted content type participates in the identity.
+    #[test]
+    fn result_shape_participates_in_the_identity() -> Result<(), Box<dyn StdError>> {
+        // Text hashes the exact bytes `[1, 2]`; the JSON shape canonicalizes to `[1,2]`.
+        let messages = vec![
+            assistant_call("call_1", false),
+            tool_result("call_1", "[1, 2]"),
+        ];
+
+        let mut text_sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        text_sources.call(true);
+        text_sources.result(true, ResultShape::Text);
+
+        let mut json_sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        json_sources.call(true);
+        json_sources.result(true, ResultShape::Json);
+
+        assert_different_digest(
+            projected_digest(&text_sources, &messages),
+            projected_digest(&json_sources, &messages),
+        )
+    }
+
+    /// A GenerateContent null result keeps its flattened-null identity instead of hashing like
+    /// accepted text.
+    #[test]
+    fn json_null_result_shape_is_distinct() -> Result<(), Box<dyn StdError>> {
+        let messages = vec![assistant_call("call_1", false), tool_result("call_1", "")];
+
+        let mut null_sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        null_sources.call(true);
+        null_sources.result(true, ResultShape::JsonNull);
+
+        let mut text_sources = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        text_sources.call(true);
+        text_sources.result(true, ResultShape::Text);
+
+        assert_different_digest(
+            projected_digest(&null_sources, &messages),
+            projected_digest(&text_sources, &messages),
+        )
+    }
+
+    /// Reasoning participates in the projection only for codecs that preserve its replay; the
+    /// Chat Completions projection hashes the same history identically with or without the block.
+    #[test]
+    fn reasoning_projection_is_gated_on_the_client_family() -> Result<(), Box<dyn StdError>> {
+        let chat_with = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+        let chat_without = Sources::new(UpstreamFormat::OpenAiChatCompletion);
+
+        let with_reasoning = vec![user_text("q"), reasoning_message()];
+        let without_reasoning = vec![user_text("q")];
+
+        assert_same_digest(
+            projected_digest(&chat_with, &with_reasoning),
+            projected_digest(&chat_without, &without_reasoning),
+        )?;
+
+        let responses_with = Sources::new(UpstreamFormat::OpenAiResponse);
+        let responses_without = Sources::new(UpstreamFormat::OpenAiResponse);
+
+        assert_different_digest(
+            projected_digest(&responses_with, &with_reasoning),
+            projected_digest(&responses_without, &without_reasoning),
+        )
+    }
+
+    /// Deferred user parts project in their original wire order, not in the order their
+    /// regrouped destinations were resolved.
+    #[test]
+    fn deferred_parts_project_in_wire_order() -> Result<(), Box<dyn StdError>> {
+        let mut sources = Sources::new(UpstreamFormat::GeminiGenerateContent);
+
+        let later = sources.defer_part(1);
+        let earlier = sources.defer_part(0);
+        sources.resolve_parts(&[later, earlier], 0);
+
+        let messages = vec![IrMessage {
+            role: IrRole::User,
+            parts: vec![
+                IrPart::Text {
+                    text: "a".to_string(),
+                },
+                IrPart::Text {
+                    text: "b".to_string(),
+                },
+            ],
+        }];
+
+        let projected = sources.project(&messages);
+
+        assert_same_digest(
+            projected.evidence().retry.map(|retry| retry.digest),
+            direct_digest(|projector| {
+                projector.text(Role::User, b"b");
+                projector.text(Role::User, b"a");
+            }),
+        )?;
+
+        assert_different_digest(
+            projected.evidence().retry.map(|retry| retry.digest),
+            direct_digest(|projector| {
+                projector.text(Role::User, b"a");
+                projector.text(Role::User, b"b");
+            }),
+        )
+    }
+
+    /// State items splice into the canonical history at their message offsets: the item at offset
+    /// zero precedes the first message, later offsets land between their neighbors, and items
+    /// beyond the last message close the history.
+    #[test]
+    fn state_items_splice_at_their_offsets() -> Result<(), Box<dyn StdError>> {
+        let native_state = |offset: usize| StateItem {
+            offset,
+            item: json!({"type": "reasoning", "encrypted_content": "enc"}),
+            is_gateway: false,
+            is_compaction: false,
+            family: StateFamily::Responses,
+        };
+
+        let messages = vec![user_text("u1"), user_text("u2")];
+        let [head, middle, tail] = [native_state(0), native_state(1), native_state(2)];
+
+        let sources = Sources::new(UpstreamFormat::OpenAiResponse);
+
+        let spliced = {
+            let mut projector = Projector::new();
+
+            sources.append_window(&messages, [&head, &middle, &tail], 0, &mut projector);
+
+            projector.evidence().retry.map(|retry| retry.digest)
+        };
+
+        assert_same_digest(
+            spliced,
+            direct_digest(|projector| {
+                projector.state(ReplayFamily::Responses, StateKind::Native, &head.item);
+                projector.text(Role::User, b"u1");
+                projector.state(ReplayFamily::Responses, StateKind::Native, &middle.item);
+                projector.text(Role::User, b"u2");
+                projector.state(ReplayFamily::Responses, StateKind::Native, &tail.item);
+            }),
+        )
+    }
+
+    /// A suffix window drops covered messages and the state items before it, keeps the state at
+    /// and after the window head, and never shifts a state item across a message.
+    #[test]
+    fn suffix_window_respects_the_first_message_boundary() -> Result<(), Box<dyn StdError>> {
+        let native_state = |offset: usize| StateItem {
+            offset,
+            item: json!({"type": "reasoning", "encrypted_content": "enc"}),
+            is_gateway: false,
+            is_compaction: false,
+            family: StateFamily::Responses,
+        };
+
+        let messages = vec![user_text("u1"), user_text("u2")];
+        let [head, middle, tail] = [native_state(0), native_state(1), native_state(2)];
+
+        let sources = Sources::new(UpstreamFormat::OpenAiResponse);
+
+        let window_at = |first_message: usize| {
+            let mut projector = Projector::new();
+
+            sources.append_window(
+                &messages,
+                [&head, &middle, &tail],
+                first_message,
+                &mut projector,
+            );
+
+            projector.evidence().retry.map(|retry| retry.digest)
+        };
+
+        assert_same_digest(
+            window_at(1),
+            direct_digest(|projector| {
+                projector.state(ReplayFamily::Responses, StateKind::Native, &middle.item);
+                projector.text(Role::User, b"u2");
+                projector.state(ReplayFamily::Responses, StateKind::Native, &tail.item);
+            }),
+        )?;
+
+        // The full window and the suffix window differ: covered history is genuinely excluded.
+        assert_different_digest(window_at(1), window_at(0))
+    }
+
+    /// The completed-call projection helper fingerprints a valid invocation and declines — without
+    /// altering inference — a call whose foreign argument string is not a JSON object.
+    #[test]
+    fn project_call_gates_on_object_arguments() -> Result<(), Box<dyn StdError>> {
+        let mut projector = Projector::new();
+
+        assert!(project_call(
+            &mut projector,
+            "call_1",
+            "find",
+            "{\"q\":1}",
+            Some("sig")
+        ));
+
+        // A declined call alters nothing: the projector stays at the empty-history identity.
+        let mut declined = Projector::new();
+
+        assert!(!project_call(
+            &mut declined,
+            "call_1",
+            "find",
+            "[1,2]",
+            None
+        ));
+
+        let mut malformed = Projector::new();
+
+        assert!(!project_call(
+            &mut malformed,
+            "call_1",
+            "find",
+            "not json",
+            None
+        ));
+
+        let empty = Projector::new();
+
+        assert_same_digest(
+            declined.evidence().retry.map(|retry| retry.digest),
+            empty.evidence().retry.map(|retry| retry.digest),
+        )?;
+        assert_same_digest(
+            malformed.evidence().retry.map(|retry| retry.digest),
+            empty.evidence().retry.map(|retry| retry.digest),
+        )?;
+
+        assert_different_digest(
+            projector.evidence().retry.map(|retry| retry.digest),
+            empty.evidence().retry.map(|retry| retry.digest),
+        )
+    }
+}

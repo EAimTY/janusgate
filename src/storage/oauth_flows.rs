@@ -20,6 +20,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, num::NonZeroI64, sync::LazyLock};
 
+#[cfg(test)]
+mod tests;
+
 /// The column order of flow selects — the table's own order — consumed positionally by
 /// [`flow_from_row`].
 const FLOW_COLUMNS: &str = "id, provider_definition_name, provider_definition_version, \

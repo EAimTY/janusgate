@@ -23,6 +23,11 @@ pub(crate) mod oauth;
 pub(crate) mod quota;
 pub(crate) mod quota_rejection;
 
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_support;
+
 pub(crate) use definition::{DefinitionPayload, ProviderDefinition};
 
 /// The provider control engine's shared failure vocabulary: the device authorization, the token

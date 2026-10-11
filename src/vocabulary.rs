@@ -115,3 +115,76 @@ impl ReasoningLevel {
             .unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the shared reasoning vocabulary: the closed string domain, canonical set
+    //! ordering, and the spelling round-trip every format surface renders from
+    //! (`docs/reference/inference.md`).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::ReasoningLevel;
+
+    /// The vocabulary parses exactly its own seven spellings — case-sensitively, with no
+    /// alternate separators — and every foreign string is refused.
+    #[test]
+    fn parsing_accepts_only_the_closed_spelling_domain() {
+        let spellings = [
+            ("none", ReasoningLevel::None),
+            ("minimal", ReasoningLevel::Minimal),
+            ("low", ReasoningLevel::Low),
+            ("medium", ReasoningLevel::Medium),
+            ("high", ReasoningLevel::High),
+            ("xhigh", ReasoningLevel::XHigh),
+            ("max", ReasoningLevel::Max),
+        ];
+
+        for (spelling, level) in spellings {
+            assert_eq!(ReasoningLevel::from_vocabulary_str(spelling), Some(level));
+            assert_eq!(level.as_str(), spelling);
+            assert_eq!(
+                ReasoningLevel::from_vocabulary_str(level.as_str()),
+                Some(level)
+            );
+        }
+
+        for foreign in ["", "LOW", "High", "x-high", "x_high", "ultra", "off"] {
+            assert_eq!(ReasoningLevel::from_vocabulary_str(foreign), None);
+        }
+    }
+
+    /// Set canonicalization deduplicates into the canonical declaration order regardless of the
+    /// input's order or repetitions, and the empty set stays empty.
+    #[test]
+    fn canonicalization_deduplicates_into_canonical_order() {
+        let canonical = ReasoningLevel::CANONICAL;
+
+        assert_eq!(
+            ReasoningLevel::canonicalize_levels([
+                ReasoningLevel::High,
+                ReasoningLevel::None,
+                ReasoningLevel::High,
+                ReasoningLevel::Max,
+                ReasoningLevel::Low,
+            ]),
+            vec![
+                ReasoningLevel::None,
+                ReasoningLevel::Low,
+                ReasoningLevel::High,
+                ReasoningLevel::Max,
+            ]
+        );
+        assert_eq!(
+            ReasoningLevel::canonicalize_levels(canonical.into_iter().rev()),
+            canonical.to_vec()
+        );
+        assert_eq!(
+            ReasoningLevel::canonicalize_levels(std::iter::empty()),
+            Vec::new()
+        );
+    }
+}

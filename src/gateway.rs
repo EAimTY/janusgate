@@ -26,6 +26,9 @@ mod request;
 use request::build_upstream_request;
 pub(crate) use request::{build_internal_request, overlay_header_rows};
 
+#[cfg(test)]
+mod tests;
+
 mod event_stream;
 mod response_body;
 use event_stream::{json_event_stream, sse_event_stream};

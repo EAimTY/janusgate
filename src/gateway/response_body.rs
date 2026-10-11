@@ -4,6 +4,9 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
 use serde_json::value::RawValue;
 use std::fmt;
 
+#[cfg(test)]
+mod tests;
+
 /// Selects the last occurrence of a configured root member, matching ordinary JSON decoding.
 struct EnvelopeMember<'a> {
     /// Provider-authored object member naming the actual protocol document.

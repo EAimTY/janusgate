@@ -608,7 +608,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         }
     };
 
-    format::validate_sampling_ranges(request.temperature, request.top_p)?;
+    format::validate_sampling_ranges(request.temperature, request.top_p, "top_p")?;
 
     if request.max_tokens.is_some() && request.max_completion_tokens.is_some() {
         return Err(InvalidRequest::field(

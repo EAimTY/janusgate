@@ -35,6 +35,15 @@ mod error;
 pub(crate) mod schema;
 mod tls;
 
+#[cfg(test)]
+mod deserializers_tests;
+
+#[cfg(test)]
+mod schema_tests;
+
+#[cfg(test)]
+mod tests;
+
 use self::error::Error;
 
 /// Quiet period the watched inputs must stay silent for before a debounced reload applies — long

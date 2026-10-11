@@ -37,6 +37,9 @@ use log::{debug, info, warn};
 use reqwest::Client;
 use std::time::Duration;
 
+#[cfg(test)]
+mod tests;
+
 /// How long a device-flow claim is trusted before another poller steals it: twice the
 /// control-plane timeout that bounds every exchange attempt. The first timeout-width covers the
 /// exchange's whole budget; the second is the strict slack the assert below demands, keeping a

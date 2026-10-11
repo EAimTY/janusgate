@@ -12,6 +12,9 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[cfg(test)]
+mod tests;
+
 /// One shared runtime cache. All lookup/index mutations hold one short synchronous mutex.
 #[derive(Default)]
 pub(crate) struct Cache {

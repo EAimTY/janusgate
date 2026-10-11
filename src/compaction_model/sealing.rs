@@ -312,3 +312,310 @@ fn decode_envelope(plaintext: &[u8]) -> Result<EnvelopeV1, UnsealError> {
 
     Ok(envelope)
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{
+        CARRIER_NAMESPACE, SealingKeys, UnsealError, decode_envelope, is_gateway_marker, seal,
+        unseal,
+    };
+    use crate::{
+        compaction_model::envelope::{
+            EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, ReplacementMode,
+        },
+        config::schema::CompactionConfig,
+        test_support::{self, SEALING_KEY_PRIMARY, SEALING_KEY_SECONDARY},
+    };
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use std::error::Error as StdError;
+
+    /// The fixture envelope every sealing scenario round-trips.
+    fn fixture_envelope() -> EnvelopeV1 {
+        EnvelopeV1::new(
+            String::from("cmp_fixture"),
+            ReplacementMode::CanonicalWindow,
+            EnvelopePayload::GatewaySummary(GatewaySummaryPayload {
+                summary_text: String::from("Sealed summary."),
+                preserved_instructions: Vec::new(),
+                retained_units: Vec::new(),
+                retained_state_items: Vec::new(),
+                overlap_identities: Vec::new(),
+            }),
+            None,
+        )
+    }
+
+    /// Builds the sealing keys of the given `(id, standard-base64 material)` pairs; the first
+    /// pair is the sealing key.
+    fn keys_of(pairs: &[(&str, &str)]) -> Result<SealingKeys, Box<dyn StdError>> {
+        let body = serde_json::json!({
+            "keys": pairs
+                .iter()
+                .map(|(id, material)| serde_json::json!({"id": id, "key": material}))
+                .collect::<Vec<_>>()
+        });
+
+        let config: CompactionConfig = serde_json::from_value(body)?;
+
+        Ok(SealingKeys::build(&config))
+    }
+
+    /// The encoded payload segment of a well-formed carrier: the text after the second `.` of the
+    /// namespaced form.
+    fn encoded_payload_of(carrier: &str) -> Result<&str, Box<dyn StdError>> {
+        let rest = carrier
+            .strip_prefix(CARRIER_NAMESPACE)
+            .ok_or("the carrier lacks the gateway namespace")?;
+
+        rest.split_once('.')
+            .map(|(_id, payload)| payload)
+            .ok_or_else(|| "the carrier lacks the key-id separator".into())
+    }
+
+    /// A sealed carrier carries the namespace and the sealing key's identifier, unseals to the
+    /// exact envelope under the live key set, and is recognizable as a gateway marker — while
+    /// ordinary state strings are not.
+    #[test]
+    fn sealed_carrier_round_trips_and_carries_the_key_id() -> Result<(), Box<dyn StdError>> {
+        let keys = keys_of(&[
+            ("alpha", SEALING_KEY_PRIMARY),
+            ("beta", SEALING_KEY_SECONDARY),
+        ])?;
+
+        let carrier = seal(&keys, &fixture_envelope(), None);
+
+        assert!(is_gateway_marker(&carrier), "a sealed carrier is a marker");
+
+        assert!(
+            carrier.starts_with("janusgate.compaction.v1.alpha."),
+            "the first configured key seals and its id rides in the clear"
+        );
+
+        let unsealed = unseal(&keys, &carrier, None).map_err(|error| error.to_string())?;
+
+        assert_eq!(unsealed, fixture_envelope());
+
+        assert!(
+            !is_gateway_marker("native opaque state"),
+            "ordinary native state is never a marker"
+        );
+
+        Ok(())
+    }
+
+    /// Rotation keeps artifacts readable while the sealing key is retained and invalidates them
+    /// once it is removed: a carrier sealed under `alpha` unseals under any set that still knows
+    /// `alpha`, and names an unknown key once `alpha` is gone.
+    #[test]
+    fn rotation_unseals_while_the_key_is_retained_and_fails_after_removal()
+    -> Result<(), Box<dyn StdError>> {
+        let sealing = keys_of(&[
+            ("alpha", SEALING_KEY_PRIMARY),
+            ("beta", SEALING_KEY_SECONDARY),
+        ])?;
+
+        let carrier = seal(&sealing, &fixture_envelope(), None);
+
+        let rotated = keys_of(&[
+            ("beta", SEALING_KEY_SECONDARY),
+            ("alpha", SEALING_KEY_PRIMARY),
+        ])?;
+
+        assert!(
+            unseal(&rotated, &carrier, None).is_ok(),
+            "the old key still unseals after a newer key prepends"
+        );
+
+        let removed = keys_of(&[("beta", SEALING_KEY_SECONDARY)])?;
+
+        assert!(
+            matches!(
+                unseal(&removed, &carrier, None),
+                Err(UnsealError::UnknownKey)
+            ),
+            "removing the sealing key intentionally invalidates its artifacts"
+        );
+
+        Ok(())
+    }
+
+    /// The visible-content binding is authenticated: a carrier unseals only under the exact
+    /// binding it sealed with, and a tampered ciphertext fails authentication rather than
+    /// decoding to attacker-chosen state.
+    #[test]
+    fn binding_and_ciphertext_are_authenticated() -> Result<(), Box<dyn StdError>> {
+        let keys = keys_of(&[("alpha", SEALING_KEY_PRIMARY)])?;
+
+        let carrier = seal(&keys, &fixture_envelope(), Some(b"visible content"));
+
+        assert!(unseal(&keys, &carrier, Some(b"visible content")).is_ok());
+
+        assert!(
+            matches!(
+                unseal(&keys, &carrier, None),
+                Err(UnsealError::AuthenticationFailed)
+            ),
+            "the unbound consumption of a bound carrier fails authentication"
+        );
+
+        assert!(matches!(
+            unseal(&keys, &carrier, Some(b"other content")),
+            Err(UnsealError::AuthenticationFailed)
+        ));
+
+        let payload = encoded_payload_of(&carrier)?;
+
+        let mut nonce_and_ciphertext = URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|error| format!("the fixture carrier decodes: {error}"))?;
+
+        let (last, _head) = nonce_and_ciphertext
+            .split_last_mut()
+            .ok_or("the fixture carrier carries a payload")?;
+
+        *last ^= 0xff;
+
+        let tampered = format!(
+            "{CARRIER_NAMESPACE}alpha.{}",
+            URL_SAFE_NO_PAD.encode(&nonce_and_ciphertext)
+        );
+
+        assert!(
+            matches!(
+                unseal(&keys, &tampered, None),
+                Err(UnsealError::AuthenticationFailed)
+            ),
+            "flipping one ciphertext bit fails authentication"
+        );
+
+        Ok(())
+    }
+
+    /// Structurally broken carriers fail with the malformed or unknown-key error — never with a
+    /// panic and never as plausible state.
+    #[test]
+    fn broken_carriers_fail_explicitly() -> Result<(), Box<dyn StdError>> {
+        let keys = keys_of(&[("alpha", SEALING_KEY_PRIMARY)])?;
+
+        assert!(
+            matches!(
+                unseal(&keys, "native opaque state", None),
+                Err(UnsealError::Malformed)
+            ),
+            "a string outside the namespace is malformed"
+        );
+
+        assert!(
+            matches!(
+                unseal(&keys, "janusgate.compaction.v1.no-separator", None),
+                Err(UnsealError::Malformed)
+            ),
+            "a namespaced string without a key-id separator is malformed"
+        );
+
+        assert!(
+            matches!(
+                unseal(&keys, "janusgate.compaction.v1.other-key.Zm9v", None),
+                Err(UnsealError::UnknownKey)
+            ),
+            "a carrier naming an unconfigured key is unknown, not malformed"
+        );
+
+        assert!(matches!(
+            unseal(
+                &keys,
+                "janusgate.compaction.v1.alpha.!!!not-base64!!!",
+                None
+            ),
+            Err(UnsealError::Malformed)
+        ));
+
+        // A payload shorter than the nonce cannot carry an authenticated encryption.
+        assert!(matches!(
+            unseal(&keys, "janusgate.compaction.v1.alpha.YQ", None),
+            Err(UnsealError::Malformed)
+        ));
+
+        Ok(())
+    }
+
+    /// The authenticated plaintext must decode as the known envelope version: a future or
+    /// corrupted version inside a validly sealed carrier is malformed, never half-decoded.
+    #[test]
+    fn unknown_envelope_versions_are_malformed() -> Result<(), Box<dyn StdError>> {
+        let mut body = serde_json::to_value(fixture_envelope())?;
+
+        let version = body
+            .get_mut("version")
+            .ok_or("the fixture envelope carries its version")?;
+
+        *version = 2.into();
+
+        let plaintext = serde_json::to_vec(&body)?;
+
+        assert!(matches!(
+            decode_envelope(&plaintext),
+            Err(UnsealError::Malformed)
+        ));
+
+        assert!(matches!(
+            decode_envelope(b"not json"),
+            Err(UnsealError::Malformed)
+        ));
+
+        Ok(())
+    }
+
+    /// The keys' rendering names the configured identifiers and never the key material.
+    #[test]
+    fn key_debug_renders_identifiers_only() -> Result<(), Box<dyn StdError>> {
+        let keys = keys_of(&[
+            ("alpha", SEALING_KEY_PRIMARY),
+            ("beta", SEALING_KEY_SECONDARY),
+        ])?;
+
+        let rendered = format!("{keys:?}");
+
+        assert!(rendered.contains("alpha"));
+        assert!(rendered.contains("beta"));
+
+        assert!(
+            !rendered.contains(SEALING_KEY_PRIMARY),
+            "the secret material never enters the rendering"
+        );
+
+        Ok(())
+    }
+
+    /// Under the installed shared test configuration the live-config path seals with the first
+    /// configured key and round-trips through unsealing.
+    #[test]
+    fn live_configuration_seals_with_the_first_key_and_unseals() -> Result<(), Box<dyn StdError>> {
+        test_support::install_configuration();
+
+        let lock = test_support::configuration_lock();
+
+        let carrier = super::seal_with_live_config(&fixture_envelope(), None)
+            .map_err(|error| error.to_string())?;
+
+        assert!(
+            carrier.starts_with("janusgate.compaction.v1.test-primary."),
+            "the first configured shared key seals"
+        );
+
+        let unsealed =
+            super::unseal_with_live_config(&carrier, None).map_err(|error| error.to_string())?;
+
+        assert_eq!(unsealed, fixture_envelope());
+
+        drop(lock);
+
+        Ok(())
+    }
+}

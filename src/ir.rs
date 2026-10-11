@@ -804,3 +804,365 @@ impl Aggregator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the IR's own decisions: the aggregation fold rules over IR event streams, the
+    //! saturating usage composition, the accepted image URL forms, and the request-boundary
+    //! reasoning-level rejection (`docs/reference/inference.md`).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        clippy::panic,
+        clippy::expect_used,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{
+        Aggregator, InvalidRequest, IrAggregatedToolCall, IrAggregation, IrEvent, IrFinishReason,
+        IrImage, IrPart, IrReasoningBlock, IrRole, IrUsage,
+    };
+    use crate::vocabulary::ReasoningLevel;
+    use serde_json::json;
+
+    /// Folds one event stream through an aggregator and returns the result.
+    fn folded(events: &[IrEvent]) -> IrAggregation {
+        let mut aggregator = Aggregator::default();
+
+        for event in events {
+            aggregator.ingest(event);
+        }
+
+        aggregator.finish()
+    }
+
+    /// Text and reasoning deltas accumulate into their own spans; a reasoning done carrying its
+    /// own text is authoritative over pending deltas, while an empty-text done closes the
+    /// streamed deltas as the block.
+    #[test]
+    fn text_and_reasoning_folds_follow_authoritative_dones() {
+        let aggregation = folded(&[
+            IrEvent::MessageStart {
+                id: "resp-1".to_string(),
+                model: "m".to_string(),
+            },
+            IrEvent::TextDelta("Hello ".to_string()),
+            IrEvent::TextDelta("world".to_string()),
+            IrEvent::ReasoningDelta("think".to_string()),
+            IrEvent::ReasoningDelta("ing".to_string()),
+            IrEvent::ReasoningDone {
+                text: String::new(),
+                signature: Some("sig".to_string()),
+                opaque: json!({"i": 1}),
+            },
+            IrEvent::ReasoningDelta("second".to_string()),
+            IrEvent::ReasoningDone {
+                text: "authoritative".to_string(),
+                signature: None,
+                opaque: json!(null),
+            },
+            IrEvent::TextDelta("!".to_string()),
+            IrEvent::Done,
+        ]);
+
+        assert_eq!(aggregation.text, "Hello world!");
+        assert_eq!(aggregation.reasoning, "thinkingauthoritative");
+        assert_eq!(
+            aggregation.reasoning_blocks,
+            vec![
+                IrReasoningBlock {
+                    text: "thinking".to_string(),
+                    signature: Some("sig".to_string()),
+                    opaque: json!({"i": 1}),
+                },
+                IrReasoningBlock {
+                    text: "authoritative".to_string(),
+                    signature: None,
+                    opaque: json!(null),
+                },
+            ]
+        );
+        assert_eq!(aggregation.finish, None);
+    }
+
+    /// A delta-only stream without a closing done still yields its unterminated reasoning span
+    /// as a text-only block, so aggregated renderings never lose a reasoning prefix.
+    #[test]
+    fn unterminated_reasoning_flushes_as_a_text_only_block() {
+        let aggregation = folded(&[
+            IrEvent::ReasoningDelta("partial".to_string()),
+            IrEvent::TextDelta("answer".to_string()),
+        ]);
+
+        assert_eq!(aggregation.text, "answer");
+        assert_eq!(aggregation.reasoning, "partial");
+        assert_eq!(
+            aggregation.reasoning_blocks,
+            vec![IrReasoningBlock {
+                text: "partial".to_string(),
+                signature: None,
+                opaque: json!(null),
+            }]
+        );
+    }
+
+    /// Tool call arguments assemble per index: deltas accumulate under their stable index, a
+    /// done without arguments uses the accumulated text, a done with arguments is
+    /// authoritative, and a repeated done for one index is ignored so a duplicating upstream
+    /// cannot double-deliver a call.
+    #[test]
+    fn tool_calls_assemble_per_index_and_ignore_repeated_dones() {
+        let aggregation = folded(&[
+            IrEvent::ToolCallDelta {
+                index: 0,
+                call_id: None,
+                name: None,
+                arguments_delta: "{\"a\"".to_string(),
+            },
+            IrEvent::ToolCallDelta {
+                index: 1,
+                call_id: Some("call-2".to_string()),
+                name: Some("g".to_string()),
+                arguments_delta: "[1,".to_string(),
+            },
+            IrEvent::ToolCallDelta {
+                index: 0,
+                call_id: Some("call-1".to_string()),
+                name: Some("f".to_string()),
+                arguments_delta: ": 1}".to_string(),
+            },
+            IrEvent::ToolCallDelta {
+                index: 1,
+                call_id: None,
+                name: None,
+                arguments_delta: "2]".to_string(),
+            },
+            IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call-1".to_string(),
+                name: "f".to_string(),
+                arguments: String::new(),
+                thought_signature: Some("sig".to_string()),
+            },
+            IrEvent::ToolCallDone {
+                index: 1,
+                call_id: "call-2".to_string(),
+                name: "g".to_string(),
+                arguments: "[9]".to_string(),
+                thought_signature: None,
+            },
+            IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call-1".to_string(),
+                name: "f".to_string(),
+                arguments: "{\"a\": 2}".to_string(),
+                thought_signature: None,
+            },
+        ]);
+
+        assert_eq!(
+            aggregation.tool_calls,
+            vec![
+                IrAggregatedToolCall {
+                    call_id: "call-1".to_string(),
+                    name: "f".to_string(),
+                    arguments: "{\"a\": 1}".to_string(),
+                    thought_signature: Some("sig".to_string()),
+                },
+                IrAggregatedToolCall {
+                    call_id: "call-2".to_string(),
+                    name: "g".to_string(),
+                    arguments: "[9]".to_string(),
+                    thought_signature: None,
+                },
+            ]
+        );
+    }
+
+    /// The finish, compaction, and usage events fold into their aggregation fields while the
+    /// start and terminal markers record nothing, and the plain-finish builder carries no
+    /// prompt-block detail.
+    #[test]
+    fn terminal_and_compaction_events_fold_into_their_fields() {
+        let mut aggregator = Aggregator::default();
+
+        aggregator.ingest(&IrEvent::TextDelta("t".to_string()));
+        aggregator.ingest(&IrEvent::CompactionState {
+            payload: json!({"window": 1}),
+        });
+        aggregator.ingest(&IrEvent::CompactionState {
+            payload: json!({"window": 2}),
+        });
+        aggregator.ingest(&IrEvent::CompactionMetadata {
+            is_paused: true,
+            iterations: Vec::new(),
+        });
+        aggregator.ingest(&IrEvent::Usage(IrUsage {
+            input_tokens: 3,
+            ..IrUsage::default()
+        }));
+        aggregator.ingest(&IrEvent::finish(IrFinishReason::ToolCall));
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(aggregation.finish, Some(IrFinishReason::ToolCall));
+        assert_eq!(aggregation.prompt_block_reason, None);
+        assert!(aggregation.is_compaction_paused);
+        assert_eq!(
+            aggregation.compaction_states,
+            vec![json!({"window": 1}), json!({"window": 2})]
+        );
+        assert_eq!(
+            aggregation.usage,
+            Some(IrUsage {
+                input_tokens: 3,
+                ..IrUsage::default()
+            })
+        );
+
+        let blocked = folded(&[IrEvent::Finish {
+            reason: IrFinishReason::ContentFilter,
+            prompt_block_reason: Some("SAFETY".to_string()),
+        }]);
+
+        assert_eq!(blocked.finish, Some(IrFinishReason::ContentFilter));
+        assert_eq!(blocked.prompt_block_reason.as_deref(), Some("SAFETY"));
+    }
+
+    /// Usage sums saturate rather than overflow, and a reported breakdown column sums when both
+    /// observations report it and is never lost to an unreporting sibling.
+    #[test]
+    fn usage_sums_saturate_and_keep_reported_breakdowns() {
+        let reported = IrUsage {
+            input_tokens: 10,
+            output_tokens: u64::MAX,
+            cached_tokens: Some(4),
+            reasoning_tokens: Some(6),
+            ..IrUsage::default()
+        };
+        let unreporting = IrUsage {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_write_tokens: Some(7),
+            ..IrUsage::default()
+        };
+
+        let summed = reported.saturating_sum(unreporting);
+
+        assert_eq!(summed.input_tokens, 11);
+        assert_eq!(summed.output_tokens, u64::MAX);
+        assert_eq!(summed.cached_tokens, Some(4));
+        assert_eq!(summed.cache_write_tokens, Some(7));
+        assert_eq!(summed.reasoning_tokens, Some(6));
+
+        let both_reporting = IrUsage {
+            cached_tokens: Some(2),
+            ..IrUsage::default()
+        }
+        .saturating_sum(IrUsage {
+            cached_tokens: Some(3),
+            ..IrUsage::default()
+        });
+
+        assert_eq!(both_reporting.cached_tokens, Some(5));
+        assert_eq!(
+            IrUsage::default().saturating_sum(IrUsage::default()),
+            IrUsage::default()
+        );
+    }
+
+    /// An image reference accepts `data:` URLs as inline base64 with their MIME type, keeps
+    /// `http`/`https` remote, and rejects every other scheme and malformed data URL.
+    #[test]
+    fn image_references_accept_data_and_web_schemes_only() {
+        let inline = IrImage::from_url("data:image/png;base64,aGVsbG8=").expect("a data URL");
+
+        assert_eq!(
+            inline,
+            IrImage::Inline {
+                mime_type: "image/png".to_string(),
+                data_base64: "aGVsbG8=".to_string(),
+            }
+        );
+
+        assert_eq!(
+            IrImage::from_url("https://example.test/a.png").expect("an https URL"),
+            IrImage::Url("https://example.test/a.png".to_string())
+        );
+        assert_eq!(
+            IrImage::from_url("http://example.test/a.png").expect("an http URL"),
+            IrImage::Url("http://example.test/a.png".to_string())
+        );
+
+        for malformed in [
+            "ftp://example.test/a.png",
+            "data:image/png;base64",
+            "data:image/png,aGVsbG8=",
+            "data:",
+            "",
+        ] {
+            let error = match IrImage::from_url(malformed) {
+                Err(error) => error,
+                Ok(_) => panic!("the image reference `{malformed}` is rejected"),
+            };
+
+            assert_eq!(error.param.as_deref(), Some("image_url"));
+        }
+    }
+
+    /// The request-boundary reasoning parse accepts the closed vocabulary and rejects a foreign
+    /// level naming the parameter with the offending value.
+    #[test]
+    fn reasoning_parse_rejects_foreign_levels_naming_the_parameter() {
+        assert!(matches!(
+            ReasoningLevel::parse("xhigh", "effort"),
+            Ok(ReasoningLevel::XHigh)
+        ));
+
+        let error =
+            ReasoningLevel::parse("ultra", "effort").expect_err("a foreign level is rejected");
+
+        assert_eq!(error.param.as_deref(), Some("effort"));
+        assert!(error.to_string().contains("ultra"));
+    }
+
+    /// The invalid-request builders state where a rejection names a parameter and where it
+    /// names the request as a whole.
+    #[test]
+    fn invalid_request_builders_name_their_scope() {
+        let field = InvalidRequest::field("top_p", "out of range");
+        let request = InvalidRequest::request("bad body");
+
+        assert_eq!(field.param.as_deref(), Some("top_p"));
+        assert_eq!(field.to_string(), "out of range");
+        assert_eq!(request.param, None);
+        assert_eq!(request.to_string(), "bad body");
+    }
+
+    /// The typed parts and roles render their snake_case IR spellings, which the state-carrying
+    /// surfaces rely on for vendored wire shapes.
+    #[test]
+    fn parts_render_their_typed_spelling() {
+        let message = super::IrMessage {
+            role: IrRole::Tool,
+            parts: vec![IrPart::ToolOutput {
+                call_id: "c".to_string(),
+                content: "{}".to_string(),
+                is_error: true,
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&message).expect("IR messages serialize"),
+            json!({
+                "role": "tool",
+                "parts": [{
+                    "kind": "tool_output",
+                    "call_id": "c",
+                    "content": "{}",
+                    "is_error": true,
+                }],
+            })
+        );
+    }
+}

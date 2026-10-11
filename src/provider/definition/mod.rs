@@ -20,6 +20,9 @@ mod quota_validation;
 pub(crate) mod template;
 mod validate;
 
+#[cfg(test)]
+mod tests;
+
 use crate::format::UpstreamFormat;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroI64;

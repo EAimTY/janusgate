@@ -32,7 +32,9 @@ export function RowLink(props: {
     readonly trailing?: JSX.Element;
 }): JSX.Element {
     // The anatomy both shapes share; the chevron's hover grammar must stay
-    // defined here and nowhere else.
+    // defined here and nowhere else. The shape choice rides a `Show`, so the
+    // props read lands in a tracking scope — a component body runs once, and
+    // a branch on reactive state there would never follow its value.
     const content = (
         <>
             <span class="min-w-0 flex-1 basis-56">
@@ -54,26 +56,27 @@ export function RowLink(props: {
         </>
     );
 
-    if (props.trailing === undefined) {
-        return (
-            <AppLink
-                href={props.href}
-                class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint"
-            >
-                {content}
-            </AppLink>
-        );
-    }
-
     return (
-        <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint">
-            <AppLink
-                href={props.href}
-                class="group flex min-w-0 flex-1 basis-56 flex-wrap items-center gap-x-4 gap-y-2"
-            >
-                {content}
-            </AppLink>
-            {props.trailing}
-        </li>
+        <Show
+            when={props.trailing !== undefined}
+            fallback={
+                <AppLink
+                    href={props.href}
+                    class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint"
+                >
+                    {content}
+                </AppLink>
+            }
+        >
+            <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint">
+                <AppLink
+                    href={props.href}
+                    class="group flex min-w-0 flex-1 basis-56 flex-wrap items-center gap-x-4 gap-y-2"
+                >
+                    {content}
+                </AppLink>
+                {props.trailing}
+            </li>
+        </Show>
     );
 }

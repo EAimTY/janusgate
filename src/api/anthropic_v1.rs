@@ -200,3 +200,6 @@ async fn models(
     serving::model_list_response::<Surface, _, _>(&context.database, api_key.0, native_model_page)
         .await
 }
+
+#[cfg(test)]
+mod tests;

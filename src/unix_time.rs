@@ -48,3 +48,47 @@ pub(crate) fn seconds_from_now(seconds: i64) -> Option<i64> {
 
     unix_now_micros().checked_add(micros)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the database-clock composition: an upstream-reported magnitude scales onto the
+    //! microsecond clock and overflows map to `None` for the caller's typed failure.
+
+    #![expect(
+        clippy::missing_panics_doc,
+        clippy::expect_used,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{MICROS_PER_SEC, seconds_from_now, unix_now_micros};
+
+    /// A duration scales exactly by the seconds-to-microseconds factor onto the current
+    /// database clock: the scheduled instant sits at the scaling of one of the clock reads
+    /// bracketing the call, whatever the reads' drift.
+    #[test]
+    fn durations_scale_onto_the_microsecond_clock() {
+        let before = unix_now_micros();
+        let scheduled = seconds_from_now(90).expect("a small duration never overflows");
+        let after = unix_now_micros();
+
+        assert!(scheduled >= before + 90 * MICROS_PER_SEC);
+        assert!(scheduled <= after + 90 * MICROS_PER_SEC);
+        assert!(seconds_from_now(0).is_some_and(|instant| instant >= before));
+    }
+
+    /// A magnitude composes while both its scaling and its addition to the current clock fit the
+    /// database clock, and yields `None` past whichever boundary the current clock puts first:
+    /// with a second of slack the composition succeeds, and a magnitude provably beyond the
+    /// current addition boundary fails however much the next clock read drifts.
+    #[test]
+    fn overflow_yields_none_at_the_first_boundary() {
+        let fitting = (i64::MAX - unix_now_micros()) / MICROS_PER_SEC - 1;
+
+        assert!(seconds_from_now(fitting).is_some());
+
+        let overflowing = (i64::MAX - unix_now_micros()) / MICROS_PER_SEC + 2;
+
+        assert_eq!(seconds_from_now(overflowing), None);
+        assert_eq!(seconds_from_now(i64::MAX), None);
+    }
+}

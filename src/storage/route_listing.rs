@@ -12,6 +12,9 @@ use crate::{
 };
 use std::sync::LazyLock;
 
+#[cfg(test)]
+mod tests;
+
 /// The single listing statement: direct routes and pool members over enabled accounts and
 /// models, SQL-ordered by public name, route, and authored member priority. A fully fixed
 /// statement over the shared column consts, built once.

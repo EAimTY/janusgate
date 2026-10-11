@@ -38,6 +38,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+mod tests;
+
 /// The working state one provisioning sequence folds into: the flow's slots, the credential
 /// fields a step may supply, and the working base URL. The caller commits the state atomically —
 /// the provider row changes only when all steps succeed.

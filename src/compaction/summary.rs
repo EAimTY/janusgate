@@ -137,3 +137,341 @@ pub(super) fn validate_summary(aggregation: &IrAggregation) -> Result<String, Co
 
     Ok(aggregation.text.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{plan_summary_request, validate_summary};
+    use crate::{
+        compaction::history::{self, Budgets, CheckpointInstructions},
+        ir::{
+            IrAggregatedToolCall, IrAggregation, IrFinishReason, IrMessage, IrPart, IrRequest,
+            IrRole, IrToolChoice, StateFamily, StateItem,
+        },
+    };
+    use std::error::Error as StdError;
+
+    /// The checkpoint plan fixture of the planner tests, built through the real planner: one
+    /// unit under a zero retention budget, so the whole history is the older prefix the summary
+    /// consumes.
+    fn fixture_plan(
+        summary_budget: u64,
+    ) -> Result<history::GatewayCheckpointPlan, Box<dyn StdError>> {
+        let ir = IrRequest {
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: String::from("covered history"),
+                }],
+            }],
+            ..IrRequest::default()
+        };
+
+        Ok(history::plan_gateway_checkpoint(
+            &ir,
+            &CheckpointInstructions::Parsed(&[]),
+            false,
+            Budgets {
+                summary: summary_budget,
+                retention: 0,
+            },
+        )?)
+    }
+
+    /// The checkpoint plan fixture carrying retained native state, built through the native
+    /// planner over a history whose retained region carries one opaque state item.
+    fn fixture_plan_with_retained_state(
+        summary_budget: u64,
+    ) -> Result<history::GatewayCheckpointPlan, Box<dyn StdError>> {
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: String::from("covered history"),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: String::from("kept"),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::Text {
+                        text: String::from("kept answer"),
+                    }],
+                },
+            ],
+            state_items: vec![StateItem {
+                offset: 1,
+                item: serde_json::json!({"type": "compaction", "content": null}),
+                is_gateway: false,
+                is_compaction: true,
+                family: StateFamily::Messages,
+            }],
+            ..IrRequest::default()
+        };
+
+        Ok(history::plan_native_checkpoint(
+            &ir,
+            &CheckpointInstructions::Parsed(&[]),
+            Budgets {
+                summary: summary_budget,
+                retention: 0,
+            },
+        )?)
+    }
+
+    /// The restored window the planner tests borrow.
+    fn fixture_restored() -> IrRequest {
+        IrRequest {
+            model: String::from("public-model"),
+            instructions: Some(String::from("original instructions")),
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: String::from("covered history"),
+                }],
+            }],
+            tools: vec![crate::ir::IrTool {
+                name: String::from("lookup"),
+                description: None,
+                parameters: None,
+            }],
+            tool_choice: Some(IrToolChoice::Auto),
+            max_output_tokens: Some(999),
+            response_format: Some(crate::ir::IrResponseFormat::Json),
+            state_items: vec![StateItem {
+                offset: 0,
+                item: serde_json::json!({"opaque": true}),
+                is_gateway: false,
+                is_compaction: false,
+                family: StateFamily::Responses,
+            }],
+            ..IrRequest::default()
+        }
+    }
+
+    /// The summarizer request carries the default prompt when the caller supplied none, closes
+    /// with the fixed user instruction, turns tool selection off, drops the definitions without
+    /// retained native state, binds the output to the summary budget, and never carries the
+    /// window's format restriction, output budget, or opaque state.
+    #[test]
+    fn the_default_planner_shapes_the_summarizer_request() -> Result<(), Box<dyn StdError>> {
+        let mut plan = fixture_plan(100)?;
+
+        let summarizer = plan_summary_request(&fixture_restored(), &mut plan, None, None);
+
+        assert_eq!(
+            summarizer.instructions.as_deref(),
+            Some(super::DEFAULT_SUMMARY_PROMPT),
+            "absent compaction instructions keep the default prompt"
+        );
+
+        let [covered, closing] = summarizer.messages.as_slice() else {
+            return Err(
+                "the summarizer input is the older prefix plus the closing instruction".into(),
+            );
+        };
+
+        assert_eq!(
+            covered.parts,
+            vec![IrPart::Text {
+                text: String::from("covered history")
+            }],
+        );
+
+        assert_eq!(closing.role, IrRole::User);
+
+        assert_eq!(
+            closing.parts,
+            vec![IrPart::Text {
+                text: String::from("Produce the summary now.")
+            }]
+        );
+
+        assert_eq!(summarizer.tool_choice, Some(IrToolChoice::None));
+
+        assert!(
+            summarizer.tools.is_empty(),
+            "definitions ride only when retained native state may require their prefix"
+        );
+
+        assert_eq!(summarizer.max_output_tokens, Some(100));
+
+        assert_eq!(
+            summarizer.response_format, None,
+            "format restrictions never propagate"
+        );
+
+        assert!(
+            summarizer.state_items.is_empty(),
+            "opaque state never rides the summarizer"
+        );
+
+        Ok(())
+    }
+
+    /// Supplied compaction instructions replace the default prompt outright, the caller's
+    /// compact-only output cap binds the summary output to the smaller of cap and budget, and
+    /// retained native state keeps the restored window's tool definitions riding.
+    #[test]
+    fn supplied_instructions_and_caps_and_retained_state_shape_the_request()
+    -> Result<(), Box<dyn StdError>> {
+        let mut plan = fixture_plan(100)?;
+
+        let summarizer = plan_summary_request(
+            &fixture_restored(),
+            &mut plan,
+            Some("Summarize briefly."),
+            Some(40),
+        );
+
+        assert_eq!(
+            summarizer.instructions.as_deref(),
+            Some("Summarize briefly.")
+        );
+
+        assert_eq!(
+            summarizer.max_output_tokens,
+            Some(40),
+            "the smaller cap binds"
+        );
+
+        let mut plan = fixture_plan(100)?;
+
+        let summarizer = plan_summary_request(
+            &fixture_restored(),
+            &mut plan,
+            Some("Summarize briefly."),
+            Some(400),
+        );
+
+        assert_eq!(
+            summarizer.max_output_tokens,
+            Some(100),
+            "the budget binds over a larger cap"
+        );
+
+        let mut plan = fixture_plan_with_retained_state(100)?;
+
+        assert!(
+            !plan.retained_state_items.is_empty(),
+            "the fixture plan carries its retained region's native state"
+        );
+
+        let summarizer = plan_summary_request(&fixture_restored(), &mut plan, None, None);
+
+        assert_eq!(
+            summarizer.tools.len(),
+            1,
+            "retained native state keeps the exact tool prefix riding"
+        );
+
+        assert!(
+            summarizer.messages.iter().all(|message| !message
+                .parts
+                .iter()
+                .any(|part| matches!(part, IrPart::ToolOutput { .. })),),
+            "only the plan's input rides; the restored window's messages do not"
+        );
+
+        Ok(())
+    }
+
+    /// Planning consumes the plan's summary input: the covered prefix becomes the summarizer's
+    /// input and no later consumer can re-read it.
+    #[test]
+    fn planning_consumes_the_summary_input() -> Result<(), Box<dyn StdError>> {
+        let mut plan = fixture_plan(100)?;
+
+        assert_eq!(plan.summary_input_messages.len(), 1);
+
+        let _summarizer = plan_summary_request(&fixture_restored(), &mut plan, None, None);
+
+        assert!(plan.summary_input_messages.is_empty());
+
+        Ok(())
+    }
+
+    /// Only a complete, nonempty, tool-free summary ending normally validates; every other shape
+    /// fails with the stable unusable-summary code, preserving the upstream's own protocol
+    /// meanings for refusal and truncation.
+    #[test]
+    fn validation_accepts_only_complete_usable_summaries() -> Result<(), Box<dyn StdError>> {
+        let usable = IrAggregation {
+            text: String::from("A complete summary."),
+            finish: Some(IrFinishReason::Stop),
+            ..IrAggregation::default()
+        };
+
+        assert_eq!(
+            validate_summary(&usable).unwrap_or_default(),
+            "A complete summary."
+        );
+
+        for (aggregation, reason) in [
+            (
+                IrAggregation {
+                    text: String::from("   "),
+                    finish: Some(IrFinishReason::Stop),
+                    ..IrAggregation::default()
+                },
+                "empty",
+            ),
+            (IrAggregation::default(), "no finish"),
+            (
+                IrAggregation {
+                    text: String::from("Truncated."),
+                    finish: Some(IrFinishReason::Length),
+                    ..IrAggregation::default()
+                },
+                "truncated",
+            ),
+            (
+                IrAggregation {
+                    text: String::from("Let me call a tool."),
+                    finish: Some(IrFinishReason::ToolCall),
+                    ..IrAggregation::default()
+                },
+                "tool finish",
+            ),
+            (
+                IrAggregation {
+                    text: String::from("Text beside a tool call."),
+                    finish: Some(IrFinishReason::Stop),
+                    tool_calls: vec![IrAggregatedToolCall {
+                        call_id: String::from("call"),
+                        name: String::from("lookup"),
+                        arguments: String::from("{}"),
+                        thought_signature: None,
+                    }],
+                    ..IrAggregation::default()
+                },
+                "tool call",
+            ),
+        ] {
+            let failure = match validate_summary(&aggregation) {
+                Ok(_) => return Err(format!("the {reason} shape is unusable").into()),
+
+                Err(failure) => failure,
+            };
+
+            let rendered = failure.to_string();
+
+            assert!(
+                rendered.starts_with("compaction_summary_unusable:"),
+                "the {reason} shape renders the stable code, got {rendered}"
+            );
+        }
+
+        Ok(())
+    }
+}

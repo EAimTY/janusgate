@@ -145,3 +145,223 @@ fn estimate_context_bytes(ir: &IrRequest) -> Result<u64, CompactionError> {
 
     Ok(u64::try_from(bytes).unwrap_or(u64::MAX))
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{
+        MESSAGES_DEFAULT_THRESHOLD, estimate_context_tokens, estimate_message_tokens,
+        responses_gateway_default_threshold,
+    };
+    use crate::{
+        compaction::error::CompactionError,
+        ir::{IrImage, IrMessage, IrPart, IrRequest, IrRole, IrTool, StateFamily, StateItem},
+    };
+    use std::error::Error as StdError;
+
+    /// The gateway default threshold is exactly `floor(0.8 × capacity)` — including the
+    /// remainder decomposition cases the integer arithmetic exists for — and a model without a
+    /// declared effective capacity is rejected, never given an invented window.
+    #[test]
+    fn gateway_default_threshold_floors_exactly_or_fails() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(
+            responses_gateway_default_threshold("m", Some(10)).unwrap_or_default(),
+            8
+        );
+
+        assert_eq!(
+            responses_gateway_default_threshold("m", Some(5)).unwrap_or_default(),
+            4
+        );
+
+        assert_eq!(
+            responses_gateway_default_threshold("m", Some(3)).unwrap_or_default(),
+            2
+        );
+
+        assert_eq!(
+            responses_gateway_default_threshold("m", Some(1)).unwrap_or_default(),
+            0
+        );
+
+        assert_eq!(
+            responses_gateway_default_threshold("m", Some(u64::MAX)).unwrap_or_default(),
+            14_757_395_258_967_641_292,
+            "the largest capacity floors without overflow"
+        );
+
+        match responses_gateway_default_threshold("public-model", None) {
+            Err(CompactionError::UnknownCapacity { model }) => {
+                assert_eq!(model, "public-model");
+            }
+
+            other => {
+                return Err(format!("a missing capacity fails explicitly, got {other:?}").into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The documented estimator counts `ceil(utf8 bytes / 3)` over instructions, message text,
+    /// tool-call identity bytes, tool-output content, reasoning text, and the canonical tool JSON.
+    #[test]
+    fn estimation_counts_model_visible_bytes() -> Result<(), Box<dyn StdError>> {
+        let empty = estimate_context_tokens(&IrRequest::default())?;
+
+        assert_eq!(
+            empty, 1,
+            "an empty request still serializes an empty tool list"
+        );
+
+        let mut ir = IrRequest {
+            instructions: Some(String::from("abcdef")),
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: String::from("abcdef"),
+                }],
+            }],
+            ..IrRequest::default()
+        };
+
+        // 12 model-visible bytes plus the serialized empty tool list.
+        assert_eq!(estimate_context_tokens(&ir)?, 14_u64.div_ceil(3));
+
+        ir.tools = vec![IrTool {
+            name: String::from("lookup"),
+            description: None,
+            parameters: Some(serde_json::json!({})),
+        }];
+
+        let tool_bytes = u64::try_from(serde_json::to_vec(&ir.tools)?.len())?;
+
+        assert_eq!(
+            estimate_context_tokens(&ir)?,
+            (12 + tool_bytes).div_ceil(3),
+            "tool definitions count through their canonical JSON"
+        );
+
+        ir.messages.push(IrMessage {
+            role: IrRole::Assistant,
+            parts: vec![
+                IrPart::ToolCall {
+                    call_id: String::from("aa"),
+                    name: String::from("b"),
+                    arguments: String::from("{}"),
+                    thought_signature: None,
+                },
+                IrPart::Reasoning {
+                    text: String::from("abcd"),
+                    signature: None,
+                    opaque: serde_json::Value::Null,
+                },
+            ],
+        });
+
+        ir.messages.push(IrMessage {
+            role: IrRole::Tool,
+            parts: vec![IrPart::ToolOutput {
+                call_id: String::from("aa"),
+                content: String::from("result"),
+                is_error: false,
+            }],
+        });
+
+        // 12 instruction/text bytes + (2+1+2) call bytes + 4 reasoning bytes + 6 output bytes,
+        // the tool list no longer empty.
+        assert_eq!(estimate_context_tokens(&ir)?, (27 + tool_bytes).div_ceil(3));
+
+        Ok(())
+    }
+
+    /// Content the estimate cannot represent faithfully — image parts and opaque state items —
+    /// fails the measurement instead of counting transport bytes.
+    #[test]
+    fn unrepresentable_content_fails_the_measurement() {
+        let image = IrRequest {
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Image {
+                    image: IrImage::Url(String::from("https://upstream.test/image.png")),
+                }],
+            }],
+            ..IrRequest::default()
+        };
+
+        assert!(matches!(
+            estimate_context_tokens(&image),
+            Err(CompactionError::UnsupportedMeasurement)
+        ));
+
+        let stateful = IrRequest {
+            state_items: vec![StateItem {
+                offset: 0,
+                item: serde_json::json!({"type": "compaction"}),
+                is_gateway: false,
+                is_compaction: true,
+                family: StateFamily::Responses,
+            }],
+            ..IrRequest::default()
+        };
+
+        assert!(matches!(
+            estimate_context_tokens(&stateful),
+            Err(CompactionError::UnsupportedMeasurement),
+        ));
+    }
+
+    /// The shared unit estimator applies the same rules to a message run: text counts, images
+    /// fail, and the `ceil(bytes / 3)` rounding holds per run, not per message.
+    #[test]
+    fn message_estimation_rounds_per_run() -> Result<(), Box<dyn StdError>> {
+        let messages = vec![
+            IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: String::from("ab"),
+                }],
+            },
+            IrMessage {
+                role: IrRole::Assistant,
+                parts: vec![IrPart::Text {
+                    text: String::from("c"),
+                }],
+            },
+        ];
+
+        assert_eq!(
+            estimate_message_tokens(&messages)?,
+            1,
+            "3 bytes round to one token"
+        );
+
+        let image_run = vec![IrMessage {
+            role: IrRole::User,
+            parts: vec![IrPart::Image {
+                image: IrImage::Inline {
+                    mime_type: String::from("image/png"),
+                    data_base64: String::from("aXY"),
+                },
+            }],
+        }];
+
+        assert!(matches!(
+            estimate_message_tokens(&image_run),
+            Err(CompactionError::UnsupportedMeasurement)
+        ));
+
+        Ok(())
+    }
+
+    /// The protocol's default Messages threshold is the documented 150,000 input tokens.
+    #[test]
+    fn messages_default_threshold_is_the_documented_value() {
+        assert_eq!(MESSAGES_DEFAULT_THRESHOLD, 150_000);
+    }
+}

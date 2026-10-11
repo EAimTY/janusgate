@@ -77,6 +77,13 @@ where
     }
 }
 
+impl<T> Default for Nullable<T> {
+    /// The omitted key's meaning: no value — never the stored value.
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
 impl<'de, T> Deserialize<'de> for Nullable<T>
 where
     T: Deserialize<'de>,
@@ -188,5 +195,133 @@ pub(crate) mod absent_keeps {
         }
 
         deserializer.deserialize_option(AbsentKeepsVisitor(PhantomData))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the two-state field adapters: the required-nullable field reads a value or
+    //! `null`, the absent-keeps field rejects an explicit `null`, and the tolerant probe reads
+    //! only string-shaped foreign fields (`docs/reference/management-api.md` two-state fields).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{Nullable, absent_keeps::deserialize as absent_keeps, string_or_none};
+    use serde::Deserialize;
+    use serde_json::json;
+
+    /// A fixture carrying one field of each adapter shape.
+    #[derive(Debug, PartialEq, Eq, Deserialize)]
+    struct Fixture {
+        /// A required, nullable field; omission deserializes as `null` through the field default.
+        #[serde(default, deserialize_with = "Nullable::deserialize")]
+        nullable: Nullable<u32>,
+
+        /// An absent-keeps field.
+        #[serde(default, deserialize_with = "absent_keeps")]
+        absent_keeps: Option<u32>,
+
+        /// A tolerant foreign probe field.
+        #[serde(deserialize_with = "string_or_none")]
+        probe: Option<String>,
+    }
+
+    /// A required-nullable field accepts a value and an explicit `null` — and, as the one
+    /// documented tolerance, an omitted key — while a wrong-typed value fails.
+    #[test]
+    fn nullable_fields_accept_values_null_and_omission() -> Result<(), Box<dyn std::error::Error>> {
+        let valued: Fixture = serde_json::from_value(json!({
+            "nullable": 7,
+            "probe": "x",
+        }))?;
+
+        assert_eq!(valued.nullable, Nullable(Some(7)));
+        assert_eq!(valued.absent_keeps, None);
+        assert_eq!(valued.probe.as_deref(), Some("x"));
+
+        let nulled: Fixture = serde_json::from_value(json!({
+            "nullable": null,
+            "probe": "x",
+        }))?;
+
+        assert_eq!(nulled.nullable, Nullable(None));
+
+        let omitted: Fixture = serde_json::from_value(json!({
+            "probe": "x",
+        }))?;
+
+        assert_eq!(omitted.nullable, Nullable(None));
+
+        assert!(
+            serde_json::from_value::<Fixture>(json!({
+                "nullable": "seven",
+                "probe": "x",
+            }))
+            .is_err()
+        );
+
+        Ok(())
+    }
+
+    /// An absent-keeps field defaults on omission, accepts a present value, and rejects an
+    /// explicit `null`: absence and `null` are never two spellings of one state.
+    #[test]
+    fn absent_keeps_fields_reject_explicit_null() -> Result<(), Box<dyn std::error::Error>> {
+        let valued: Fixture = serde_json::from_value(json!({
+            "nullable": 1,
+            "absent_keeps": 7,
+            "probe": "x",
+        }))?;
+
+        assert_eq!(valued.absent_keeps, Some(7));
+
+        assert!(
+            serde_json::from_value::<Fixture>(json!({
+                "nullable": 1,
+                "absent_keeps": null,
+                "probe": "x",
+            }))
+            .is_err()
+        );
+
+        Ok(())
+    }
+
+    /// The tolerant probe reads a string and discards every other complete JSON shape, so a
+    /// foreign field of any type parses as absent rather than failing the payload.
+    #[test]
+    fn tolerant_probes_read_only_string_shapes() -> Result<(), Box<dyn std::error::Error>> {
+        let shapes: Vec<(serde_json::Value, Option<&str>)> = vec![
+            (json!("text"), Some("text")),
+            (json!(7), None),
+            (json!(null), None),
+            (json!(true), None),
+            (json!({"a": 1}), None),
+            (json!([1, 2]), None),
+        ];
+
+        for (shape, expected) in shapes {
+            let fixture: Fixture = serde_json::from_value(json!({
+                "nullable": 1,
+                "probe": shape,
+            }))?;
+
+            assert_eq!(fixture.probe.as_deref(), expected);
+        }
+
+        Ok(())
+    }
+
+    /// A nullable field serializes its value bare and its absence as `null`, mirroring the
+    /// nullable storage column on the wire.
+    #[test]
+    fn nullable_fields_serialize_bare_values_and_null() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(serde_json::to_value(Nullable(Some(7)))?, 7);
+        assert_eq!(serde_json::to_value(Nullable::<u32>(None))?, json!(null));
+
+        Ok(())
     }
 }

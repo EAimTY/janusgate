@@ -120,3 +120,165 @@ pub(crate) struct InputTokenTrigger {
     /// Exact caller-supplied threshold.
     pub(crate) value: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking on its own assertions; a # Panics section on every \
+                  test would document nothing its name does not"
+    )]
+
+    use super::{
+        AutomaticEntry, InputTokenTrigger, IterationReport, SamplingKind, ThresholdEdit,
+        UsageIteration,
+    };
+    use crate::ir::IrUsage;
+    use std::error::Error as StdError;
+
+    /// Every deserialized iteration entry is a producer-owned native report — the gateway never
+    /// parses its own render back — while the constructor-built gateway report renders with its
+    /// sampling kind and omits unreported breakdowns.
+    #[test]
+    fn iteration_entries_parse_as_native_and_render_gateway_facts() -> Result<(), Box<dyn StdError>>
+    {
+        let parsed: UsageIteration = serde_json::from_value(serde_json::json!({
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "vendor_extension": true
+        }))?;
+
+        assert!(
+            matches!(parsed, UsageIteration::Native(_)),
+            "a parsed entry is always the producer-owned native report"
+        );
+
+        let report = UsageIteration::gateway(
+            SamplingKind::Compaction,
+            IrUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                cached_tokens: None,
+                cache_write_tokens: Some(3),
+                reasoning_tokens: None,
+            },
+        );
+
+        let rendered = serde_json::to_value(&report)?;
+
+        assert_eq!(
+            rendered,
+            serde_json::json!({
+                "type": "compaction",
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "cache_creation_input_tokens": 3
+            }),
+            "an unreported cache read stays absent on the wire"
+        );
+
+        let message_report = UsageIteration::gateway(
+            SamplingKind::Message,
+            IrUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+                cached_tokens: Some(1),
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            },
+        );
+
+        let rendered = serde_json::to_value(&message_report)?;
+
+        assert_eq!(
+            crate::test_support::at(&rendered, "/type"),
+            &serde_json::json!("message"),
+            "the sampling kind rides the wire spelling"
+        );
+
+        assert_eq!(
+            serde_json::to_value(&IterationReport {
+                kind: SamplingKind::Compaction,
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            })?
+            .pointer("/cache_read_input_tokens"),
+            None,
+            "absent breakdowns are skipped, never null"
+        );
+
+        Ok(())
+    }
+
+    /// The Messages threshold edit keeps its vendor tag and member presence: absent members stay
+    /// absent, and the nested trigger carries its own `input_tokens` tag.
+    #[test]
+    fn threshold_edits_keep_their_vendor_shape() -> Result<(), Box<dyn StdError>> {
+        let full = ThresholdEdit {
+            trigger: Some(InputTokenTrigger { value: 50_000 }),
+            should_pause_after_compaction: Some(true),
+            instructions: Some(String::from("Keep decisions.")),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&full)?,
+            serde_json::json!({
+                "type": "compact_20260112",
+                "trigger": {"type": "input_tokens", "value": 50_000},
+                "pause_after_compaction": true,
+                "instructions": "Keep decisions."
+            })
+        );
+
+        assert_eq!(
+            serde_json::to_value(ThresholdEdit {
+                trigger: None,
+                should_pause_after_compaction: None,
+                instructions: None,
+            })?,
+            serde_json::json!({"type": "compact_20260112"})
+        );
+
+        let parsed: ThresholdEdit = serde_json::from_value(serde_json::json!({
+            "type": "compact_20260112",
+            "trigger": {"type": "input_tokens", "value": 60_000}
+        }))?;
+
+        assert_eq!(parsed.trigger.map(|trigger| trigger.value), Some(60_000));
+
+        assert_eq!(parsed.should_pause_after_compaction, None);
+
+        assert_eq!(parsed.instructions, None);
+
+        Ok(())
+    }
+
+    /// The Responses automatic entry parses and renders as the single field-identical wire form:
+    /// the `compaction` tag beside the threshold when the caller stated one.
+    #[test]
+    fn automatic_entries_are_field_identical_on_both_wires() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(
+            serde_json::to_value(AutomaticEntry {
+                compact_threshold: Some(90_000)
+            })?,
+            serde_json::json!({"type": "compaction", "compact_threshold": 90_000})
+        );
+
+        assert_eq!(
+            serde_json::to_value(AutomaticEntry {
+                compact_threshold: None
+            })?,
+            serde_json::json!({"type": "compaction"})
+        );
+
+        let parsed: AutomaticEntry = serde_json::from_value(serde_json::json!({
+            "type": "compaction"
+        }))?;
+
+        assert_eq!(parsed.compact_threshold, None);
+
+        Ok(())
+    }
+}

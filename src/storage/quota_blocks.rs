@@ -7,6 +7,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod tests;
+
 /// Captured account interpretation and derived-evidence ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuotaFence {

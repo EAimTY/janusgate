@@ -116,3 +116,220 @@ impl ApiKeyAccessControl {
         self.route_overrides.sort_by_key(|rule| rule.model_route_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for serving-key permission resolution: the route-over-owner-over-key precedence,
+    //! the typed owner identity, and the canonical readable ordering
+    //! (`docs/design/routing.md` *Serving-key permissions*).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{
+        AccessDecision, ApiKeyAccessControl, ApiKeyOwnerDefault, ApiKeyRouteOverride, RouteOwner,
+    };
+
+    /// A policy carrying one of every rule kind: a key default of deny, a provider default, a
+    /// pool default, and two route overrides.
+    fn policy() -> ApiKeyAccessControl {
+        ApiKeyAccessControl {
+            default_access: AccessDecision::Deny,
+            owner_defaults: vec![
+                ApiKeyOwnerDefault::Provider {
+                    provider_id: 4,
+                    access: AccessDecision::Allow,
+                },
+                ApiKeyOwnerDefault::Pool {
+                    pool_id: 7,
+                    access: AccessDecision::Deny,
+                },
+            ],
+            route_overrides: vec![
+                ApiKeyRouteOverride {
+                    model_route_id: 30,
+                    access: AccessDecision::Allow,
+                },
+                ApiKeyRouteOverride {
+                    model_route_id: 31,
+                    access: AccessDecision::Deny,
+                },
+            ],
+        }
+    }
+
+    /// The first present decision wins in exactly one order: a route override beats its owner's
+    /// default, the owner default beats the key default, and the key default covers everything
+    /// inheriting.
+    #[test]
+    fn resolution_prefers_route_then_owner_then_key_default() {
+        let policy = policy();
+
+        assert_eq!(
+            policy.resolve(30, RouteOwner::Provider(4)),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            policy.resolve(31, RouteOwner::Pool(7)),
+            AccessDecision::Deny
+        );
+        assert_eq!(
+            policy.resolve(32, RouteOwner::Provider(4)),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            policy.resolve(33, RouteOwner::Pool(7)),
+            AccessDecision::Deny
+        );
+        assert_eq!(
+            policy.resolve(34, RouteOwner::Provider(9)),
+            AccessDecision::Deny
+        );
+    }
+
+    /// An inherited deny can be overridden by a route allow, and an explicit decision equal to
+    /// the inherited default remains an authored pin that resolution honors.
+    #[test]
+    fn explicit_pins_override_and_restate_defaults() {
+        let mut policy = ApiKeyAccessControl {
+            default_access: AccessDecision::Deny,
+            owner_defaults: vec![ApiKeyOwnerDefault::Provider {
+                provider_id: 4,
+                access: AccessDecision::Deny,
+            }],
+            route_overrides: vec![ApiKeyRouteOverride {
+                model_route_id: 30,
+                access: AccessDecision::Allow,
+            }],
+        };
+
+        // The route allow overrides the inherited provider deny.
+        assert_eq!(
+            policy.resolve(30, RouteOwner::Provider(4)),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            policy.resolve(31, RouteOwner::Provider(4)),
+            AccessDecision::Deny
+        );
+
+        policy.default_access = AccessDecision::Allow;
+
+        // The explicit route deny is a pin, not an inheritance, so flipping the key default
+        // does not move it.
+        assert_eq!(
+            policy.resolve(30, RouteOwner::Provider(4)),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            policy.resolve(31, RouteOwner::Provider(4)),
+            AccessDecision::Deny
+        );
+        assert_eq!(
+            policy.resolve(32, RouteOwner::Pool(1)),
+            AccessDecision::Allow
+        );
+    }
+
+    /// Owner defaults address typed identities: equal numerical IDs of different kinds are
+    /// unrelated, so a provider default never covers a pooled route owned by a same-numbered
+    /// pool, and a pooled route's owner is the pool, never a member provider.
+    #[test]
+    fn owner_identity_is_typed_not_numeric() {
+        let policy = ApiKeyAccessControl {
+            default_access: AccessDecision::Deny,
+            owner_defaults: vec![
+                ApiKeyOwnerDefault::Provider {
+                    provider_id: 7,
+                    access: AccessDecision::Allow,
+                },
+                ApiKeyOwnerDefault::Pool {
+                    pool_id: 7,
+                    access: AccessDecision::Allow,
+                },
+            ],
+            route_overrides: Vec::new(),
+        };
+
+        assert_eq!(
+            policy.resolve(1, RouteOwner::Provider(7)),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            policy.resolve(2, RouteOwner::Pool(7)),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            policy.resolve(3, RouteOwner::Provider(8)),
+            AccessDecision::Deny
+        );
+        assert_eq!(policy.resolve(4, RouteOwner::Pool(8)), AccessDecision::Deny);
+    }
+
+    /// Canonicalization orders providers before pools by ID and route overrides by route ID,
+    /// retains explicit entries equal to the default, and is idempotent.
+    #[test]
+    fn canonicalization_orders_and_retains_explicit_rules() {
+        let mut policy = ApiKeyAccessControl {
+            default_access: AccessDecision::Deny,
+            owner_defaults: vec![
+                ApiKeyOwnerDefault::Pool {
+                    pool_id: 7,
+                    access: AccessDecision::Deny,
+                },
+                ApiKeyOwnerDefault::Provider {
+                    provider_id: 9,
+                    access: AccessDecision::Deny,
+                },
+                ApiKeyOwnerDefault::Provider {
+                    provider_id: 4,
+                    access: AccessDecision::Allow,
+                },
+            ],
+            route_overrides: vec![
+                ApiKeyRouteOverride {
+                    model_route_id: 31,
+                    access: AccessDecision::Deny,
+                },
+                ApiKeyRouteOverride {
+                    model_route_id: 30,
+                    access: AccessDecision::Allow,
+                },
+            ],
+        };
+
+        policy.canonicalize();
+        policy.canonicalize();
+
+        let owners: Vec<_> = policy
+            .owner_defaults
+            .iter()
+            .map(|rule| match *rule {
+                ApiKeyOwnerDefault::Provider {
+                    provider_id,
+                    access,
+                } => (0, provider_id, access),
+                ApiKeyOwnerDefault::Pool { pool_id, access } => (1, pool_id, access),
+            })
+            .collect();
+
+        assert_eq!(
+            owners,
+            vec![
+                (0, 4, AccessDecision::Allow),
+                (0, 9, AccessDecision::Deny),
+                (1, 7, AccessDecision::Deny),
+            ]
+        );
+        assert_eq!(
+            policy
+                .route_overrides
+                .iter()
+                .map(|rule| (rule.model_route_id, rule.access))
+                .collect::<Vec<_>>(),
+            vec![(30, AccessDecision::Allow), (31, AccessDecision::Deny)]
+        );
+    }
+}

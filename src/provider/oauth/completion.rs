@@ -19,6 +19,9 @@ use crate::{
 };
 use reqwest::Client;
 
+#[cfg(test)]
+mod tests;
+
 /// The product of one completed flow's exchange-and-provisioning pipeline: the stored OAuth
 /// credentials and the final working base URL — with its provenance — that the provider write
 /// commits.

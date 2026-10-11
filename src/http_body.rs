@@ -143,3 +143,86 @@ pub(crate) fn truncate_excerpt(body: &str) -> String {
         format!("{excerpt}…")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the bounded error-body read and the shared excerpt policy: complete input is
+    //! provable, truncated or malformed input never classifies, and error excerpts are bounded
+    //! in characters.
+
+    #![expect(
+        clippy::missing_panics_doc,
+        clippy::expect_used,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{read_bounded_error_body, truncate_excerpt};
+
+    /// A bounded read of a complete small body classifies its JSON and renders its text;
+    /// multi-byte characters survive lossy decoding unchanged.
+    #[tokio::test]
+    async fn complete_bodies_classify_and_render() {
+        let response = reqwest::Response::from(http::Response::new(
+            b"{\"error\": {\"code\": 429}}".to_vec(),
+        ));
+
+        let body = read_bounded_error_body(response).await;
+
+        assert_eq!(
+            body.complete_json().expect("complete JSON classifies"),
+            serde_json::json!({"error": {"code": 429}})
+        );
+        assert_eq!(body.lossy_text(), "{\"error\": {\"code\": 429}}");
+    }
+
+    /// A body cut off at the read cap never classifies even when its prefix is well-formed
+    /// JSON, and its rendered text stays within the cap.
+    #[tokio::test]
+    async fn truncated_bodies_never_classify() {
+        let mut oversized = Vec::new();
+
+        oversized.extend_from_slice(b"{\"error\": ");
+        oversized.resize(4 * 1024 + 512, b'x');
+
+        let response = reqwest::Response::from(http::Response::new(oversized));
+
+        let body = read_bounded_error_body(response).await;
+
+        assert!(body.complete_json().is_none());
+        assert!(body.lossy_text().chars().count() <= 4 * 1024);
+    }
+
+    /// Invalid UTF-8 renders through the lossy decoder without producing classification
+    /// evidence.
+    #[tokio::test]
+    async fn invalid_utf8_renders_lossily() {
+        let response = reqwest::Response::from(http::Response::new(vec![0x7b, 0xff, 0x7d]));
+
+        let body = read_bounded_error_body(response).await;
+
+        assert!(body.complete_json().is_none());
+        assert_eq!(body.lossy_text(), "\u{7b}\u{fffd}\u{7d}");
+    }
+
+    /// The excerpt policy keeps complete bodies whole, truncates longer bodies at exactly the
+    /// character bound with an ellipsis, and counts characters rather than bytes.
+    #[test]
+    fn excerpts_are_bounded_in_characters() {
+        let exact: String = std::iter::repeat_n('a', 400).collect();
+
+        assert_eq!(truncate_excerpt(&exact), exact);
+
+        let longer: String = std::iter::repeat_n('a', 401).collect();
+        let truncated = truncate_excerpt(&longer);
+
+        assert_eq!(truncated.chars().count(), 401);
+        assert!(truncated.ends_with('…'));
+        assert_eq!(truncated.chars().next_back(), Some('…'));
+
+        let multibyte = "é".repeat(401);
+        let multibyte_truncated = truncate_excerpt(&multibyte);
+
+        assert_eq!(multibyte_truncated.chars().count(), 401);
+        assert!(multibyte_truncated.starts_with(&"é".repeat(400)));
+    }
+}

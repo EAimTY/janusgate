@@ -125,3 +125,166 @@ pub(crate) fn reported_iteration_totals(
     }
     total
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{CompactionLedger, reported_iteration_totals};
+    use crate::ir::{IrUsage, compaction::UsageIteration};
+    use std::error::Error as StdError;
+
+    /// A ledger records only dispatches the upstream answered with usage; an empty ledger and a
+    /// usage-less dispatch both leave the reported billed totals absent, so no protocol-required
+    /// zero can become a recorded token fact.
+    #[test]
+    fn usage_less_dispatches_acquire_no_fabricated_totals() {
+        let mut ledger = CompactionLedger::default();
+
+        assert_eq!(ledger.reported_billed_totals(), None);
+
+        ledger.record(None);
+
+        assert_eq!(ledger.reported_billed_totals(), None);
+
+        assert!(ledger.iterations().is_empty());
+    }
+
+    /// Billed totals sum every recorded iteration field by field; a breakdown sums when any
+    /// iteration reported it, stays unreported when none did, and the sums saturate rather than
+    /// overflow. An explicit zero report remains a present measurement.
+    #[test]
+    fn billed_totals_sum_breakdowns_and_saturate() {
+        let mut ledger = CompactionLedger::default();
+
+        ledger.record(Some(IrUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cached_tokens: Some(40),
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        }));
+
+        ledger.record(Some(IrUsage {
+            input_tokens: 30,
+            output_tokens: 5,
+            cached_tokens: None,
+            cache_write_tokens: Some(7),
+            reasoning_tokens: Some(3),
+        }));
+
+        let totals = ledger.billed_totals();
+
+        assert_eq!(totals.input_tokens, 130);
+        assert_eq!(totals.output_tokens, 15);
+        assert_eq!(totals.cached_tokens, Some(40), "a single report is kept");
+        assert_eq!(totals.cache_write_tokens, Some(7));
+        assert_eq!(totals.reasoning_tokens, Some(3));
+
+        assert_eq!(
+            ledger.reported_billed_totals(),
+            Some(totals),
+            "a non-empty ledger reports its totals"
+        );
+
+        ledger.record(Some(IrUsage {
+            input_tokens: u64::MAX,
+            output_tokens: 0,
+            cached_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        }));
+
+        assert_eq!(ledger.billed_totals().input_tokens, u64::MAX);
+    }
+
+    /// An explicit zero usage report is a real observation: it records an iteration and reports
+    /// present zero totals, distinct from the absent totals of an empty ledger.
+    #[test]
+    fn explicit_zero_reports_stay_present() -> Result<(), Box<dyn StdError>> {
+        let mut ledger = CompactionLedger::default();
+
+        ledger.record(Some(IrUsage::default()));
+
+        assert_eq!(ledger.iterations().len(), 1);
+
+        let totals = ledger
+            .reported_billed_totals()
+            .ok_or("an explicit report is present")?;
+
+        assert_eq!(totals.input_tokens, 0);
+        assert_eq!(totals.output_tokens, 0);
+        assert_eq!(totals.cached_tokens, None);
+
+        Ok(())
+    }
+
+    /// Iteration totals sum the known counters of gateway and producer-owned reports and invent
+    /// nothing: a producer iteration outside the known counter shape aborts the total entirely.
+    #[test]
+    fn iteration_totals_sum_known_counters_only() {
+        assert_eq!(reported_iteration_totals(&[]), None);
+
+        let gateway = [UsageIteration::gateway(
+            crate::ir::compaction::SamplingKind::Compaction,
+            IrUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                cached_tokens: Some(2),
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            },
+        )];
+
+        assert_eq!(
+            reported_iteration_totals(&gateway),
+            Some(IrUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                cached_tokens: Some(2),
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            })
+        );
+
+        let native = [
+            serde_json::json!({"input_tokens": 7, "output_tokens": 3}),
+            serde_json::json!({
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 5,
+                "cache_creation_input_tokens": 6,
+                "vendor_extension": {"anything": true}
+            }),
+        ]
+        .into_iter()
+        .map(UsageIteration::from)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            reported_iteration_totals(&native),
+            Some(IrUsage {
+                input_tokens: 8,
+                output_tokens: 4,
+                cached_tokens: Some(5),
+                cache_write_tokens: Some(6),
+                reasoning_tokens: None,
+            }),
+            "producer reports sum beside their vendor extensions"
+        );
+
+        let unusable = [UsageIteration::from(serde_json::json!({
+            "output_tokens": 3
+        }))];
+
+        assert_eq!(
+            reported_iteration_totals(&unusable),
+            None,
+            "a producer report without the known counters yields no total"
+        );
+    }
+}

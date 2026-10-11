@@ -45,6 +45,9 @@ mod provider_quota;
 mod providers;
 mod usage;
 
+#[cfg(test)]
+mod tests;
+
 // The route markers this version's router mounts, plus the error body the bindings export besides
 // the route payloads; every other payload type stays in the file of the route declaring it, and
 // the route contract itself is shared at `crate::management_api::Route`.

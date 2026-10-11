@@ -15,6 +15,9 @@ use std::{
     sync::LazyLock,
 };
 
+#[cfg(test)]
+mod tests;
+
 /// One process-local key, independent of sealing keys and stable through configuration reload.
 static PROCESS_KEY: LazyLock<Key> = LazyLock::new(|| Key::from_bytes(rand::random()));
 

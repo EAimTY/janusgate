@@ -14,6 +14,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+#[cfg(test)]
+mod tests;
+
 /// Parses upstream Anthropic Messages responses — event-name-discriminated SSE streams or a
 /// complete JSON body — into IR events.
 ///

@@ -37,3 +37,71 @@ pub(crate) fn is_base_url(value: &str) -> bool {
 
     is_routing_safe_text(value) && after_scheme.is_some_and(|rest| !rest.is_empty())
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the routing-safe text composition vocabulary: the printable-ASCII base
+    //! contract, the URL-path token bans, and the base-URL scheme requirement
+    //! (`docs/reference/management-api.md`).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{is_base_url, is_routing_safe_text, is_routing_safe_token};
+
+    /// Routing-safe text is exactly non-empty printable ASCII: every printable ASCII character
+    /// passes, while the empty string, ASCII whitespace, control characters, and non-ASCII text
+    /// all fail.
+    #[test]
+    fn routing_safe_text_is_nonempty_printable_ascii_without_whitespace() {
+        assert!(is_routing_safe_text("a"));
+        assert!(is_routing_safe_text("gpt-4o:2024-08-06"));
+        assert!(is_routing_safe_text("~!@#$%^&*()_+`[]{}|;'\",.<>?"));
+
+        assert!(!is_routing_safe_text(""));
+        assert!(!is_routing_safe_text(" "));
+        assert!(!is_routing_safe_text("a b"));
+        assert!(!is_routing_safe_text("a\tb"));
+        assert!(!is_routing_safe_text("a\nb"));
+        assert!(!is_routing_safe_text("\u{7f}"));
+        assert!(!is_routing_safe_text("\u{1}"));
+        assert!(!is_routing_safe_text("méga"));
+        assert!(!is_routing_safe_text("模型"));
+    }
+
+    /// A routing token additionally bans exactly the two characters a Gemini URL path cannot
+    /// address, `/` and `:`, while every other printable ASCII character stays acceptable.
+    #[test]
+    fn routing_safe_tokens_additionally_ban_slash_and_colon() {
+        assert!(is_routing_safe_token("gemini-2.5-flash"));
+        assert!(is_routing_safe_token("a+b_c~d"));
+
+        assert!(!is_routing_safe_token("a/b"));
+        assert!(!is_routing_safe_token("a:b"));
+        assert!(!is_routing_safe_token(":"));
+        assert!(!is_routing_safe_token("/"));
+        assert!(!is_routing_safe_token(""));
+        assert!(!is_routing_safe_token("a b"));
+    }
+
+    /// A base URL is routing-safe text with a case-sensitive `http://` or `https://` scheme and
+    /// a non-empty rest: uppercase schemes, bare schemes, foreign schemes, and non-URL text all
+    /// fail.
+    #[test]
+    fn base_urls_require_a_lowercase_http_scheme_and_a_rest() {
+        assert!(is_base_url("https://api.example.com/v1"));
+        assert!(is_base_url("http://localhost:8080"));
+        assert!(is_base_url("http://a"));
+
+        assert!(!is_base_url("https://"));
+        assert!(!is_base_url("http://"));
+        assert!(!is_base_url("HTTPS://api.example.com"));
+        assert!(!is_base_url("Http://api.example.com"));
+        assert!(!is_base_url("ftp://api.example.com"));
+        assert!(!is_base_url("api.example.com"));
+        assert!(!is_base_url("https://a b"));
+        assert!(!is_base_url(""));
+    }
+}

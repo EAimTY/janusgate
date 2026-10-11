@@ -35,6 +35,8 @@
 //! [`UsageGroupBy`](crate::accounting::UsageGroupBy) — live in [`crate::accounting`].
 
 mod store;
+#[cfg(test)]
+mod tests;
 mod usage;
 
 pub(crate) use self::{

@@ -41,19 +41,6 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
     // once per read, instead of a linear find per rendered route row.
     const modelsById = createMemo(() => indexRowsById(models()));
     const poolsById = createMemo(() => indexRowsById(pools()));
-    const targetLabel = (route: ModelRouteResponse): JSX.Element => {
-        const target = route.target;
-        if (target.type === "direct") {
-            const model = modelsById().get(target.model_id);
-            return model === undefined
-                ? missingDirectTargetMessage(target.model_id)
-                : directTargetMessage(model.provider, model.upstream_id);
-        }
-        return poolTargetMessage(
-            poolsById().get(target.pool_id)?.name ?? `#${target.pool_id}`,
-            target.upstream_id,
-        );
-    };
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -100,52 +87,75 @@ export function ModelRoutesScreen(props: { readonly api: ManagementApi }): JSX.E
                 >
                     <ul class="flex flex-col gap-2">
                         <For each={routes()}>
-                            {(route) => {
-                                const automatic = route.is_automatic
-                                    ? translation()(
-                                          ($) => $.screens.routingListsScreen.automaticPrefix,
-                                      )
-                                    : "";
-                                return (
-                                    <li>
-                                        <RowLink
-                                            href={
-                                                route.is_automatic
-                                                    ? route.target.type === "direct"
-                                                        ? hrefs.modelDetail(route.target.model_id)
-                                                        : hrefs.providerPoolEdit(
-                                                              route.target.pool_id,
-                                                          )
-                                                    : hrefs.modelRouteEdit(route.id)
-                                            }
-                                            primary={route.public_id}
-                                            secondary={`${automatic}${targetLabel(route)}`}
-                                            badges={
-                                                <Badge
-                                                    tone={route.is_enabled ? "ok" : "muted"}
-                                                    label={
-                                                        route.is_enabled
-                                                            ? translation()(
-                                                                  ($) =>
-                                                                      $.screens.routingListsScreen
-                                                                          .on,
-                                                              )
-                                                            : translation()(
-                                                                  ($) =>
-                                                                      $.screens.routingListsScreen
-                                                                          .off,
-                                                              )
-                                                    }
-                                                />
-                                            }
-                                        />
-                                    </li>
-                                );
-                            }}
+                            {(route) => (
+                                <RouteRow
+                                    route={route}
+                                    modelsById={modelsById()}
+                                    poolsById={poolsById()}
+                                />
+                            )}
                         </For>
                     </ul>
                 </Show>
             </Show>
         </div>
+    );
+}
+
+/**
+ * One route's row: where the route leads and whether it serves. A component
+ * of its own so its label reads — and keeps reading — through a tracking
+ * scope, the way every per-row read beside a listing must.
+ */
+function RouteRow(props: {
+    readonly route: ModelRouteResponse;
+    readonly modelsById: ReadonlyMap<number, ModelResponse>;
+    readonly poolsById: ReadonlyMap<number, ProviderPoolResponse>;
+}): JSX.Element {
+    const route = props.route;
+    const target = route.target;
+    const targetLabel = (): JSX.Element => {
+        if (target.type === "direct") {
+            const model = props.modelsById.get(target.model_id);
+            return model === undefined
+                ? missingDirectTargetMessage(target.model_id)
+                : directTargetMessage(model.provider, model.upstream_id);
+        }
+        return poolTargetMessage(
+            props.poolsById.get(target.pool_id)?.name ?? `#${target.pool_id}`,
+            target.upstream_id,
+        );
+    };
+    return (
+        <li>
+            <RowLink
+                href={
+                    route.is_automatic
+                        ? target.type === "direct"
+                            ? hrefs.modelDetail(target.model_id)
+                            : hrefs.providerPoolEdit(target.pool_id)
+                        : hrefs.modelRouteEdit(route.id)
+                }
+                primary={route.public_id}
+                secondary={
+                    <>
+                        {route.is_automatic
+                            ? translation()(($) => $.screens.routingListsScreen.automaticPrefix)
+                            : ""}
+                        {targetLabel()}
+                    </>
+                }
+                badges={
+                    <Badge
+                        tone={route.is_enabled ? "ok" : "muted"}
+                        label={
+                            route.is_enabled
+                                ? translation()(($) => $.screens.routingListsScreen.on)
+                                : translation()(($) => $.screens.routingListsScreen.off)
+                        }
+                    />
+                }
+            />
+        </li>
     );
 }

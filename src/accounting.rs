@@ -205,3 +205,92 @@ impl UsageGroupBy {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the accounting vocabularies: the stored `api_logs` column spellings and the
+    //! management wire names are closed sets whose parse, render, and serde spellings agree
+    //! (`docs/design/storage.md` *ApiLog*, `docs/reference/management-api.md`).
+
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking; a # Panics section on every test would restate that"
+    )]
+
+    use super::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy};
+
+    /// Every endpoint type renders the exact storage spelling the schema `CHECK` accepts — as
+    /// its serde name too — and the parse side accepts only those spellings: no case drift, no
+    /// substrings.
+    #[test]
+    fn endpoint_type_storage_spellings_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        for endpoint_type in ApiLogEndpointType::ALL {
+            let spelling = endpoint_type.as_str();
+
+            assert_eq!(serde_json::to_value(endpoint_type)?, spelling);
+            assert_eq!(ApiLogEndpointType::parse(spelling), Some(endpoint_type));
+        }
+
+        for foreign in [
+            "",
+            "openai_chat_completions ",
+            "OPENAI_CHAT_COMPLETIONS",
+            "chat_completions",
+            "gemini_interactions_v2",
+        ] {
+            assert_eq!(ApiLogEndpointType::parse(foreign), None);
+        }
+
+        Ok(())
+    }
+
+    /// Every outcome renders the exact storage spelling the schema `CHECK` accepts — as its
+    /// serde name too — and the parse side accepts only those spellings.
+    #[test]
+    fn outcome_storage_spellings_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        for outcome in ApiLogOutcome::ALL {
+            let spelling = outcome.as_str();
+
+            assert_eq!(serde_json::to_value(outcome)?, spelling);
+            assert_eq!(ApiLogOutcome::parse(spelling), Some(outcome));
+        }
+
+        for foreign in ["", "ok", "COMPLETED", "client_aborted_", "error"] {
+            assert_eq!(ApiLogOutcome::parse(foreign), None);
+        }
+
+        Ok(())
+    }
+
+    /// Every grouping dimension renders its exact management wire name, and the wire accepts
+    /// exactly those names — the element type is the validation.
+    #[test]
+    fn usage_group_by_wire_names_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let names = [
+            (UsageGroupBy::Day, "day"),
+            (UsageGroupBy::Model, "model"),
+            (UsageGroupBy::ModelRoute, "model_route"),
+            (UsageGroupBy::Provider, "provider"),
+            (UsageGroupBy::ApiKey, "api_key"),
+            (UsageGroupBy::EndpointType, "endpoint_type"),
+            (UsageGroupBy::Outcome, "outcome"),
+            (UsageGroupBy::IsStream, "is_stream"),
+            (UsageGroupBy::HttpStatus, "http_status"),
+        ];
+
+        for (dimension, name) in names {
+            assert_eq!(dimension.as_str(), name);
+            assert_eq!(serde_json::to_value(dimension)?, name);
+            assert!(
+                serde_json::from_value::<UsageGroupBy>(serde_json::Value::from(name))
+                    .is_ok_and(|parsed| parsed == dimension)
+            );
+        }
+
+        assert!(
+            serde_json::from_value::<UsageGroupBy>(serde_json::Value::from("day_of_week")).is_err()
+        );
+
+        Ok(())
+    }
+}

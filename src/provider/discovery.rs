@@ -34,6 +34,9 @@ use reqwest::Client;
 use serde_json::Value as Json;
 use std::num::NonZeroU64;
 
+#[cfg(test)]
+mod tests;
+
 /// Fetches the upstream models — identifiers with their extracted capability facts — of a
 /// provider through its definition's discovery descriptor, refreshing the access token first
 /// when a known expiry requires it.

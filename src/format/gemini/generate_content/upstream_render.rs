@@ -205,11 +205,13 @@ struct FunctionDeclaration<'a> {
     /// Function name the model calls.
     name: &'a str,
 
-    /// Human-readable description.
+    /// Human-readable description, omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
 
     /// JSON Schema of the accepted arguments, absent for a function that
     /// takes none.
+    #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<&'a Value>,
 }
 

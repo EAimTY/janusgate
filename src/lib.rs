@@ -38,6 +38,8 @@ mod serde_helpers;
 mod server;
 mod sse;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod unix_time;
 mod vocabulary;
 

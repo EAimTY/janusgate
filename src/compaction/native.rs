@@ -561,3 +561,190 @@ pub(super) fn threshold_edits(
 ) -> Vec<crate::ir::compaction::ThresholdEdit> {
     edits.iter().map(Into::into).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "the tests' assertions panic; a # Panics section on every test would \
+                  restate that"
+    )]
+
+    use super::{classify_failure, threshold_edits, usage_to_ir};
+    use crate::{
+        format::{
+            compaction_control::ThresholdEdit as ParsedThresholdEdit,
+            openai::response::UpstreamUsage,
+        },
+        ir::compaction::{InputTokenTrigger, ThresholdEdit},
+        provider::definition::compaction::UnsupportedClassifier,
+    };
+    use std::error::Error as StdError;
+
+    /// The classifier is purely positive: no classifier never classifies, a listed status hits
+    /// before the body is read, a listed error code or parameter hits through the bounded body,
+    /// and everything else — including arbitrary bodies — stays unclassified.
+    #[test]
+    fn classification_is_positive_and_exact() -> Result<(), Box<dyn StdError>> {
+        let classifier: UnsupportedClassifier = serde_json::from_value(serde_json::json!({
+            "statuses": [410, 404],
+            "codes": ["compaction_not_supported"],
+            "parameters": ["tools"]
+        }))?;
+
+        assert_eq!(
+            classify_failure(None, reqwest::StatusCode::GONE, ""),
+            None,
+            "an absent classifier never positively classifies"
+        );
+
+        assert!(
+            classify_failure(Some(&classifier), reqwest::StatusCode::GONE, "").is_some(),
+            "a listed status hits before the body is read"
+        );
+
+        assert!(
+            classify_failure(
+                Some(&classifier),
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                ""
+            )
+            .is_none(),
+            "an unlisted status with an unreadable body stays unclassified"
+        );
+
+        assert!(
+            classify_failure(
+                Some(&classifier),
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"compaction_not_supported"}}"#
+            )
+            .is_some(),
+            "a listed error code hits through the body"
+        );
+
+        assert!(
+            classify_failure(
+                Some(&classifier),
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":{"param":"tools"}}"#
+            )
+            .is_some(),
+            "a listed error parameter hits through the body"
+        );
+
+        assert_eq!(
+            classify_failure(
+                Some(&classifier),
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"something_else"}}"#
+            ),
+            None,
+            "an unlisted code is arbitrary rejection evidence, never the boundary"
+        );
+
+        assert_eq!(
+            classify_failure(
+                Some(&classifier),
+                reqwest::StatusCode::BAD_REQUEST,
+                "not json"
+            ),
+            None
+        );
+
+        Ok(())
+    }
+
+    /// Parsed threshold edits convert to the vendor-shaped wire objects: the trigger nests under
+    /// its `input_tokens` tag, the pause renders only when requested, and instructions carry
+    /// through.
+    #[test]
+    fn threshold_edits_convert_to_the_wire_shape() -> Result<(), Box<dyn StdError>> {
+        assert!(threshold_edits(&[]).is_empty());
+
+        let edits = threshold_edits(&[
+            ParsedThresholdEdit {
+                trigger: Some(50_000),
+                pause_after_compaction: true,
+                instructions: Some(String::from("Keep the decisions.")),
+            },
+            ParsedThresholdEdit {
+                trigger: None,
+                pause_after_compaction: false,
+                instructions: None,
+            },
+        ]);
+
+        let rendered = serde_json::to_value(&edits)?;
+
+        assert_eq!(
+            rendered,
+            serde_json::json!([
+                {
+                    "type": "compact_20260112",
+                    "trigger": {"type": "input_tokens", "value": 50_000},
+                    "pause_after_compaction": true,
+                    "instructions": "Keep the decisions."
+                },
+                {"type": "compact_20260112"}
+            ]),
+            "absent members stay absent on the wire"
+        );
+
+        let [stated, bare] = edits.as_slice() else {
+            return Err("the fixture carries exactly two edits".into());
+        };
+
+        assert!(
+            matches!(stated.trigger, Some(InputTokenTrigger { value: 50_000 })),
+            "the stated trigger rides under its input_tokens tag"
+        );
+
+        assert!(bare.trigger.is_none());
+
+        assert!(bare.should_pause_after_compaction.is_none());
+
+        let round_tripped: ThresholdEdit =
+            serde_json::from_value(serde_json::json!({"type": "compact_20260112"}))?;
+
+        assert!(round_tripped.trigger.is_none());
+
+        Ok(())
+    }
+
+    /// A native Responses usage observation converts field by field: reported breakdowns map,
+    /// unreported ones stay absent.
+    #[test]
+    fn native_usage_maps_breakdowns_faithfully() -> Result<(), Box<dyn StdError>> {
+        let bare = usage_to_ir(&UpstreamUsage::default());
+
+        assert_eq!(
+            (bare.input_tokens, bare.output_tokens),
+            (0, 0),
+            "the default observation reports nothing"
+        );
+
+        assert_eq!(bare.cached_tokens, None);
+
+        assert_eq!(bare.cache_write_tokens, None);
+
+        assert_eq!(bare.reasoning_tokens, None);
+
+        let observed = serde_json::from_value::<UpstreamUsage>(serde_json::json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 5},
+            "output_tokens_details": {"reasoning_tokens": 8}
+        }))?;
+
+        let detailed = usage_to_ir(&observed);
+
+        assert_eq!(detailed.input_tokens, 100);
+        assert_eq!(detailed.output_tokens, 20);
+        assert_eq!(detailed.cached_tokens, Some(60));
+        assert_eq!(detailed.cache_write_tokens, Some(5));
+        assert_eq!(detailed.reasoning_tokens, Some(8));
+
+        Ok(())
+    }
+}

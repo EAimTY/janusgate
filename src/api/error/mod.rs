@@ -23,6 +23,9 @@ pub(crate) mod anthropic;
 pub(crate) mod gemini;
 pub(crate) mod openai;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     accounting::ApiLogOutcome, gateway::Error as GatewayError, ir::InvalidRequest,
     provider::Error as ProviderError, storage::Error as StorageError,

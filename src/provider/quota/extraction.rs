@@ -6,6 +6,9 @@ use serde_json::Value as Json;
 use std::collections::BTreeSet;
 use time::{Date, OffsetDateTime, format_description::well_known::Rfc3339};
 
+#[cfg(test)]
+mod tests;
+
 /// A safe structured extraction failure; no foreign values or response bodies are retained.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("quota source {source_key:?}, entry {entry_key:?}: {reason}")]

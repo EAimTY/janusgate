@@ -26,6 +26,8 @@ use std::{convert::Infallible, marker::PhantomData};
 
 mod completion;
 mod delivery;
+#[cfg(test)]
+mod tests;
 pub(super) use completion::{OperationKind, run_compact, run_completion};
 
 /// Maximum accepted request body size, large enough for inline image data.

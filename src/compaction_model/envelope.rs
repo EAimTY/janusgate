@@ -248,3 +248,173 @@ pub(crate) fn summary_message(summary_text: &str) -> IrMessage {
 
 /// The fixed first line of a restored gateway summary message.
 const SUMMARY_RESTORE_PREFIX: &str = "The following is a summary of the earlier conversation:";
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::missing_panics_doc,
+        reason = "a test fails by panicking on its own assertions; a # Panics section on every \
+                  test would document nothing its name does not"
+    )]
+
+    use super::{
+        EnvelopePayload, EnvelopeV1, GatewaySummaryPayload, NativeReplayWindow,
+        NativeWindowPayload, PrefixIdentity, ReplacementMode, RetainedUnit, summary_message,
+    };
+    use crate::{
+        compaction_model::mechanism::Mechanism,
+        format::UpstreamFormat,
+        ir::{IrMessage, IrPart, IrRole},
+    };
+    use std::error::Error as StdError;
+
+    /// The restored summary message is a user-role text message: the fixed context line, a blank
+    /// line, then the stored summary text — conversation context, never instruction authority.
+    #[test]
+    fn summary_message_is_a_prefixed_user_text_message() -> Result<(), Box<dyn StdError>> {
+        let message = summary_message("The earlier work.");
+
+        assert_eq!(message.role, IrRole::User);
+
+        let [IrPart::Text { text }] = message.parts.as_slice() else {
+            return Err("the summary message carries exactly one text part".into());
+        };
+
+        assert_eq!(
+            text,
+            "The following is a summary of the earlier conversation:\n\nThe earlier work."
+        );
+
+        Ok(())
+    }
+
+    /// The producer identity spelling is `provider:{id}` — the one constructor every producer
+    /// comparison shares; a hand-derived copy that drifts would match no envelope.
+    #[test]
+    fn producer_instance_spells_the_provider_prefix() {
+        assert_eq!(
+            NativeWindowPayload::producer_instance(42),
+            String::from("provider:42")
+        );
+    }
+
+    /// A version-1 envelope round-trips through its serde form: the version pins to 1, the
+    /// replacement mode and payload discriminate by their canonical snake-case tags, and both
+    /// payload kinds decode back to the exact value sealed.
+    #[test]
+    fn envelope_round_trips_with_version_and_tags() -> Result<(), Box<dyn StdError>> {
+        let summary_payload = GatewaySummaryPayload {
+            summary_text: String::from("Summary."),
+            preserved_instructions: Vec::new(),
+            retained_units: vec![RetainedUnit {
+                messages: vec![IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: String::from("kept"),
+                    }],
+                }],
+            }],
+            retained_state_items: Vec::new(),
+            overlap_identities: Vec::new(),
+        };
+
+        let summary = EnvelopeV1::new(
+            String::from("cmp_1"),
+            ReplacementMode::HistoricalCheckpoint,
+            EnvelopePayload::GatewaySummary(summary_payload.clone()),
+            Some(String::from("digest")),
+        );
+
+        let body = serde_json::to_value(&summary)?;
+
+        assert_eq!(
+            crate::test_support::at(&body, "/version"),
+            &serde_json::json!(1)
+        );
+        assert_eq!(
+            crate::test_support::at(&body, "/replacement"),
+            &serde_json::json!("historical_checkpoint")
+        );
+        assert_eq!(
+            crate::test_support::at(&body, "/payload/type"),
+            &serde_json::json!("gateway_summary")
+        );
+
+        assert_eq!(serde_json::from_value::<EnvelopeV1>(body)?, summary);
+
+        let native = EnvelopeV1::new(
+            String::from("cmp_2"),
+            ReplacementMode::CanonicalWindow,
+            EnvelopePayload::NativeWindow(NativeWindowPayload {
+                producer_instance_id: String::from("provider:7"),
+                upstream_model_id: String::from("upstream-model"),
+                mechanism: Mechanism::ResponsesStandaloneCompact,
+                native_format: UpstreamFormat::OpenAiResponse,
+                required_prefix_identity: Some(PrefixIdentity {
+                    instructions_digest: Some(String::from("abc")),
+                    tools_digest: None,
+                }),
+                retained_messages: Vec::new(),
+                retained_state_items: Vec::new(),
+                window: NativeReplayWindow::ResponsesWindow { items: Vec::new() },
+            }),
+            None,
+        );
+
+        let body = serde_json::to_value(&native)?;
+
+        assert_eq!(
+            crate::test_support::at(&body, "/payload/type"),
+            &serde_json::json!("native_window")
+        );
+        assert_eq!(
+            crate::test_support::at(&body, "/replacement"),
+            &serde_json::json!("canonical_window")
+        );
+
+        assert_eq!(serde_json::from_value::<EnvelopeV1>(body)?, native);
+
+        Ok(())
+    }
+
+    /// The envelope and its payloads reject unknown members: a member outside the closed schema
+    /// fails decoding instead of being silently dropped.
+    #[test]
+    fn envelope_rejects_unknown_members() {
+        let body = serde_json::json!({
+            "version": 1,
+            "artifact_id": "cmp_1",
+            "replacement": "canonical_window",
+            "payload": {
+                "type": "gateway_summary",
+                "summary_text": "s",
+                "preserved_instructions": [],
+                "retained_units": [],
+                "retained_state_items": [],
+                "overlap_identities": []
+            },
+            "unexpected_member": true
+        });
+
+        assert!(serde_json::from_value::<EnvelopeV1>(body).is_err());
+
+        let complete = serde_json::json!({
+            "version": 1,
+            "artifact_id": "cmp_1",
+            "replacement": "canonical_window",
+            "payload": {
+                "type": "gateway_summary",
+                "summary_text": "s",
+                "preserved_instructions": [],
+                "retained_units": [],
+                "retained_state_items": [],
+                "overlap_identities": []
+            }
+        });
+
+        assert!(
+            serde_json::from_value::<EnvelopeV1>(complete).is_ok(),
+            "the same body without the unknown member decodes"
+        );
+    }
+}

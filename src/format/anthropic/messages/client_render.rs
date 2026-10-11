@@ -13,6 +13,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 /// The aggregated, non-streaming Messages response body.
 #[derive(Debug, Serialize)]
 pub(crate) struct MessagesResponse {

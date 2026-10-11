@@ -40,6 +40,9 @@ mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use self::{
     upstream_parse::UpstreamParser, upstream_render::render_generate_content_request,
 };

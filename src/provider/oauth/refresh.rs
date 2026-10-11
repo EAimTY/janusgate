@@ -32,6 +32,9 @@ use reqwest::Client;
 use std::time::{Duration, Instant};
 use tokio::time as tokio_time;
 
+#[cfg(test)]
+mod tests;
+
 /// Margin subtracted from the token expiry when deciding freshness, in database-clock
 /// microseconds, so a token is never used into its final seconds. The same margin participates
 /// in the refresh-lease predicate, keeping "expired enough to refresh" consistent with

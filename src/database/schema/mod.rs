@@ -32,6 +32,8 @@
 //! every intermediate state.
 
 mod api_logs_version_1;
+#[cfg(test)]
+mod tests;
 mod version_1;
 
 use super::Error;

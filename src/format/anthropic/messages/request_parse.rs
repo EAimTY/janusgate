@@ -23,6 +23,9 @@ use crate::{
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 /// Strictly parsed `POST /messages` request body: unknown members are 400s, known semantic
 /// controls without gateway support are 400s, and presentation-only controls are
 /// accepted-and-ignored (`docs/reference/inference.md`).

@@ -10,6 +10,9 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod tests;
+
 /// One desired public entry, keyed by its stable direct or pooled target.
 struct Entry {
     /// Composed provider or pool prefix and exact upstream ID.

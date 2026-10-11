@@ -18,7 +18,9 @@ The bindings generator needs Rust and writes ignored files under `web/src/manage
 | Purpose | Repository-root command |
 | --- | --- |
 | Gateway development | `cargo run --locked -- --config config.dev.jsonc` |
+| Gateway tests | `cargo test --workspace` |
 | Frontend development | `npm run dev:web` |
+| Frontend tests | `npm run test -w web` |
 | Frontend production build | `npm run build:web` |
 | Frontend quality gate | `npm run check` |
 | Regenerate management reference | `npm run docs:generate` |
@@ -39,9 +41,11 @@ cargo check --workspace --all-targets
 cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets
 cargo clippy --workspace --all-targets --all-features
+cargo test --workspace
+cargo test --workspace --all-features
 ```
 
-Formatting is feature-independent; its second invocation verifies the result. After web code changes, regenerate bindings if necessary and run `npm run check`. Build the SPA when changing build behavior, dynamic loading, or deployment assumptions. Run relevant functionality tests for the behavior changed; formatting and static checks do not replace them.
+Formatting is feature-independent; its second invocation verifies the result. After web code changes, regenerate bindings if necessary and run `npm run check` and `npm run test -w web`. Build the SPA when changing build behavior, dynamic loading, or deployment assumptions. Run relevant functionality tests for the behavior changed; formatting and static checks do not replace them.
 
 After management changes, regenerate the committed [schema reference](reference/management-api/README.md), review semantic changes in [the management contract](reference/management-api.md), and regenerate frontend bindings. `npm run docs:check` generates into a temporary directory and compares without rewriting documentation. The Rust route registry owns methods and paths; serde-aware declarations own payload shapes; the human-written contract owns behavior, bounds, and defaults. Do not maintain another schema inventory by hand.
 

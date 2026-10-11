@@ -307,3 +307,278 @@ fn next_line(buffer: &[u8]) -> Result<Option<(String, usize)>, SseParseError> {
 
     Ok(Some((line, end + terminator_length)))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the SSE frame machinery: field assembly across chunk boundaries, the three
+    //! line terminators, the BOM strip, keep-alive suppression, the frame cap, and the writer's
+    //! round-trip through the parser.
+
+    #![expect(
+        clippy::missing_panics_doc,
+        clippy::indexing_slicing,
+        reason = "a test fails by panicking, and fixtures index frame vectors whose positions \
+                  the assertions pin; a # Panics section on every test would restate that"
+    )]
+
+    use super::{SseFrame, SseParseError, SseParser, format_data_frame, format_frame};
+
+    /// Ingests `chunks` through a fresh parser and returns every frame and the parser's final
+    /// flush.
+    fn parsed(chunks: &[&[u8]]) -> Result<Vec<SseFrame>, SseParseError> {
+        let mut parser = SseParser::new();
+        let mut frames = Vec::new();
+
+        for chunk in chunks {
+            frames.extend(parser.ingest(chunk)?);
+        }
+
+        frames.extend(parser.finish()?);
+
+        Ok(frames)
+    }
+
+    /// A frame carries its concatenated data lines and its last event name; multi-line payloads
+    /// join with newlines, multiple frames dispatch per chunk, and the tolerated `id` and
+    /// `retry` fields are ignored.
+    #[test]
+    fn frames_assemble_data_and_event_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let frames = parsed(&[
+            b"event: alpha\nid: 7\nretry: 100\ndata: first\ndata: second\n\n",
+            b"event: beta\ndata: only\n\n",
+        ])?;
+
+        assert_eq!(
+            frames,
+            vec![
+                SseFrame {
+                    data: "first\nsecond".to_string(),
+                    event: Some("alpha".to_string()),
+                },
+                SseFrame {
+                    data: "only".to_string(),
+                    event: Some("beta".to_string()),
+                },
+            ]
+        );
+
+        Ok(())
+    }
+
+    /// Field values tolerate the optional single-space prefix and lines without a colon are
+    /// whole-line fields with empty values.
+    #[test]
+    fn field_value_prefixes_are_tolerated() -> Result<(), Box<dyn std::error::Error>> {
+        let frames = parsed(&[b"data:with nospace\ndata: with space\n\n"])?;
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                data: "with nospace\nwith space".to_string(),
+                event: None,
+            }]
+        );
+
+        Ok(())
+    }
+
+    /// All three specification terminators — `\n`, `\r\n`, and lone `\r` — end a line, and a
+    /// `\r` at the end of one chunk pairs with a `\n` arriving in the next.
+    #[test]
+    fn all_terminators_end_lines_across_chunks() -> Result<(), Box<dyn std::error::Error>> {
+        let frames = parsed(&[
+            b"data: lf\ndata: split",
+            b"\r\ndata: cr\rdata: done\r",
+            b"\n\n",
+        ])?;
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].data, "lf\nsplit\ncr\ndone");
+
+        Ok(())
+    }
+
+    /// One leading UTF-8 BOM is stripped even when split across chunks, and only at the head of
+    /// the stream.
+    #[test]
+    fn a_leading_bom_is_stripped_across_chunks() -> Result<(), Box<dyn std::error::Error>> {
+        let split = parsed(&[
+            &[0xef, 0xbb],
+            &[0xbf, b'd', b'a', b't', b'a', b':', b' ', b'x', b'\n', b'\n'],
+        ])?;
+
+        assert_eq!(split[0].data, "x");
+
+        let whole = parsed(&[&[
+            0xef, 0xbb, 0xbf, b'd', b'a', b't', b'a', b':', b' ', b'y', b'\n', b'\n',
+        ]])?;
+
+        assert_eq!(whole[0].data, "y");
+
+        let mid_stream = parsed(&[b"data: a\n\n", &[0xef, 0xbb, 0xbf], b"\n"])?;
+
+        // A BOM after the first byte is content, not a byte-order mark.
+        assert_eq!(mid_stream.len(), 1);
+        assert_eq!(mid_stream[0].data, "a");
+
+        Ok(())
+    }
+
+    /// Comment-only streams and `data:`-only keep-alives dispatch nothing, while two empty data
+    /// lines join to a lone newline and still dispatch.
+    #[test]
+    fn comments_and_data_only_keepalives_stay_suppressed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let comments = parsed(&[b": heartbeat\n: again\n\n"])?;
+
+        assert!(comments.is_empty());
+
+        let keepalive = parsed(&[b"data:\n\n"])?;
+
+        assert!(keepalive.is_empty());
+
+        let lone_newline = parsed(&[b"data:\ndata:\n\n"])?;
+
+        assert_eq!(
+            lone_newline,
+            vec![SseFrame {
+                data: "\n".to_string(),
+                event: None,
+            }]
+        );
+
+        let interleaved = parsed(&[b": ping\ndata: real\n: pong\n\n"])?;
+
+        assert_eq!(interleaved.len(), 1);
+        assert_eq!(interleaved[0].data, "real");
+
+        Ok(())
+    }
+
+    /// An event line with no data dispatches nothing, and the last event line before dispatch
+    /// names the frame.
+    #[test]
+    fn events_without_data_never_dispatch() -> Result<(), Box<dyn std::error::Error>> {
+        let frames = parsed(&[
+            b"event: dropped\n\n",
+            b"event: first\nevent: last\ndata: x\n\n",
+        ])?;
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                data: "x".to_string(),
+                event: Some("last".to_string()),
+            }]
+        );
+
+        Ok(())
+    }
+
+    /// A stream that ends without its dispatching blank line still yields its trailing frame,
+    /// and a fully drained stream finishes empty.
+    #[test]
+    fn finish_flushes_the_unterminated_tail() -> Result<(), Box<dyn std::error::Error>> {
+        let unterminated = parsed(&[b"data: tail\n"])?;
+
+        assert_eq!(unterminated.len(), 1);
+        assert_eq!(unterminated[0].data, "tail");
+
+        let consumed_terminator = parsed(&[b"data: tail\ndata: two\n"])?;
+
+        assert_eq!(consumed_terminator[0].data, "tail\ntwo");
+
+        let drained = parsed(&[b"data: done\n\n"])?;
+
+        assert!(drained.len() == 1);
+
+        let empty = parsed(&[b""])?;
+
+        assert!(empty.is_empty());
+
+        Ok(())
+    }
+
+    /// A frame assembled across many data lines cannot skirt the cap: the per-line accounting
+    /// fails the frame once its lines together exceed the bound, and the failure is sticky for
+    /// the rest of the stream.
+    #[test]
+    fn oversized_frames_fail_across_lines_and_stay() -> Result<(), Box<dyn std::error::Error>> {
+        let line = vec![b'x'; 1024 * 1024];
+        let mut chunks: Vec<&[u8]> = Vec::new();
+
+        for _ in 0..17 {
+            chunks.push(b"data: ");
+            chunks.push(&line);
+            chunks.push(b"\n");
+        }
+
+        chunks.push(b"\n");
+
+        let mut parser = SseParser::new();
+
+        // Lines up to and including the one crossing the cap are accepted; the frame never
+        // dispatches.
+        let mut is_failed = false;
+
+        for chunk in chunks {
+            match parser.ingest(chunk) {
+                Ok(_) => {}
+                Err(SseParseError::FrameTooLarge) => {
+                    is_failed = true;
+
+                    break;
+                }
+            }
+        }
+
+        assert!(is_failed);
+        assert!(matches!(parser.finish(), Err(SseParseError::FrameTooLarge)));
+
+        Ok(())
+    }
+
+    /// A single chunk beyond the cap fails immediately, before the parser buffers it.
+    #[test]
+    fn an_oversized_chunk_fails_immediately() {
+        let oversized = vec![b'y'; 16 * 1024 * 1024 + 1];
+        let mut parser = SseParser::new();
+
+        assert!(matches!(
+            parser.ingest(&oversized),
+            Err(SseParseError::FrameTooLarge)
+        ));
+        assert!(matches!(parser.finish(), Err(SseParseError::FrameTooLarge)));
+    }
+
+    /// The writer's frames parse back to exactly the event and data they carry, and the bare
+    /// data writer emits no event line.
+    #[test]
+    fn written_frames_round_trip_through_the_parser() -> Result<(), Box<dyn std::error::Error>> {
+        let framed = format_frame(Some("message"), "{\"i\": 1}");
+        let mut parser = SseParser::new();
+
+        assert_eq!(
+            parser.ingest(framed.as_bytes())?,
+            vec![SseFrame {
+                data: "{\"i\": 1}".to_string(),
+                event: Some("message".to_string()),
+            }]
+        );
+
+        let bare = format_data_frame("just data");
+        let mut bare_parser = SseParser::new();
+
+        assert_eq!(
+            bare_parser.ingest(bare.as_bytes())?,
+            vec![SseFrame {
+                data: "just data".to_string(),
+                event: None,
+            }]
+        );
+        assert!(format_data_frame("x").starts_with("data: x\n\n"));
+        assert!(format_frame(Some("e"), "x").starts_with("event: e\ndata: x\n\n"));
+
+        Ok(())
+    }
+}

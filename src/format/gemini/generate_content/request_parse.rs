@@ -377,7 +377,7 @@ pub(super) fn parse_request(
     let (temperature, top_p, max_output_tokens, reasoning_effort, response_format) =
         parse_generation_config(request.generation_config.as_ref())?;
 
-    crate::format::validate_sampling_ranges(temperature, top_p)?;
+    crate::format::validate_sampling_ranges(temperature, top_p, "topP")?;
 
     Ok(ParsedRequest {
         affinity,

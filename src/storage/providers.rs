@@ -18,6 +18,9 @@ use crate::{
 use serde::Serialize;
 use std::sync::LazyLock;
 
+#[cfg(test)]
+mod tests;
+
 /// Inserts one provider row through the pooled or transactional executor, returning the new
 /// row's id: the statement is written once for both the pooled creation path and the device
 /// poller's atomic provider-write-plus-outcome commit.

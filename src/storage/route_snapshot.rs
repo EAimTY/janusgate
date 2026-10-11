@@ -8,6 +8,9 @@ use crate::{
 };
 use std::{collections::HashMap, sync::LazyLock};
 
+#[cfg(test)]
+mod tests;
+
 /// The direct target's provider-model read over the shared column consts: a fully fixed
 /// statement, built once instead of through `format!` on every dispatch.
 static READ_TARGET_DIRECT_SQL: LazyLock<String> = LazyLock::new(|| {

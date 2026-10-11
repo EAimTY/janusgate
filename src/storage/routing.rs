@@ -7,6 +7,9 @@ use crate::{
 };
 use std::collections::HashSet;
 
+#[cfg(test)]
+mod tests;
+
 /// Stored pool with its complete ordered membership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderPool {

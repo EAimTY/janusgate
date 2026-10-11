@@ -60,6 +60,9 @@ use crate::{
 };
 use std::future::Future;
 
+#[cfg(test)]
+mod tests;
+
 /// The shipped default summary-output budget (`docs/design/providers.md`): applied when the
 /// definition carries no compaction section to state its own.
 const DEFAULT_SUMMARY_BUDGET_TOKENS: u64 = 4096;
