@@ -96,3 +96,7 @@ Numeric request accounting is enabled by default with 90-day retention. Disable 
 [Documentation index](docs/README.md) is the map of the project's normative design, assumptions, and public contracts. Start there for architecture, routing, provider recipes, storage, compaction, configuration, and the complete management API method/path/payload reference.
 
 [Development guide](docs/development.md) covers setup, generated references, and quality gates. [AGENTS.md](AGENTS.md) supplies repository working rules and task-specific reading instructions; [web/AGENTS.md](web/AGENTS.md) adds frontend rules. Product context is maintained in [PRODUCT.md](PRODUCT.md), and the console's visual system in [web/DESIGN.md](web/DESIGN.md).
+
+## License
+
+JanusGate is licensed under the [Apache License, Version 2.0](LICENSE). Third-party dependencies retain their own licenses.
